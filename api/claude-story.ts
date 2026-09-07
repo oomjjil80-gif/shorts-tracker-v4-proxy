@@ -30,14 +30,91 @@ function textFromClaude(data: any) {
 }
 
 function extractJson(text: string) {
-  const cleaned = text
+  const cleaned = String(text || '')
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/i, '')
     .replace(/```\s*$/i, '')
     .trim()
 
-  return JSON.parse(cleaned)
+  try {
+    return JSON.parse(cleaned)
+  } catch {}
+
+  const firstBrace = cleaned.indexOf('{')
+  const lastBrace = cleaned.lastIndexOf('}')
+
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1))
+  }
+
+  throw new Error('No parseable JSON object found')
 }
+
+const LONGFORM_DRAFT_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    hook: { type: 'string' },
+    targetMinutes: { type: 'integer' },
+    chapters: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          chapterNo: { type: 'integer' },
+          title: { type: 'string' },
+          purpose: { type: 'string' },
+          segments: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                speaker: { type: 'string' },
+                text: { type: 'string' },
+                visualHint: { type: 'string' },
+                factStatus: {
+                  type: 'string',
+                  enum: ['verified', 'interpretation', 'verify_before_publish']
+                }
+              },
+              required: ['speaker', 'text', 'visualHint', 'factStatus'],
+              additionalProperties: false
+            }
+          }
+        },
+        required: ['chapterNo', 'title', 'purpose', 'segments'],
+        additionalProperties: false
+      }
+    },
+    ending: {
+      type: 'object',
+      properties: {
+        speaker: { type: 'string' },
+        text: { type: 'string' }
+      },
+      required: ['speaker', 'text'],
+      additionalProperties: false
+    },
+    shortsSpinOff: {
+      type: 'array',
+      items: { type: 'string' }
+    },
+    warnings: {
+      type: 'array',
+      items: { type: 'string' }
+    }
+  },
+  required: [
+    'title',
+    'hook',
+    'targetMinutes',
+    'chapters',
+    'ending',
+    'shortsSpinOff',
+    'warnings'
+  ],
+  additionalProperties: false
+} as const
 
 function buildSystemPrompt() {
   return [
@@ -65,7 +142,7 @@ function buildSystemPrompt() {
     '- 결론을 하나로 강요하지 않고 시청자가 자신의 조건을 확인하도록 끝낸다.',
     '- 롱폼에서도 30~60초마다 새로운 질문·사례·숫자·비교가 등장하도록 구성한다.',
     '',
-    '반드시 요청된 JSON만 출력한다. Markdown 코드블록은 사용하지 않는다.'
+    '응답은 제공된 JSON Schema를 정확히 따라야 한다.'
   ].join('\n')
 }
 
@@ -114,41 +191,8 @@ ${JSON.stringify(input?.hookCandidates || [], null, 2)}
 - 민재는 실제 시청자 질문이 필요한 곳에만 등장
 - 각 챕터가 다음 챕터를 궁금하게 만드는 연결 구조
 - 나중에 장면계획/CUT 자동분해가 가능하도록 chapterNo와 segment를 명확하게 구분
-
-다음 JSON 구조로만 출력하라.
-
-{
-  "title": "최종 롱폼 제목",
-  "hook": "첫 15~25초 훅",
-  "targetMinutes": ${targetMinutes},
-  "chapters": [
-    {
-      "chapterNo": 1,
-      "title": "챕터 제목",
-      "purpose": "이 챕터의 역할",
-      "segments": [
-        {
-          "speaker": "그루 또는 민재",
-          "text": "실제 TTS에 사용할 대사",
-          "visualHint": "이 대사를 이해시키기 위한 화면·숫자·표·비교 아이디어",
-          "factStatus": "verified 또는 interpretation 또는 verify_before_publish"
-        }
-      ]
-    }
-  ],
-  "ending": {
-    "speaker": "그루",
-    "text": "열린 결말형 마무리"
-  },
-  "shortsSpinOff": [
-    "롱폼에서 파생 가능한 쇼츠 소재 1",
-    "롱폼에서 파생 가능한 쇼츠 소재 2",
-    "롱폼에서 파생 가능한 쇼츠 소재 3"
-  ],
-  "warnings": [
-    "GPT 검수 단계에서 반드시 확인해야 하는 내용"
-  ]
-}
+- chapters 배열은 정확히 ${chapterCount}개 챕터로 구성
+- 각 segment의 factStatus는 verified, interpretation, verify_before_publish 중 하나만 사용
 `.trim()
 }
 
@@ -179,7 +223,7 @@ export default async function handler(req: Request, res: Response) {
   const test = Boolean(req.body?.test)
 
   try {
-    const payload = test
+    const payload: any = test
       ? {
           model:
             process.env.ANTHROPIC_STORY_MODEL ||
@@ -203,7 +247,7 @@ export default async function handler(req: Request, res: Response) {
             process.env.ANTHROPIC_STORY_MODEL ||
             'claude-sonnet-5',
 
-          max_tokens: 12000,
+          max_tokens: 16000,
 
           system: buildSystemPrompt(),
 
@@ -212,7 +256,14 @@ export default async function handler(req: Request, res: Response) {
               role: 'user',
               content: buildUserPrompt(input)
             }
-          ]
+          ],
+
+          output_config: {
+            format: {
+              type: 'json_schema',
+              schema: LONGFORM_DRAFT_SCHEMA
+            }
+          }
         }
 
     const response = await fetch(
@@ -239,6 +290,8 @@ export default async function handler(req: Request, res: Response) {
     } catch {}
 
     if (!response.ok) {
+      console.error('Anthropic request failed', response.status, raw.slice(0, 2000))
+
       return res.status(response.status).json({
         ok: false,
         error:
@@ -267,11 +320,22 @@ export default async function handler(req: Request, res: Response) {
       })
     }
 
+    if (data?.stop_reason === 'max_tokens') {
+      console.error('Claude longform output truncated at max_tokens')
+
+      return res.status(502).json({
+        ok: false,
+        error: 'Claude output was truncated before completion'
+      })
+    }
+
     let draft: any
 
     try {
       draft = extractJson(text)
     } catch {
+      console.error('Claude returned invalid JSON', text.slice(0, 2000))
+
       return res.status(502).json({
         ok: false,
         error: 'Claude returned invalid JSON',
@@ -287,10 +351,11 @@ export default async function handler(req: Request, res: Response) {
       usage: data?.usage || null
     })
   } catch (error: any) {
+    console.error('Claude story handler failed', error)
+
     return res.status(500).json({
       ok: false,
       error: error?.message || String(error)
     })
   }
 }
-

@@ -32,8 +32,71 @@ function extractJson(text: string) {
     .replace(/^```\s*/i, '')
     .replace(/```\s*$/i, '')
     .trim()
-  return JSON.parse(cleaned)
+
+  try {
+    return JSON.parse(cleaned)
+  } catch {}
+
+  const firstBrace = cleaned.indexOf('{')
+  const lastBrace = cleaned.lastIndexOf('}')
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1))
+  }
+
+  throw new Error('No parseable JSON object found')
 }
+
+const LONGFORM_DRAFT_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    hook: { type: 'string' },
+    targetMinutes: { type: 'integer' },
+    chapters: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          chapterNo: { type: 'integer' },
+          title: { type: 'string' },
+          purpose: { type: 'string' },
+          segments: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                speaker: { type: 'string' },
+                text: { type: 'string' },
+                visualHint: { type: 'string' },
+                factStatus: {
+                  type: 'string',
+                  enum: ['verified', 'interpretation', 'verify_before_publish']
+                }
+              },
+              required: ['speaker', 'text', 'visualHint', 'factStatus'],
+              additionalProperties: false
+            }
+          }
+        },
+        required: ['chapterNo', 'title', 'purpose', 'segments'],
+        additionalProperties: false
+      }
+    },
+    ending: {
+      type: 'object',
+      properties: {
+        speaker: { type: 'string' },
+        text: { type: 'string' }
+      },
+      required: ['speaker', 'text'],
+      additionalProperties: false
+    },
+    shortsSpinOff: { type: 'array', items: { type: 'string' } },
+    warnings: { type: 'array', items: { type: 'string' } }
+  },
+  required: ['title', 'hook', 'targetMinutes', 'chapters', 'ending', 'shortsSpinOff', 'warnings'],
+  additionalProperties: false
+} as const
 
 function buildSystemPrompt() {
   return [
@@ -135,9 +198,15 @@ export default async function handler(req: Request, res: Response) {
   try {
     const payload = {
       model,
-      max_tokens: 12000,
+      max_tokens: 16000,
       system: buildSystemPrompt(),
-      messages: [{ role: 'user', content: buildUserPrompt(input) }]
+      messages: [{ role: 'user', content: buildUserPrompt(input) }],
+      output_config: {
+        format: {
+          type: 'json_schema',
+          schema: LONGFORM_DRAFT_SCHEMA
+        }
+      }
     }
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -155,6 +224,7 @@ export default async function handler(req: Request, res: Response) {
     try { data = raw ? JSON.parse(raw) : {} } catch {}
 
     if (!response.ok) {
+      console.error('Anthropic revision request failed', response.status, raw.slice(0, 2000))
       return res.status(response.status).json({
         ok: false,
         error: data?.error?.message || raw || 'Anthropic API revision request failed'
@@ -162,6 +232,10 @@ export default async function handler(req: Request, res: Response) {
     }
 
     const text = textFromClaude(data)
+    if (data?.stop_reason === 'max_tokens') {
+      console.error('Claude revision output truncated at max_tokens')
+      return res.status(502).json({ ok: false, error: 'Claude revision output was truncated before completion' })
+    }
     if (!text) {
       return res.status(502).json({ ok: false, error: 'Claude revision response had no text output' })
     }
@@ -170,6 +244,7 @@ export default async function handler(req: Request, res: Response) {
     try {
       draft = extractJson(text)
     } catch {
+      console.error('Claude revision returned invalid JSON', text.slice(0, 2000))
       return res.status(502).json({ ok: false, error: 'Claude revision returned invalid JSON', rawText: text })
     }
 
@@ -182,6 +257,7 @@ export default async function handler(req: Request, res: Response) {
       revisionCount: 1
     })
   } catch (error: any) {
+    console.error('Claude revision handler failed', error)
     return res.status(500).json({ ok: false, error: error?.message || String(error) })
   }
 }
