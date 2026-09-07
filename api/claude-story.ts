@@ -1,27 +1,14 @@
 import type { Request, Response } from 'express'
 
-function setCors(req: Request, res: Response) {
-  const origin = String(req.headers.origin || '')
-
-  const allowed =
-    /^http:\/\/localhost(?::\d+)?$/i.test(origin) ||
-    /^http:\/\/127\.0\.0\.1(?::\d+)?$/i.test(origin) ||
-    /^https:\/\/tracker\.vercel\.app$/i.test(origin) ||
-    /^https:\/\/shorts-production-tracker\.vercel\.app$/i.test(origin) ||
-    /^https:\/\/shorts-production-tracker-[a-z0-9-]+\.vercel\.app$/i.test(origin)
-
-  if (allowed) {
-    res.setHeader('Access-Control-Allow-Origin', origin)
-    res.setHeader('Vary', 'Origin')
-  }
-
+function setCors(_req: Request, res: Response) {
+  res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept')
+  res.setHeader('Cache-Control', 'no-store')
 }
 
 function textFromClaude(data: any) {
   const blocks = Array.isArray(data?.content) ? data.content : []
-
   return blocks
     .filter((block: any) => block?.type === 'text')
     .map((block: any) => String(block?.text || ''))
@@ -36,13 +23,10 @@ function extractJson(text: string) {
     .replace(/```\s*$/i, '')
     .trim()
 
-  try {
-    return JSON.parse(cleaned)
-  } catch {}
+  try { return JSON.parse(cleaned) } catch {}
 
   const firstBrace = cleaned.indexOf('{')
   const lastBrace = cleaned.lastIndexOf('}')
-
   if (firstBrace >= 0 && lastBrace > firstBrace) {
     return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1))
   }
@@ -95,24 +79,10 @@ const LONGFORM_DRAFT_SCHEMA = {
       required: ['speaker', 'text'],
       additionalProperties: false
     },
-    shortsSpinOff: {
-      type: 'array',
-      items: { type: 'string' }
-    },
-    warnings: {
-      type: 'array',
-      items: { type: 'string' }
-    }
+    shortsSpinOff: { type: 'array', items: { type: 'string' } },
+    warnings: { type: 'array', items: { type: 'string' } }
   },
-  required: [
-    'title',
-    'hook',
-    'targetMinutes',
-    'chapters',
-    'ending',
-    'shortsSpinOff',
-    'warnings'
-  ],
+  required: ['title','hook','targetMinutes','chapters','ending','shortsSpinOff','warnings'],
   additionalProperties: false
 } as const
 
@@ -147,15 +117,8 @@ function buildSystemPrompt() {
 }
 
 function buildUserPrompt(input: any) {
-  const targetMinutes = Math.max(
-    5,
-    Math.min(30, Number(input?.targetMinutes || 15))
-  )
-
-  const chapterCount = Math.max(
-    3,
-    Math.min(10, Number(input?.chapterCount || 6))
-  )
+  const targetMinutes = Math.max(5, Math.min(30, Number(input?.targetMinutes || 15)))
+  const chapterCount = Math.max(3, Math.min(10, Number(input?.chapterCount || 6)))
 
   return `
 다음 소재로 약 ${targetMinutes}분 분량의 경제그루터기 롱폼 대본을 작성하라.
@@ -199,24 +162,14 @@ ${JSON.stringify(input?.hookCandidates || [], null, 2)}
 export default async function handler(req: Request, res: Response) {
   setCors(req, res)
 
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end()
-  }
-
+  if (req.method === 'OPTIONS') return res.status(204).end()
   if (req.method !== 'POST') {
-    return res.status(405).json({
-      ok: false,
-      error: 'Method not allowed'
-    })
+    return res.status(405).json({ ok: false, error: 'Method not allowed' })
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY
-
   if (!apiKey) {
-    return res.status(503).json({
-      ok: false,
-      error: 'ANTHROPIC_API_KEY is not configured'
-    })
+    return res.status(503).json({ ok: false, error: 'ANTHROPIC_API_KEY is not configured' })
   }
 
   const input = req.body?.input || {}
@@ -225,39 +178,19 @@ export default async function handler(req: Request, res: Response) {
   try {
     const payload: any = test
       ? {
-          model:
-            process.env.ANTHROPIC_STORY_MODEL ||
-            'claude-sonnet-5',
-
+          model: process.env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5',
           max_tokens: 256,
-
-          system:
-            '짧고 정확하게 응답하라.',
-
-          messages: [
-            {
-              role: 'user',
-              content:
-                'Content Production Tracker Claude API 연결 테스트입니다. 한국어로 "Claude 대본 API 연결 성공"이라고만 답하세요.'
-            }
-          ]
+          system: '짧고 정확하게 응답하라.',
+          messages: [{
+            role: 'user',
+            content: 'Content Production Tracker Claude API 연결 테스트입니다. 한국어로 "Claude 대본 API 연결 성공"이라고만 답하세요.'
+          }]
         }
       : {
-          model:
-            process.env.ANTHROPIC_STORY_MODEL ||
-            'claude-sonnet-5',
-
+          model: process.env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5',
           max_tokens: 16000,
-
           system: buildSystemPrompt(),
-
-          messages: [
-            {
-              role: 'user',
-              content: buildUserPrompt(input)
-            }
-          ],
-
+          messages: [{ role: 'user', content: buildUserPrompt(input) }],
           output_config: {
             format: {
               type: 'json_schema',
@@ -266,49 +199,30 @@ export default async function handler(req: Request, res: Response) {
           }
         }
 
-    const response = await fetch(
-      'https://api.anthropic.com/v1/messages',
-      {
-        method: 'POST',
-
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json'
-        },
-
-        body: JSON.stringify(payload)
-      }
-    )
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    })
 
     const raw = await response.text()
-
     let data: any = {}
-
-    try {
-      data = raw ? JSON.parse(raw) : {}
-    } catch {}
+    try { data = raw ? JSON.parse(raw) : {} } catch {}
 
     if (!response.ok) {
       console.error('Anthropic request failed', response.status, raw.slice(0, 2000))
-
       return res.status(response.status).json({
         ok: false,
-        error:
-          data?.error?.message ||
-          raw ||
-          'Anthropic API request failed'
+        error: data?.error?.message || raw || 'Anthropic API request failed'
       })
     }
 
     const text = textFromClaude(data)
-
-    if (!text) {
-      return res.status(502).json({
-        ok: false,
-        error: 'Claude response had no text output'
-      })
-    }
+    if (!text) return res.status(502).json({ ok: false, error: 'Claude response had no text output' })
 
     if (test) {
       return res.status(200).json({
@@ -321,21 +235,13 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (data?.stop_reason === 'max_tokens') {
-      console.error('Claude longform output truncated at max_tokens')
-
-      return res.status(502).json({
-        ok: false,
-        error: 'Claude output was truncated before completion'
-      })
+      return res.status(502).json({ ok: false, error: 'Claude output was truncated before completion' })
     }
 
     let draft: any
-
     try {
       draft = extractJson(text)
     } catch {
-      console.error('Claude returned invalid JSON', text.slice(0, 2000))
-
       return res.status(502).json({
         ok: false,
         error: 'Claude returned invalid JSON',
@@ -352,7 +258,6 @@ export default async function handler(req: Request, res: Response) {
     })
   } catch (error: any) {
     console.error('Claude story handler failed', error)
-
     return res.status(500).json({
       ok: false,
       error: error?.message || String(error)
