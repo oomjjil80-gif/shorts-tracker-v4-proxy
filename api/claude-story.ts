@@ -6,6 +6,7 @@ function setCors(req: Request, res: Response) {
   const allowed =
     /^http:\/\/localhost(?::\d+)?$/i.test(origin) ||
     /^http:\/\/127\.0\.0\.1(?::\d+)?$/i.test(origin) ||
+    /^https:\/\/tracker\.vercel\.app$/i.test(origin) ||
     /^https:\/\/shorts-production-tracker\.vercel\.app$/i.test(origin) ||
     /^https:\/\/shorts-production-tracker-[a-z0-9-]+\.vercel\.app$/i.test(origin)
 
@@ -292,3 +293,4 @@ export default async function handler(req: Request, res: Response) {
     })
   }
 }
+
