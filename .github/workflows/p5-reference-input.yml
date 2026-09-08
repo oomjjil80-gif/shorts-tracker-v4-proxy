@@ -1,0 +1,26 @@
+name: Apply Gemini reference input
+on:
+  push:
+    paths:
+      - 'tools/p5-reference-input-patch.mjs'
+      - '.github/workflows/p5-reference-input.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply Gemini reference input integration
+        run: node tools/p5-reference-input-patch.mjs
+      - name: Commit proxy source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/index.ts
+          git diff --cached --quiet && exit 0
+          git commit -m "Accept scene reference images in Gemini generation"
+          git push
