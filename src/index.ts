@@ -3,7 +3,7 @@ import { put, get } from '@vercel/blob'
 import { createHash, randomUUID } from 'node:crypto'
 
 const app = express()
-app.use(express.json({ limit: '256kb' }))
+app.use(express.json({ limit: '24mb' }))
 
 const STORY_SCHEMA = {
   type: 'object',
@@ -583,12 +583,40 @@ app.post(
         '4K'
       ])
 
+    const rawReferences = Array.isArray(input.references) ? input.references.slice(0, 4) : []
+    const referenceBlocks = rawReferences
+      .map((ref: any) => ({
+        type: 'image',
+        data: String(ref?.data || '').replace(/^data:[^;]+;base64,/, ''),
+        mime_type: String(ref?.mimeType || ref?.mime_type || 'image/png')
+      }))
+      .filter((ref: any) => ref.data.length > 0)
+
+    const interactionInput = referenceBlocks.length
+      ? [
+          {
+            type: 'text',
+            text: [
+              'Use the provided reference images as identity/style anchors. Preserve face, hair, beard, age, clothing, body proportions, and core character design unless the prompt explicitly requests a scene-type transformation such as the established SD version.',
+              'Generate exactly ONE final image for this CUT. Do not return a candidate sheet, variations, collage, triptych, or contact sheet.',
+              prompt
+            ].join('\n\n')
+          },
+          ...referenceBlocks
+        ]
+      : [
+          {
+            type: 'text',
+            text: 'Generate exactly ONE final image for this CUT. Do not return a candidate sheet, variations, collage, triptych, or contact sheet.\n\n' + prompt
+          }
+        ]
+
     const payload = {
       model:
         'gemini-3.1-flash-image',
 
       input:
-        prompt,
+        interactionInput,
 
       response_format: [
         {
