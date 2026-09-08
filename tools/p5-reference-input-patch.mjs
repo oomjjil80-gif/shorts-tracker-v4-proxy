@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+const p='src/index.ts';
+let s=fs.readFileSync(p,'utf8');
+const anchor=`    const payload = {\n      model:\n        'gemini-3.1-flash-image',\n\n      input:\n        prompt,`;
+if(!s.includes(anchor)) throw new Error('payload anchor missing');
+const replacement=`    const rawReferences = Array.isArray(input.references) ? input.references.slice(0, 4) : []\n    const referenceBlocks = rawReferences\n      .map((ref: any) => ({\n        type: 'image',\n        data: String(ref?.data || '').replace(/^data:[^;]+;base64,/, ''),\n        mime_type: String(ref?.mimeType || ref?.mime_type || 'image/png')\n      }))\n      .filter((ref: any) => ref.data.length > 0)\n\n    const interactionInput = referenceBlocks.length\n      ? [\n          {\n            type: 'text',\n            text: [\n              'Use the provided reference images as identity/style anchors. Preserve face, hair, beard, age, clothing, body proportions, and core character design unless the prompt explicitly requests a scene-type transformation such as the established SD version.',\n              'Generate exactly ONE final image for this CUT. Do not return a candidate sheet, variations, collage, triptych, or contact sheet.',\n              prompt\n            ].join('\\n\\n')\n          },\n          ...referenceBlocks\n        ]\n      : [\n          {\n            type: 'text',\n            text: 'Generate exactly ONE final image for this CUT. Do not return a candidate sheet, variations, collage, triptych, or contact sheet.\\n\\n' + prompt\n          }\n        ]\n\n    const payload = {\n      model:\n        'gemini-3.1-flash-image',\n\n      input:\n        interactionInput,`;
+s=s.replace(anchor,replacement);
+s=s.replace("app.use(express.json({ limit: '256kb' }))","app.use(express.json({ limit: '24mb' }))");
+fs.writeFileSync(p,s);
+console.log('Gemini reference image input patch applied');
