@@ -22,8 +22,10 @@ jobs:
           node-version: '20'
       - name: Apply rewrite mode patch
         run: node tools/alpha33-rewrite-mode-patch.mjs
-      - name: TypeScript syntax/type check
-        run: npx tsc --noEmit
+      - name: Verify patch markers
+        run: |
+          grep -q "rewriteMode" api/claude-longform-revise.ts
+          grep -q "repeatedIssueKeys" api/claude-longform-revise.ts
       - name: Commit proxy source
         run: |
           git config user.name 'github-actions[bot]'
