@@ -1,0 +1,40 @@
+name: Apply Alpha 36 production finalize mode
+
+on:
+  push:
+    paths:
+      - 'tools/alpha36-production-finalize-patch.mjs'
+      - '.github/workflows/alpha36-production-finalize.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Apply production finalize patch
+        run: node tools/alpha36-production-finalize-patch.mjs
+      - name: Verify markers
+        run: |
+          grep -q "finalizeForProduction" api/claude-longform-revise.ts
+          grep -q "speaker는 정확히 내레이션" api/claude-longform-revise.ts
+      - name: Commit proxy source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add api/claude-longform-revise.ts
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+          else
+            git commit -m 'Add production final narration finalize mode'
+            git pull --rebase origin main
+            git push origin main
+          fi
