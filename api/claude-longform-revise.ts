@@ -101,7 +101,7 @@ const LONGFORM_DRAFT_SCHEMA = {
 function buildSystemPrompt() {
   return [
     '당신은 Content Production Tracker의 경제그루터기 롱폼 대본 수정 작가다.',
-    '초안 전체를 새로 창작하는 것이 아니라 GPT QC가 지적한 필수 문제만 정확하게 고친다.',
+    '기본은 GPT QC가 지적한 필수 문제만 정확하게 고친다. 단, rewriteMode가 켜진 반복 실패 구간은 기존 문장을 보존하려 하지 말고 해당 문제 구간을 통째로 새로 쓴다.',
     '',
     '[수정 원칙]',
     '- verifiedFacts를 사실 기준으로 사용한다.',
@@ -109,6 +109,8 @@ function buildSystemPrompt() {
     '- sources와 입력 자료가 뒷받침하지 않는 새 사실·숫자·시행일·예외조건을 추가하지 않는다.',
     '- GPT revisionInstructions와 required 이슈를 우선 해결한다.',
     '- warning은 문맥상 필요할 때만 다듬고 좋은 문장은 이유 없이 전면 재작성하지 않는다.',
+    '- rewriteMode=true이면 반복된 required/blocker와 연결된 segment/챕터만 폐기 후 재작성한다. 검증된 Fact Pack 밖의 사실을 새로 만들지 않는다.',
+    '- 재작성 대상 밖의 좋은 구간, 제목의 핵심 질문, BM Reference와 Story Map의 큰 흐름은 유지한다.',
     '- 원래 제목, 훅, 챕터 수, 챕터 흐름, 그루/민재 역할을 가능한 한 유지한다.',
     '- 경제그루터기 특성상 원인 → 생활 연결 → 사람마다 결과가 다른 이유 → 변수/대응 시나리오 → 열린 결말 흐름을 유지한다.',
     '- 공포·과장·정치적 선동을 피하고 자연스러운 한국어 구어체와 TTS 친화 문장으로 쓴다.',
@@ -147,6 +149,9 @@ function buildUserPrompt(input: any) {
     '[sources]',
     JSON.stringify(Array.isArray(handoff.sources) ? handoff.sources : [], null, 2),
     '',
+    '[반복 QC 재작성 모드]',
+    JSON.stringify({ rewriteMode: Boolean(input?.rewriteMode), repeatedIssueKeys: Array.isArray(input?.repeatedIssueKeys) ? input.repeatedIssueKeys : [] }, null, 2),
+    '',
     '[GPT QC 필수 수정 지시]',
     JSON.stringify(Array.isArray(qc.revisionInstructions) ? qc.revisionInstructions : [], null, 2),
     '',
@@ -156,7 +161,9 @@ function buildUserPrompt(input: any) {
     '[원본 Claude Longform Draft]',
     JSON.stringify(draft, null, 2),
     '',
-    '위 자료만 사용해 정확히 1회 수정본을 작성하라. 새로운 외부 사실을 보충하지 말고, 필요한 부분만 수정한 뒤 동일 JSON 구조만 반환하라.'
+    input?.rewriteMode
+      ? '같은 QC 문제가 3회 이상 반복됐다. 반복 문제와 연결된 구간은 기존 문장을 살리려 하지 말고 삭제 후 verifiedFacts·claimsToVerify·sources와 현재 GPT 필수 수정지시만으로 새로 작성하라. 나머지 좋은 구간과 큰 구조는 유지하고 동일 JSON 구조만 반환하라.'
+      : '위 자료만 사용해 정확히 1회 수정본을 작성하라. 새로운 외부 사실을 보충하지 말고, 필요한 부분만 수정한 뒤 동일 JSON 구조만 반환하라.'
   ].join('\n')
 }
 
@@ -254,7 +261,8 @@ export default async function handler(req: Request, res: Response) {
       model: data?.model || model,
       draft,
       usage: data?.usage || null,
-      revisionCount: 1
+      revisionCount: 1,
+      rewriteMode: Boolean(input?.rewriteMode)
     })
   } catch (error: any) {
     console.error('Claude revision handler failed', error)
