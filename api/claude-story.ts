@@ -101,10 +101,10 @@ function buildSystemPrompt() {
     '- claimsToVerify에 있는 내용은 확정 사실처럼 단정하지 않는다.',
     '- 투자·대출·정책 결과를 개인에게 보장되는 결과처럼 표현하지 않는다.',
     '',
-    '[캐릭터]',
-    '- 그루: 복잡한 경제를 차분하고 쉽게 풀어주는 안내자.',
-    '- 민재: 시청자가 실제로 궁금해할 질문을 대신 묻는 인물.',
-    '- 민재의 질문은 억지 대화가 아니라 설명 전환점에서만 사용한다.',
+    '[화자 규칙]',
+    '- economy_benchmark 프로필은 기본적으로 단일 중립 내레이션으로 작성한다.',
+    '- 그루, 민재 등 과거 경제그루터기 캐릭터를 자동 등장시키지 않는다.',
+    '- 특정 캐릭터/진행자가 소재나 Master Brief에 명시적으로 지정된 경우에만 사용한다.',
     '',
     '[대본 원칙]',
     '- 문어체보다 실제 말하기 좋은 자연스러운 한국어를 사용한다.',
@@ -125,7 +125,7 @@ function buildUserPrompt(input: any) {
   const chapterCount = Math.max(3, Math.min(10, Number(input?.chapterCount || 6)))
 
   return `
-다음 소재로 약 ${targetMinutes}분 분량의 경제그루터기 롱폼 대본을 작성하라.
+다음 소재로 약 ${targetMinutes}분 분량의 경제·생활 설명형 롱폼 대본을 작성하라.
 
 [소재 제목]
 ${String(input?.title || '')}
@@ -166,7 +166,7 @@ ${JSON.stringify({ primaryCategory: input?.primaryCategory || '', secondaryTags:
 [목표]
 - 약 ${targetMinutes}분
 - ${chapterCount}개 챕터
-- economy_benchmark 프로필이면 특정 고정 캐릭터 대화에 의존하지 말고 내레이션 중심 경제 다큐/설명형으로 작성
+- economy_benchmark 프로필이면 고정 캐릭터를 사용하지 말고 단일 중립 내레이션 중심 경제·생활 설명형으로 작성. speaker는 기본적으로 내레이션을 사용
 - 원본 BM의 큰 질문과 소주제 기능을 유지하되 한국의 사실·사례·데이터로 치환
 - 각 챕터가 답을 하나 주면서 동시에 다음 질문을 열어 다음 챕터를 궁금하게 만드는 연결 구조
 - 시청자 유지에 기여하지 않는 역사·배경 설명을 길게 선행하지 않음
