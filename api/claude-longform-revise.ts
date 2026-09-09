@@ -98,7 +98,7 @@ const LONGFORM_DRAFT_SCHEMA = {
   additionalProperties: false
 } as const
 
-function buildSystemPrompt() {
+function buildSystemPrompt(finalizeForProduction = false) {
   return [
     '당신은 Content Production Tracker의 경제·생활 롱폼 대본 수정 작가다.',
     '기본은 GPT QC가 지적한 필수 문제만 정확하게 고친다. 단, rewriteMode가 켜진 반복 실패 구간은 기존 문장을 보존하려 하지 말고 해당 문제 구간을 통째로 새로 쓴다.',
@@ -124,6 +124,7 @@ function buildSystemPrompt() {
 }
 
 function buildUserPrompt(input: any) {
+  const finalizeForProduction = Boolean(input?.finalizeForProduction)
   const handoff = input?.handoff || {}
   const draft = input?.draft || {}
   const qc = input?.qc || {}
@@ -162,9 +163,11 @@ function buildUserPrompt(input: any) {
     '[원본 Claude Longform Draft]',
     JSON.stringify(draft, null, 2),
     '',
-    input?.rewriteMode
-      ? '같은 QC 문제가 3회 이상 반복됐다. 반복 문제와 연결된 구간은 기존 문장을 살리려 하지 말고 삭제 후 verifiedFacts·claimsToVerify·sources와 현재 GPT 필수 수정지시만으로 새로 작성하라. 나머지 좋은 구간과 큰 구조는 유지하고 동일 JSON 구조만 반환하라.'
-      : '위 자료만 사용해 정확히 1회 수정본을 작성하라. 새로운 외부 사실을 보충하지 말고, 필요한 부분만 수정한 뒤 동일 JSON 구조만 반환하라.'
+    finalizeForProduction
+      ? '이 원고는 실제 업로드 제작 직전 최종본이다. 제목·훅·챕터 순서·검증된 사실·핵심 논리를 유지하되 그루, 민재 등 고정 캐릭터 대화 흔적을 모두 제거한다. 질문형 대사는 자연스러운 내레이션의 수사 질문으로 바꾸고, 모든 segment의 speaker는 정확히 내레이션으로 설정한다. 새로운 사실이나 숫자를 추가하지 않는다. TTS가 그대로 읽어도 자연스러운 완성 원고를 동일 JSON 구조로 반환하라.'
+      : (input?.rewriteMode
+        ? '같은 QC 문제가 3회 이상 반복됐다. 반복 문제와 연결된 구간은 기존 문장을 살리려 하지 말고 삭제 후 verifiedFacts·claimsToVerify·sources와 현재 GPT 필수 수정지시만으로 새로 작성하라. 나머지 좋은 구간과 큰 구조는 유지하고 동일 JSON 구조만 반환하라.'
+        : '위 자료만 사용해 정확히 1회 수정본을 작성하라. 새로운 외부 사실을 보충하지 말고, 필요한 부분만 수정한 뒤 동일 JSON 구조만 반환하라.')
   ].join('\n')
 }
 
@@ -196,10 +199,11 @@ export default async function handler(req: Request, res: Response) {
   if (!input?.draft || typeof input.draft !== 'object') {
     return res.status(400).json({ ok: false, error: 'Claude longform draft is required' })
   }
-  if (!input?.qc || typeof input.qc !== 'object') {
+  const finalizeForProduction = Boolean(input?.finalizeForProduction)
+  if (!finalizeForProduction && (!input?.qc || typeof input.qc !== 'object')) {
     return res.status(400).json({ ok: false, error: 'GPT QC result is required' })
   }
-  if (input.qc.status !== 'revision_required') {
+  if (!finalizeForProduction && input.qc.status !== 'revision_required') {
     return res.status(409).json({ ok: false, error: `Revision is not allowed for QC status: ${String(input.qc.status || 'unknown')}` })
   }
 
@@ -207,7 +211,7 @@ export default async function handler(req: Request, res: Response) {
     const payload = {
       model,
       max_tokens: 16000,
-      system: buildSystemPrompt(),
+      system: buildSystemPrompt(finalizeForProduction),
       messages: [{ role: 'user', content: buildUserPrompt(input) }],
       output_config: {
         format: {
@@ -262,8 +266,9 @@ export default async function handler(req: Request, res: Response) {
       model: data?.model || model,
       draft,
       usage: data?.usage || null,
-      revisionCount: 1,
-      rewriteMode: Boolean(input?.rewriteMode)
+      revisionCount: finalizeForProduction ? 0 : 1,
+      rewriteMode: Boolean(input?.rewriteMode),
+      finalizeForProduction
     })
   } catch (error: any) {
     console.error('Claude revision handler failed', error)
