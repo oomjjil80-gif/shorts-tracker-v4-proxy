@@ -1,0 +1,40 @@
+name: Apply Alpha 35 legacy economy character cleanup
+
+on:
+  push:
+    paths:
+      - 'tools/alpha35-remove-legacy-economy-characters.mjs'
+      - '.github/workflows/alpha35-remove-legacy-economy-characters.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Apply cleanup patch
+        run: node tools/alpha35-remove-legacy-economy-characters.mjs
+      - name: Verify cleanup markers
+        run: |
+          grep -q "고정 캐릭터를 사용하지 말고 단일 중립 내레이션" api/claude-story.ts
+          grep -q "과거 경제그루터기 캐릭터를 유지하지 않는다" api/claude-longform-revise.ts
+      - name: Commit patched proxy source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add api/claude-story.ts api/claude-longform-revise.ts
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+          else
+            git commit -m 'Remove legacy Gru Minjae character leakage from economy benchmark'
+            git pull --rebase origin main
+            git push origin main
+          fi
