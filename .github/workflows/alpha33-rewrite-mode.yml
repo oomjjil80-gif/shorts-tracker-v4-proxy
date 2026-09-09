@@ -1,0 +1,38 @@
+name: Apply Alpha 33 repeated QC rewrite mode
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/alpha33-rewrite-mode-patch.mjs'
+      - '.github/workflows/alpha33-rewrite-mode.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Apply rewrite mode patch
+        run: node tools/alpha33-rewrite-mode-patch.mjs
+      - name: TypeScript syntax/type check
+        run: npx tsc --noEmit
+      - name: Commit proxy source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add api/claude-longform-revise.ts
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+          else
+            git commit -m 'Enable repeated QC problem-section rewrite mode'
+            git pull --rebase origin main
+            git push origin main
+          fi
