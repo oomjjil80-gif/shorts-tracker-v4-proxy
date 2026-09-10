@@ -52,7 +52,7 @@ export default async function handler(req: Request, res: Response) {
   const prompt = String(input.prompt || '').trim()
   const imageBase64 = String(input.imageBase64 || '').replace(/^data:[^;]+;base64,/, '')
   const mimeType = String(input.mimeType || 'image/png')
-  const targetScore = Math.max(80, Math.min(95, Number(input.targetScore || 84)))
+  const targetScore = Math.max(78, Math.min(92, Number(input.targetScore || 80)))
   if (!prompt || !imageBase64) return res.status(400).json({ error: { message: 'prompt and imageBase64 are required' } })
 
   const rubric = [
@@ -72,7 +72,7 @@ export default async function handler(req: Request, res: Response) {
     'comprehension: one-second understanding of the core economic relationship.',
     'hierarchy: one dominant idea/object, clear eye path, no competing focal points.',
     'metaphor: strength and relevance of the visual metaphor; not generic decoration.',
-    'premiumFinish: professional art direction, composition, depth, polish; not cheap educational clip-art.',
+    'premiumFinish: professional art direction, composition, depth, polish. Score relative to a strong YouTube economy explainer reference, but do not use this dimension alone as a hard failure.',
     'realism: believable real-world background integrated with the graphics.',
     'stickmanConsistency: stickman is visually consistent, secondary, useful, and not awkwardly cropped.',
     'cleanliness: no broken generated text, nonsense labels, accidental logos, comic bubbles, clutter, or irrelevant ornaments.',
@@ -87,7 +87,7 @@ export default async function handler(req: Request, res: Response) {
     'blankCanvas: true only when a large blank panel is clearly an accidental unfinished object inside the scene. Reserved top/bottom negative-space bands for Tracker overlay are allowed and must NOT trigger this defect.',
     'irrelevantMeaning: true when the dominant scene represents a different economic claim from the exact CUT narration/screen goal.',
     '',
-    'SEVERE FAIL if ANY hard defect above is true, OR semanticMatch below 55, OR the core meaning cannot be understood in one second, OR a key subject is badly clipped.',
+    'SEVERE FAIL only when ANY hard defect above is clearly present, OR semanticMatch below 50, OR the dominant visual meaning is clearly wrong, OR a key subject is severely clipped. Do not mark severe merely because polish is below benchmark.',
     'IMPORTANT: The supplied image may already include Tracker compositing. Distinguish Tracker overlay zones from AI-generated text inside the artwork. Clean, intentional Tracker overlay text is allowed; broken or unintended in-scene text is not.',
     '',
     'Return JSON only in this exact shape:',
@@ -127,7 +127,7 @@ export default async function handler(req: Request, res: Response) {
     const dimensions: Record<string, number> = {}
     for (const key of Object.keys(WEIGHTS)) dimensions[key] = clampScore(rawDims[key])
     const score = Math.round(Object.entries(WEIGHTS).reduce((sum, [key, weight]) => sum + dimensions[key] * weight, 0))
-    const semanticSevere = dimensions.semanticMatch < 55
+    const semanticSevere = dimensions.semanticMatch < 50
     const weakDimensions = Object.entries(dimensions)
       .filter(([, v]) => v < targetScore)
       .sort((a, b) => a[1] - b[1])
@@ -146,7 +146,7 @@ export default async function handler(req: Request, res: Response) {
     }
     const hardDefect = Object.values(defects).some(Boolean)
     const severe = Boolean(parsed.severe) || semanticSevere || hardDefect
-    const pass = score >= targetScore && dimensions.semanticMatch >= 72 && !severe && !hardDefect
+    const pass = score >= targetScore && dimensions.semanticMatch >= 68 && !severe && !hardDefect
 
     console.log('[IMAGE_QC_RESULT]', JSON.stringify({
       score,
@@ -158,7 +158,7 @@ export default async function handler(req: Request, res: Response) {
       dimensions,
       weakDimensions,
       reasons,
-      rubricVersion:'economy-semantic-premium-v5-calibrated-gates'
+      rubricVersion:'economy-semantic-premium-v6-balanced-gates'
     }))
 
     return res.status(200).json({
@@ -173,7 +173,7 @@ export default async function handler(req: Request, res: Response) {
       reasons,
       correctionPrompt: String(parsed.correctionPrompt || '').slice(0, 2200),
       modelId: 'gemini-3.8-flash',
-      rubricVersion: 'economy-semantic-premium-v5-calibrated-gates'
+      rubricVersion: 'economy-semantic-premium-v6-balanced-gates'
     })
   } catch (error: any) {
     return res.status(500).json({ error: { message: error?.message || String(error) } })
