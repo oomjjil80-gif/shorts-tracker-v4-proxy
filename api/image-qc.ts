@@ -111,7 +111,7 @@ export default async function handler(req: Request, res: Response) {
   }
 
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -158,7 +158,7 @@ export default async function handler(req: Request, res: Response) {
       weakDimensions,
       reasons,
       correctionPrompt: String(parsed.correctionPrompt || '').slice(0, 2200),
-      modelId: 'gemini-2.5-flash',
+      modelId: 'gemini-3.8-flash',
       rubricVersion: 'economy-semantic-premium-v4-hard-gates'
     })
   } catch (error: any) {
