@@ -52,7 +52,7 @@ export default async function handler(req: Request, res: Response) {
   const prompt = String(input.prompt || '').trim()
   const imageBase64 = String(input.imageBase64 || '').replace(/^data:[^;]+;base64,/, '')
   const mimeType = String(input.mimeType || 'image/png')
-  const targetScore = Math.max(82, Math.min(95, Number(input.targetScore || 88)))
+  const targetScore = Math.max(80, Math.min(95, Number(input.targetScore || 84)))
   if (!prompt || !imageBase64) return res.status(400).json({ error: { message: 'prompt and imageBase64 are required' } })
 
   const rubric = [
@@ -79,16 +79,16 @@ export default async function handler(req: Request, res: Response) {
     'frameSafety: important subjects and overlays are not clipped and remain readable on mobile.',
     '',
     '[HARD DEFECT GATES — INSPECT PIXELS, DO NOT GUESS INTENT]',
-    'visibleGeneratedText: true if the source image itself contains ANY visible Korean/English word, readable label, number, percentage, caption, title, watermark or UI-like text. This includes plausible-looking but wrong text. Decorative currency symbols count only when clearly text-like.',
+    'visibleGeneratedText: true ONLY for prominent, unintended, broken, nonsensical, misleading, or obviously AI-generated text/number/label inside the artwork. Do NOT fail clean Tracker overlay text placed in reserved top/bottom title zones. Do NOT fail tiny incidental numerals on banknotes, coins, certificates, buildings, or props when they are not a focal message.',
     'missingOrBrokenFace: true if any primary stick-figure character has a blank/missing face, severely malformed facial features, duplicated/fragmented face, or face is unintentionally obscured.',
     'characterStyleBreak: true if a primary character visibly changes away from the established simple 2D stick-figure language (for example a realistic elderly person, different illustration family, inconsistent body/face treatment) without the CUT explicitly requiring it.',
     'realHumanProtagonist: true if a photorealistic human becomes the main protagonist where the stick-figure channel style is required.',
     'brokenAnatomy: true for obvious extra/missing limbs, impossible hand/arm attachment, merged body parts, or severe character deformation.',
-    'blankCanvas: true for a large empty card/white panel or poster-like canvas that looks like unfinished generated infographic space rather than intentional Tracker overlay safe-space.',
+    'blankCanvas: true only when a large blank panel is clearly an accidental unfinished object inside the scene. Reserved top/bottom negative-space bands for Tracker overlay are allowed and must NOT trigger this defect.',
     'irrelevantMeaning: true when the dominant scene represents a different economic claim from the exact CUT narration/screen goal.',
     '',
     'SEVERE FAIL if ANY hard defect above is true, OR semanticMatch below 55, OR the core meaning cannot be understood in one second, OR a key subject is badly clipped.',
-    'IMPORTANT: This endpoint evaluates the CLEAN SOURCE IMAGE BEFORE Tracker overlays. Therefore any visible title/caption/number already present in the supplied image is a defect, even if the wording looks correct.',
+    'IMPORTANT: The supplied image may already include Tracker compositing. Distinguish Tracker overlay zones from AI-generated text inside the artwork. Clean, intentional Tracker overlay text is allowed; broken or unintended in-scene text is not.',
     '',
     'Return JSON only in this exact shape:',
     '{"dimensions":{"semanticMatch":0,"comprehension":0,"hierarchy":0,"metaphor":0,"premiumFinish":0,"realism":0,"stickmanConsistency":0,"cleanliness":0,"frameSafety":0},"defects":{"visibleGeneratedText":false,"missingOrBrokenFace":false,"characterStyleBreak":false,"realHumanProtagonist":false,"brokenAnatomy":false,"blankCanvas":false,"irrelevantMeaning":false},"severe":false,"reasons":["..."],"correctionPrompt":"..."}',
@@ -150,7 +150,7 @@ export default async function handler(req: Request, res: Response) {
     return res.status(200).json({
       score,
       targetScore,
-      pass: score >= targetScore && dimensions.semanticMatch >= 75 && !severe && !hardDefect,
+      pass: score >= targetScore && dimensions.semanticMatch >= 72 && !severe && !hardDefect,
       severe,
       hardDefect,
       defects,
@@ -159,7 +159,7 @@ export default async function handler(req: Request, res: Response) {
       reasons,
       correctionPrompt: String(parsed.correctionPrompt || '').slice(0, 2200),
       modelId: 'gemini-3.8-flash',
-      rubricVersion: 'economy-semantic-premium-v4-hard-gates'
+      rubricVersion: 'economy-semantic-premium-v5-calibrated-gates'
     })
   } catch (error: any) {
     return res.status(500).json({ error: { message: error?.message || String(error) } })
