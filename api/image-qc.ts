@@ -28,14 +28,15 @@ function clampScore(v: any) {
 }
 
 const WEIGHTS: Record<string, number> = {
-  comprehension: 0.25,
-  hierarchy: 0.15,
-  metaphor: 0.15,
-  premiumFinish: 0.15,
-  realism: 0.10,
-  stickmanConsistency: 0.08,
-  cleanliness: 0.07,
-  frameSafety: 0.05,
+  semanticMatch: 0.28,
+  comprehension: 0.20,
+  hierarchy: 0.12,
+  metaphor: 0.12,
+  premiumFinish: 0.10,
+  realism: 0.07,
+  stickmanConsistency: 0.04,
+  cleanliness: 0.04,
+  frameSafety: 0.03,
 }
 
 export default async function handler(req: Request, res: Response) {
@@ -54,13 +55,19 @@ export default async function handler(req: Request, res: Response) {
   if (!prompt || !imageBase64) return res.status(400).json({ error: { message: 'prompt and imageBase64 are required' } })
 
   const rubric = [
-    'You are the final senior art director for a premium Korean economy YouTube channel.',
-    'Judge ONLY the actual final 9:16 image shown to you. Be strict and do not reward intention.',
-    `Publication target is ${targetScore}/100 or higher and should look at least one level above a typical good economy explainer thumbnail/scene.`,
-    'The frame should combine a realistic or premium semi-realistic real-world background, one dominant economic visual metaphor, a secondary consistent 2D stickman explainer, exact readable overlay text/numbers when present, and strong mobile hierarchy.',
-    'A viewer should understand the direction of the economic relationship within about one second on a phone screen.',
+    'You are the final senior art director and semantic QC editor for a premium Korean economy YouTube channel.',
+    'Judge ONLY the actual final image shown to you against the ORIGINAL GENERATION PROMPT. Be strict and do not reward intention.',
+    `Publication target is ${targetScore}/100 or higher.`,
+    '',
+    '[HIGHEST PRIORITY: NARRATION ↔ IMAGE SEMANTIC MATCH]',
+    'The prompt can contain CUT SEMANTIC TARGET / narration / screen goal / visual focus. Treat those as the source of truth for what this exact CUT is saying.',
+    'Do not accept a pretty or generally economy-related image if it illustrates a neighboring sentence, a different cause/result, or a generic money scene instead of the current narration meaning.',
+    'semanticMatch means: the dominant visual relationship, actors/objects, comparison direction, cause/result direction and emotional situation all correspond to this exact narration/screen goal.',
+    'If the image invents poverty, bankruptcy, crash, inheritance, generational conflict, political blame, or another dramatic claim not present in the CUT semantic target, semanticMatch must be low and severe=true when the invented meaning dominates the frame.',
+    'For abstract economic concepts, an accurate comparison/data/symbolic screen is better than a forced staged scene.',
     '',
     'Score EACH dimension from 0 to 100:',
+    'semanticMatch: exact match between this CUT narration/screen goal and what the image actually communicates. This is the most important score.',
     'comprehension: one-second understanding of the core economic relationship.',
     'hierarchy: one dominant idea/object, clear eye path, no competing focal points.',
     'metaphor: strength and relevance of the visual metaphor; not generic decoration.',
@@ -70,16 +77,16 @@ export default async function handler(req: Request, res: Response) {
     'cleanliness: no broken generated text, nonsense labels, accidental logos, comic bubbles, clutter, or irrelevant ornaments.',
     'frameSafety: important subjects and overlays are not clipped and remain readable on mobile.',
     '',
-    'SEVERE FAIL if ANY of these occurs: real human is the main protagonist; broken/nonsense generated text is prominent; blank infographic/card-news canvas; core meaning cannot be understood in one second; badly clipped key subject; the requested economy concept is visually wrong.',
+    'SEVERE FAIL if ANY of these occurs: semanticMatch below 55; real human is the main protagonist when the channel style requires stickman; broken/nonsense generated text is prominent; blank infographic/card-news canvas; core meaning cannot be understood in one second; badly clipped key subject; the requested economy concept is visually wrong.',
     'If exact overlay text added by the editing layer is clean and readable, treat it as a positive. Do not penalize correct Korean text simply because the generation prompt prohibited AI-generated text.',
     '',
     'Return JSON only in this exact shape:',
-    '{"dimensions":{"comprehension":0,"hierarchy":0,"metaphor":0,"premiumFinish":0,"realism":0,"stickmanConsistency":0,"cleanliness":0,"frameSafety":0},"severe":false,"reasons":["..."],"correctionPrompt":"..."}',
-    'reasons: max 6 concise reasons, strongest problems first.',
-    'correctionPrompt: concrete regeneration instructions that fix the weakest dimensions. Do not mention policy or the scoring process.',
+    '{"dimensions":{"semanticMatch":0,"comprehension":0,"hierarchy":0,"metaphor":0,"premiumFinish":0,"realism":0,"stickmanConsistency":0,"cleanliness":0,"frameSafety":0},"severe":false,"reasons":["..."],"correctionPrompt":"..."}',
+    'reasons: max 6 concise reasons, strongest semantic mismatch first.',
+    'correctionPrompt: concrete regeneration instructions that fix the exact narration-to-image mismatch first, then the weakest visual dimensions. Do not mention policy or scoring.',
     '',
     'ORIGINAL GENERATION PROMPT:',
-    prompt.slice(0, 14000)
+    prompt.slice(0, 16000)
   ].join('\n')
 
   const payload = {
@@ -110,25 +117,26 @@ export default async function handler(req: Request, res: Response) {
     const dimensions: Record<string, number> = {}
     for (const key of Object.keys(WEIGHTS)) dimensions[key] = clampScore(rawDims[key])
     const score = Math.round(Object.entries(WEIGHTS).reduce((sum, [key, weight]) => sum + dimensions[key] * weight, 0))
+    const semanticSevere = dimensions.semanticMatch < 55
     const weakDimensions = Object.entries(dimensions)
       .filter(([, v]) => v < targetScore)
       .sort((a, b) => a[1] - b[1])
       .slice(0, 4)
       .map(([k]) => k)
     const reasons = Array.isArray(parsed.reasons) ? parsed.reasons.map((v: any) => String(v)).slice(0, 6) : []
-    const severe = Boolean(parsed.severe)
+    const severe = Boolean(parsed.severe) || semanticSevere
 
     return res.status(200).json({
       score,
       targetScore,
-      pass: score >= targetScore && !severe,
+      pass: score >= targetScore && dimensions.semanticMatch >= 75 && !severe,
       severe,
       dimensions,
       weakDimensions,
       reasons,
-      correctionPrompt: String(parsed.correctionPrompt || '').slice(0, 1800),
+      correctionPrompt: String(parsed.correctionPrompt || '').slice(0, 2200),
       modelId: 'gemini-2.5-flash',
-      rubricVersion: 'economy-premium-v2'
+      rubricVersion: 'economy-semantic-premium-v3'
     })
   } catch (error: any) {
     return res.status(500).json({ error: { message: error?.message || String(error) } })
