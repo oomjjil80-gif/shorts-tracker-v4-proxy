@@ -77,11 +77,20 @@ export default async function handler(req: Request, res: Response) {
     'cleanliness: no broken generated text, nonsense labels, accidental logos, comic bubbles, clutter, or irrelevant ornaments.',
     'frameSafety: important subjects and overlays are not clipped and remain readable on mobile.',
     '',
-    'SEVERE FAIL if ANY of these occurs: semanticMatch below 55; real human is the main protagonist when the channel style requires stickman; broken/nonsense generated text is prominent; blank infographic/card-news canvas; core meaning cannot be understood in one second; badly clipped key subject; the requested economy concept is visually wrong.',
-    'If exact overlay text added by the editing layer is clean and readable, treat it as a positive. Do not penalize correct Korean text simply because the generation prompt prohibited AI-generated text.',
+    '[HARD DEFECT GATES — INSPECT PIXELS, DO NOT GUESS INTENT]',
+    'visibleGeneratedText: true if the source image itself contains ANY visible Korean/English word, readable label, number, percentage, caption, title, watermark or UI-like text. This includes plausible-looking but wrong text. Decorative currency symbols count only when clearly text-like.',
+    'missingOrBrokenFace: true if any primary stick-figure character has a blank/missing face, severely malformed facial features, duplicated/fragmented face, or face is unintentionally obscured.',
+    'characterStyleBreak: true if a primary character visibly changes away from the established simple 2D stick-figure language (for example a realistic elderly person, different illustration family, inconsistent body/face treatment) without the CUT explicitly requiring it.',
+    'realHumanProtagonist: true if a photorealistic human becomes the main protagonist where the stick-figure channel style is required.',
+    'brokenAnatomy: true for obvious extra/missing limbs, impossible hand/arm attachment, merged body parts, or severe character deformation.',
+    'blankCanvas: true for a large empty card/white panel or poster-like canvas that looks like unfinished generated infographic space rather than intentional Tracker overlay safe-space.',
+    'irrelevantMeaning: true when the dominant scene represents a different economic claim from the exact CUT narration/screen goal.',
+    '',
+    'SEVERE FAIL if ANY hard defect above is true, OR semanticMatch below 55, OR the core meaning cannot be understood in one second, OR a key subject is badly clipped.',
+    'IMPORTANT: This endpoint evaluates the CLEAN SOURCE IMAGE BEFORE Tracker overlays. Therefore any visible title/caption/number already present in the supplied image is a defect, even if the wording looks correct.',
     '',
     'Return JSON only in this exact shape:',
-    '{"dimensions":{"semanticMatch":0,"comprehension":0,"hierarchy":0,"metaphor":0,"premiumFinish":0,"realism":0,"stickmanConsistency":0,"cleanliness":0,"frameSafety":0},"severe":false,"reasons":["..."],"correctionPrompt":"..."}',
+    '{"dimensions":{"semanticMatch":0,"comprehension":0,"hierarchy":0,"metaphor":0,"premiumFinish":0,"realism":0,"stickmanConsistency":0,"cleanliness":0,"frameSafety":0},"defects":{"visibleGeneratedText":false,"missingOrBrokenFace":false,"characterStyleBreak":false,"realHumanProtagonist":false,"brokenAnatomy":false,"blankCanvas":false,"irrelevantMeaning":false},"severe":false,"reasons":["..."],"correctionPrompt":"..."}',
     'reasons: max 6 concise reasons, strongest semantic mismatch first.',
     'correctionPrompt: concrete regeneration instructions that fix the exact narration-to-image mismatch first, then the weakest visual dimensions. Do not mention policy or scoring.',
     '',
@@ -124,19 +133,32 @@ export default async function handler(req: Request, res: Response) {
       .slice(0, 4)
       .map(([k]) => k)
     const reasons = Array.isArray(parsed.reasons) ? parsed.reasons.map((v: any) => String(v)).slice(0, 6) : []
-    const severe = Boolean(parsed.severe) || semanticSevere
+    const rawDefects = parsed?.defects || {}
+    const defects = {
+      visibleGeneratedText: Boolean(rawDefects.visibleGeneratedText),
+      missingOrBrokenFace: Boolean(rawDefects.missingOrBrokenFace),
+      characterStyleBreak: Boolean(rawDefects.characterStyleBreak),
+      realHumanProtagonist: Boolean(rawDefects.realHumanProtagonist),
+      brokenAnatomy: Boolean(rawDefects.brokenAnatomy),
+      blankCanvas: Boolean(rawDefects.blankCanvas),
+      irrelevantMeaning: Boolean(rawDefects.irrelevantMeaning),
+    }
+    const hardDefect = Object.values(defects).some(Boolean)
+    const severe = Boolean(parsed.severe) || semanticSevere || hardDefect
 
     return res.status(200).json({
       score,
       targetScore,
-      pass: score >= targetScore && dimensions.semanticMatch >= 75 && !severe,
+      pass: score >= targetScore && dimensions.semanticMatch >= 75 && !severe && !hardDefect,
       severe,
+      hardDefect,
+      defects,
       dimensions,
       weakDimensions,
       reasons,
       correctionPrompt: String(parsed.correctionPrompt || '').slice(0, 2200),
       modelId: 'gemini-2.5-flash',
-      rubricVersion: 'economy-semantic-premium-v3'
+      rubricVersion: 'economy-semantic-premium-v4-hard-gates'
     })
   } catch (error: any) {
     return res.status(500).json({ error: { message: error?.message || String(error) } })
