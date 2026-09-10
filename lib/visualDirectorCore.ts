@@ -267,7 +267,7 @@ export async function runVisualDirector(apiKey: string, model: string, input: an
 
   let plan: any
   try { plan = JSON.parse(text) }
-  catch { return { status: 502, body: { ok: false, error: 'OpenAI returned invalid Visual Director JSON', rawText: text } }
+  catch { return { status: 502, body: { ok: false, error: 'OpenAI returned invalid Visual Director JSON', rawText: text } } }
 
   plan.version = 'v1.1'
   plan = enforcePlanIntegrity(input.draft, plan)
