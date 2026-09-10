@@ -1,0 +1,40 @@
+name: Fix cloud sync URL query parsing
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-cloud-sync-url-query-parsing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch URL parsing
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('api/sync/[...path].ts')
+          s=p.read_text()
+          old="""    const rawPath = (req.query as any).path\n    const urlPath = String((req as any).url || '').split('?')[0]\n    const fallbackPath = urlPath.replace(/^\\/api\\/sync\\/?/, '')\n    const parts = Array.isArray(rawPath)\n      ? rawPath.map(String)\n      : String(rawPath || fallbackPath || '').split('/').filter(Boolean)\n    const key = getSyncKey(req)\n    const op = String((req.query as any).op || parts[0] || '')\n"""
+          new="""    const requestUrl = new URL(String((req as any).url || '/'), 'https://sync.local')\n    const rawPath = (req.query as any)?.path\n    const fallbackPath = requestUrl.pathname.replace(/^\\/api\\/sync\\/?/, '')\n    const parts = Array.isArray(rawPath)\n      ? rawPath.map(String)\n      : String(rawPath || fallbackPath || '').split('/').filter(Boolean)\n    const key = getSyncKey(req)\n    const op = String(requestUrl.searchParams.get('op') || (req.query as any)?.op || parts[0] || '')\n    const querySlot = requestUrl.searchParams.get('slot') || (req.query as any)?.slot\n    const queryIndex = requestUrl.searchParams.get('index') || (req.query as any)?.index\n"""
+          if old not in s: raise SystemExit('URL parse anchor not found')
+          s=s.replace(old,new,1)
+          s=s.replace("const slot = validSlot(parts.length >= 3 ? parts[1] : (req.query as any).slot)", "const slot = validSlot(parts.length >= 3 ? parts[1] : querySlot)",1)
+          s=s.replace("const index = validIndex(parts.length >= 3 ? parts[2] : (req.query as any).index)", "const index = validIndex(parts.length >= 3 ? parts[2] : queryIndex)",1)
+          p.write_text(s)
+      - name: Verify
+        run: |
+          grep -F "requestUrl.searchParams.get('op')" 'api/sync/[...path].ts'
+          grep -F "querySlot" 'api/sync/[...path].ts'
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 'api/sync/[...path].ts'
+          git commit -m 'Parse cloud sync op and chunk params from request URL'
+          git push
