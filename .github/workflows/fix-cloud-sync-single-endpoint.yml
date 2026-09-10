@@ -1,0 +1,41 @@
+name: Fix cloud sync single endpoint
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-cloud-sync-single-endpoint.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch sync handler to dispatch by op query
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('api/sync/[...path].ts')
+          s=p.read_text()
+          anchor="""    const key = getSyncKey(req)\n\n    if (req.method === 'GET' && parts.length === 1 && parts[0] === 'manifest') {\n"""
+          replacement="""    const key = getSyncKey(req)\n    const op = String((req.query as any).op || parts[0] || '')\n\n    if (req.method === 'GET' && op === 'manifest') {\n"""
+          if anchor not in s: raise SystemExit('anchor1 not found')
+          s=s.replace(anchor,replacement,1)
+          s=s.replace("if (req.method === 'POST' && parts.length === 1 && parts[0] === 'start')", "if (req.method === 'POST' && op === 'start')",1)
+          s=s.replace("if (parts[0] === 'chunk')", "if (op === 'chunk')",1)
+          s=s.replace("if (req.method === 'POST' && parts.length === 1 && parts[0] === 'commit')", "if (req.method === 'POST' && op === 'commit')",1)
+          p.write_text(s)
+      - name: Verify
+        run: |
+          grep -F "const op =" 'api/sync/[...path].ts'
+          grep -F "op === 'chunk'" 'api/sync/[...path].ts'
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 'api/sync/[...path].ts'
+          git commit -m 'Dispatch cloud sync operations through one reachable endpoint'
+          git push
