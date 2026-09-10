@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { runVisualDirector } from '../lib/visualDirectorCore'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -86,7 +87,6 @@ function extractText(data: any) {
   return ''
 }
 
-
 export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
@@ -95,6 +95,19 @@ export default async function handler(req: Request, res: Response) {
 
   const body = req.body || {}
   const input = body.input || {}
+
+  // Hobby 배포의 Serverless Function 수 제한을 피하기 위해 Visual Director를
+  // 별도 endpoint가 아니라 기존 /api/story 함수의 taskType으로 함께 처리한다.
+  if (body.taskType === 'visual_director') {
+    try {
+      const model = String(process.env.OPENAI_VISUAL_DIRECTOR_MODEL || process.env.OPENAI_QC_MODEL || 'gpt-5.6-terra')
+      const result = await runVisualDirector(String(process.env.OPENAI_API_KEY), model, input)
+      return res.status(result.status).json(result.body)
+    } catch (error: any) {
+      return res.status(500).json({ ok: false, error: error?.message || String(error) })
+    }
+  }
+
   const topic = String(input.topic || '').trim()
   if (!topic) return res.status(400).json({ error: { message: 'topic is required' } })
 
