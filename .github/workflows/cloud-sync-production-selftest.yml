@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/cloud-sync-production-selftest.yml'
 
+# rerun after URL query parsing fix
 jobs:
   test:
     runs-on: ubuntu-latest
