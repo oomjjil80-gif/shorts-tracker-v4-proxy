@@ -146,11 +146,25 @@ export default async function handler(req: Request, res: Response) {
     }
     const hardDefect = Object.values(defects).some(Boolean)
     const severe = Boolean(parsed.severe) || semanticSevere || hardDefect
+    const pass = score >= targetScore && dimensions.semanticMatch >= 72 && !severe && !hardDefect
+
+    console.log('[IMAGE_QC_RESULT]', JSON.stringify({
+      score,
+      targetScore,
+      pass,
+      severe,
+      hardDefect,
+      defects,
+      dimensions,
+      weakDimensions,
+      reasons,
+      rubricVersion:'economy-semantic-premium-v5-calibrated-gates'
+    }))
 
     return res.status(200).json({
       score,
       targetScore,
-      pass: score >= targetScore && dimensions.semanticMatch >= 72 && !severe && !hardDefect,
+      pass,
       severe,
       hardDefect,
       defects,
