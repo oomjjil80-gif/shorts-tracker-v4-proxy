@@ -75,19 +75,20 @@ export default async function handler(req: Request, res: Response) {
       ? rawPath.map(String)
       : String(rawPath || fallbackPath || '').split('/').filter(Boolean)
     const key = getSyncKey(req)
+    const op = String((req.query as any).op || parts[0] || '')
 
-    if (req.method === 'GET' && parts.length === 1 && parts[0] === 'manifest') {
+    if (req.method === 'GET' && op === 'manifest') {
       const manifest = await readJson(manifestPath(key))
       return res.status(200).json({ ok: true, manifest: manifest || null })
     }
 
-    if (req.method === 'POST' && parts.length === 1 && parts[0] === 'start') {
+    if (req.method === 'POST' && op === 'start') {
       const current = await readJson(manifestPath(key))
       const slot = current?.activeSlot === 'a' ? 'b' : 'a'
       return res.status(200).json({ ok: true, slot, chunkBytes: 2 * 1024 * 1024, previousRevision: current?.revision || null })
     }
 
-    if (parts[0] === 'chunk') {
+    if (op === 'chunk') {
       const slot = validSlot(parts.length >= 3 ? parts[1] : (req.query as any).slot)
       const index = validIndex(parts.length >= 3 ? parts[2] : (req.query as any).index)
       if (req.method === 'POST') {
@@ -114,7 +115,7 @@ export default async function handler(req: Request, res: Response) {
       }
     }
 
-    if (req.method === 'POST' && parts.length === 1 && parts[0] === 'commit') {
+    if (req.method === 'POST' && op === 'commit') {
       const body = await readBody(req)
       const slot = validSlot(body?.slot)
       const chunkCount = Number(body?.chunkCount)
