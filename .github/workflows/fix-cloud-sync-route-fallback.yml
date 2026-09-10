@@ -1,0 +1,43 @@
+name: Fix cloud sync route fallback
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-cloud-sync-route-fallback.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Patch catch-all path parsing and remove temporary explicit functions
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const p = 'api/sync/[...path].ts';
+          let s = fs.readFileSync(p, 'utf8');
+          const old = `    const rawPath = (req.query as any).path\n    const parts = Array.isArray(rawPath) ? rawPath.map(String) : String(rawPath || '').split('/').filter(Boolean)`;
+          const neu = `    const rawPath = (req.query as any).path\n    const urlPath = String((req as any).url || '').split('?')[0]\n    const fallbackPath = urlPath.replace(/^\\/api\\/sync\\/?/, '')\n    const parts = Array.isArray(rawPath)\n      ? rawPath.map(String)\n      : String(rawPath || fallbackPath || '').split('/').filter(Boolean)`;
+          if (!s.includes(old)) throw new Error('target path parser not found');
+          s = s.replace(old, neu);
+          fs.writeFileSync(p, s);
+          NODE
+          rm -f api/sync/start.ts api/sync/manifest.ts api/sync/commit.ts 'api/sync/chunk/[slot]/[index].ts'
+      - name: Verify
+        run: |
+          grep -n "fallbackPath" 'api/sync/[...path].ts'
+          test ! -e api/sync/start.ts
+          test ! -e api/sync/manifest.ts
+          test ! -e api/sync/commit.ts
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m 'Fix cloud sync catch-all path resolution without extra functions'
+          git push
