@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { runVisualDirector } from '../lib/visualDirectorCore'
+import { runVisualDirector } from '../lib/visualDirectorCore.js'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -96,8 +96,6 @@ export default async function handler(req: Request, res: Response) {
   const body = req.body || {}
   const input = body.input || {}
 
-  // Hobby 배포의 Serverless Function 수 제한을 피하기 위해 Visual Director를
-  // 별도 endpoint가 아니라 기존 /api/story 함수의 taskType으로 함께 처리한다.
   if (body.taskType === 'visual_director') {
     try {
       const model = String(process.env.OPENAI_VISUAL_DIRECTOR_MODEL || process.env.OPENAI_QC_MODEL || 'gpt-5.6-terra')
