@@ -68,14 +68,16 @@ export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
   try {
-    const rawPath = (req.query as any).path
-    const urlPath = String((req as any).url || '').split('?')[0]
-    const fallbackPath = urlPath.replace(/^\/api\/sync\/?/, '')
+    const requestUrl = new URL(String((req as any).url || '/'), 'https://sync.local')
+    const rawPath = (req.query as any)?.path
+    const fallbackPath = requestUrl.pathname.replace(/^\/api\/sync\/?/, '')
     const parts = Array.isArray(rawPath)
       ? rawPath.map(String)
       : String(rawPath || fallbackPath || '').split('/').filter(Boolean)
     const key = getSyncKey(req)
-    const op = String((req.query as any).op || parts[0] || '')
+    const op = String(requestUrl.searchParams.get('op') || (req.query as any)?.op || parts[0] || '')
+    const querySlot = requestUrl.searchParams.get('slot') || (req.query as any)?.slot
+    const queryIndex = requestUrl.searchParams.get('index') || (req.query as any)?.index
 
     if (req.method === 'GET' && op === 'manifest') {
       const manifest = await readJson(manifestPath(key))
@@ -89,8 +91,8 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (op === 'chunk') {
-      const slot = validSlot(parts.length >= 3 ? parts[1] : (req.query as any).slot)
-      const index = validIndex(parts.length >= 3 ? parts[2] : (req.query as any).index)
+      const slot = validSlot(parts.length >= 3 ? parts[1] : querySlot)
+      const index = validIndex(parts.length >= 3 ? parts[2] : queryIndex)
       if (req.method === 'POST') {
         const incoming = await readBody(req)
         let body: Buffer
