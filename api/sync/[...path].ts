@@ -69,7 +69,11 @@ export default async function handler(req: Request, res: Response) {
   if (req.method === 'OPTIONS') return res.status(204).end()
   try {
     const rawPath = (req.query as any).path
-    const parts = Array.isArray(rawPath) ? rawPath.map(String) : String(rawPath || '').split('/').filter(Boolean)
+    const urlPath = String((req as any).url || '').split('?')[0]
+    const fallbackPath = urlPath.replace(/^\/api\/sync\/?/, '')
+    const parts = Array.isArray(rawPath)
+      ? rawPath.map(String)
+      : String(rawPath || fallbackPath || '').split('/').filter(Boolean)
     const key = getSyncKey(req)
 
     if (req.method === 'GET' && parts.length === 1 && parts[0] === 'manifest') {
