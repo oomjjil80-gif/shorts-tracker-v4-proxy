@@ -1,0 +1,39 @@
+name: Cloud sync production self-test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cloud-sync-production-selftest.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for production alias
+        run: sleep 20
+      - name: Exercise full sync route chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://shorts-tracker-v4-proxy.vercel.app'
+          KEY='selftest-0123456789abcdef0123456789abcdef'
+          echo '--- health ---'
+          curl -fsS "$BASE/api/sync-health"; echo
+          echo '--- start ---'
+          START=$(curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data '{}' "$BASE/api/sync/start")
+          echo "$START"
+          SLOT=$(node -e "const d=JSON.parse(process.argv[1]); process.stdout.write(d.slot)" "$START")
+          PREV=$(node -e "const d=JSON.parse(process.argv[1]); process.stdout.write(d.previousRevision==null?'null':JSON.stringify(d.previousRevision))" "$START")
+          printf 'tracker-selftest' > /tmp/chunk.bin
+          echo '--- chunk upload ---'
+          curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/octet-stream' --data-binary @/tmp/chunk.bin "$BASE/api/sync/chunk/$SLOT/0"; echo
+          echo '--- commit ---'
+          BODY=$(node -e "const slot=process.argv[1],prev=JSON.parse(process.argv[2]); process.stdout.write(JSON.stringify({slot,chunkCount:1,byteLength:16,previousRevision:prev}))" "$SLOT" "$PREV")
+          curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data "$BODY" "$BASE/api/sync/commit"; echo
+          echo '--- manifest ---'
+          curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/sync/manifest"; echo
+          echo '--- chunk download ---'
+          GOT=$(curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/sync/chunk/$SLOT/0")
+          test "$GOT" = 'tracker-selftest'
+          echo 'SELFTEST_OK'
