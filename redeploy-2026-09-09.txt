@@ -1,1 +1,2 @@
 Redeploy production proxy after public alias returned NOT_FOUND on 2026-09-09.
+Force redeploy 2026-09-10 after cloud sync single-endpoint and URL query parsing fixes.
