@@ -27,13 +27,13 @@ jobs:
           PREV=$(node -e "const d=JSON.parse(process.argv[1]); process.stdout.write(d.previousRevision==null?'null':JSON.stringify(d.previousRevision))" "$START")
           printf 'tracker-selftest' > /tmp/chunk.bin
           echo '--- chunk upload ---'
-          curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/octet-stream' --data-binary @/tmp/chunk.bin "$BASE/api/sync/chunk?slot=$SLOT&index=0"; echo
+          curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/octet-stream' --data-binary @/tmp/chunk.bin "$BASE/api/sync/start?op=chunk&slot=$SLOT&index=0"; echo
           echo '--- commit ---'
           BODY=$(node -e "const slot=process.argv[1],prev=JSON.parse(process.argv[2]); process.stdout.write(JSON.stringify({slot,chunkCount:1,byteLength:16,previousRevision:prev}))" "$SLOT" "$PREV")
-          curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data "$BODY" "$BASE/api/sync/commit"; echo
+          curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data "$BODY" "$BASE/api/sync/start?op=commit"; echo
           echo '--- manifest ---'
-          curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/sync/manifest"; echo
+          curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/sync/start?op=manifest"; echo
           echo '--- chunk download ---'
-          GOT=$(curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/sync/chunk?slot=$SLOT&index=0")
+          GOT=$(curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/sync/start?op=chunk&slot=$SLOT&index=0")
           test "$GOT" = 'tracker-selftest'
           echo 'SELFTEST_OK'
