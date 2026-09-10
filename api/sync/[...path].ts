@@ -87,9 +87,9 @@ export default async function handler(req: Request, res: Response) {
       return res.status(200).json({ ok: true, slot, chunkBytes: 2 * 1024 * 1024, previousRevision: current?.revision || null })
     }
 
-    if (parts.length === 3 && parts[0] === 'chunk') {
-      const slot = validSlot(parts[1])
-      const index = validIndex(parts[2])
+    if (parts[0] === 'chunk') {
+      const slot = validSlot(parts.length >= 3 ? parts[1] : (req.query as any).slot)
+      const index = validIndex(parts.length >= 3 ? parts[2] : (req.query as any).index)
       if (req.method === 'POST') {
         const incoming = await readBody(req)
         let body: Buffer
