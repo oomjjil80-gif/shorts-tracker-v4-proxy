@@ -287,6 +287,83 @@ function mergeSplitDrafts(first: any, second: any, targetMinutes: number) {
   }
 }
 
+function buildChapterPrompt(input: any, chapterNo: number, totalChapters: number, chapterMinutes: number, previousChapter: any = null) {
+  const storyMapLines = String(input?.storyMap || '')
+    .split('\n')
+    .map((x: string) => x.trim())
+    .filter(Boolean)
+  const currentMap = storyMapLines[chapterNo - 1] || ''
+  const previousTail = previousChapter
+    ? {
+        title: previousChapter.title || '',
+        purpose: previousChapter.purpose || '',
+        tail: (Array.isArray(previousChapter.segments) ? previousChapter.segments : [])
+          .slice(-2)
+          .map((s: any) => String(s?.text || ''))
+          .filter(Boolean)
+      }
+    : null
+
+  return `
+전체 ${totalChapters}개 챕터 중 **${chapterNo}번 챕터 하나만** 작성하라.
+이 요청은 전체 롱폼의 일부이며, 절대로 다른 챕터까지 생성하지 않는다.
+
+[전체 소재]
+제목: ${String(input?.title || '')}
+요약: ${String(input?.summary || '')}
+왜 지금 중요한가: ${String(input?.whyNow || '')}
+시청자 가치: ${String(input?.viewerValue || '')}
+롱폼 프로필: ${String(input?.longformProfile || 'standard')}
+
+[이번 챕터 Story Map]
+${currentMap || '전체 Story Map의 해당 순서를 따를 것'}
+
+[전체 Production Master Brief]
+${JSON.stringify(input?.productionMasterBrief || {}, null, 2)}
+
+[확인된 사실]
+${JSON.stringify(input?.verifiedFacts || [], null, 2)}
+
+[추가 검증이 필요한 주장]
+${JSON.stringify(input?.claimsToVerify || [], null, 2)}
+
+[출처]
+${JSON.stringify(input?.sources || [], null, 2)}
+
+[이전 챕터 연결 문맥]
+${JSON.stringify(previousTail || {}, null, 2)}
+
+[이번 출력 규칙]
+- targetMinutes는 ${Math.max(2, Math.round(chapterMinutes))}로 설정한다.
+- chapters 배열은 정확히 1개만 출력한다.
+- 그 1개 챕터의 chapterNo는 반드시 ${chapterNo}다.
+- 이전 챕터 내용을 반복하지 말고 자연스럽게 이어간다.
+- 이번 챕터는 하나의 소질문에 실질적으로 답한다.
+- segment는 하나의 핵심 의미만 담당하고 완결된 문장/의미 단위로 끝낸다.
+- visualHint는 narration을 실제로 이해시키는 화면 설계다.
+- factStatus는 verified, interpretation, verify_before_publish 중 하나만 사용한다.
+- 첫 챕터가 아니면 hook은 빈 문자열로 둔다.
+- 마지막 챕터가 아니면 ending.text는 빈 문자열로 둔다.
+- shortsSpinOff는 빈 배열이어도 된다.
+`.trim()
+}
+
+function mergeChapterDrafts(parts: any[], targetMinutes: number, fallbackTitle: string) {
+  const chapters = parts.flatMap((part: any) => Array.isArray(part?.chapters) ? part.chapters : [])
+    .map((chapter: any, index: number) => ({ ...chapter, chapterNo: index + 1 }))
+  const first = parts[0] || {}
+  const last = parts[parts.length - 1] || {}
+  return {
+    title: String(first?.title || fallbackTitle || ''),
+    hook: String(first?.hook || ''),
+    targetMinutes,
+    chapters,
+    ending: last?.ending || { speaker: '내레이션', text: '' },
+    shortsSpinOff: [...new Set(parts.flatMap((part: any) => Array.isArray(part?.shortsSpinOff) ? part.shortsSpinOff : []).filter(Boolean))].slice(0, 12),
+    warnings: parts.flatMap((part: any) => Array.isArray(part?.warnings) ? part.warnings : []).filter(Boolean)
+  }
+}
+
 export default async function handler(req: Request, res: Response) {
   setCors(req, res)
 
@@ -327,42 +404,76 @@ export default async function handler(req: Request, res: Response) {
     const useSplitGeneration = targetMinutes >= 18 || chapterCount >= 7
 
     if (useSplitGeneration) {
-      const firstCount = Math.ceil(chapterCount / 2)
-      const secondCount = chapterCount - firstCount
-      const firstMinutes = Math.max(5, Math.round(targetMinutes * firstCount / chapterCount))
-      const secondMinutes = Math.max(5, targetMinutes - firstMinutes)
-      const makePayload = (batchInput: any) => ({
-        model,
-        max_tokens: 12000,
-        system: buildSystemPrompt(),
-        messages: [{ role:'user', content: buildUserPrompt(batchInput) + '\n\n[분할 생성 규칙]\n이 요청은 전체 롱폼의 일부다. splitBatch의 챕터 범위만 작성하고, chapters 배열 개수는 chapterCount와 정확히 일치시킨다. continuationContext가 있으면 앞 내용을 반복하지 않고 이어간다.' }],
-        output_config: { format: { type:'json_schema', schema:LONGFORM_DRAFT_SCHEMA } }
-      })
+      const chapterMinutes = targetMinutes / chapterCount
+      const parts:any[] = []
+      let usage:any = { input_tokens: 0, output_tokens: 0 }
+      let lastModel = model
 
-      const firstInput = splitLongformInput(input, 1, firstCount, chapterCount, firstMinutes)
-      const firstCall = await callClaudeStory(apiKey, makePayload(firstInput))
-      if (!firstCall.response.ok) return res.status(firstCall.response.status).json({ ok:false, error:firstCall.data?.error?.message || firstCall.raw || 'Anthropic API request failed' })
-      if (firstCall.data?.stop_reason === 'max_tokens') return res.status(502).json({ ok:false, error:'Claude first half was truncated before completion' })
-      const firstText = textFromClaude(firstCall.data)
-      let firstDraft:any
-      try { firstDraft = extractJson(firstText) } catch { return res.status(502).json({ ok:false, error:'Claude returned invalid JSON for first half', rawText:firstText }) }
+      for (let chapterNo = 1; chapterNo <= chapterCount; chapterNo += 1) {
+        const payload = {
+          model,
+          max_tokens: 7000,
+          system: buildSystemPrompt(),
+          messages: [{
+            role:'user',
+            content: buildChapterPrompt(input, chapterNo, chapterCount, chapterMinutes, parts[parts.length - 1]?.chapters?.[0] || null)
+          }],
+          output_config: { format: { type:'json_schema', schema:LONGFORM_DRAFT_SCHEMA } }
+        }
 
-      const secondInput = splitLongformInput(input, firstCount + 1, secondCount, chapterCount, secondMinutes, firstDraft)
-      const secondCall = await callClaudeStory(apiKey, makePayload(secondInput))
-      if (!secondCall.response.ok) return res.status(secondCall.response.status).json({ ok:false, error:secondCall.data?.error?.message || secondCall.raw || 'Anthropic API request failed' })
-      if (secondCall.data?.stop_reason === 'max_tokens') return res.status(502).json({ ok:false, error:'Claude second half was truncated before completion' })
-      const secondText = textFromClaude(secondCall.data)
-      let secondDraft:any
-      try { secondDraft = extractJson(secondText) } catch { return res.status(502).json({ ok:false, error:'Claude returned invalid JSON for second half', rawText:secondText }) }
+        const call = await callClaudeStory(apiKey, payload)
+        if (!call.response.ok) {
+          return res.status(call.response.status).json({
+            ok:false,
+            error:call.data?.error?.message || call.raw || `Anthropic API request failed at chapter ${chapterNo}`,
+            failedChapter:chapterNo
+          })
+        }
+        if (call.data?.stop_reason === 'max_tokens') {
+          return res.status(502).json({
+            ok:false,
+            error:`Claude chapter ${chapterNo} was truncated before completion`,
+            failedChapter:chapterNo
+          })
+        }
 
-      const draft = mergeSplitDrafts(firstDraft, secondDraft, targetMinutes)
+        const text = textFromClaude(call.data)
+        if (!text) return res.status(502).json({ ok:false, error:`Claude chapter ${chapterNo} had no text output`, failedChapter:chapterNo })
+
+        let part:any
+        try { part = extractJson(text) }
+        catch {
+          return res.status(502).json({
+            ok:false,
+            error:`Claude returned invalid JSON for chapter ${chapterNo}`,
+            failedChapter:chapterNo,
+            rawText:text
+          })
+        }
+
+        if (!Array.isArray(part?.chapters) || part.chapters.length !== 1) {
+          return res.status(502).json({
+            ok:false,
+            error:`Claude chapter ${chapterNo} returned an invalid chapter count`,
+            failedChapter:chapterNo
+          })
+        }
+
+        part.chapters[0].chapterNo = chapterNo
+        parts.push(part)
+        usage = addUsage(usage, call.data?.usage)
+        lastModel = call.data?.model || lastModel
+      }
+
+      const draft = mergeChapterDrafts(parts, targetMinutes, String(input?.title || ''))
       return res.status(200).json({
         ok:true,
         provider:'Anthropic',
-        model:secondCall.data?.model || firstCall.data?.model || model,
+        model:lastModel,
         draft,
-        usage:addUsage(firstCall.data?.usage, secondCall.data?.usage),
-        generationMode:'split_2_batches'
+        usage,
+        generationMode:'chapter_by_chapter',
+        generatedChapters:chapterCount
       })
     }
 
