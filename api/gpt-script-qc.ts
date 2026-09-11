@@ -384,6 +384,7 @@ function enforceStructureSignals(qc: any, signals: StructureSignal[]) {
 }
 
 
+// GPT longform revise/finalize fallback is intentionally merged here to stay within Vercel function limits.
 const LONGFORM_DRAFT_SCHEMA = {
   type:'object',
   additionalProperties:false,
