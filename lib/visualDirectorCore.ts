@@ -17,8 +17,8 @@ const VISUAL_DIRECTOR_SCHEMA = {
         additionalProperties: false,
         required: [
           'chapterNo', 'segmentNo', 'parentTopic', 'sequenceLabel',
-          'narration', 'screenGoal', 'screenType', 'pageTitle',
-          'visualFocus', 'layoutBrief', 'dataPoints', 'artworkPrompt',
+          'narration', 'screenGoal', 'viewerMustUnderstand', 'screenType', 'pageTitle',
+          'visualFocus', 'layoutBrief', 'patternIds', 'dataPoints', 'artworkPrompt',
           'trackerOverlay', 'semanticQc'
         ],
         properties: {
@@ -28,10 +28,12 @@ const VISUAL_DIRECTOR_SCHEMA = {
           sequenceLabel: { type: 'string' },
           narration: { type: 'string' },
           screenGoal: { type: 'string' },
+          viewerMustUnderstand: { type: 'string' },
           screenType: { type: 'string', enum: SCREEN_TYPES },
           pageTitle: { type: 'string' },
           visualFocus: { type: 'string' },
           layoutBrief: { type: 'string' },
+          patternIds: { type: 'array', minItems: 1, maxItems: 6, items: { type: 'string' } },
           dataPoints: {
             type: 'array',
             items: {
@@ -137,9 +139,11 @@ function enforcePlanIntegrity(draft: any, plan: any) {
     const narration = clean(cut?.narration)
     const goal = clean(cut?.screenGoal)
     const focus = clean(cut?.visualFocus)
+    const viewerGoal = clean(cut?.viewerMustUnderstand)
+    const patterns = Array.isArray(cut?.patternIds) ? cut.patternIds.filter(Boolean) : []
     const artwork = clean(cut?.artworkPrompt)
-    if (!narration || !goal || !focus || !artwork) {
-      cut.semanticQc = { pass: false, reason: '나레이션·화면목적·시각초점·이미지 지시 중 필수 항목이 비어 있음' }
+    if (!narration || !goal || !viewerGoal || !patterns.length || !focus || !artwork) {
+      cut.semanticQc = { pass: false, reason: '나레이션·화면목적·시청자 이해목표·패턴·시각초점·이미지 지시 중 필수 항목이 비어 있음' }
       continue
     }
     const next = cuts[i + 1]
@@ -166,6 +170,8 @@ function systemPrompt() {
     '- narration은 원본 대본에서 정확히 복사한다. 요약·재작성·어순변경·문장 추가·삭제를 금지한다.',
     '- 모든 CUT의 narration을 순서대로 이어 붙였을 때 원본 hook + chapters + ending 전체와 정확히 같아야 한다.',
     '- 한 화면에는 시청자가 반드시 이해해야 할 핵심 한 가지를 둔다.',
+    '- 각 CUT마다 viewerMustUnderstand를 한 문장으로 쓰고 patternIds를 1~6개 선택한다.',
+    '- 핵심 경제 패턴: TP01 선택, TP02 숨은비용, TP03 숨은구조, TP04 미래자아, TP05 큰숫자개인화, H01 숨은원인, H02 모순, H04 A/B선택, H07 구체숫자, S01 문제누적, S02 답지연, S04 공포반전, S05 통념파괴, S06 조건분기, S07 예외, S08 개인→구조, S09 구조→개인, S10 처음질문회수, E01 추상→사물, E02 숫자→생활, E03 같은시작다른결말, E04 원인사슬, E05 숨은비용, E12 가정표시, E13 민감도, V01 A/B비교, V02 시간축, V03 돈흐름, V04 자산고갈, V07 미래분기, V09 보이는것/숨은것, V11 선택경로, V12 워터폴, V13 구매력감소, V14 복리, V17 명목/실질, V18 룰시뮬레이터, V19 변수1개변경, V23 가계대차대조표, V24 3시나리오.',
     '- narration과 화면이 다른 내용을 말하면 semanticQc.pass=false다.',
     '- 멋있지만 설명에 도움이 안 되는 장식 장면을 만들지 않는다.',
     '- 숫자, 퍼센트, 기간, 비교, 단계, 그래프는 이미지 생성 모델에 정확성을 맡기지 않고 Tracker overlay/data engine 대상으로 분리한다.',
@@ -205,7 +211,7 @@ function systemPrompt() {
     '[출력]',
     '- 입력 chapter/segment 순서를 보존한다.',
     '- 필요하면 한 segment를 여러 CUT으로 분해하되 narration 원문은 연속 구간으로 정확히 분할한다.',
-    '- 각 CUT마다 screenGoal, screenType, pageTitle, visualFocus, layoutBrief, dataPoints, artworkPrompt, trackerOverlay를 구체적으로 작성한다.',
+    '- 각 CUT마다 screenGoal, viewerMustUnderstand, patternIds, screenType, pageTitle, visualFocus, layoutBrief, dataPoints, artworkPrompt, trackerOverlay를 구체적으로 작성한다.'
     '- semanticQc는 해당 설계가 narration의 실제 의미를 정확하게 전달하는지 자체 검수한다.',
     '- 반드시 지정 JSON schema만 출력한다.'
   ].join('\n')
