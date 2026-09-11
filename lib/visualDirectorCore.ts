@@ -211,7 +211,7 @@ function systemPrompt() {
     '[출력]',
     '- 입력 chapter/segment 순서를 보존한다.',
     '- 필요하면 한 segment를 여러 CUT으로 분해하되 narration 원문은 연속 구간으로 정확히 분할한다.',
-    '- 각 CUT마다 screenGoal, viewerMustUnderstand, patternIds, screenType, pageTitle, visualFocus, layoutBrief, dataPoints, artworkPrompt, trackerOverlay를 구체적으로 작성한다.'
+    '- 각 CUT마다 screenGoal, viewerMustUnderstand, patternIds, screenType, pageTitle, visualFocus, layoutBrief, dataPoints, artworkPrompt, trackerOverlay를 구체적으로 작성한다.',
     '- semanticQc는 해당 설계가 narration의 실제 의미를 정확하게 전달하는지 자체 검수한다.',
     '- 반드시 지정 JSON schema만 출력한다.'
   ].join('\n')
