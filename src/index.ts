@@ -89,6 +89,46 @@ const STORY_SCHEMA = {
   }
 }
 
+const VISUAL_DIRECTOR_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['version','cuts'],
+  properties: {
+    version: { type: 'string' },
+    cuts: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 120,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'id','narration','screenGoal','viewerMustUnderstand',
+          'visualType','visualFocus','layoutBrief','patternIds',
+          'productionPrompt','exactOverlay'
+        ],
+        properties: {
+          id: { type:'string' },
+          chapterNo: { type:['integer','null'] },
+          parentTopic: { type:'string' },
+          sequenceLabel: { type:'string' },
+          pageTitle: { type:'string' },
+          narration: { type:'string' },
+          screenGoal: { type:'string' },
+          viewerMustUnderstand: { type:'string' },
+          visualType: { type:'string' },
+          visualFocus: { type:'string' },
+          layoutBrief: { type:'string' },
+          patternIds: { type:'array', minItems:1, maxItems:6, items:{ type:'string' } },
+          productionPrompt: { type:'string' },
+          exactOverlay: { type:'array', items:{ type:'string' } },
+          dataPoints: { type:'array', items:{ type:'string' } }
+        }
+      }
+    }
+  }
+}
+
 function allowCors(
   req: express.Request,
   res: express.Response
@@ -755,6 +795,62 @@ app.post(
 
     const input =
       body.input || {}
+
+    if (String(body.taskType || '') === 'visual_director') {
+      const draft = input.draft || {}
+      const handoff = input.handoff || {}
+      const patternLibrary = handoff.productionPatternLibrary || null
+      const model = String(body.modelId || process.env.OPENAI_MODEL || 'gpt-5-mini')
+      const visualInstructions = [
+        '당신은 경제 롱폼 영상의 GPT Visual Director다.',
+        '대본을 의미 단위 CUT으로 나누고 각 CUT마다 화면이 무엇을 설명해야 하는지 명확히 설계한다.',
+        '각 CUT에는 patternIds를 반드시 1~6개 선택한다.',
+        'patternIds는 제공된 Economy Production Pattern Library 원칙에 맞춰 선택하고, 장식 목적의 패턴 선택은 금지한다.',
+        '한 화면에는 핵심 메시지 하나만 둔다.',
+        '숫자/비교/흐름/시간축 관계가 핵심이면 화면 구조에서 그 관계가 즉시 읽혀야 한다.',
+        '정확한 한글/숫자/퍼센트는 이미지 생성에 맡기지 말고 exactOverlay로 분리한다.',
+        '벤치마크 채널의 캐릭터, 고유 화풍, 썸네일 배치, 장면 배열은 복제하지 않는다.',
+        '반드시 지정된 JSON schema만 출력한다.'
+      ].join('\n')
+      const payload = {
+        model,
+        reasoning: { effort: 'medium' },
+        instructions: visualInstructions,
+        input: JSON.stringify({ draft, handoff, patternLibrary }),
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'visual_director_plan',
+            strict: true,
+            schema: VISUAL_DIRECTOR_SCHEMA
+          }
+        }
+      }
+      try {
+        const response = await fetch('https://api.openai.com/v1/responses', {
+          method:'POST',
+          headers:{
+            Authorization:`Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type':'application/json'
+          },
+          body:JSON.stringify(payload)
+        })
+        const data:any = await response.json()
+        if (!response.ok) {
+          return res.status(response.status).json({ error:{ message:data?.error?.message || 'OpenAI visual director request failed' } })
+        }
+        const text = extractText(data)
+        if (!text) return res.status(502).json({ error:{ message:'Visual Director response had no text output' } })
+        return res.status(200).json({
+          plan: JSON.parse(text),
+          provider:'openai',
+          model,
+          usage:data?.usage || null
+        })
+      } catch (error:any) {
+        return res.status(500).json({ error:{ message:error?.message || String(error) } })
+      }
+    }
 
     const topic =
       String(
