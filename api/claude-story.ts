@@ -401,6 +401,73 @@ export default async function handler(req: Request, res: Response) {
 
     const targetMinutes = Math.max(5, Math.min(30, Number(input?.targetMinutes || 15)))
     const chapterCount = Math.max(3, Math.min(10, Number(input?.chapterCount || 6)))
+
+    if (String(req.body?.mode || '') === 'chapter') {
+      const chapterNo = Math.max(1, Math.min(chapterCount, Number(req.body?.chapterNo || 1)))
+      const totalChapters = Math.max(chapterCount, Number(req.body?.totalChapters || chapterCount))
+      const chapterMinutes = Math.max(2, targetMinutes / totalChapters)
+      const previousChapter = req.body?.previousChapter && typeof req.body.previousChapter === 'object'
+        ? req.body.previousChapter
+        : null
+      const payload = {
+        model,
+        max_tokens: 7000,
+        system: buildSystemPrompt(),
+        messages: [{
+          role:'user',
+          content: buildChapterPrompt(input, chapterNo, totalChapters, chapterMinutes, previousChapter)
+        }],
+        output_config: { format: { type:'json_schema', schema:LONGFORM_DRAFT_SCHEMA } }
+      }
+
+      const call = await callClaudeStory(apiKey, payload)
+      if (!call.response.ok) {
+        return res.status(call.response.status).json({
+          ok:false,
+          error:call.data?.error?.message || call.raw || `Anthropic API request failed at chapter ${chapterNo}`,
+          failedChapter:chapterNo
+        })
+      }
+      if (call.data?.stop_reason === 'max_tokens') {
+        return res.status(502).json({
+          ok:false,
+          error:`Claude chapter ${chapterNo} was truncated before completion`,
+          failedChapter:chapterNo
+        })
+      }
+      const text = textFromClaude(call.data)
+      if (!text) return res.status(502).json({ ok:false, error:`Claude chapter ${chapterNo} had no text output`, failedChapter:chapterNo })
+
+      let draft:any
+      try { draft = extractJson(text) }
+      catch {
+        return res.status(502).json({
+          ok:false,
+          error:`Claude returned invalid JSON for chapter ${chapterNo}`,
+          failedChapter:chapterNo,
+          rawText:text
+        })
+      }
+      if (!Array.isArray(draft?.chapters) || draft.chapters.length !== 1) {
+        return res.status(502).json({
+          ok:false,
+          error:`Claude chapter ${chapterNo} returned an invalid chapter count`,
+          failedChapter:chapterNo
+        })
+      }
+      draft.chapters[0].chapterNo = chapterNo
+      return res.status(200).json({
+        ok:true,
+        provider:'Anthropic',
+        model:call.data?.model || model,
+        draft,
+        usage:call.data?.usage || null,
+        generationMode:'single_chapter',
+        chapterNo,
+        totalChapters
+      })
+    }
+
     const useSplitGeneration = targetMinutes >= 18 || chapterCount >= 7
 
     if (useSplitGeneration) {
