@@ -220,6 +220,73 @@ ${JSON.stringify({ primaryCategory: input?.primaryCategory || '', secondaryTags:
 `.trim()
 }
 
+
+function addUsage(a: any, b: any) {
+  return {
+    input_tokens: Number(a?.input_tokens || 0) + Number(b?.input_tokens || 0),
+    output_tokens: Number(a?.output_tokens || 0) + Number(b?.output_tokens || 0),
+  }
+}
+
+async function callClaudeStory(apiKey: string, payload: any) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  })
+  const raw = await response.text()
+  let data: any = {}
+  try { data = raw ? JSON.parse(raw) : {} } catch {}
+  return { response, raw, data }
+}
+
+function splitLongformInput(input: any, startChapter: number, batchCount: number, totalChapters: number, batchMinutes: number, priorDraft: any = null) {
+  const storyMapLines = String(input?.storyMap || '')
+    .split('\n')
+    .map((x: string) => x.trim())
+    .filter(Boolean)
+  const selectedMap = storyMapLines.slice(startChapter - 1, startChapter - 1 + batchCount).join('\n')
+  return {
+    ...input,
+    targetMinutes: batchMinutes,
+    chapterCount: batchCount,
+    storyMap: selectedMap || input?.storyMap || '',
+    continuationContext: priorDraft ? {
+      instruction: '앞 배치의 내용을 반복하지 말고 논리를 자연스럽게 이어간다.',
+      priorTitle: priorDraft.title || '',
+      priorHook: priorDraft.hook || '',
+      priorChapters: priorDraft.chapters || []
+    } : null,
+    splitBatch: {
+      totalChapters,
+      startChapter,
+      endChapter: startChapter + batchCount - 1
+    }
+  }
+}
+
+function mergeSplitDrafts(first: any, second: any, targetMinutes: number) {
+  const firstChapters = Array.isArray(first?.chapters) ? first.chapters : []
+  const secondChapters = Array.isArray(second?.chapters) ? second.chapters : []
+  const chapters = [...firstChapters, ...secondChapters].map((chapter: any, index: number) => ({
+    ...chapter,
+    chapterNo: index + 1
+  }))
+  return {
+    title: String(first?.title || second?.title || ''),
+    hook: String(first?.hook || second?.hook || ''),
+    targetMinutes,
+    chapters,
+    ending: second?.ending || first?.ending || { speaker: '내레이션', text: '' },
+    shortsSpinOff: [...(Array.isArray(first?.shortsSpinOff) ? first.shortsSpinOff : []), ...(Array.isArray(second?.shortsSpinOff) ? second.shortsSpinOff : [])].slice(0, 12),
+    warnings: [...(Array.isArray(first?.warnings) ? first.warnings : []), ...(Array.isArray(second?.warnings) ? second.warnings : [])]
+  }
+}
+
 export default async function handler(req: Request, res: Response) {
   setCors(req, res)
 
@@ -237,86 +304,86 @@ export default async function handler(req: Request, res: Response) {
   const test = Boolean(req.body?.test)
 
   try {
-    const payload: any = test
-      ? {
-          model: process.env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5',
-          max_tokens: 256,
-          system: '짧고 정확하게 응답하라.',
-          messages: [{
-            role: 'user',
-            content: 'Content Production Tracker Claude API 연결 테스트입니다. 한국어로 "Claude 대본 API 연결 성공"이라고만 답하세요.'
-          }]
-        }
-      : {
-          model: process.env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5',
-          max_tokens: 16000,
-          system: buildSystemPrompt(),
-          messages: [{ role: 'user', content: buildUserPrompt(input) }],
-          output_config: {
-            format: {
-              type: 'json_schema',
-              schema: LONGFORM_DRAFT_SCHEMA
-            }
-          }
-        }
+    const model = process.env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5'
+    if (test) {
+      const payload = {
+        model,
+        max_tokens: 256,
+        system: '짧고 정확하게 응답하라.',
+        messages: [{
+          role: 'user',
+          content: 'Content Production Tracker Claude API 연결 테스트입니다. 한국어로 "Claude 대본 API 연결 성공"이라고만 답하세요.'
+        }]
+      }
+      const { response, raw, data } = await callClaudeStory(apiKey, payload)
+      if (!response.ok) return res.status(response.status).json({ ok:false, error:data?.error?.message || raw || 'Anthropic API request failed' })
+      const text = textFromClaude(data)
+      if (!text) return res.status(502).json({ ok:false, error:'Claude response had no text output' })
+      return res.status(200).json({ ok:true, provider:'Anthropic', model:data?.model || model, text, usage:data?.usage || null })
+    }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    })
+    const targetMinutes = Math.max(5, Math.min(30, Number(input?.targetMinutes || 15)))
+    const chapterCount = Math.max(3, Math.min(10, Number(input?.chapterCount || 6)))
+    const useSplitGeneration = targetMinutes >= 18 || chapterCount >= 7
 
-    const raw = await response.text()
-    let data: any = {}
-    try { data = raw ? JSON.parse(raw) : {} } catch {}
+    if (useSplitGeneration) {
+      const firstCount = Math.ceil(chapterCount / 2)
+      const secondCount = chapterCount - firstCount
+      const firstMinutes = Math.max(5, Math.round(targetMinutes * firstCount / chapterCount))
+      const secondMinutes = Math.max(5, targetMinutes - firstMinutes)
+      const makePayload = (batchInput: any) => ({
+        model,
+        max_tokens: 12000,
+        system: buildSystemPrompt(),
+        messages: [{ role:'user', content: buildUserPrompt(batchInput) + '\n\n[분할 생성 규칙]\n이 요청은 전체 롱폼의 일부다. splitBatch의 챕터 범위만 작성하고, chapters 배열 개수는 chapterCount와 정확히 일치시킨다. continuationContext가 있으면 앞 내용을 반복하지 않고 이어간다.' }],
+        output_config: { format: { type:'json_schema', schema:LONGFORM_DRAFT_SCHEMA } }
+      })
 
+      const firstInput = splitLongformInput(input, 1, firstCount, chapterCount, firstMinutes)
+      const firstCall = await callClaudeStory(apiKey, makePayload(firstInput))
+      if (!firstCall.response.ok) return res.status(firstCall.response.status).json({ ok:false, error:firstCall.data?.error?.message || firstCall.raw || 'Anthropic API request failed' })
+      if (firstCall.data?.stop_reason === 'max_tokens') return res.status(502).json({ ok:false, error:'Claude first half was truncated before completion' })
+      const firstText = textFromClaude(firstCall.data)
+      let firstDraft:any
+      try { firstDraft = extractJson(firstText) } catch { return res.status(502).json({ ok:false, error:'Claude returned invalid JSON for first half', rawText:firstText }) }
+
+      const secondInput = splitLongformInput(input, firstCount + 1, secondCount, chapterCount, secondMinutes, firstDraft)
+      const secondCall = await callClaudeStory(apiKey, makePayload(secondInput))
+      if (!secondCall.response.ok) return res.status(secondCall.response.status).json({ ok:false, error:secondCall.data?.error?.message || secondCall.raw || 'Anthropic API request failed' })
+      if (secondCall.data?.stop_reason === 'max_tokens') return res.status(502).json({ ok:false, error:'Claude second half was truncated before completion' })
+      const secondText = textFromClaude(secondCall.data)
+      let secondDraft:any
+      try { secondDraft = extractJson(secondText) } catch { return res.status(502).json({ ok:false, error:'Claude returned invalid JSON for second half', rawText:secondText }) }
+
+      const draft = mergeSplitDrafts(firstDraft, secondDraft, targetMinutes)
+      return res.status(200).json({
+        ok:true,
+        provider:'Anthropic',
+        model:secondCall.data?.model || firstCall.data?.model || model,
+        draft,
+        usage:addUsage(firstCall.data?.usage, secondCall.data?.usage),
+        generationMode:'split_2_batches'
+      })
+    }
+
+    const payload = {
+      model,
+      max_tokens: 16000,
+      system: buildSystemPrompt(),
+      messages: [{ role:'user', content:buildUserPrompt(input) }],
+      output_config:{ format:{ type:'json_schema', schema:LONGFORM_DRAFT_SCHEMA } }
+    }
+    const { response, raw, data } = await callClaudeStory(apiKey, payload)
     if (!response.ok) {
       console.error('Anthropic request failed', response.status, raw.slice(0, 2000))
-      return res.status(response.status).json({
-        ok: false,
-        error: data?.error?.message || raw || 'Anthropic API request failed'
-      })
+      return res.status(response.status).json({ ok:false, error:data?.error?.message || raw || 'Anthropic API request failed' })
     }
-
     const text = textFromClaude(data)
-    if (!text) return res.status(502).json({ ok: false, error: 'Claude response had no text output' })
-
-    if (test) {
-      return res.status(200).json({
-        ok: true,
-        provider: 'Anthropic',
-        model: data?.model || payload.model,
-        text,
-        usage: data?.usage || null
-      })
-    }
-
-    if (data?.stop_reason === 'max_tokens') {
-      return res.status(502).json({ ok: false, error: 'Claude output was truncated before completion' })
-    }
-
-    let draft: any
-    try {
-      draft = extractJson(text)
-    } catch {
-      return res.status(502).json({
-        ok: false,
-        error: 'Claude returned invalid JSON',
-        rawText: text
-      })
-    }
-
-    return res.status(200).json({
-      ok: true,
-      provider: 'Anthropic',
-      model: data?.model || payload.model,
-      draft,
-      usage: data?.usage || null
-    })
+    if (!text) return res.status(502).json({ ok:false, error:'Claude response had no text output' })
+    if (data?.stop_reason === 'max_tokens') return res.status(502).json({ ok:false, error:'Claude output was truncated before completion' })
+    let draft:any
+    try { draft = extractJson(text) } catch { return res.status(502).json({ ok:false, error:'Claude returned invalid JSON', rawText:text }) }
+    return res.status(200).json({ ok:true, provider:'Anthropic', model:data?.model || model, draft, usage:data?.usage || null, generationMode:'single' })
   } catch (error: any) {
     console.error('Claude story handler failed', error)
     return res.status(500).json({
