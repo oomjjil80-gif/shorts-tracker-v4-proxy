@@ -205,37 +205,28 @@ function systemPrompt() {
     '작성자는 Claude이고, 당신은 작성자가 아니다. 좋은 문장을 이유 없이 다시 쓰지 말고 검수한다.',
     '목표는 문학적 완성도가 아니라 실제 CUT, TTS, 화면 설계로 바로 넘길 수 있는 제작 가능한 최종 나레이션인지 판정하는 것이다.',
     '',
-    '[가장 중요한 사실성 원칙]',
-    '- verifiedFacts는 현재 입력 안에서 확인된 사실의 기준이다.',
-    '- claimsToVerify는 미확정 주장이다. 대본에서 확정 사실처럼 단정되면 반드시 문제로 잡는다.',
-    '- sources는 근거 목록이다. 입력 자료가 뒷받침하지 않는 사실을 스스로 만들어 채우지 않는다.',
-    '- 입력만으로 확인할 수 없는 외부 사실은 "확인됨"이라고 판정하지 않는다.',
-    '- 숫자, 비율, 시행시점, 적용대상, 예외조건은 특히 엄격하게 본다.',
+    '[사실성 원칙 — 사용자 결정 우선 / LOW-GATE]',
+    '- 이 QC는 게시 허가자가 아니라 참고 편집자다. 최종 게시 여부는 사용자가 결정한다.',
+    '- verifiedFacts와 sources는 참고 근거다. 부족하더라도 일반적인 해설·가정·예시·시뮬레이션은 제작을 막지 않는다.',
+    '- claimsToVerify는 경고 대상으로만 취급한다. 명백한 허위 단정이나 법적 위험이 없는 한 status를 blocked/revision_required로 올리지 않는다.',
+    '- 숫자·비율·시행시점·적용대상·예외조건이 불확실하면 warning으로 표시하고 제작은 계속 허용한다.',
+    '- 법적 위험(명예훼손, 사생활 침해, 저작권 침해를 유발하는 직접 복제, 불법행위 조장 등)이나 기술적으로 사용할 수 없는 오염/형식 파손만 실제 중단 사유로 본다.'
     '',
-    '[내용 밀도 / 인과관계 — 필수]',
-    '- 추상적인 상식, 분위기 설명, 결론을 표현만 바꾼 반복, 앞 문단을 다시 요약하는 filler는 content_density 또는 repetition required 이슈로 잡는다.',
-    '- 중요한 주장 뒤에 시청자가 "왜?"라고 물을 핵심 연결고리가 빠지면 causality required 이슈로 잡는다.',
-    '- 주장에는 필요한 범위에서 이유, 대상, 근거/사례, 예외/반론이 붙어 실제 이해가 전진해야 한다.',
-    '- 각 segment는 이전 segment보다 새 정보·논리·사례·반론·관점 중 최소 하나를 전진시켜야 한다.',
+    '[내용 밀도 / 인과관계 — 권고]',
+    '- 반복, 밀도 부족, 인과 설명 부족은 품질 개선용 warning으로 제안한다.',
+    '- 이 항목만으로 자동 수정이나 제작 중단을 요구하지 않는다.',
+    '- 사용자가 원하면 그대로 진행할 수 있어야 한다.'
     '',
-    '[segment / CUT 경계 — 필수]',
-    '- 한 segment는 하나의 핵심 의미만 담당해야 한다. 서로 독립된 핵심 두 개가 섞이면 mixed_core required 이슈다.',
-    '- 문장이나 핵심 의미가 다음 segment에서야 완성되면 segment_boundary required 이슈다.',
-    '- 접속어나 전제만 남기고 segment가 끝나는 구조, 다음 segment가 앞 문장의 목적어나 결론을 이어받는 구조를 허용하지 않는다.',
-    '- 기존 CUT 개수를 유지하기 위해 의미 단위를 억지로 쪼개거나 합치는 발상을 금지한다.',
-    '- 실제 TTS에서 한 segment를 통째로 읽어도 자연스럽게 닫혀야 한다.',
+    '[segment / CUT 경계 — 권고]',
+    '- segment 경계가 어색하거나 한 segment에 핵심이 여러 개여도 우선 warning으로만 표시한다.',
+    '- TTS/CUT 자동화에 치명적으로 사용할 수 없는 수준이 아니라면 제작을 막지 않는다.'
     '',
-    '[상위 주제 / 순서 구조 — 필수]',
-    '- 여러 원인, 방안, 단계, 조건을 나열할 때는 부모 주제가 먼저 잡혀야 한다.',
-    '- 첫째·둘째·셋째 또는 1단계·2단계 같은 순차 항목이면 시청자가 현재 위치를 잃지 않도록 hierarchy를 검수한다.',
-    '- 순서가 중요한 항목이 평면적으로 섞여 있으면 hierarchy required 이슈다.',
+    '[상위 주제 / 순서 구조 — 권고]',
+    '- 순서나 hierarchy가 약하면 warning으로만 남긴다. 이 항목만으로 수정 강제하지 않는다.'
     '',
-    '[Visual Director 준비도 — 필수]',
-    '- visualHint는 예쁜 장면 제안이 아니라 현재 narration의 핵심 의미를 화면으로 어떻게 이해시킬지 설명해야 한다.',
-    '- narration은 수치 변화인데 visualHint가 단순히 돈을 보는 사람처럼 장식 장면이면 visual_mismatch required 이슈다.',
-    '- 비교는 비교 화면, 시간 변화는 단계/추세, 숫자 관계는 데이터 화면, 원인-결과는 인과 구조처럼 정보 성격에 맞는 시각화가 제안되어야 한다.',
-    '- 이미지 하나로 설명하기 어려운 추상 경제 개념을 억지 상황극으로 바꾸지 않는다.',
-    '- 화면만 봐도 핵심 내용을 따라갈 수 있는 수준으로 후속 Visual Director가 설계 가능한지 판정한다.',
+    '[Visual Director 준비도 — 권고]',
+    '- visualHint와 narration이 약하게 맞아도 warning으로만 제안한다.',
+    '- Visual Director가 후속 단계에서 보완할 수 있으므로 이 항목만으로 제작을 막지 않는다.'
     '',
     '[대본 오염/형식 누출 검사 — 필수]',
     '- 최종 시청자용 대사에 시스템/assistant/user role, JSON 조각, 코드블록, 테스트 마커, 디버그 문자열이 섞이면 반드시 required 이슈로 잡는다.',
@@ -243,13 +234,11 @@ function systemPrompt() {
     '- 주제와 전혀 무관한 문장, 갑작스러운 타 채널/타 인물 대사, 비정상 자모·기호 반복도 contamination 또는 format_leak으로 잡는다.',
     '- contaminationSignals가 하나라도 있으면 status=pass로 판정하지 않는다.',
     '',
-    '[편집장 / Retention Editor — 최우선 품질 기준]',
+    '[편집장 / Retention Editor — 참고 점수]'
     '- 좋은 문장을 칭찬하는 것이 아니라 시청자가 떠날 이유를 먼저 찾는다.',
     '- 첫 20~40초 안에 영상의 핵심 질문, 시청 이유, 예상 밖의 긴장 또는 구체적 이득이 잡혀야 한다.',
-    '- 훅이 질문만 던지고 보상 약속이 없거나, 결론을 너무 빨리 다 말해버려 다음 구간의 궁금증이 사라지면 hook/retention required 이슈다.',
-    '- 각 챕터는 최소 하나의 역할을 가져야 한다: 새 사실, 원인 규명, 사례, 반론, 관점 전환, 위험 확대, 해결 조건, 결론 회수. 역할이 없는 챕터는 chapter_role required 이슈다.',
-    '- 60~120초 이상 새 정보·질문·사례·반론·감정/관점 변화가 없으면 pacing 또는 retention required 이슈다.',
-    '- 챕터 끝은 다음 챕터로 넘어갈 이유가 있어야 한다. 단순 요약으로 닫혀 궁금증이 0이 되면 curiosity_gap required 이슈다.',
+    '- 훅·챕터 역할·전개·궁금증 연결이 약하면 warning으로만 남긴다.',
+    '- 점수가 낮아도 자동 수정이나 제작 중단 조건으로 사용하지 않는다.'
     '- 중간마다 작은 답을 주되 더 큰 질문을 남기는 구조를 선호한다. 계속 미루기만 하는 낚시는 금지한다.',
     '- 같은 결론을 표현만 바꿔 반복하거나 이미 이해한 내용을 오래 설명하면 retention/content_density 이슈다.',
     '- 결말은 제목과 훅의 핵심 질문을 반드시 회수해야 하며, 본문에서 쌓은 논리보다 약한 일반론으로 끝나면 payoff required 이슈다.',
@@ -268,17 +257,16 @@ function systemPrompt() {
     '- 문어체보다 실제 말하기 좋은 자연스러운 한국어를 쓴다.',
     '- 같은 설명과 AI식 관용구를 반복하지 않는다.',
     '',
-    '[제작 준비도 판정]',
-    '- readyForCutPlanning=true: 의미 단위가 완결되고 한 segment 한 핵심이며 상위 구조가 명확해야 한다.',
-    '- readyForTts=true: 문장 경계가 닫혀 있고 말하기 자연스러우며 다음 segment에 의미가 물리지 않아야 한다.',
-    '- readyForVisualDirector=true: 각 segment의 핵심과 visualHint가 일치하고 화면 형태를 설계할 정보가 충분해야 한다.',
-    '- 위 세 항목 중 하나라도 false면 status=pass로 판정하지 않는다.',
+    '[제작 준비도 판정 — 사용자 결정 우선]',
+    '- readyForCutPlanning/readyForTts/readyForVisualDirector는 참고 정보다.',
+    '- false가 있어도 기술적으로 진행 가능한 원고라면 status=pass를 허용한다.',
     '',
-    '[최종 판정]',
-    '- pass: 게시 전 추가 수정이 필요하지 않고 CUT/TTS/Visual Director로 바로 넘길 수 있는 수준. blocker/required 이슈가 없어야 한다.',
-    '- revision_required: Claude가 수정하면 해결 가능한 required 이슈가 하나 이상 있다.',
-    '- blocked: 핵심 사실 근거 부족, 상충, 위험한 단정 등 현재 입력만으로 안전하게 고칠 수 없는 blocker가 있다.',
-    '- warning만 있다면 pass가 가능하다.',
+    '[최종 판정 — LOW-GATE]',
+    '- 기본값은 pass다.',
+    '- 사실 근거 부족, 출처 부족, 해석 차이, 예시 시뮬레이션, 훅/구성/밀도/전개 점수 부족은 warning으로만 남기고 pass 처리한다.',
+    '- revision_required는 기술적으로 그대로 쓰기 어려운 형식 파손이나 명확한 내부 오염을 수정하면 바로 해결되는 경우에만 사용한다.',
+    '- blocked는 명백한 법적 위험 또는 현재 원고를 그대로 처리하면 시스템이 깨지는 수준의 치명적 형식 오류에만 사용한다.',
+    '- 애매하면 pass + warning으로 판정한다.'
     '',
     'revisionInstructions는 Claude에게 그대로 전달할 수 있도록 위치, 문제, 수정 방향을 구체적으로 쓴다.',
     '반드시 지정된 JSON schema로만 응답한다.'
@@ -405,6 +393,38 @@ function enforceEditorialScores(qc: any) {
   return qc
 }
 
+function applyLowGateUserDecisionPolicy(qc: any) {
+  if (!qc || typeof qc !== 'object') return qc
+  qc.issues = Array.isArray(qc.issues) ? qc.issues : []
+
+  const technicalCategories = new Set(['contamination', 'format_leak'])
+  let hasTechnicalBlock = false
+
+  qc.issues = qc.issues.map((issue:any) => {
+    const category = String(issue?.category || '')
+    const severity = String(issue?.severity || 'warning')
+    const technical = technicalCategories.has(category)
+    if (technical && ['blocker','required'].includes(severity)) {
+      hasTechnicalBlock = true
+      return issue
+    }
+    return { ...issue, severity: 'warning' }
+  })
+
+  // Editorial/factual scores are advisory only. User makes the final decision.
+  if (!hasTechnicalBlock) {
+    qc.status = 'pass'
+    qc.finalDecision = '사용자 결정 우선: 법적/치명적 기술 문제 없음. 경고를 참고하되 제작 진행 가능.'
+    if (qc.productionReadiness && typeof qc.productionReadiness === 'object') {
+      qc.productionReadiness.note = '참고용 준비도입니다. false 항목이 있어도 사용자가 제작 진행을 결정할 수 있습니다.'
+    }
+  } else if (qc.status === 'blocked') {
+    qc.status = 'revision_required'
+    qc.finalDecision = '내부 형식 오염/파손만 정리하면 제작 진행 가능.'
+  }
+  return qc
+}
+
 function enforceStructureSignals(qc: any, signals: StructureSignal[]) {
   if (!signals.length || !qc || typeof qc !== 'object') return qc
   const hardSignals = signals.filter((s) => s.kind === 'incomplete_segment' || s.kind === 'missing_visual_hint')
@@ -512,7 +532,7 @@ export default async function handler(req: Request, res: Response) {
       keyConfigured: Boolean(apiKey),
       task: 'longform_script_qc',
       contaminationGuard: 'v1',
-      productionQc: 'v3-retention-editor'
+      productionQc: 'v4-low-gate-user-decision'
     })
   }
 
@@ -627,7 +647,7 @@ export default async function handler(req: Request, res: Response) {
         text,
         usage: data?.usage || null,
         contaminationGuard: 'v1',
-        productionQc: 'v3-retention-editor'
+        productionQc: 'v4-low-gate-user-decision'
       })
     }
 
@@ -639,16 +659,8 @@ export default async function handler(req: Request, res: Response) {
     }
 
     qc = enforceContamination(qc, contaminationSignals)
-    qc = enforceStructureSignals(qc, structureSignals)
-    qc = enforceEditorialScores(qc)
-
-    if (qc?.productionReadiness && (
-      qc.productionReadiness.readyForCutPlanning !== true ||
-      qc.productionReadiness.readyForTts !== true ||
-      qc.productionReadiness.readyForVisualDirector !== true
-    ) && qc.status === 'pass') {
-      qc.status = 'revision_required'
-    }
+    // Structure/retention/factual quality checks remain advisory; they never auto-block.
+    qc = applyLowGateUserDecisionPolicy(qc)
 
     return res.status(200).json({
       ok: true,
@@ -659,7 +671,7 @@ export default async function handler(req: Request, res: Response) {
       contaminationSignals,
       structureSignals,
       contaminationGuard: 'v1',
-      productionQc: 'v3-retention-editor'
+      productionQc: 'v4-low-gate-user-decision'
     })
   } catch (error: any) {
     return res.status(500).json({ ok: false, error: error?.message || String(error) })
