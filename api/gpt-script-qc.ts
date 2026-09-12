@@ -110,7 +110,8 @@ const QC_SCHEMA = {
       additionalProperties: false,
       required: [
         'factualGrounding', 'channelFit', 'structure', 'ttsNaturalness',
-        'contentDensity', 'causalClarity', 'visualReadiness'
+        'contentDensity', 'causalClarity', 'visualReadiness',
+        'retentionStrength', 'curiosityContinuity', 'pacing', 'payoffStrength'
       ],
       properties: {
         factualGrounding: { type: 'integer', minimum: 0, maximum: 100 },
@@ -119,7 +120,11 @@ const QC_SCHEMA = {
         ttsNaturalness: { type: 'integer', minimum: 0, maximum: 100 },
         contentDensity: { type: 'integer', minimum: 0, maximum: 100 },
         causalClarity: { type: 'integer', minimum: 0, maximum: 100 },
-        visualReadiness: { type: 'integer', minimum: 0, maximum: 100 }
+        visualReadiness: { type: 'integer', minimum: 0, maximum: 100 },
+        retentionStrength: { type: 'integer', minimum: 0, maximum: 100 },
+        curiosityContinuity: { type: 'integer', minimum: 0, maximum: 100 },
+        pacing: { type: 'integer', minimum: 0, maximum: 100 },
+        payoffStrength: { type: 'integer', minimum: 0, maximum: 100 }
       }
     },
     issues: {
@@ -238,12 +243,22 @@ function systemPrompt() {
     '- 주제와 전혀 무관한 문장, 갑작스러운 타 채널/타 인물 대사, 비정상 자모·기호 반복도 contamination 또는 format_leak으로 잡는다.',
     '- contaminationSignals가 하나라도 있으면 status=pass로 판정하지 않는다.',
     '',
-    '[편집장 / Retention Editor]',
+    '[편집장 / Retention Editor — 최우선 품질 기준]',
     '- 좋은 문장을 칭찬하는 것이 아니라 시청자가 떠날 이유를 먼저 찾는다.',
-    '- 90~120초 분량 동안 질문, 데이터, 사례, 반론, 감정/관점 변화가 전혀 없으면 chapter_flow required 후보로 본다.',
-    '- 결론을 너무 빨리 공개하거나 다음 구간을 볼 질문이 사라지는 지점을 공격적으로 지적한다.',
+    '- 첫 20~40초 안에 영상의 핵심 질문, 시청 이유, 예상 밖의 긴장 또는 구체적 이득이 잡혀야 한다.',
+    '- 훅이 질문만 던지고 보상 약속이 없거나, 결론을 너무 빨리 다 말해버려 다음 구간의 궁금증이 사라지면 hook/retention required 이슈다.',
+    '- 각 챕터는 최소 하나의 역할을 가져야 한다: 새 사실, 원인 규명, 사례, 반론, 관점 전환, 위험 확대, 해결 조건, 결론 회수. 역할이 없는 챕터는 chapter_role required 이슈다.',
+    '- 60~120초 이상 새 정보·질문·사례·반론·감정/관점 변화가 없으면 pacing 또는 retention required 이슈다.',
+    '- 챕터 끝은 다음 챕터로 넘어갈 이유가 있어야 한다. 단순 요약으로 닫혀 궁금증이 0이 되면 curiosity_gap required 이슈다.',
+    '- 중간마다 작은 답을 주되 더 큰 질문을 남기는 구조를 선호한다. 계속 미루기만 하는 낚시는 금지한다.',
+    '- 같은 결론을 표현만 바꿔 반복하거나 이미 이해한 내용을 오래 설명하면 retention/content_density 이슈다.',
+    '- 결말은 제목과 훅의 핵심 질문을 반드시 회수해야 하며, 본문에서 쌓은 논리보다 약한 일반론으로 끝나면 payoff required 이슈다.',
     '- BM Reference/Story Map이 제공된 실험에서는 원작의 성공 구조를 이유 없이 창작적으로 바꾼 부분을 지적한다.',
     '- 제목/핵심 질문이 약속한 문제를 본편이 끝까지 추적하는지 본다.',
+    '- retentionStrength: 20분 이상 시청을 유지할 전체 견인력.',
+    '- curiosityContinuity: 한 구간의 답이 다음 구간의 질문으로 자연스럽게 이어지는 정도.',
+    '- pacing: 정보/사례/반론/관점 변화의 속도와 지루한 정체 구간의 부재.',
+    '- payoffStrength: 제목·훅의 약속을 결론에서 충분히 회수하는 정도.',
     '',
     '[경제·생활경제 채널 규칙]',
     '- 복잡한 경제 현안을 생활 문제로 쉽게 연결한다.',
@@ -315,6 +330,8 @@ function userPrompt(input: any, contaminationSignals: ContaminationSignal[], str
     '위 자료만을 근거로 대본 전체를 검수하라. 근거가 없는 내용을 외부 지식으로 확정하지 말라.',
     '내용 밀도, 인과관계, segment 완결성, 한 segment 한 핵심, 상위주제/순서, visualHint-나레이션 의미 일치를 모두 검사하라.',
     '현재 원고가 실제 제작용 최종 나레이션으로 바로 CUT/TTS/Visual Director 단계에 넘어갈 수 있는지 엄격하게 판정하라.',
+    '특히 첫 30초 훅, 챕터별 역할, 60~120초 단위의 변화, 챕터 사이 궁금증 연결, 마지막 payoff를 별도로 점검하라.',
+    'retentionStrength, curiosityContinuity, pacing, payoffStrength는 각각 100점 만점으로 냉정하게 채점하라.',
     'contaminationSignals가 있으면 반드시 issues와 revisionInstructions에 반영하고 pass로 판정하지 말라.'
   ].join('\n')
 }
@@ -350,6 +367,41 @@ function enforceContamination(qc: any, signals: ContaminationSignal[]) {
     qc.productionReadiness.readyForVisualDirector = false
   }
   qc.summary = `대본 오염/형식 누출이 감지되어 수정이 필요합니다. ${String(qc.summary || '')}`.trim()
+  return qc
+}
+
+function enforceEditorialScores(qc: any) {
+  if (!qc || typeof qc !== 'object') return qc
+  const scores = qc.scores || {}
+  const checks = [
+    ['retentionStrength', 'retention', '시청 유지력'],
+    ['curiosityContinuity', 'curiosity_gap', '궁금증 연결'],
+    ['pacing', 'pacing', '전개 속도'],
+    ['payoffStrength', 'payoff', '결말 회수력']
+  ] as const
+  const weak = checks.filter(([key]) => Number(scores[key]) < 80)
+  if (!weak.length) return qc
+
+  qc.issues = Array.isArray(qc.issues) ? qc.issues : []
+  qc.revisionInstructions = Array.isArray(qc.revisionInstructions) ? qc.revisionInstructions : []
+
+  for (const [key, category, label] of weak) {
+    const score = Number(scores[key])
+    if (!qc.issues.some((x:any) => String(x?.category||'') === category)) {
+      qc.issues.push({
+        severity:'required',
+        category,
+        location:'대본 전체',
+        claim:`${label} 점수 ${Number.isFinite(score) ? score : 0}/100`,
+        evidence:'편집장 QC 점수 기준 80점 미만',
+        problem:`${label}가 기준 미달이라 장편 영상의 이탈 위험이 높습니다.`,
+        recommendation:'문제 구간만 재작성해 새 정보·질문·사례·반론·관점 변화 또는 결론 회수를 강화합니다.'
+      })
+    }
+    const instruction = `${label}를 80점 이상으로 올린다. 좋은 구간은 유지하고 이탈 위험 구간만 압축·재배치·재작성한다.`
+    if (!qc.revisionInstructions.some((x:any)=>String(x).includes(label))) qc.revisionInstructions.push(instruction)
+  }
+  if (qc.status === 'pass') qc.status = 'revision_required'
   return qc
 }
 
@@ -460,7 +512,7 @@ export default async function handler(req: Request, res: Response) {
       keyConfigured: Boolean(apiKey),
       task: 'longform_script_qc',
       contaminationGuard: 'v1',
-      productionQc: 'v2'
+      productionQc: 'v3-retention-editor'
     })
   }
 
@@ -575,7 +627,7 @@ export default async function handler(req: Request, res: Response) {
         text,
         usage: data?.usage || null,
         contaminationGuard: 'v1',
-        productionQc: 'v2'
+        productionQc: 'v3-retention-editor'
       })
     }
 
@@ -588,6 +640,7 @@ export default async function handler(req: Request, res: Response) {
 
     qc = enforceContamination(qc, contaminationSignals)
     qc = enforceStructureSignals(qc, structureSignals)
+    qc = enforceEditorialScores(qc)
 
     if (qc?.productionReadiness && (
       qc.productionReadiness.readyForCutPlanning !== true ||
@@ -606,7 +659,7 @@ export default async function handler(req: Request, res: Response) {
       contaminationSignals,
       structureSignals,
       contaminationGuard: 'v1',
-      productionQc: 'v2'
+      productionQc: 'v3-retention-editor'
     })
   } catch (error: any) {
     return res.status(500).json({ ok: false, error: error?.message || String(error) })
