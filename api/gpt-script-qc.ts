@@ -143,7 +143,8 @@ const QC_SCHEMA = {
               'chapter_flow', 'open_ending', 'visualization', 'tts',
               'content_density', 'causality', 'segment_boundary', 'mixed_core',
               'hierarchy', 'visual_mismatch', 'production_readiness',
-              'contamination', 'format_leak'
+              'retention', 'curiosity_gap', 'pacing', 'payoff', 'chapter_role',
+              'legal_risk', 'contamination', 'format_leak'
             ]
           },
           location: { type: 'string' },
@@ -210,23 +211,24 @@ function systemPrompt() {
     '- verifiedFacts와 sources는 참고 근거다. 부족하더라도 일반적인 해설·가정·예시·시뮬레이션은 제작을 막지 않는다.',
     '- claimsToVerify는 경고 대상으로만 취급한다. 명백한 허위 단정이나 법적 위험이 없는 한 status를 blocked/revision_required로 올리지 않는다.',
     '- 숫자·비율·시행시점·적용대상·예외조건이 불확실하면 warning으로 표시하고 제작은 계속 허용한다.',
-    '- 법적 위험(명예훼손, 사생활 침해, 저작권 침해를 유발하는 직접 복제, 불법행위 조장 등)이나 기술적으로 사용할 수 없는 오염/형식 파손만 실제 중단 사유로 본다.'
+    '- 법적 위험(명예훼손, 사생활 침해, 저작권 침해를 유발하는 직접 복제, 불법행위 조장 등)이나 기술적으로 사용할 수 없는 오염/형식 파손만 실제 중단 사유로 본다.',
+    '- 명백한 법적 위험을 발견하면 category=legal_risk, severity=blocker로 표시한다.',
     '',
     '[내용 밀도 / 인과관계 — 권고]',
     '- 반복, 밀도 부족, 인과 설명 부족은 품질 개선용 warning으로 제안한다.',
     '- 이 항목만으로 자동 수정이나 제작 중단을 요구하지 않는다.',
-    '- 사용자가 원하면 그대로 진행할 수 있어야 한다.'
+    '- 사용자가 원하면 그대로 진행할 수 있어야 한다.',
     '',
     '[segment / CUT 경계 — 권고]',
     '- segment 경계가 어색하거나 한 segment에 핵심이 여러 개여도 우선 warning으로만 표시한다.',
-    '- TTS/CUT 자동화에 치명적으로 사용할 수 없는 수준이 아니라면 제작을 막지 않는다.'
+    '- TTS/CUT 자동화에 치명적으로 사용할 수 없는 수준이 아니라면 제작을 막지 않는다.',
     '',
     '[상위 주제 / 순서 구조 — 권고]',
-    '- 순서나 hierarchy가 약하면 warning으로만 남긴다. 이 항목만으로 수정 강제하지 않는다.'
+    '- 순서나 hierarchy가 약하면 warning으로만 남긴다. 이 항목만으로 수정 강제하지 않는다.',
     '',
     '[Visual Director 준비도 — 권고]',
     '- visualHint와 narration이 약하게 맞아도 warning으로만 제안한다.',
-    '- Visual Director가 후속 단계에서 보완할 수 있으므로 이 항목만으로 제작을 막지 않는다.'
+    '- Visual Director가 후속 단계에서 보완할 수 있으므로 이 항목만으로 제작을 막지 않는다.',
     '',
     '[대본 오염/형식 누출 검사 — 필수]',
     '- 최종 시청자용 대사에 시스템/assistant/user role, JSON 조각, 코드블록, 테스트 마커, 디버그 문자열이 섞이면 반드시 required 이슈로 잡는다.',
@@ -234,11 +236,11 @@ function systemPrompt() {
     '- 주제와 전혀 무관한 문장, 갑작스러운 타 채널/타 인물 대사, 비정상 자모·기호 반복도 contamination 또는 format_leak으로 잡는다.',
     '- contaminationSignals가 하나라도 있으면 status=pass로 판정하지 않는다.',
     '',
-    '[편집장 / Retention Editor — 참고 점수]'
+    '[편집장 / Retention Editor — 참고 점수]',
     '- 좋은 문장을 칭찬하는 것이 아니라 시청자가 떠날 이유를 먼저 찾는다.',
     '- 첫 20~40초 안에 영상의 핵심 질문, 시청 이유, 예상 밖의 긴장 또는 구체적 이득이 잡혀야 한다.',
     '- 훅·챕터 역할·전개·궁금증 연결이 약하면 warning으로만 남긴다.',
-    '- 점수가 낮아도 자동 수정이나 제작 중단 조건으로 사용하지 않는다.'
+    '- 점수가 낮아도 자동 수정이나 제작 중단 조건으로 사용하지 않는다.',
     '- 중간마다 작은 답을 주되 더 큰 질문을 남기는 구조를 선호한다. 계속 미루기만 하는 낚시는 금지한다.',
     '- 같은 결론을 표현만 바꿔 반복하거나 이미 이해한 내용을 오래 설명하면 retention/content_density 이슈다.',
     '- 결말은 제목과 훅의 핵심 질문을 반드시 회수해야 하며, 본문에서 쌓은 논리보다 약한 일반론으로 끝나면 payoff required 이슈다.',
@@ -266,7 +268,7 @@ function systemPrompt() {
     '- 사실 근거 부족, 출처 부족, 해석 차이, 예시 시뮬레이션, 훅/구성/밀도/전개 점수 부족은 warning으로만 남기고 pass 처리한다.',
     '- revision_required는 기술적으로 그대로 쓰기 어려운 형식 파손이나 명확한 내부 오염을 수정하면 바로 해결되는 경우에만 사용한다.',
     '- blocked는 명백한 법적 위험 또는 현재 원고를 그대로 처리하면 시스템이 깨지는 수준의 치명적 형식 오류에만 사용한다.',
-    '- 애매하면 pass + warning으로 판정한다.'
+    '- 애매하면 pass + warning으로 판정한다.',
     '',
     'revisionInstructions는 Claude에게 그대로 전달할 수 있도록 위치, 문제, 수정 방향을 구체적으로 쓴다.',
     '반드시 지정된 JSON schema로만 응답한다.'
@@ -317,9 +319,9 @@ function userPrompt(input: any, contaminationSignals: ContaminationSignal[], str
     '',
     '위 자료만을 근거로 대본 전체를 검수하라. 근거가 없는 내용을 외부 지식으로 확정하지 말라.',
     '내용 밀도, 인과관계, segment 완결성, 한 segment 한 핵심, 상위주제/순서, visualHint-나레이션 의미 일치를 모두 검사하라.',
-    '현재 원고가 실제 제작용 최종 나레이션으로 바로 CUT/TTS/Visual Director 단계에 넘어갈 수 있는지 엄격하게 판정하라.',
-    '특히 첫 30초 훅, 챕터별 역할, 60~120초 단위의 변화, 챕터 사이 궁금증 연결, 마지막 payoff를 별도로 점검하라.',
-    'retentionStrength, curiosityContinuity, pacing, payoffStrength는 각각 100점 만점으로 냉정하게 채점하라.',
+    '현재 원고가 실제 제작용 최종 나레이션으로 넘어갈 수 있는지 참고용으로 판정하라. 편집 품질 문제만으로 제작을 막지 마라.',
+    '첫 30초 훅, 챕터별 역할, 60~120초 단위의 변화, 챕터 사이 궁금증 연결, 마지막 payoff는 참고 점수로만 점검하라.',
+    'retentionStrength, curiosityContinuity, pacing, payoffStrength는 각각 100점 만점으로 채점하되 점수만으로 revision_required/blocked를 만들지 마라.',
     'contaminationSignals가 있으면 반드시 issues와 revisionInstructions에 반영하고 pass로 판정하지 말라.'
   ].join('\n')
 }
@@ -397,7 +399,7 @@ function applyLowGateUserDecisionPolicy(qc: any) {
   if (!qc || typeof qc !== 'object') return qc
   qc.issues = Array.isArray(qc.issues) ? qc.issues : []
 
-  const technicalCategories = new Set(['contamination', 'format_leak'])
+  const technicalCategories = new Set(['contamination', 'format_leak', 'legal_risk'])
   let hasTechnicalBlock = false
 
   qc.issues = qc.issues.map((issue:any) => {
@@ -418,6 +420,9 @@ function applyLowGateUserDecisionPolicy(qc: any) {
     if (qc.productionReadiness && typeof qc.productionReadiness === 'object') {
       qc.productionReadiness.note = '참고용 준비도입니다. false 항목이 있어도 사용자가 제작 진행을 결정할 수 있습니다.'
     }
+  } else if (qc.issues.some((x:any) => String(x?.category || '') === 'legal_risk' && String(x?.severity || '') === 'blocker')) {
+    qc.status = 'blocked'
+    qc.finalDecision = '명백한 법적 위험이 감지되어 사용자 확인 전 자동 진행을 중단합니다.'
   } else if (qc.status === 'blocked') {
     qc.status = 'revision_required'
     qc.finalDecision = '내부 형식 오염/파손만 정리하면 제작 진행 가능.'
