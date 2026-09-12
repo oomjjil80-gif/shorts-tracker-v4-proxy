@@ -139,6 +139,16 @@ function extractText(data: any) {
 export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
+  if (req.method === 'GET') {
+    return res.status(200).json({
+      ok: true,
+      capabilities: {
+        shortformStory: true,
+        visualDirector: true,
+        longformChapterFallback: true
+      }
+    })
+  }
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' })
   if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: { message: 'OPENAI_API_KEY is not configured' } })
 
