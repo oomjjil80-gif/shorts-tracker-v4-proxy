@@ -17,6 +17,55 @@ function setCors(req: Request, res: Response) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept')
 }
 
+
+const LONGFORM_CHAPTER_SCHEMA = {
+  type:'object',
+  additionalProperties:false,
+  required:['title','hook','targetMinutes','chapters','ending','shortsSpinOff','warnings'],
+  properties:{
+    title:{type:'string'},
+    hook:{type:'string'},
+    targetMinutes:{type:'integer'},
+    chapters:{
+      type:'array',
+      minItems:1,
+      maxItems:1,
+      items:{
+        type:'object',
+        additionalProperties:false,
+        required:['chapterNo','title','purpose','segments'],
+        properties:{
+          chapterNo:{type:'integer'},
+          title:{type:'string'},
+          purpose:{type:'string'},
+          segments:{
+            type:'array',
+            items:{
+              type:'object',
+              additionalProperties:false,
+              required:['speaker','text','visualHint','factStatus'],
+              properties:{
+                speaker:{type:'string'},
+                text:{type:'string'},
+                visualHint:{type:'string'},
+                factStatus:{type:'string',enum:['verified','interpretation','verify_before_publish']}
+              }
+            }
+          }
+        }
+      }
+    },
+    ending:{
+      type:'object',
+      additionalProperties:false,
+      required:['speaker','text'],
+      properties:{speaker:{type:'string'},text:{type:'string'}}
+    },
+    shortsSpinOff:{type:'array',items:{type:'string'}},
+    warnings:{type:'array',items:{type:'string'}}
+  }
+} as const
+
 const STORY_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -95,6 +144,56 @@ export default async function handler(req: Request, res: Response) {
 
   const body = req.body || {}
   const input = body.input || {}
+
+  if (body.taskType === 'longform_chapter') {
+    const chapterNo = Math.max(1, Number(body.chapterNo || 1))
+    const totalChapters = Math.max(chapterNo, Number(body.totalChapters || input?.chapterCount || 6))
+    const targetMinutes = Math.max(1, Math.round(Number(input?.targetMinutes || 15) / totalChapters))
+    const previous = body.previousChapter || null
+    const longformModel = String(process.env.OPENAI_LONGFORM_MODEL || process.env.OPENAI_QC_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini')
+    const prompt = [
+      `전체 ${totalChapters}개 중 ${chapterNo}번 챕터 하나만 작성하라. 실제 유튜브 제작용 자연스러운 한국어 대본이다.`,
+      '사실/해석을 구분하되 검수 경고 때문에 집필을 중단하지 않는다.',
+      `이번 챕터 targetMinutes는 ${targetMinutes}, chapters 배열은 정확히 1개, chapterNo는 ${chapterNo}.`,
+      chapterNo === 1 ? '첫 챕터는 강한 hook을 작성한다.' : 'hook은 빈 문자열.',
+      chapterNo === totalChapters ? '마지막 챕터 ending을 작성한다.' : 'ending.text는 빈 문자열.',
+      'segment는 완결된 의미 단위이며 speaker는 기본적으로 내레이션. visualHint는 실제 화면 설계.',
+      '[Production Master Brief]\n' + JSON.stringify(input.productionMasterBrief || {}),
+      '[Provider Brief]\n' + JSON.stringify(input.providerBrief || {}),
+      '[소재]\n' + JSON.stringify({title:input.title,summary:input.summary,whyNow:input.whyNow,viewerValue:input.viewerValue,longformProfile:input.longformProfile,benchmarkReference:input.benchmarkReference,storyMap:input.storyMap}),
+      '[검증 사실]\n' + JSON.stringify(input.verifiedFacts || []),
+      '[확인 필요]\n' + JSON.stringify(input.claimsToVerify || []),
+      '[출처]\n' + JSON.stringify(input.sources || []),
+      '[이전 챕터]\n' + JSON.stringify(previous || {})
+    ].join('\n\n')
+    const payload:any = {
+      model: longformModel,
+      input: prompt,
+      text: { format: { type:'json_schema', name:'longform_chapter', strict:true, schema:LONGFORM_CHAPTER_SCHEMA } }
+    }
+    try {
+      const response = await fetch('https://api.openai.com/v1/responses', {
+        method:'POST',
+        headers:{ Authorization:`Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type':'application/json' },
+        body:JSON.stringify(payload)
+      })
+      const raw = await response.text()
+      let data:any = {}
+      try { data = raw ? JSON.parse(raw) : {} } catch {}
+      if (!response.ok) return res.status(response.status).json({ ok:false, error:data?.error?.message || raw || 'OpenAI longform request failed' })
+      const text = extractText(data)
+      if (!text) return res.status(502).json({ ok:false, error:'GPT longform fallback returned no text' })
+      let draft:any
+      try { draft = JSON.parse(text) } catch { return res.status(502).json({ ok:false, error:'GPT longform fallback returned invalid JSON' }) }
+      if (!Array.isArray(draft?.chapters) || draft.chapters.length !== 1) {
+        return res.status(502).json({ ok:false, error:'GPT longform fallback returned invalid chapter count' })
+      }
+      draft.chapters[0].chapterNo = chapterNo
+      return res.status(200).json({ ok:true, provider:'OpenAI', model:data?.model || longformModel, draft, usage:data?.usage || null, generationMode:'gpt_fallback_chapter', chapterNo, totalChapters })
+    } catch (error:any) {
+      return res.status(500).json({ ok:false, error:error?.message || String(error) })
+    }
+  }
 
   if (body.taskType === 'visual_director') {
     try {
