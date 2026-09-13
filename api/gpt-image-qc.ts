@@ -76,7 +76,7 @@ export default async function handler(req: Request, res: Response) {
       ok: Boolean(process.env.OPENAI_API_KEY),
       provider: 'OpenAI',
       model: process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini',
-      contractVersion: 'gpt-vision-qc-v1.1'
+      contractVersion: 'gpt-vision-qc-v1.2'
     })
   }
 
@@ -102,27 +102,29 @@ export default async function handler(req: Request, res: Response) {
     '',
     '[Priority order]',
     '1. Semantic match: does the image explain the exact CUT meaning, not a neighboring or generic economy concept?',
-    '2. Hard defects: broken/nonsense generated text, missing/broken primary face, style break, photoreal human replacing required channel character, broken anatomy, accidental blank poster/card, clearly irrelevant meaning.',
-    '3. Composition: the main relation should be understandable quickly and should leave safe space for Tracker overlay when requested.',
+    '2. Hard defects: generated text when forbidden, missing/broken primary face, style break, photoreal human replacing required channel character, broken anatomy, accidental blank poster/card, clearly irrelevant meaning.',
+    '3. Composition: the main relation should be understandable quickly and should leave safe space for Tracker deterministic overlay.',
     '',
-    '[Text rule]',
-    'Tracker may later add exact Korean text/numbers as deterministic overlay. Treat prominent unintended text or nonsense text inside the generated artwork as a defect.',
-    'Do not fail tiny incidental details on money or props unless they are prominent or misleading.',
+    '[Base-image text rule]',
+    'For economy longform, the generated source artwork must contain ZERO readable Korean, English, numbers, percentages, labels, logos, watermarks, subtitles or UI. Tracker adds exact Korean text/numbers later with a deterministic overlay compositor.',
+    'For economy longform, ANY clearly readable generated text/number/label on monitors, documents, signs, interfaces or the scene itself means generatedText=true and decision=RETRY.',
+    'For non-economy paths, treat prominent unintended or nonsense generated text as a defect according to the supplied prompt.',
     '',
     ...(economyLongform ? [
       '[ECONOMY LONGFORM V0.1 — HARD QC GATES]',
-      'This path has three additional non-negotiable hard gates.',
+      'This path has four additional non-negotiable hard gates.',
       'A. MASCOT COUNT: the image must contain exactly ONE clearly visible professional finance mascot: round pale face, clean dark outline, simple readable eyes/mouth, navy suit, white shirt, roughly 8–10% of frame. If there is zero mascot, more than one mascot, a stick figure, Gru/SD character, toy child character, or a photoreal human protagonist replacing the mascot, set mascotMissingOrWrongCount=true and decision=RETRY.',
       'Background population silhouettes are allowed only when semantically necessary and visually subordinate; they do not count as the finance mascot.',
       'B. STYLE FLOOR: the frame must read as premium Korean finance editorial / cinematic finance documentary with refined semi-realistic 2.5D depth, integrated environment, deep navy + warm amber/orange + controlled red, rich but organized detail. If it looks like cheap vector, flat infographic, PowerPoint/card-news, children educational art, toy-like glossy 3D, generic stock illustration, or simplistic animation, set styleFloorFailure=true and decision=RETRY.',
       'C. ORIENTATION: the final artwork must be a single horizontal 16:9 long-form composition. If it is portrait/vertical, square, a candidate sheet, or clearly non-horizontal, set wrongOrientation=true and decision=RETRY.',
+      'D. SEMANTIC SPECIFICITY: if the CUT is about a concrete relationship such as generation-size difference, debt burden, price gap, cause/effect, policy path or asset comparison, the image must visibly show that relationship. A generic finance command center, trading room, dashboard wall, data-stream room, random chart room or generic money scene is NOT a semantic match unless the CUT explicitly asks for that setting. In that case set semanticMatch=false and irrelevantMeaning=true.',
       'The economic relationship/metaphor must remain the main subject. Mascot is a supporting explainer, not the main subject.',
       ''
     ] : []),
     '[Decision rule]',
     'If ANY hard defect is clearly present, decision=RETRY.',
     'If semanticMatch=false, decision=RETRY.',
-    'For economy longform, mascotMissingOrWrongCount=true OR styleFloorFailure=true OR wrongOrientation=true always means RETRY.',
+    'For economy longform, generatedText=true OR mascotMissingOrWrongCount=true OR styleFloorFailure=true OR wrongOrientation=true always means RETRY.',
     'Otherwise PASS unless composition is so poor that the intended meaning cannot be understood.',
     'For RETRY, write a short retryInstruction that preserves good parts and fixes only the failure.',
     'Return JSON only.'
@@ -187,9 +189,11 @@ export default async function handler(req: Request, res: Response) {
     }
 
     const economyHardGate = economyLongform && Boolean(
+      result?.defects?.generatedText ||
       result?.defects?.mascotMissingOrWrongCount ||
       result?.defects?.styleFloorFailure ||
-      result?.defects?.wrongOrientation
+      result?.defects?.wrongOrientation ||
+      result?.semanticMatch === false
     )
     if (economyHardGate) result.decision = 'RETRY'
 
@@ -206,7 +210,7 @@ export default async function handler(req: Request, res: Response) {
       ...result,
       provider: 'OpenAI',
       model,
-      contractVersion: 'gpt-vision-qc-v1.1',
+      contractVersion: 'gpt-vision-qc-v1.2',
       usage: data?.usage || null
     })
   } catch (error: any) {
