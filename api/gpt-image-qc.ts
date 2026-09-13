@@ -42,7 +42,10 @@ const QC_SCHEMA = {
         'brokenAnatomy',
         'blankCanvas',
         'irrelevantMeaning',
-        'badComposition'
+        'badComposition',
+        'mascotMissingOrWrongCount',
+        'styleFloorFailure',
+        'wrongOrientation'
       ],
       properties: {
         generatedText: { type: 'boolean' },
@@ -52,7 +55,10 @@ const QC_SCHEMA = {
         brokenAnatomy: { type: 'boolean' },
         blankCanvas: { type: 'boolean' },
         irrelevantMeaning: { type: 'boolean' },
-        badComposition: { type: 'boolean' }
+        badComposition: { type: 'boolean' },
+        mascotMissingOrWrongCount: { type: 'boolean' },
+        styleFloorFailure: { type: 'boolean' },
+        wrongOrientation: { type: 'boolean' }
       }
     },
     reason: { type: 'string' },
@@ -70,7 +76,7 @@ export default async function handler(req: Request, res: Response) {
       ok: Boolean(process.env.OPENAI_API_KEY),
       provider: 'OpenAI',
       model: process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini',
-      contractVersion: 'gpt-vision-qc-v1'
+      contractVersion: 'gpt-vision-qc-v1.1'
     })
   }
 
@@ -84,6 +90,7 @@ export default async function handler(req: Request, res: Response) {
   const imageBase64 = String(input.imageBase64 || '').replace(/^data:[^;]+;base64,/, '')
   const mimeType = String(input.mimeType || 'image/png').trim() || 'image/png'
   const context = input.context && typeof input.context === 'object' ? input.context : {}
+  const economyLongform = context?.economyLongformV01 === true || String(context?.profile || '') === 'economy-longform-v01'
 
   if (!prompt) return res.status(400).json({ error: { message: 'prompt is required' } })
   if (!imageBase64) return res.status(400).json({ error: { message: 'imageBase64 is required' } })
@@ -102,9 +109,20 @@ export default async function handler(req: Request, res: Response) {
     'Tracker may later add exact Korean text/numbers as deterministic overlay. Treat prominent unintended text or nonsense text inside the generated artwork as a defect.',
     'Do not fail tiny incidental details on money or props unless they are prominent or misleading.',
     '',
+    ...(economyLongform ? [
+      '[ECONOMY LONGFORM V0.1 — HARD QC GATES]',
+      'This path has three additional non-negotiable hard gates.',
+      'A. MASCOT COUNT: the image must contain exactly ONE clearly visible professional finance mascot: round pale face, clean dark outline, simple readable eyes/mouth, navy suit, white shirt, roughly 8–10% of frame. If there is zero mascot, more than one mascot, a stick figure, Gru/SD character, toy child character, or a photoreal human protagonist replacing the mascot, set mascotMissingOrWrongCount=true and decision=RETRY.',
+      'Background population silhouettes are allowed only when semantically necessary and visually subordinate; they do not count as the finance mascot.',
+      'B. STYLE FLOOR: the frame must read as premium Korean finance editorial / cinematic finance documentary with refined semi-realistic 2.5D depth, integrated environment, deep navy + warm amber/orange + controlled red, rich but organized detail. If it looks like cheap vector, flat infographic, PowerPoint/card-news, children educational art, toy-like glossy 3D, generic stock illustration, or simplistic animation, set styleFloorFailure=true and decision=RETRY.',
+      'C. ORIENTATION: the final artwork must be a single horizontal 16:9 long-form composition. If it is portrait/vertical, square, a candidate sheet, or clearly non-horizontal, set wrongOrientation=true and decision=RETRY.',
+      'The economic relationship/metaphor must remain the main subject. Mascot is a supporting explainer, not the main subject.',
+      ''
+    ] : []),
     '[Decision rule]',
     'If ANY hard defect is clearly present, decision=RETRY.',
     'If semanticMatch=false, decision=RETRY.',
+    'For economy longform, mascotMissingOrWrongCount=true OR styleFloorFailure=true OR wrongOrientation=true always means RETRY.',
     'Otherwise PASS unless composition is so poor that the intended meaning cannot be understood.',
     'For RETRY, write a short retryInstruction that preserves good parts and fixes only the failure.',
     'Return JSON only.'
@@ -129,7 +147,7 @@ export default async function handler(req: Request, res: Response) {
       },
       body: JSON.stringify({
         model,
-        reasoning: { effort: 'low' },
+        reasoning: { effort: economyLongform ? 'medium' : 'low' },
         instructions,
         input: [{
           role: 'user',
@@ -168,11 +186,19 @@ export default async function handler(req: Request, res: Response) {
       return res.status(502).json({ error: { message: 'OpenAI image QC response was not valid JSON' } })
     }
 
+    const economyHardGate = economyLongform && Boolean(
+      result?.defects?.mascotMissingOrWrongCount ||
+      result?.defects?.styleFloorFailure ||
+      result?.defects?.wrongOrientation
+    )
+    if (economyHardGate) result.decision = 'RETRY'
+
     console.log('[GPT_IMAGE_QC]', JSON.stringify({
       decision: result?.decision,
       semanticMatch: result?.semanticMatch,
       defects: result?.defects,
-      confidence: result?.confidence
+      confidence: result?.confidence,
+      economyLongform
     }))
 
     return res.status(200).json({
@@ -180,7 +206,7 @@ export default async function handler(req: Request, res: Response) {
       ...result,
       provider: 'OpenAI',
       model,
-      contractVersion: 'gpt-vision-qc-v1',
+      contractVersion: 'gpt-vision-qc-v1.1',
       usage: data?.usage || null
     })
   } catch (error: any) {
