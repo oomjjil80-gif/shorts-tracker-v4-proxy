@@ -17,12 +17,49 @@ function extractText(data: any) {
   return ''
 }
 
+function imageDimensionsFromBase64(base64: string, mimeType: string) {
+  try {
+    const bytes = Buffer.from(base64, 'base64')
+    if (bytes.length < 24) return null
+    const mime = String(mimeType || '').toLowerCase()
+    const isPng = mime.includes('png') || (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47)
+    if (isPng && bytes.length >= 24) {
+      const width = bytes.readUInt32BE(16)
+      const height = bytes.readUInt32BE(20)
+      if (width > 0 && height > 0) return { width, height }
+    }
+
+    const isJpeg = mime.includes('jpeg') || mime.includes('jpg') || (bytes[0] === 0xff && bytes[1] === 0xd8)
+    if (isJpeg) {
+      let offset = 2
+      while (offset + 9 < bytes.length) {
+        if (bytes[offset] !== 0xff) { offset += 1; continue }
+        const marker = bytes[offset + 1]
+        offset += 2
+        if (marker === 0xd8 || marker === 0xd9) continue
+        if (offset + 2 > bytes.length) break
+        const length = bytes.readUInt16BE(offset)
+        if (length < 2 || offset + length > bytes.length) break
+        const isSof = [0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker)
+        if (isSof && length >= 7) {
+          const height = bytes.readUInt16BE(offset + 3)
+          const width = bytes.readUInt16BE(offset + 5)
+          if (width > 0 && height > 0) return { width, height }
+        }
+        offset += length
+      }
+    }
+  } catch {}
+  return null
+}
+
 const QC_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: [
     'decision',
     'semanticMatch',
+    'financeMascotCount',
     'defects',
     'reason',
     'retryInstruction',
@@ -31,6 +68,7 @@ const QC_SCHEMA = {
   properties: {
     decision: { type: 'string', enum: ['PASS', 'RETRY'] },
     semanticMatch: { type: 'boolean' },
+    financeMascotCount: { type: 'integer', minimum: 0, maximum: 10 },
     defects: {
       type: 'object',
       additionalProperties: false,
@@ -76,7 +114,7 @@ export default async function handler(req: Request, res: Response) {
       ok: Boolean(process.env.OPENAI_API_KEY),
       provider: 'OpenAI',
       model: process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini',
-      contractVersion: 'gpt-vision-qc-v1.2'
+      contractVersion: 'gpt-vision-qc-v1.3'
     })
   }
 
@@ -91,6 +129,9 @@ export default async function handler(req: Request, res: Response) {
   const mimeType = String(input.mimeType || 'image/png').trim() || 'image/png'
   const context = input.context && typeof input.context === 'object' ? input.context : {}
   const economyLongform = context?.economyLongformV01 === true || String(context?.profile || '') === 'economy-longform-v01'
+  const actualDimensions = imageDimensionsFromBase64(imageBase64, mimeType)
+  const actualRatio = actualDimensions ? actualDimensions.width / actualDimensions.height : null
+  const deterministicWrongOrientation = Boolean(economyLongform && actualRatio != null && (actualRatio < 1.60 || actualRatio > 1.95))
 
   if (!prompt) return res.status(400).json({ error: { message: 'prompt is required' } })
   if (!imageBase64) return res.status(400).json({ error: { message: 'imageBase64 is required' } })
@@ -113,10 +154,11 @@ export default async function handler(req: Request, res: Response) {
     ...(economyLongform ? [
       '[ECONOMY LONGFORM V0.1 — HARD QC GATES]',
       'This path has four additional non-negotiable hard gates.',
-      'A. MASCOT COUNT: the image must contain exactly ONE clearly visible professional finance mascot: round pale face, clean dark outline, simple readable eyes/mouth, navy suit, white shirt, roughly 8–10% of frame. If there is zero mascot, more than one mascot, a stick figure, Gru/SD character, toy child character, or a photoreal human protagonist replacing the mascot, set mascotMissingOrWrongCount=true and decision=RETRY.',
-      'Background population silhouettes are allowed only when semantically necessary and visually subordinate; they do not count as the finance mascot.',
+      'A. MASCOT IDENTITY/COUNT: count ONLY characters that actually match the required professional finance mascot: one visually distinct round pale face with clean dark outline, simple readable eyes/mouth, navy suit and white shirt, intentionally isolated as the supporting explainer. Return that number in financeMascotCount.',
+      'A crowd member, ordinary human figure, background silhouette, elderly/young person, person-shaped token or generic suit does NOT count as the finance mascot.',
+      'If financeMascotCount is not exactly 1, set mascotMissingOrWrongCount=true and decision=RETRY. If a population/crowd is needed for the CUT, the population should remain visually subordinate/anonymous while the single mascot is separately identifiable.',
       'B. STYLE FLOOR: the frame must read as premium Korean finance editorial / cinematic finance documentary with refined semi-realistic 2.5D depth, integrated environment, deep navy + warm amber/orange + controlled red, rich but organized detail. If it looks like cheap vector, flat infographic, PowerPoint/card-news, children educational art, toy-like glossy 3D, generic stock illustration, or simplistic animation, set styleFloorFailure=true and decision=RETRY.',
-      'C. ORIENTATION: the final artwork must be a single horizontal 16:9 long-form composition. If it is portrait/vertical, square, a candidate sheet, or clearly non-horizontal, set wrongOrientation=true and decision=RETRY.',
+      'C. ORIENTATION: the source artwork must be a single horizontal 16:9 long-form composition. Use the supplied actual pixel dimensions as authoritative when available. If portrait/vertical, square, candidate sheet, or clearly non-horizontal, set wrongOrientation=true and decision=RETRY.',
       'D. SEMANTIC SPECIFICITY: if the CUT is about a concrete relationship such as generation-size difference, debt burden, price gap, cause/effect, policy path or asset comparison, the image must visibly show that relationship. A generic finance command center, trading room, dashboard wall, data-stream room, random chart room or generic money scene is NOT a semantic match unless the CUT explicitly asks for that setting. In that case set semanticMatch=false and irrelevantMeaning=true.',
       'The economic relationship/metaphor must remain the main subject. Mascot is a supporting explainer, not the main subject.',
       ''
@@ -124,7 +166,7 @@ export default async function handler(req: Request, res: Response) {
     '[Decision rule]',
     'If ANY hard defect is clearly present, decision=RETRY.',
     'If semanticMatch=false, decision=RETRY.',
-    'For economy longform, generatedText=true OR mascotMissingOrWrongCount=true OR styleFloorFailure=true OR wrongOrientation=true always means RETRY.',
+    'For economy longform, generatedText=true OR financeMascotCount!=1 OR mascotMissingOrWrongCount=true OR styleFloorFailure=true OR wrongOrientation=true always means RETRY.',
     'Otherwise PASS unless composition is so poor that the intended meaning cannot be understood.',
     'For RETRY, write a short retryInstruction that preserves good parts and fixes only the failure.',
     'Return JSON only.'
@@ -135,7 +177,7 @@ export default async function handler(req: Request, res: Response) {
     prompt,
     '',
     '[Structured CUT context]',
-    JSON.stringify(context)
+    JSON.stringify({ ...context, actualImageDimensions: actualDimensions, actualAspectRatio: actualRatio })
   ].join('\n')
 
   const model = String(process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini')
@@ -188,8 +230,13 @@ export default async function handler(req: Request, res: Response) {
       return res.status(502).json({ error: { message: 'OpenAI image QC response was not valid JSON' } })
     }
 
+    if (!result.defects || typeof result.defects !== 'object') result.defects = {}
+    if (economyLongform && Number(result?.financeMascotCount) !== 1) result.defects.mascotMissingOrWrongCount = true
+    if (deterministicWrongOrientation) result.defects.wrongOrientation = true
+
     const economyHardGate = economyLongform && Boolean(
       result?.defects?.generatedText ||
+      Number(result?.financeMascotCount) !== 1 ||
       result?.defects?.mascotMissingOrWrongCount ||
       result?.defects?.styleFloorFailure ||
       result?.defects?.wrongOrientation ||
@@ -200,8 +247,11 @@ export default async function handler(req: Request, res: Response) {
     console.log('[GPT_IMAGE_QC]', JSON.stringify({
       decision: result?.decision,
       semanticMatch: result?.semanticMatch,
+      financeMascotCount: result?.financeMascotCount,
       defects: result?.defects,
       confidence: result?.confidence,
+      actualDimensions,
+      actualRatio,
       economyLongform
     }))
 
@@ -210,7 +260,9 @@ export default async function handler(req: Request, res: Response) {
       ...result,
       provider: 'OpenAI',
       model,
-      contractVersion: 'gpt-vision-qc-v1.2',
+      contractVersion: 'gpt-vision-qc-v1.3',
+      actualDimensions,
+      actualAspectRatio: actualRatio,
       usage: data?.usage || null
     })
   } catch (error: any) {
