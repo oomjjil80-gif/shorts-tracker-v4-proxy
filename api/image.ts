@@ -59,15 +59,16 @@ function economyLongformServerGuard() {
     'SEMANTIC PRIORITY: the CUT-specific meaning is more important than the finance style. The final scene must physically explain the exact relationship in the CUT. Never replace a specific relationship with a generic finance control room, trading desk, dashboard wall, data-stream room or random chart environment unless the CUT explicitly requires that setting.',
     'OUTPUT: exactly ONE 16:9 horizontal long-form image. No portrait frame, candidate sheet, collage, triptych, contact sheet or poster page.',
     'STYLE: premium Korean finance explainer; high-end editorial illustration + cinematic finance documentary atmosphere + refined semi-realistic 2.5D depth. Use deep navy, warm amber/orange key light and controlled red accents. Rich but organized environmental detail.',
-    'MASCOT MANDATORY: exactly ONE clearly visible professional finance mascot in every generated still — round pale face, clean dark outline, simple readable eyes/mouth, navy suit, white shirt. About 8–10% of frame, secondary to the economic relationship. Never omit the mascot.',
-    'NO SUBSTITUTE CHARACTER: no stick figure, no Gru/visitor SD character, no Pixar-like child character, no photoreal human protagonist. If population/crowd context is necessary, keep it distant and visually subordinate so the finance mascot remains the only foreground character.',
+    'MASCOT MANDATORY: exactly ONE clearly visible professional finance mascot in every generated still — round pale face, clean dark outline, simple readable eyes/mouth, navy suit, white shirt. About 8–10% of frame, secondary to the economic relationship. Keep the mascot spatially separated from crowds/subject groups so it is instantly identifiable. Never omit the mascot.',
+    'NO SUBSTITUTE CHARACTER: no stick figure, no Gru/visitor SD character, no Pixar-like child character, no photoreal human protagonist. If population/crowd context is necessary, the compared population must be represented as anonymous simplified faceless silhouettes/tokens or distant grouped figures, while the finance mascot remains the only distinct foreground character.',
+    'POPULATION/GENERATION COMPARISON RULE: when the CUT compares generations, population size, cohort size or group scale, show both groups simultaneously in the same frame using clearly different group width/height/count/occupied area. The size difference itself must be the dominant visual fact before any overlay text. Do not turn the groups into a detailed crowd of individually featured people.',
     'SCENE DESIGN: use one dominant economic relationship + one scene-specific visual metaphor. Translate meaning through space, scale, weight, direction, distance or transformation. For comparisons, the difference itself must be visible before any text. For cause/effect, the physical chain must be visible. Do not default to gauges, pipes, scales, machines, arrows or charts unless this CUT specifically needs them.',
     'NEW SCENE RESET: preserve only quality, lighting, palette, mascot design language and premium channel atmosphere. Never reuse previous-scene composition, props, objects, metaphor or background layout.',
     'INTEGRATED DEPTH: the scene must feel like one premium economic environment, not floating icons, a toy diorama, a classroom graphic or a card-news layout.',
     'ZERO GENERATED TEXT: render NO readable Korean, English, numbers, percentages, labels, logos, watermarks, subtitles, UI, signage, document text or monitor text in the base artwork. Tracker adds exact Korean text/numbers later with a deterministic overlay compositor. Any text request in the upstream prompt is semantic guidance only and must NOT be painted into the generated source image.',
     'If a monitor, document, sign or dashboard is visually necessary, use abstract non-readable shapes only.',
     'QUALITY FLOOR: reject cheap vector, flat infographic, PowerPoint, generic stock illustration, toy-like glossy 3D, children educational graphics and sparse poster composition.',
-    'Before rendering, verify all six: horizontal 16:9; exactly one visible finance mascot; premium V7 editorial depth; exact CUT meaning is visually dominant; no previous-scene leakage; absolutely no readable text or numbers.'
+    'Before rendering, verify all seven: horizontal 16:9; exactly one separately identifiable finance mascot; premium V7 editorial depth; exact CUT meaning is visually dominant; population/group scenes keep ordinary people anonymous/subordinate; no previous-scene leakage; absolutely no readable text or numbers.'
   ].join('\n')
 }
 
@@ -112,7 +113,7 @@ export default async function handler(req: Request, res: Response) {
         prompt,
         '',
         '[FINAL SERVER REMINDER]',
-        'Show the exact CUT relationship, not generic finance scenery. Keep exactly one finance mascot. Output one premium 16:9 horizontal source image with zero readable text.'
+        'Show the exact CUT relationship, not generic finance scenery. Keep exactly one separately identifiable finance mascot. For population/group comparisons keep ordinary figures anonymous and subordinate. Output one premium 16:9 horizontal source image with zero readable text.'
       ].join('\n')
     : prompt
 
