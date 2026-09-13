@@ -114,7 +114,7 @@ export default async function handler(req: Request, res: Response) {
       ok: Boolean(process.env.OPENAI_API_KEY),
       provider: 'OpenAI',
       model: process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini',
-      contractVersion: 'gpt-vision-qc-v1.3'
+      contractVersion: 'gpt-vision-qc-v1.4'
     })
   }
 
@@ -143,12 +143,15 @@ export default async function handler(req: Request, res: Response) {
     '',
     '[Priority order]',
     '1. Semantic match: does the image explain the exact CUT meaning, not a neighboring or generic economy concept?',
-    '2. Hard defects: generated text when forbidden, missing/broken primary face, style break, photoreal human replacing required channel character, broken anatomy, accidental blank poster/card, clearly irrelevant meaning.',
+    '2. Hard defects: generated readable text when forbidden, missing/broken primary face, style break, photoreal human replacing required channel character, broken anatomy, accidental blank poster/card, clearly irrelevant meaning.',
     '3. Composition: the main relation should be understandable quickly and should leave safe space for Tracker deterministic overlay.',
     '',
     '[Base-image text rule]',
-    'For economy longform, the generated source artwork must contain ZERO readable Korean, English, numbers, percentages, labels, logos, watermarks, subtitles or UI. Tracker adds exact Korean text/numbers later with a deterministic overlay compositor.',
-    'For economy longform, ANY clearly readable generated text/number/label on monitors, documents, signs, interfaces or the scene itself means generatedText=true and decision=RETRY.',
+    'For economy longform, the generated source artwork must contain ZERO clearly readable Korean, English, numbers, percentages, labels, logos, watermarks, subtitles or UI. Tracker adds exact Korean text/numbers later with a deterministic overlay compositor.',
+    'Mark generatedText=true ONLY when a normal viewer at ordinary playback scale can actually read or clearly recognize a meaningful text/number/symbol sequence.',
+    'Readable labels such as GDP, DATA INPUT, 3.1%, $ or ₩ count as generated text and must fail.',
+    'Do NOT mark generatedText=true for tiny illegible pseudo-glyphs, abstract strokes, texture, scribbles, decorative marks, unlabeled chart ticks, unreadable document filler, or shapes that merely resemble writing when no actual sequence can be read.',
+    'For economy longform, any clearly readable generated text/number/label on monitors, documents, signs, interfaces or the scene itself means generatedText=true and decision=RETRY.',
     'For non-economy paths, treat prominent unintended or nonsense generated text as a defect according to the supplied prompt.',
     '',
     ...(economyLongform ? [
@@ -260,7 +263,7 @@ export default async function handler(req: Request, res: Response) {
       ...result,
       provider: 'OpenAI',
       model,
-      contractVersion: 'gpt-vision-qc-v1.3',
+      contractVersion: 'gpt-vision-qc-v1.4',
       actualDimensions,
       actualAspectRatio: actualRatio,
       usage: data?.usage || null
