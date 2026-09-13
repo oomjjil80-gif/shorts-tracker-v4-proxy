@@ -37,20 +37,37 @@ function findGeneratedImage(data: any) {
   return null
 }
 
+function extractSemanticTarget(prompt: string) {
+  const text = String(prompt || '')
+  const patternIndex = text.lastIndexOf('[PATTERN CONTRACT]')
+  if (patternIndex >= 0) return text.slice(patternIndex).slice(0, 2200)
+
+  const cutMatches = [...text.matchAll(/\[CUT\s+\d+\s+SCENE\]/gi)]
+  const lastCut = cutMatches[cutMatches.length - 1]
+  if (lastCut?.index != null) return text.slice(lastCut.index).slice(0, 2200)
+
+  const directorIndex = text.lastIndexOf('[ECONOMY SCENE DIRECTOR')
+  if (directorIndex >= 0) return text.slice(directorIndex).slice(0, 2200)
+
+  return text.slice(-2200)
+}
+
 function economyLongformServerGuard() {
   return [
     '[SERVER STYLE LOCK — ECONOMY LONGFORM V0.1 / V7 QUALITY]',
-    'This request is stateless. Reconstruct this visual identity on every request and ignore any legacy stick-figure, Gru/SD, zero-text or 9:16 instruction that conflicts with this lock.',
+    'This request is stateless. Reconstruct this visual identity on every request and ignore any conflicting legacy stick-figure, Gru/SD or 9:16 instruction.',
+    'SEMANTIC PRIORITY: the CUT-specific meaning is more important than the finance style. The final scene must physically explain the exact relationship in the CUT. Never replace a specific relationship with a generic finance control room, trading desk, dashboard wall, data-stream room or random chart environment unless the CUT explicitly requires that setting.',
     'OUTPUT: exactly ONE 16:9 horizontal long-form image. No portrait frame, candidate sheet, collage, triptych, contact sheet or poster page.',
     'STYLE: premium Korean finance explainer; high-end editorial illustration + cinematic finance documentary atmosphere + refined semi-realistic 2.5D depth. Use deep navy, warm amber/orange key light and controlled red accents. Rich but organized environmental detail.',
     'MASCOT MANDATORY: exactly ONE clearly visible professional finance mascot in every generated still — round pale face, clean dark outline, simple readable eyes/mouth, navy suit, white shirt. About 8–10% of frame, secondary to the economic relationship. Never omit the mascot.',
     'NO SUBSTITUTE CHARACTER: no stick figure, no Gru/visitor SD character, no Pixar-like child character, no photoreal human protagonist. If population/crowd context is necessary, keep it distant and visually subordinate so the finance mascot remains the only foreground character.',
-    'SCENE DESIGN: one dominant economic relationship + one scene-specific visual metaphor. Translate meaning through space, scale, weight, direction, distance or transformation. Do not default to gauges, pipes, scales, machines, arrows or charts unless this CUT specifically needs them.',
+    'SCENE DESIGN: use one dominant economic relationship + one scene-specific visual metaphor. Translate meaning through space, scale, weight, direction, distance or transformation. For comparisons, the difference itself must be visible before any text. For cause/effect, the physical chain must be visible. Do not default to gauges, pipes, scales, machines, arrows or charts unless this CUT specifically needs them.',
     'NEW SCENE RESET: preserve only quality, lighting, palette, mascot design language and premium channel atmosphere. Never reuse previous-scene composition, props, objects, metaphor or background layout.',
     'INTEGRATED DEPTH: the scene must feel like one premium economic environment, not floating icons, a toy diorama, a classroom graphic or a card-news layout.',
-    'TEXT: use only exact short wording/numbers explicitly requested by the CUT. Never invent extra labels, numbers, English, Korean, logos, watermarks, subtitles or UI.',
+    'ZERO GENERATED TEXT: render NO readable Korean, English, numbers, percentages, labels, logos, watermarks, subtitles, UI, signage, document text or monitor text in the base artwork. Tracker adds exact Korean text/numbers later with a deterministic overlay compositor. Any text request in the upstream prompt is semantic guidance only and must NOT be painted into the generated source image.',
+    'If a monitor, document, sign or dashboard is visually necessary, use abstract non-readable shapes only.',
     'QUALITY FLOOR: reject cheap vector, flat infographic, PowerPoint, generic stock illustration, toy-like glossy 3D, children educational graphics and sparse poster composition.',
-    'Before rendering, verify: horizontal 16:9; exactly one visible finance mascot; premium V7 editorial depth; economic relation is visually dominant; no previous-scene leakage; no invented text.'
+    'Before rendering, verify all six: horizontal 16:9; exactly one visible finance mascot; premium V7 editorial depth; exact CUT meaning is visually dominant; no previous-scene leakage; absolutely no readable text or numbers.'
   ].join('\n')
 }
 
@@ -83,8 +100,20 @@ export default async function handler(req: Request, res: Response) {
     }))
     .filter((ref: any) => ref.data.length > 0)
 
+  const semanticTarget = economyLongform ? extractSemanticTarget(prompt) : ''
   const guardedPrompt = economyLongform
-    ? [economyLongformServerGuard(), '', '[CUT-SPECIFIC BRIEF]', prompt, '', '[FINAL SERVER REMINDER]', 'Do not omit the single finance mascot. Output one premium 16:9 horizontal image only.'].join('\n')
+    ? [
+        '[CUT MEANING — HIGHEST PRIORITY]',
+        semanticTarget,
+        '',
+        economyLongformServerGuard(),
+        '',
+        '[FULL CUT BRIEF — REFERENCE ONLY]',
+        prompt,
+        '',
+        '[FINAL SERVER REMINDER]',
+        'Show the exact CUT relationship, not generic finance scenery. Keep exactly one finance mascot. Output one premium 16:9 horizontal source image with zero readable text.'
+      ].join('\n')
     : prompt
 
   const referenceInstruction = economyLongform
