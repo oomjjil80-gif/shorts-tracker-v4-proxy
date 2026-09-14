@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { handleBenchmarkCloneDiagnostic } from '../lib/benchmarkCloneDiagnostic.js'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -12,7 +13,7 @@ function setCors(req: Request, res: Response) {
     res.setHeader('Access-Control-Allow-Origin', origin)
     res.setHeader('Vary', 'Origin')
   }
-  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept')
 }
 
@@ -75,6 +76,11 @@ function economyLongformServerGuard() {
 export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
+
+  if (req.method === 'GET' && String((req.query as any)?.diagnostic || '') === 'benchmark-clone') {
+    return handleBenchmarkCloneDiagnostic(req, res)
+  }
+
   if (req.method !== 'POST') return res.status(405).json({ error: { message: 'Method not allowed' } })
 
   const apiKey = process.env.GEMINI_API_KEY
