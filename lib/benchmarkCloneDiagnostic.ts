@@ -37,8 +37,17 @@ SOURCE IMAGE RULE: no readable Korean, English, digits, percentages, labels, sub
   }
 }
 
-function assetPath(panel: string) { return `${BASE}/panel-${panel}.bin` }
-function metaPath(panel: string) { return `${BASE}/panel-${panel}.json` }
+function attemptSuffix(attempt: number) { return attempt <= 1 ? '' : `-attempt-${attempt}` }
+function assetPath(panel: string, attempt: number) { return `${BASE}/panel-${panel}${attemptSuffix(attempt)}.bin` }
+function metaPath(panel: string, attempt: number) { return `${BASE}/panel-${panel}${attemptSuffix(attempt)}.json` }
+
+function correctedPrompt(panel: string, attempt: number, basePrompt: string) {
+  if (attempt <= 1) return basePrompt
+  if ((panel === '6' || panel === '12') && attempt === 2) {
+    return `${basePrompt}\n\n[DIAGNOSTIC RETRY — FIX ONLY THE OBSERVED FAILURE]\nPreserve the successful composition, character placement, blue/gold contrast, cinematic background and exact scene meaning from the first attempt. Fix ONLY this defect: the prior image invented readable currency symbols/labels. ABSOLUTE SYMBOL BAN: do not draw $, ₩, €, ¥, KRW, USD, currency abbreviations, digits, letters, labels, logos, coin engravings, money-bag emblems, monitor text, sign text or text-like glyphs anywhere. Represent wealth only through unlabeled warm gold light, completely blank geometric coins/discs with no marks, abstract gold bars with no engravings, neutral asset blocks, glow and scale. Every money-related object must have a clean unmarked surface. Do not otherwise redesign the scene.`
+  }
+  return basePrompt
+}
 
 async function readPrivate(path: string) {
   const result: any = await get(path, { access: 'private', useCache: false })
@@ -66,11 +75,14 @@ export async function handleBenchmarkCloneDiagnostic(req: Request, res: Response
   const spec = PANELS[panel]
   if (!spec) return res.status(400).json({ error: { message: 'panel must be 1, 6, or 12' } })
   const action = String((req.query as any)?.action || 'meta')
+  const rawAttempt = Number((req.query as any)?.attempt || 1)
+  const attempt = Number.isInteger(rawAttempt) && rawAttempt >= 1 && rawAttempt <= 3 ? rawAttempt : 1
+  const generationPrompt = correctedPrompt(panel, attempt, spec.prompt)
 
   try {
     if (action === 'asset') {
-      const meta = await readJson(metaPath(panel))
-      const asset = await readPrivate(assetPath(panel))
+      const meta = await readJson(metaPath(panel, attempt))
+      const asset = await readPrivate(assetPath(panel, attempt))
       if (!asset || !meta) return res.status(404).json({ error: { message: 'stored asset not found' } })
       const buffer = Buffer.from(await new Response(asset.stream).arrayBuffer())
       res.setHeader('Content-Type', meta.mimeType || 'image/png')
@@ -79,13 +91,13 @@ export async function handleBenchmarkCloneDiagnostic(req: Request, res: Response
       return res.status(200).send(buffer)
     }
 
-    const existing = await readJson(metaPath(panel))
+    const existing = await readJson(metaPath(panel, attempt))
     if (action !== 'generate') {
-      return res.status(200).json({ ok: true, panel, stored: Boolean(existing), meta: existing || null })
+      return res.status(200).json({ ok: true, panel, attempt, stored: Boolean(existing), meta: existing || null })
     }
 
-    // Cost guard: once stored, repeated generate calls reuse the exact asset and NEVER regenerate it.
-    if (existing) return res.status(200).json({ ok: true, panel, stored: true, reused: true, meta: existing })
+    // Cost guard: each explicit attempt can be generated only once. Repeated calls reuse the exact stored asset.
+    if (existing) return res.status(200).json({ ok: true, panel, attempt, stored: true, reused: true, meta: existing })
 
     const host = String(req.headers.host || 'shorts-tracker-v4-proxy.vercel.app')
     const origin = `https://${host}`
@@ -94,7 +106,7 @@ export async function handleBenchmarkCloneDiagnostic(req: Request, res: Response
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
         contractVersion: '1.5', taskType: 'cut_image', providerId: 'gemini', modelId: 'gemini-3.1-flash-image',
-        input: { prompt: spec.prompt, aspectRatio: '16:9', imageSize: '1K', cutIndex: Number(panel) - 1, references: [], profile: PROFILE }
+        input: { prompt: generationPrompt, aspectRatio: '16:9', imageSize: '1K', cutIndex: Number(panel) - 1, references: [], profile: PROFILE }
       })
     })
 
@@ -103,7 +115,7 @@ export async function handleBenchmarkCloneDiagnostic(req: Request, res: Response
     if (!base64) throw new Error('Gemini image payload missing')
     const buffer = Buffer.from(base64, 'base64')
 
-    await put(assetPath(panel), buffer, { access: 'private', allowOverwrite: false, addRandomSuffix: false, contentType: mimeType })
+    await put(assetPath(panel, attempt), buffer, { access: 'private', allowOverwrite: false, addRandomSuffix: false, contentType: mimeType })
 
     let qc: any = null
     let qcError: string | null = null
@@ -111,23 +123,24 @@ export async function handleBenchmarkCloneDiagnostic(req: Request, res: Response
       qc = await fetchJson(`${origin}/api/gpt-image-qc`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({ input: {
-          prompt: spec.prompt, imageBase64: base64, mimeType,
-          context: { profile: PROFILE, panel, panelName: spec.name, viewerMustUnderstand: spec.meaning, economyLongformV01: false, benchmarkCloneDiagnostic: true, zeroTextBaseImage: true }
+          prompt: generationPrompt, imageBase64: base64, mimeType,
+          context: { profile: PROFILE, panel, attempt, panelName: spec.name, viewerMustUnderstand: spec.meaning, economyLongformV01: false, benchmarkCloneDiagnostic: true, zeroTextBaseImage: true }
         } })
       })
     } catch (err: any) { qcError = err?.message || String(err) }
 
     const meta = {
-      schemaVersion: 'BENCHMARK-CLONE-ASSET-1', profile: PROFILE, panel, panelName: spec.name,
+      schemaVersion: 'BENCHMARK-CLONE-ASSET-1', profile: PROFILE, panel, attempt, panelName: spec.name,
       viewerMustUnderstand: spec.meaning, generatedAt: new Date().toISOString(), provider: 'gemini', model: 'gemini-3.1-flash-image',
       mimeType, byteLength: buffer.length, requestId: imageData?.meta?.requestId || null,
-      qc, qcError, retryCount: 0, autoRetry: false,
-      assetEndpoint: `/api/image?diagnostic=benchmark-clone&panel=${panel}&action=asset`
+      qc, qcError, retryCount: attempt - 1, autoRetry: false,
+      retryReason: attempt === 2 && (panel === '6' || panel === '12') ? 'remove generated currency symbols while preserving successful composition' : null,
+      assetEndpoint: `/api/image?diagnostic=benchmark-clone&panel=${panel}&attempt=${attempt}&action=asset`
     }
-    await put(metaPath(panel), JSON.stringify(meta), { access: 'private', allowOverwrite: false, addRandomSuffix: false, contentType: 'application/json', cacheControlMaxAge: 60 })
-    return res.status(200).json({ ok: true, panel, stored: true, reused: false, meta })
+    await put(metaPath(panel, attempt), JSON.stringify(meta), { access: 'private', allowOverwrite: false, addRandomSuffix: false, contentType: 'application/json', cacheControlMaxAge: 60 })
+    return res.status(200).json({ ok: true, panel, attempt, stored: true, reused: false, meta })
   } catch (err: any) {
-    console.error('[BENCHMARK_CLONE_DIAGNOSTIC]', JSON.stringify({ panel, action, error: err?.message || String(err) }))
+    console.error('[BENCHMARK_CLONE_DIAGNOSTIC]', JSON.stringify({ panel, attempt, action, error: err?.message || String(err) }))
     return res.status(500).json({ error: { message: err?.message || String(err) } })
   }
 }
