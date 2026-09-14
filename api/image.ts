@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express'
 import { handleBenchmarkCloneDiagnostic } from '../lib/benchmarkCloneDiagnostic.js'
+import { handleBenchmarkRef01Diagnostic } from '../lib/benchmarkRef01Diagnostic.js'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -77,8 +78,12 @@ export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
 
-  if (req.method === 'GET' && String((req.query as any)?.diagnostic || '') === 'benchmark-clone') {
+  const diagnostic = String((req.query as any)?.diagnostic || '')
+  if (req.method === 'GET' && diagnostic === 'benchmark-clone') {
     return handleBenchmarkCloneDiagnostic(req, res)
+  }
+  if (req.method === 'GET' && diagnostic === 'benchmark-ref01') {
+    return handleBenchmarkRef01Diagnostic(req, res)
   }
 
   if (req.method !== 'POST') return res.status(405).json({ error: { message: 'Method not allowed' } })
