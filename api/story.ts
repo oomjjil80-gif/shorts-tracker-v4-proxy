@@ -1,5 +1,7 @@
 import type { Request, Response } from 'express'
 import { runVisualDirector } from '../lib/visualDirectorCore.js'
+import { put } from '@vercel/blob'
+import { randomUUID } from 'node:crypto'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -17,6 +19,28 @@ function setCors(req: Request, res: Response) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept')
 }
 
+
+const SOURCE_HOSTS = new Set(['instagram.com','www.instagram.com','tiktok.com','www.tiktok.com','vm.tiktok.com','reddit.com','www.reddit.com','v.redd.it','x.com','www.x.com','twitter.com','www.twitter.com','youtube.com','www.youtube.com','youtu.be','facebook.com','www.facebook.com','fb.watch','bilibili.com','www.bilibili.com','xiaohongshu.com','www.xiaohongshu.com'])
+async function collectSource(body:any){
+  const raw=String(body?.sourceUrl||'').trim(); if(!raw) throw new Error('sourceUrl is required')
+  const src=new URL(raw); if(!SOURCE_HOSTS.has(src.hostname.toLowerCase())) throw new Error('unsupported source host')
+  const cobaltBase=String(process.env.COBALT_API_URL||'').trim().replace(/\/$/,'')
+  if(!cobaltBase) { const err:any=new Error('COBALT_API_URL is not configured'); err.code='COLLECTOR_NOT_CONFIGURED'; throw err }
+  const headers:Record<string,string>={'Accept':'application/json','Content-Type':'application/json'}
+  const key=String(process.env.COBALT_API_KEY||'').trim(); if(key) headers.Authorization='Api-Key '+key
+  const cr=await fetch(cobaltBase+'/',{method:'POST',headers,body:JSON.stringify({url:src.toString(),downloadMode:'auto',videoQuality:String(body?.videoQuality||'1080'),filenameStyle:'basic',youtubeVideoCodec:'h264'})})
+  const rawResp=await cr.text(); let data:any={}; try{data=rawResp?JSON.parse(rawResp):{}}catch{}
+  if(!cr.ok||data?.status==='error') throw new Error(data?.error?.code||data?.error?.message||rawResp||'cobalt request failed')
+  if(data?.status==='picker') return {ok:true,needsSelection:true,sourceUrl:src.toString(),picker:data}
+  if(!['tunnel','redirect'].includes(data?.status)||!data?.url) throw new Error('No downloadable media URL returned')
+  const mh:Record<string,string>={Accept:'*/*'}; if(key) mh.Authorization='Api-Key '+key
+  const mr=await fetch(String(data.url),{headers:mh,redirect:'follow'}); if(!mr.ok) throw new Error('media fetch failed: '+mr.status)
+  const buf=Buffer.from(await mr.arrayBuffer()); const max=Number(process.env.SOURCE_COLLECTOR_MAX_BYTES||150*1024*1024); if(buf.length>max) throw new Error('source media exceeds size limit')
+  const id=randomUUID(); const filename=String(data.filename||('source-'+id+'.mp4')).replace(/[\\/:*?"<>|\x00-\x1f]/g,'_').slice(0,160)
+  const path='source-collector/'+new Date().toISOString().slice(0,10)+'/'+id+'-'+filename
+  const blob:any=await put(path,buf,{access:'private',addRandomSuffix:false,contentType:mr.headers.get('content-type')||'video/mp4'})
+  return {ok:true,needsSelection:false,source:{id,originalUrl:src.toString(),platform:src.hostname,filename,bytes:buf.length,contentType:mr.headers.get('content-type')||'video/mp4',blobPath:path,blobUrl:blob.url||null,collectedAt:new Date().toISOString()}}
+}
 
 const LONGFORM_CHAPTER_SCHEMA = {
   type:'object',
@@ -150,6 +174,9 @@ export default async function handler(req: Request, res: Response) {
     })
   }
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' })
+  if (req.body?.taskType === 'source_collect') {
+    try { return res.status(200).json(await collectSource(req.body)) } catch(e:any) { return res.status(e?.code==='COLLECTOR_NOT_CONFIGURED'?503:400).json({error:{code:e?.code||'SOURCE_COLLECT_FAILED',message:e?.message||String(e)}}) }
+  }
   if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: { message: 'OPENAI_API_KEY is not configured' } })
 
   const body = req.body || {}
