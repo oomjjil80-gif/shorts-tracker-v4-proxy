@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express'
 import { runVisualDirector } from '../lib/visualDirectorCore.js'
-import { put } from '@vercel/blob'
+import { put, issueSignedToken, presignUrl } from '@vercel/blob'
 import { randomUUID } from 'node:crypto'
 
 function setCors(req: Request, res: Response) {
@@ -19,6 +19,14 @@ function setCors(req: Request, res: Response) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept')
 }
 
+
+async function makeSourcePlaybackUrl(pathname:string){
+  if(!pathname.startsWith('source-collector/')) throw new Error('invalid source path')
+  const token=await issueSignedToken({pathname,operations:['get']})
+  const validUntil=Date.now()+60*60*1000
+  const signed=await presignUrl(token,{pathname,operation:'get',validUntil})
+  return {playbackUrl:signed.presignedUrl,validUntil}
+}
 
 const SOURCE_HOSTS = new Set(['instagram.com','www.instagram.com','tiktok.com','www.tiktok.com','vm.tiktok.com','reddit.com','www.reddit.com','v.redd.it','x.com','www.x.com','twitter.com','www.twitter.com','youtube.com','www.youtube.com','youtu.be','facebook.com','www.facebook.com','fb.watch','bilibili.com','www.bilibili.com','xiaohongshu.com','www.xiaohongshu.com'])
 async function collectSource(body:any){
@@ -176,6 +184,10 @@ export default async function handler(req: Request, res: Response) {
     })
   }
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' })
+  if (req.body?.taskType === 'source_playback') {
+    try { return res.status(200).json({ok:true,...await makeSourcePlaybackUrl(String(req.body?.blobPath||''))}) }
+    catch(e:any) { return res.status(400).json({error:{code:'SOURCE_PLAYBACK_FAILED',message:e?.message||String(e)}}) }
+  }
   if (req.body?.taskType === 'source_collect') {
     try { return res.status(200).json(await collectSource(req.body)) } catch(e:any) { return res.status(e?.code==='COLLECTOR_NOT_CONFIGURED'?503:400).json({error:{code:e?.code||'SOURCE_COLLECT_FAILED',message:e?.message||String(e)}}) }
   }
