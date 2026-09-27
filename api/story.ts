@@ -169,7 +169,9 @@ export default async function handler(req: Request, res: Response) {
       capabilities: {
         shortformStory: true,
         visualDirector: true,
-        longformChapterFallback: true
+        longformChapterFallback: true,
+        sourceCollector: true,
+        sourceCollectorConfigured: Boolean(process.env.COBALT_API_URL)
       }
     })
   }
