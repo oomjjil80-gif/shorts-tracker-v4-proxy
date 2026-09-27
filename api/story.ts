@@ -24,7 +24,7 @@ async function makeSourcePlaybackUrl(pathname:string){
   if(!pathname.startsWith('source-collector/')) throw new Error('invalid source path')
   const token=await issueSignedToken({pathname,operations:['get']})
   const validUntil=Date.now()+60*60*1000
-  const signed=await presignUrl(token,{pathname,operation:'get',validUntil})
+  const signed=await presignUrl(token,{pathname,operation:'get',validUntil,access:'private'})
   return {playbackUrl:signed.presignedUrl,validUntil}
 }
 
