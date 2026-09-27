@@ -2,7 +2,8 @@ import type { Request, Response } from 'express'
 import { put } from '@vercel/blob'
 import { randomUUID } from 'node:crypto'
 
-// Source Collector v1 — URL to Tracker source asset\nconst ALLOWED_HOSTS = new Set([
+// Source Collector v1 — URL to Tracker source asset
+const ALLOWED_HOSTS = new Set([
   'instagram.com','www.instagram.com',
   'tiktok.com','www.tiktok.com','vm.tiktok.com',
   'reddit.com','www.reddit.com','v.redd.it',
