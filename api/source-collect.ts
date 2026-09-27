@@ -1,4 +1,4 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node'
+import type { Request, Response } from 'express'
 import { put } from '@vercel/blob'
 import { randomUUID } from 'node:crypto'
 
@@ -13,7 +13,7 @@ const ALLOWED_HOSTS = new Set([
   'xiaohongshu.com','www.xiaohongshu.com'
 ])
 
-function cors(req: VercelRequest, res: VercelResponse) {
+function cors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
   if (/^https:\/\/shorts-production-tracker(?:-[a-z0-9-]+)?\.vercel\.app$/i.test(origin) ||
       /^http:\/\/(localhost|127\.0\.0\.1)(?::\d+)?$/i.test(origin)) {
@@ -52,7 +52,7 @@ async function fetchMedia(url: string, authHeader: string | undefined) {
   return { buf, contentType: r.headers.get('content-type') || 'video/mp4' }
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: Request, res: Response) {
   cors(req,res)
   if (req.method === 'OPTIONS') return res.status(204).end()
   if (req.method !== 'POST') return res.status(405).json({ error:{ message:'POST required' } })
