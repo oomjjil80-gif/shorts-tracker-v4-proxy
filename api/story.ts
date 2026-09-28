@@ -38,7 +38,7 @@ async function collectSource(body:any){
   const key=String(process.env.COBALT_API_KEY||'').trim(); if(key) headers.Authorization='Api-Key '+key
   let mediaUrl=''
   let mediaTitle=''
-  if(/(^|\\.)douyin\\.com$/i.test(src.hostname)){
+  if(src.hostname.toLowerCase()==='douyin.com'||src.hostname.toLowerCase().endsWith('.douyin.com')){
     // Douyin: resolve via the public mobile share SSR page. Generic cobalt
     // rejects current Douyin URLs with error.api.link.invalid.
     const pathParts=src.pathname.split('/').filter(Boolean); const vi=pathParts.indexOf('video'); const svi=pathParts.findIndex((x,i)=>x==='share'&&pathParts[i+1]==='video'); const id=(vi>=0?pathParts[vi+1]:(svi>=0?pathParts[svi+2]:src.searchParams.get('modal_id'))) || ''
@@ -66,7 +66,7 @@ async function collectSource(body:any){
     mediaUrl=String(data.url); mediaTitle=String(data.filename||'')
   }
   const mh:Record<string,string>={Accept:'*/*','User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1','Referer':'https://www.douyin.com/'}
-  if(key&&!/(^|\\.)douyin\\.com$/i.test(src.hostname)) mh.Authorization='Api-Key '+key
+  if(key&&!(src.hostname.toLowerCase()==='douyin.com'||src.hostname.toLowerCase().endsWith('.douyin.com'))) mh.Authorization='Api-Key '+key
   const mr=await fetch(mediaUrl,{headers:mh,redirect:'follow'}); if(!mr.ok) throw new Error('media fetch failed: '+mr.status)
   const buf=Buffer.from(await mr.arrayBuffer()); const max=Number(process.env.SOURCE_COLLECTOR_MAX_BYTES||150*1024*1024); if(buf.length>max) throw new Error('source media exceeds size limit')
   const id=randomUUID(); const filename=String(mediaTitle||('source-'+id+'.mp4')).replace(/[\\/:*?"<>|\x00-\x1f]/g,'_').slice(0,160)
