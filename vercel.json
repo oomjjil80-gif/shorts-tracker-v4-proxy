@@ -2,7 +2,7 @@
   "functions": {
     "api/story.ts": {
       "maxDuration": 180,
-      "includeFiles": ["node_modules/@sparticuz/chromium/bin/**", "node_modules/mediainfo.js/dist/MediaInfoModule.wasm"]
+      "includeFiles": "node_modules/{@sparticuz/chromium/bin/**,mediainfo.js/dist/MediaInfoModule.wasm}"
     }
   }
 }
