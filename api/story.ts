@@ -28,7 +28,7 @@ async function makeSourcePlaybackUrl(pathname:string){
   return {playbackUrl:signed.presignedUrl,validUntil}
 }
 
-const SOURCE_HOSTS = new Set(['instagram.com','www.instagram.com','tiktok.com','www.tiktok.com','vm.tiktok.com','reddit.com','www.reddit.com','v.redd.it','x.com','www.x.com','twitter.com','www.twitter.com','youtube.com','www.youtube.com','youtu.be','facebook.com','www.facebook.com','fb.watch','bilibili.com','www.bilibili.com','xiaohongshu.com','www.xiaohongshu.com'])
+const SOURCE_HOSTS = new Set(['instagram.com','www.instagram.com','tiktok.com','www.tiktok.com','vm.tiktok.com','reddit.com','www.reddit.com','v.redd.it','x.com','www.x.com','twitter.com','www.twitter.com','youtube.com','www.youtube.com','youtu.be','facebook.com','www.facebook.com','fb.watch','bilibili.com','www.bilibili.com','xiaohongshu.com','www.xiaohongshu.com','douyin.com','www.douyin.com','v.douyin.com'])
 async function collectSource(body:any){
   const raw=String(body?.sourceUrl||'').trim(); if(!raw) throw new Error('sourceUrl is required')
   const src=new URL(raw); if(!SOURCE_HOSTS.has(src.hostname.toLowerCase())) throw new Error('unsupported source host')
