@@ -49,10 +49,22 @@ async function collectSource(body:any){
     if(!sr.ok) throw new Error('Douyin share fetch failed: '+sr.status)
     const html=await sr.text()
     const titleStart=html.toLowerCase().indexOf('<title'); const titleGt=titleStart>=0?html.indexOf('>',titleStart):-1; const titleEnd=titleGt>=0?html.toLowerCase().indexOf('</title>',titleGt):-1; mediaTitle=(titleGt>=0&&titleEnd>titleGt?html.slice(titleGt+1,titleEnd):('douyin_'+id)).replace(/[\\/:*?\"<>|]/g,'_').slice(0,120)
-    const marker='\"play_addr\"'; const pi=html.indexOf(marker); const brace=pi>=0?html.indexOf('{',pi):-1; const close=brace>=0?html.indexOf('}',brace):-1; const playBlock=brace>=0&&close>brace?html.slice(brace+1,close):''
-    if(!playBlock) throw new Error('Douyin play_addr not found')
-    const urls:string[]=[]; for(const chunk of playBlock.split('\"')){ if(chunk.startsWith('http')) urls.push(chunk.split('\\u002F').join('/').split('\\/').join('/')) }
-    mediaUrl=urls.find((u:string)=>!u.includes('playwm')&&!u.includes('watermark'))||urls[0]||''
+    // 2026 share pages expose the item inside window._ROUTER_DATA.
+    const routerMark='window._ROUTER_DATA'; const ri=html.indexOf(routerMark)
+    if(ri<0) throw new Error('Douyin _ROUTER_DATA not found')
+    const eq=html.indexOf('=',ri+routerMark.length); const js=html.indexOf('{',eq)
+    if(js<0) throw new Error('Douyin _ROUTER_DATA JSON start not found')
+    let depth=0,inStr=false,esc=false,je=-1
+    for(let i=js;i<html.length;i++){ const ch=html[i]; if(esc){esc=false;continue} if(ch==='\\\\'&&inStr){esc=true;continue} if(ch==='"'){inStr=!inStr;continue} if(inStr)continue; if(ch==='{')depth++; else if(ch==='}'&&--depth===0){je=i+1;break} }
+    if(je<0) throw new Error('Douyin _ROUTER_DATA JSON end not found')
+    const router=JSON.parse(html.slice(js,je))
+    let item:any=null
+    const walk=(v:any):void=>{ if(item||!v||typeof v!=='object')return; if(Array.isArray(v)){for(const x of v)walk(x);return} if(v.videoInfoRes?.item_list?.[0]){item=v.videoInfoRes.item_list[0];return} for(const x of Object.values(v))walk(x) }
+    walk(router)
+    if(!item) throw new Error('Douyin videoInfoRes not found')
+    mediaTitle=String(item.desc||mediaTitle||('douyin_'+id)).replace(/[\\/:*?"<>|]/g,'_').slice(0,120)
+    const list=item.video?.play_addr?.url_list||item.video?.play_addr_h264?.url_list||item.video?.download_addr?.url_list||[]
+    mediaUrl=String(list[0]||'').replace('/playwm/','/play/')
     if(!mediaUrl) throw new Error('Douyin media URL not found')
     mediaUrl=mediaUrl.replace('playwm','play')
     const ru=new URL(mediaUrl); ru.searchParams.set('ratio','1080p'); mediaUrl=ru.toString()
