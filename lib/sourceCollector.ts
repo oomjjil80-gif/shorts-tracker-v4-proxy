@@ -78,10 +78,11 @@ export async function collectSource(body: any, deps: Dependencies = defaults) {
 
   let response: globalThis.Response
   if (douyin) {
+    const signal = AbortSignal.timeout(45_000)
     // Validate every CDN redirect, not just the initial player URL.
     for (let redirects = 0; ; redirects++) {
       validateDouyinMedia(mediaUrl, videoId)
-      response = await deps.fetch(mediaUrl, { headers: mediaHeaders, redirect: 'manual', signal: AbortSignal.timeout(45_000) })
+      response = await deps.fetch(mediaUrl, { headers: mediaHeaders, redirect: 'manual', signal })
       if (![301, 302, 303, 307, 308].includes(response.status)) break
       await response.body?.cancel()
       if (redirects >= 4) throw new Error('too many Douyin media redirects')

@@ -27,7 +27,7 @@ export function validateDouyinMedia(raw: string, videoId: string): URL {
   const url = new URL(raw)
   if (url.protocol !== 'https:' || url.port || url.username || url.password ||
       !MEDIA_DOMAINS.some(domain => url.hostname === domain || url.hostname.endsWith('.' + domain))) {
-    throw new DouyinResolverError('DOUYIN_INVALID_MEDIA', 'Douyin returned an unexpected media host')
+    throw new DouyinResolverError('DOUYIN_INVALID_MEDIA', `Douyin returned an unexpected media host: ${url.protocol}//${url.hostname}`)
   }
   const mediaId = url.searchParams.get('__vid')
   if (mediaId && mediaId !== videoId) throw new DouyinResolverError('DOUYIN_VIDEO_MISMATCH', 'Player returned a different video')
