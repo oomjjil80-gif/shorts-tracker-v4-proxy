@@ -36,29 +36,40 @@ async function collectSource(body:any){
   if(!cobaltBase) { const err:any=new Error('COBALT_API_URL is not configured'); err.code='COLLECTOR_NOT_CONFIGURED'; throw err }
   const headers:Record<string,string>={'Accept':'application/json','Content-Type':'application/json'}
   const key=String(process.env.COBALT_API_KEY||'').trim(); if(key) headers.Authorization='Api-Key '+key
-  const payload={url:src.toString(),downloadMode:'auto',videoQuality:String(body?.videoQuality||'1080'),filenameStyle:'basic',youtubeVideoCodec:'h264'}
-  const callResolver=async(base:string,h:Record<string,string>)=>{
-    const endpoint=(base.endsWith('/')?base.slice(0,-1):base)+'/'
-    const rr=await fetch(endpoint,{method:'POST',headers:h,body:JSON.stringify(payload)})
-    const txt=await rr.text(); let d:any={}; try{d=txt?JSON.parse(txt):{}}catch{}
-    return {rr,txt,d}
+  let mediaUrl=''
+  let mediaTitle=''
+  if(/(^|\\.)douyin\\.com$/i.test(src.hostname)){
+    // Douyin: resolve via the public mobile share SSR page. Generic cobalt
+    // rejects current Douyin URLs with error.api.link.invalid.
+    const id=(src.pathname.match(/\\/(?:video|share\\/video)\\/(\\d+)/)||src.search.match(/[?&]modal_id=(\\d+)/))?.[1]
+    if(!id) throw new Error('cannot extract Douyin video id')
+    const ua='Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
+    const share='https://www.iesdouyin.com/share/video/'+id+'/'
+    const sr=await fetch(share,{headers:{'User-Agent':ua},redirect:'follow'})
+    if(!sr.ok) throw new Error('Douyin share fetch failed: '+sr.status)
+    const html=await sr.text()
+    const titleMatch=html.match(/<title[^>]*>([^<]+)<\\/title>/i); mediaTitle=(titleMatch?.[1]||('douyin_'+id)).replace(/[\\\\/:*?"<>|\\x00-\\x1f]/g,'_').slice(0,120)
+    const pm=html.match(/"play_addr"\\s*:\\s*\\{([^}]+)\\}/)
+    if(!pm) throw new Error('Douyin play_addr not found')
+    const urls=(pm[1].match(/https?[^"]+/g)||[]).map((u:string)=>u.replace(/\\\\u002F/g,'/').replace(/\\\\\\//g,'/'))
+    mediaUrl=urls.find((u:string)=>!u.includes('playwm')&&!u.includes('watermark'))||urls[0]||''
+    if(!mediaUrl) throw new Error('Douyin media URL not found')
+    mediaUrl=mediaUrl.replace('playwm','play')
+    mediaUrl=mediaUrl.replace(/([?&])ratio=[a-zA-Z0-9]+/,'$1ratio=1080p')
+    if(!/[?&]ratio=/.test(mediaUrl)) mediaUrl+=(mediaUrl.includes('?')?'&':'?')+'ratio=1080p'
+  }else{
+    const cr=await fetch(cobaltBase+'/',{method:'POST',headers,body:JSON.stringify({url:src.toString(),downloadMode:'auto',videoQuality:String(body?.videoQuality||'1080'),filenameStyle:'basic',youtubeVideoCodec:'h264'})})
+    const rawResp=await cr.text(); let data:any={}; try{data=rawResp?JSON.parse(rawResp):{}}catch{}
+    if(!cr.ok||data?.status==='error') throw new Error(data?.error?.code||data?.error?.message||rawResp||'cobalt request failed')
+    if(data?.status==='picker') return {ok:true,needsSelection:true,sourceUrl:src.toString(),picker:data}
+    if(!['tunnel','redirect'].includes(data?.status)||!data?.url) throw new Error('No downloadable media URL returned')
+    mediaUrl=String(data.url); mediaTitle=String(data.filename||'')
   }
-  let {rr:cr,txt:rawResp,d:data}=await callResolver(cobaltBase,headers)
-  // Standard cobalt does not resolve Douyin. Use a Douyin-capable resolver as a
-  // transparent fallback so the mobile collector remains one-tap.
-  if((!cr.ok||data?.status==='error') && /(^|\\.)douyin\\.com$/i.test(src.hostname)){
-    const fallback=String(process.env.DOUYIN_RESOLVER_URL||'https://api.freesavevideo.online').trim()
-    const fh:Record<string,string>={'Accept':'application/json','Content-Type':'application/json'}
-    const fk=String(process.env.DOUYIN_RESOLVER_API_KEY||'').trim(); if(fk) fh.Authorization='Api-Key '+fk
-    const alt=await callResolver(fallback,fh); cr=alt.rr; rawResp=alt.txt; data=alt.d
-  }
-  if(!cr.ok||data?.status==='error') throw new Error(data?.error?.code||data?.error?.message||rawResp||'source resolver failed')
-  if(data?.status==='picker') return {ok:true,needsSelection:true,sourceUrl:src.toString(),picker:data}
-  if(!['tunnel','redirect'].includes(data?.status)||!data?.url) throw new Error('No downloadable media URL returned')
-  const mh:Record<string,string>={Accept:'*/*','User-Agent':'Mozilla/5.0','Referer':'https://www.douyin.com/'}; if(key&&!/freesavevideo\\.online/i.test(String(data.url))) mh.Authorization='Api-Key '+key
-  const mr=await fetch(String(data.url),{headers:mh,redirect:'follow'}); if(!mr.ok) throw new Error('media fetch failed: '+mr.status)
+  const mh:Record<string,string>={Accept:'*/*','User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1','Referer':'https://www.douyin.com/'}
+  if(key&&!/(^|\\.)douyin\\.com$/i.test(src.hostname)) mh.Authorization='Api-Key '+key
+  const mr=await fetch(mediaUrl,{headers:mh,redirect:'follow'}); if(!mr.ok) throw new Error('media fetch failed: '+mr.status)
   const buf=Buffer.from(await mr.arrayBuffer()); const max=Number(process.env.SOURCE_COLLECTOR_MAX_BYTES||150*1024*1024); if(buf.length>max) throw new Error('source media exceeds size limit')
-  const id=randomUUID(); const filename=String(data.filename||('source-'+id+'.mp4')).replace(/[\\/:*?"<>|\x00-\x1f]/g,'_').slice(0,160)
+  const id=randomUUID(); const filename=String(mediaTitle||('source-'+id+'.mp4')).replace(/[\\/:*?"<>|\x00-\x1f]/g,'_').slice(0,160)
   const path='source-collector/'+new Date().toISOString().slice(0,10)+'/'+id+'-'+filename
   const blob:any=await put(path,buf,{access:'private',addRandomSuffix:false,contentType:mr.headers.get('content-type')||'video/mp4'})
   return {ok:true,needsSelection:false,source:{id,originalUrl:src.toString(),platform:src.hostname,filename,bytes:buf.length,contentType:mr.headers.get('content-type')||'video/mp4',blobPath:path,blobUrl:blob.url||null,collectedAt:new Date().toISOString()}}
