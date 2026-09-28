@@ -38,7 +38,8 @@ async function collectSource(body:any){
   const key=String(process.env.COBALT_API_KEY||'').trim(); if(key) headers.Authorization='Api-Key '+key
   const payload={url:src.toString(),downloadMode:'auto',videoQuality:String(body?.videoQuality||'1080'),filenameStyle:'basic',youtubeVideoCodec:'h264'}
   const callResolver=async(base:string,h:Record<string,string>)=>{
-    const rr=await fetch(base.replace(/\\/$/,'')+'/',{method:'POST',headers:h,body:JSON.stringify(payload)})
+    const endpoint=(base.endsWith('/')?base.slice(0,-1):base)+'/'
+    const rr=await fetch(endpoint,{method:'POST',headers:h,body:JSON.stringify(payload)})
     const txt=await rr.text(); let d:any={}; try{d=txt?JSON.parse(txt):{}}catch{}
     return {rr,txt,d}
   }
