@@ -4,6 +4,7 @@ import { runVisualDirector } from '../lib/visualDirectorCore.js'
 import { get, issueSignedToken, presignUrl } from '@vercel/blob'
 import { collectSource } from '../lib/sourceCollector.js'
 import { getSourceAsset, listSourceAssets } from '../lib/sourceAssetRegistry.js'
+import { extractSourceFrame, extractSourceFrames, extractSourceContactSheet, parseSecondsList } from '../lib/sourceFrames.js'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -152,18 +153,41 @@ export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
   const sourceRequest = req.method === 'GET' ? req.query : req.body
-  if (['GET', 'POST'].includes(req.method || '') && ['source_asset', 'source_latest', 'source_playback', 'source_download', 'source_frame'].includes(sourceRequest?.taskType)) {
+  if (['GET', 'POST'].includes(req.method || '') && ['source_asset', 'source_latest', 'source_playback', 'source_download', 'source_frame', 'source_frames', 'source_contact_sheet'].includes(sourceRequest?.taskType)) {
     res.setHeader('Cache-Control', 'private, no-store')
     try {
       if (sourceRequest.taskType === 'source_latest') return res.status(200).json({ ok: true, ...await listSourceAssets(sourceRequest) })
       if (sourceRequest.taskType === 'source_asset') return res.status(200).json({ ok: true, source: await getSourceAsset(String(sourceRequest.sourceAssetId || '')) })
+      // Real server-side frame extraction (ffmpeg, bundled binary). The private
+      // Blob and its signed playback URL never leave this Function - no
+      // third-party image/video host ever sees them. sourceAssetId only; no
+      // caller-supplied blobPath or URL is accepted for any of these three.
       if (sourceRequest.taskType === 'source_frame') {
         const source = await getSourceAsset(String(sourceRequest.sourceAssetId || ''))
-        const second = Math.max(0, Math.min(Number(source.duration || 0) || 3600, Number(sourceRequest.second || 0)))
-        const playback = await makeSourcePlaybackUrl(source.blobPath)
-        const cloud = 'https://res.cloudinary.com/demo/video/fetch'
-        const frameUrl = cloud + '/so_' + second + ',f_jpg/' + encodeURIComponent(playback.playbackUrl)
-        return res.status(200).json({ ok:true, sourceAssetId:source.sourceAssetId, second, frameUrl })
+        const jpeg = await extractSourceFrame(source, Number(sourceRequest.second || 0))
+        res.setHeader('Content-Type', 'image/jpeg')
+        res.setHeader('Content-Length', String(jpeg.length))
+        return res.status(200).end(jpeg)
+      }
+      if (sourceRequest.taskType === 'source_frames') {
+        const source = await getSourceAsset(String(sourceRequest.sourceAssetId || ''))
+        const seconds = parseSecondsList(sourceRequest.seconds, Number(source.duration || 0))
+        if (!seconds.length) return res.status(400).json({ ok: false, error: { code: 'INVALID_SECONDS', message: 'seconds is required, e.g. "0,2,4,6"' } })
+        const frames = await extractSourceFrames(source, seconds)
+        return res.status(200).json({
+          ok: true, sourceAssetId: source.sourceAssetId,
+          frames: frames.map(f => ({ second: f.second, dataUrl: 'data:image/jpeg;base64,' + f.jpeg.toString('base64') })),
+        })
+      }
+      if (sourceRequest.taskType === 'source_contact_sheet') {
+        const source = await getSourceAsset(String(sourceRequest.sourceAssetId || ''))
+        const sheet = await extractSourceContactSheet(source, Number(sourceRequest.interval || 2))
+        res.setHeader('Content-Type', 'image/jpeg')
+        res.setHeader('Content-Length', String(sheet.jpeg.length))
+        res.setHeader('X-Contact-Sheet-Tiles', String(sheet.tileCount))
+        res.setHeader('X-Contact-Sheet-Grid', `${sheet.cols}x${sheet.rows}`)
+        res.setHeader('X-Contact-Sheet-Interval', String(sheet.interval))
+        return res.status(200).end(sheet.jpeg)
       }
       if (sourceRequest.taskType === 'source_download') {
         const source = await getSourceAsset(String(sourceRequest.sourceAssetId || ''))
@@ -190,7 +214,8 @@ export default async function handler(req: Request, res: Response) {
         sourceCollector: true,
         sourceAssetRegistry: 'private-blob-v1',
         sourceCollectorConfigured: Boolean(process.env.COBALT_API_URL),
-        sourceCollectorResolvers: { douyin: 'browser-v1', otherPlatforms: 'cobalt' }
+        sourceCollectorResolvers: { douyin: 'browser-v1', otherPlatforms: 'cobalt' },
+        sourceFrameExtraction: 'ffmpeg-server-v1'
       }
     })
   }
