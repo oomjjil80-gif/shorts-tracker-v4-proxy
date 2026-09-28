@@ -41,22 +41,22 @@ async function collectSource(body:any){
   if(/(^|\\.)douyin\\.com$/i.test(src.hostname)){
     // Douyin: resolve via the public mobile share SSR page. Generic cobalt
     // rejects current Douyin URLs with error.api.link.invalid.
-    const id=(src.pathname.match(/\\/(?:video|share\\/video)\\/(\\d+)/)||src.search.match(/[?&]modal_id=(\\d+)/))?.[1]
+    const pathParts=src.pathname.split('/').filter(Boolean); const vi=pathParts.indexOf('video'); const svi=pathParts.findIndex((x,i)=>x==='share'&&pathParts[i+1]==='video'); const id=(vi>=0?pathParts[vi+1]:(svi>=0?pathParts[svi+2]:src.searchParams.get('modal_id'))) || ''
     if(!id) throw new Error('cannot extract Douyin video id')
     const ua='Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
     const share='https://www.iesdouyin.com/share/video/'+id+'/'
     const sr=await fetch(share,{headers:{'User-Agent':ua},redirect:'follow'})
     if(!sr.ok) throw new Error('Douyin share fetch failed: '+sr.status)
     const html=await sr.text()
-    const titleMatch=html.match(/<title[^>]*>([^<]+)<\\/title>/i); mediaTitle=(titleMatch?.[1]||('douyin_'+id)).replace(/[\\\\/:*?"<>|\\x00-\\x1f]/g,'_').slice(0,120)
-    const pm=html.match(/"play_addr"\\s*:\\s*\\{([^}]+)\\}/)
-    if(!pm) throw new Error('Douyin play_addr not found')
-    const urls=(pm[1].match(/https?[^"]+/g)||[]).map((u:string)=>u.replace(/\\\\u002F/g,'/').replace(/\\\\\\//g,'/'))
+    const titleStart=html.toLowerCase().indexOf('<title'); const titleGt=titleStart>=0?html.indexOf('>',titleStart):-1; const titleEnd=titleGt>=0?html.toLowerCase().indexOf('</title>',titleGt):-1; mediaTitle=(titleGt>=0&&titleEnd>titleGt?html.slice(titleGt+1,titleEnd):('douyin_'+id)).replace(/[\\/:*?\"<>|]/g,'_').slice(0,120)
+    const marker='\"play_addr\"'; const pi=html.indexOf(marker); const brace=pi>=0?html.indexOf('{',pi):-1; const close=brace>=0?html.indexOf('}',brace):-1; const playBlock=brace>=0&&close>brace?html.slice(brace+1,close):''
+    if(!playBlock) throw new Error('Douyin play_addr not found')
+    const urls:string[]=[]; for(const chunk of playBlock.split('\"')){ if(chunk.startsWith('http')) urls.push(chunk.split('\\u002F').join('/').split('\\/').join('/')) }
     mediaUrl=urls.find((u:string)=>!u.includes('playwm')&&!u.includes('watermark'))||urls[0]||''
     if(!mediaUrl) throw new Error('Douyin media URL not found')
     mediaUrl=mediaUrl.replace('playwm','play')
-    mediaUrl=mediaUrl.replace(/([?&])ratio=[a-zA-Z0-9]+/,'$1ratio=1080p')
-    if(!/[?&]ratio=/.test(mediaUrl)) mediaUrl+=(mediaUrl.includes('?')?'&':'?')+'ratio=1080p'
+    const ru=new URL(mediaUrl); ru.searchParams.set('ratio','1080p'); mediaUrl=ru.toString()
+
   }else{
     const cr=await fetch(cobaltBase+'/',{method:'POST',headers,body:JSON.stringify({url:src.toString(),downloadMode:'auto',videoQuality:String(body?.videoQuality||'1080'),filenameStyle:'basic',youtubeVideoCodec:'h264'})})
     const rawResp=await cr.text(); let data:any={}; try{data=rawResp?JSON.parse(rawResp):{}}catch{}
