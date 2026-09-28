@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express'
 import { runVisualDirector } from '../lib/visualDirectorCore.js'
-import { put, issueSignedToken, presignUrl } from '@vercel/blob'
-import { randomUUID } from 'node:crypto'
+import { issueSignedToken, presignUrl } from '@vercel/blob'
+import { collectSource } from '../lib/sourceCollector.js'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -26,65 +26,6 @@ async function makeSourcePlaybackUrl(pathname:string){
   const validUntil=Date.now()+60*60*1000
   const signed=await presignUrl(token,{pathname,operation:'get',validUntil,access:'private'})
   return {playbackUrl:signed.presignedUrl,validUntil}
-}
-
-const SOURCE_HOSTS = new Set(['instagram.com','www.instagram.com','tiktok.com','www.tiktok.com','vm.tiktok.com','reddit.com','www.reddit.com','v.redd.it','x.com','www.x.com','twitter.com','www.twitter.com','youtube.com','www.youtube.com','youtu.be','facebook.com','www.facebook.com','fb.watch','bilibili.com','www.bilibili.com','xiaohongshu.com','www.xiaohongshu.com','douyin.com','www.douyin.com','v.douyin.com'])
-async function collectSource(body:any){
-  const raw=String(body?.sourceUrl||'').trim(); if(!raw) throw new Error('sourceUrl is required')
-  const src=new URL(raw); if(!SOURCE_HOSTS.has(src.hostname.toLowerCase())) throw new Error('unsupported source host')
-  const cobaltBase=String(process.env.COBALT_API_URL||'').trim().replace(/\/$/,'')
-  if(!cobaltBase) { const err:any=new Error('COBALT_API_URL is not configured'); err.code='COLLECTOR_NOT_CONFIGURED'; throw err }
-  const headers:Record<string,string>={'Accept':'application/json','Content-Type':'application/json'}
-  const key=String(process.env.COBALT_API_KEY||'').trim(); if(key) headers.Authorization='Api-Key '+key
-  let mediaUrl=''
-  let mediaTitle=''
-  if(src.hostname.toLowerCase()==='douyin.com'||src.hostname.toLowerCase().endsWith('.douyin.com')){
-    // Douyin: resolve via the public mobile share SSR page. Generic cobalt
-    // rejects current Douyin URLs with error.api.link.invalid.
-    const pathParts=src.pathname.split('/').filter(Boolean); const vi=pathParts.indexOf('video'); const svi=pathParts.findIndex((x,i)=>x==='share'&&pathParts[i+1]==='video'); const id=(vi>=0?pathParts[vi+1]:(svi>=0?pathParts[svi+2]:src.searchParams.get('modal_id'))) || ''
-    if(!id) throw new Error('cannot extract Douyin video id')
-    const ua='Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
-    const share='https://www.iesdouyin.com/share/video/'+id+'/?from_ssr=1'
-    const sr=await fetch(share,{headers:{'User-Agent':ua,'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8','Accept-Language':'zh-CN,zh;q=0.9','Referer':'https://www.douyin.com/?is_from_mobile_home=1&recommend=1'},redirect:'follow'})
-    if(!sr.ok) throw new Error('Douyin share fetch failed: '+sr.status)
-    const html=await sr.text()
-    const titleStart=html.toLowerCase().indexOf('<title'); const titleGt=titleStart>=0?html.indexOf('>',titleStart):-1; const titleEnd=titleGt>=0?html.toLowerCase().indexOf('</title>',titleGt):-1; mediaTitle=(titleGt>=0&&titleEnd>titleGt?html.slice(titleGt+1,titleEnd):('douyin_'+id)).replace(/[\\/:*?\"<>|]/g,'_').slice(0,120)
-    // 2026 share pages expose the item inside window._ROUTER_DATA.
-    const routerMark='window._ROUTER_DATA'; const ri=html.indexOf(routerMark)
-    if(ri<0) throw new Error('Douyin _ROUTER_DATA not found')
-    const eq=html.indexOf('=',ri+routerMark.length); const js=html.indexOf('{',eq)
-    if(js<0) throw new Error('Douyin _ROUTER_DATA JSON start not found')
-    let depth=0,inStr=false,esc=false,je=-1
-    for(let i=js;i<html.length;i++){ const ch=html[i]; if(esc){esc=false;continue} if(ch==='\\\\'&&inStr){esc=true;continue} if(ch==='"'){inStr=!inStr;continue} if(inStr)continue; if(ch==='{')depth++; else if(ch==='}'&&--depth===0){je=i+1;break} }
-    if(je<0) throw new Error('Douyin _ROUTER_DATA JSON end not found')
-    const router=JSON.parse(html.slice(js,je))
-    let item:any=null
-    const loader=router?.loaderData||{}
-    for(const v of Object.values(loader) as any[]){ if(v?.videoInfoRes?.item_list?.[0]){item=v.videoInfoRes.item_list[0];break} }
-    if(!item){ const vk=Object.keys(loader).find(k=>k.includes('video_')&&k.includes('/page')); const v=vk?loader[vk]:null; throw new Error('Douyin videoInfoRes not found; loaderKeys='+Object.keys(loader).slice(0,12).join(',')+'; videoPageKeys='+(v&&typeof v==='object'?Object.keys(v).slice(0,80).join(','):'none')) }
-    mediaTitle=String(item.desc||mediaTitle||('douyin_'+id)).replace(/[\\/:*?"<>|]/g,'_').slice(0,120)
-    const list=item.video?.play_addr?.url_list||item.video?.play_addr_h264?.url_list||item.video?.download_addr?.url_list||[]
-    mediaUrl=String(list[0]||'').replace('/playwm/','/play/')
-    if(!mediaUrl) throw new Error('Douyin media URL not found')
-    mediaUrl=mediaUrl.replace('playwm','play')
-    const ru=new URL(mediaUrl); ru.searchParams.set('ratio','1080p'); mediaUrl=ru.toString()
-
-  }else{
-    const cr=await fetch(cobaltBase+'/',{method:'POST',headers,body:JSON.stringify({url:src.toString(),downloadMode:'auto',videoQuality:String(body?.videoQuality||'1080'),filenameStyle:'basic',youtubeVideoCodec:'h264'})})
-    const rawResp=await cr.text(); let data:any={}; try{data=rawResp?JSON.parse(rawResp):{}}catch{}
-    if(!cr.ok||data?.status==='error') throw new Error(data?.error?.code||data?.error?.message||rawResp||'cobalt request failed')
-    if(data?.status==='picker') return {ok:true,needsSelection:true,sourceUrl:src.toString(),picker:data}
-    if(!['tunnel','redirect'].includes(data?.status)||!data?.url) throw new Error('No downloadable media URL returned')
-    mediaUrl=String(data.url); mediaTitle=String(data.filename||'')
-  }
-  const mh:Record<string,string>={Accept:'*/*','User-Agent':'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1','Referer':'https://www.douyin.com/'}
-  if(key&&!(src.hostname.toLowerCase()==='douyin.com'||src.hostname.toLowerCase().endsWith('.douyin.com'))) mh.Authorization='Api-Key '+key
-  const mr=await fetch(mediaUrl,{headers:mh,redirect:'follow'}); if(!mr.ok) throw new Error('media fetch failed: '+mr.status)
-  const buf=Buffer.from(await mr.arrayBuffer()); const max=Number(process.env.SOURCE_COLLECTOR_MAX_BYTES||150*1024*1024); if(buf.length>max) throw new Error('source media exceeds size limit')
-  const id=randomUUID(); const filename=String(mediaTitle||('source-'+id+'.mp4')).replace(/[\\/:*?"<>|\x00-\x1f]/g,'_').slice(0,160)
-  const path='source-collector/'+new Date().toISOString().slice(0,10)+'/'+id+'-'+filename
-  const blob:any=await put(path,buf,{access:'private',addRandomSuffix:false,contentType:mr.headers.get('content-type')||'video/mp4'})
-  return {ok:true,needsSelection:false,source:{id,originalUrl:src.toString(),platform:src.hostname,filename,bytes:buf.length,contentType:mr.headers.get('content-type')||'video/mp4',blobPath:path,blobUrl:blob.url||null,collectedAt:new Date().toISOString()}}
 }
 
 const LONGFORM_CHAPTER_SCHEMA = {

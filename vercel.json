@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/story.ts": {
+      "maxDuration": 180,
+      "includeFiles": "node_modules/@sparticuz/chromium/bin/**"
+    }
+  }
+}
