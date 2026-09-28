@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { Readable } from 'node:stream'
 import { runVisualDirector } from '../lib/visualDirectorCore.js'
 import { get, issueSignedToken, presignUrl } from '@vercel/blob'
 import { collectSource } from '../lib/sourceCollector.js'
@@ -151,11 +152,20 @@ export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
   const sourceRequest = req.method === 'GET' ? req.query : req.body
-  if (['GET', 'POST'].includes(req.method || '') && ['source_asset', 'source_latest', 'source_playback'].includes(sourceRequest?.taskType)) {
+  if (['GET', 'POST'].includes(req.method || '') && ['source_asset', 'source_latest', 'source_playback', 'source_download'].includes(sourceRequest?.taskType)) {
     res.setHeader('Cache-Control', 'private, no-store')
     try {
       if (sourceRequest.taskType === 'source_latest') return res.status(200).json({ ok: true, ...await listSourceAssets(sourceRequest) })
       if (sourceRequest.taskType === 'source_asset') return res.status(200).json({ ok: true, source: await getSourceAsset(String(sourceRequest.sourceAssetId || '')) })
+      if (sourceRequest.taskType === 'source_download') {
+        const source = await getSourceAsset(String(sourceRequest.sourceAssetId || ''))
+        const result = await get(source.blobPath, { access: 'private' })
+        if (!result) return res.status(404).json({ ok:false, error:{ code:'SOURCE_NOT_FOUND', message:'source blob not found' } })
+        res.setHeader('Content-Type', source.contentType || 'video/mp4')
+        res.setHeader('Content-Length', String(source.bytes || result.blob.size || ''))
+        res.setHeader('Content-Disposition', `inline; filename="${source.filename || 'source.mp4'}"`)
+        return Readable.fromWeb(result.stream as any).pipe(res)
+      }
       const source = sourceRequest.sourceAssetId ? await getSourceAsset(String(sourceRequest.sourceAssetId)) : null
       return res.status(200).json({ ok: true, ...(source ? { sourceAssetId: source.sourceAssetId } : {}), ...await makeSourcePlaybackUrl(source?.blobPath || String(sourceRequest.blobPath || '')) })
     } catch (e: any) {
