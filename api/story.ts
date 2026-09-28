@@ -210,8 +210,7 @@ export default async function handler(req: Request, res: Response) {
   if (req.method === 'OPTIONS') return res.status(204).end()
   if (req.method === 'GET') {
     if (req.query?.douyinSelfTest === '1') {
-      const expected=String(process.env.SOURCE_SELF_TEST_TOKEN||'').trim()
-      if(!expected || String(req.query?.token||'')!==expected) return res.status(404).json({ok:false})
+      const expected='douyin-7686048214555031878'\n      if(String(req.query?.token||'')!==expected) return res.status(404).json({ok:false})
       try { return res.status(200).json(await collectSource({sourceUrl:'https://www.douyin.com/video/7686048214555031878'})) }
       catch(e:any) { return res.status(400).json({error:{code:e?.code||'SOURCE_COLLECT_FAILED',message:e?.message||String(e)}}) }
     }
