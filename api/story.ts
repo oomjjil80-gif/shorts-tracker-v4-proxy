@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express'
 import { runVisualDirector } from '../lib/visualDirectorCore.js'
-import { issueSignedToken, presignUrl } from '@vercel/blob'
+import { get, issueSignedToken, presignUrl } from '@vercel/blob'
 import { collectSource } from '../lib/sourceCollector.js'
 import { getSourceAsset, listSourceAssets } from '../lib/sourceAssetRegistry.js'
 
