@@ -60,15 +60,24 @@ export async function resolveDouyin(sourceUrl: string) {
       // A busy page can time out after its player is already available.
       if (error?.name !== 'TimeoutError') throw error
     }
-    const stateHandle = await page.waitForFunction(() => {
+    const stateHandle = await page.waitForFunction(({ expectedId, mediaDomains }) => {
       const text = document.body?.innerText || ''
       if (/请完成下方验证|请拖动滑块|安全验证|Verify you are human|unusual traffic|Access Denied/i.test(text)) {
         return { blocked: true, mediaUrl: '' }
       }
-      const video = document.querySelector('video')
-      const mediaUrl = video?.currentSrc || video?.src || video?.querySelector('source')?.src || ''
-      return /^https:\/\//.test(mediaUrl) ? { blocked: false, mediaUrl } : false
-    }, { timeout: 45_000, polling: 500 })
+      for (const video of document.querySelectorAll('video')) {
+        const mediaUrl = video.currentSrc || video.src || video.querySelector('source')?.src || ''
+        if (!/^https:\/\//.test(mediaUrl)) continue
+        const url = new URL(mediaUrl)
+        // The player first assigns a static bootstrap video from douyinstatic.com.
+        // Wait for the requested video's CDN stream; never collect that placeholder.
+        if (!mediaDomains.some(domain => url.hostname === domain || url.hostname.endsWith('.' + domain))) continue
+        const mediaId = url.searchParams.get('__vid')
+        if (expectedId && mediaId !== expectedId) continue
+        return { blocked: false, mediaUrl }
+      }
+      return false
+    }, { timeout: 45_000, polling: 500 }, { expectedId, mediaDomains: MEDIA_DOMAINS })
     const state = await stateHandle.jsonValue() as { blocked: boolean; mediaUrl: string }
     await stateHandle.dispose()
     if (state.blocked) throw new DouyinResolverError('DOUYIN_VERIFICATION_REQUIRED', 'Douyin requires browser verification')
