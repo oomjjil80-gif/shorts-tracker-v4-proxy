@@ -44,8 +44,8 @@ async function collectSource(body:any){
     const pathParts=src.pathname.split('/').filter(Boolean); const vi=pathParts.indexOf('video'); const svi=pathParts.findIndex((x,i)=>x==='share'&&pathParts[i+1]==='video'); const id=(vi>=0?pathParts[vi+1]:(svi>=0?pathParts[svi+2]:src.searchParams.get('modal_id'))) || ''
     if(!id) throw new Error('cannot extract Douyin video id')
     const ua='Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
-    const share='https://www.iesdouyin.com/share/video/'+id+'/'
-    const sr=await fetch(share,{headers:{'User-Agent':ua},redirect:'follow'})
+    const share='https://www.iesdouyin.com/share/video/'+id+'/?from_ssr=1'
+    const sr=await fetch(share,{headers:{'User-Agent':ua,'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8','Accept-Language':'zh-CN,zh;q=0.9','Referer':'https://www.douyin.com/?is_from_mobile_home=1&recommend=1'},redirect:'follow'})
     if(!sr.ok) throw new Error('Douyin share fetch failed: '+sr.status)
     const html=await sr.text()
     const titleStart=html.toLowerCase().indexOf('<title'); const titleGt=titleStart>=0?html.indexOf('>',titleStart):-1; const titleEnd=titleGt>=0?html.toLowerCase().indexOf('</title>',titleGt):-1; mediaTitle=(titleGt>=0&&titleEnd>titleGt?html.slice(titleGt+1,titleEnd):('douyin_'+id)).replace(/[\\/:*?\"<>|]/g,'_').slice(0,120)
@@ -59,9 +59,9 @@ async function collectSource(body:any){
     if(je<0) throw new Error('Douyin _ROUTER_DATA JSON end not found')
     const router=JSON.parse(html.slice(js,je))
     let item:any=null
-    const walk=(v:any):void=>{ if(item||!v||typeof v!=='object')return; if(Array.isArray(v)){for(const x of v)walk(x);return} if(v.videoInfoRes?.item_list?.[0]){item=v.videoInfoRes.item_list[0];return} for(const x of Object.values(v))walk(x) }
-    walk(router)
-    if(!item) throw new Error('Douyin videoInfoRes not found')
+    const loader=router?.loaderData||{}
+    for(const v of Object.values(loader) as any[]){ if(v?.videoInfoRes?.item_list?.[0]){item=v.videoInfoRes.item_list[0];break} }
+    if(!item) throw new Error('Douyin videoInfoRes not found; loaderKeys='+Object.keys(loader).slice(0,12).join(','))
     mediaTitle=String(item.desc||mediaTitle||('douyin_'+id)).replace(/[\\/:*?"<>|]/g,'_').slice(0,120)
     const list=item.video?.play_addr?.url_list||item.video?.play_addr_h264?.url_list||item.video?.download_addr?.url_list||[]
     mediaUrl=String(list[0]||'').replace('/playwm/','/play/')
