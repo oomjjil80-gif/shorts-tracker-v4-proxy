@@ -6,7 +6,7 @@ import { validateDouyinSource, validateDouyinMedia } from '../lib/douyinResolver
 const sourceUrl = 'https://www.douyin.com/video/7686048214555031878'
 const mediaUrl = 'https://v3-dy-o.zjcdn.com/test.mp4?__vid=7686048214555031878'
 const mp4 = Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex')
-const resolved = { videoId: '7686048214555031878', mediaUrl, filename: 'douyin_test.mp4', headers: { 'User-Agent': 'Chromium', Referer: sourceUrl, Accept: '*/*' }, resolver: 'douyin-browser', resolveMs: 10 }
+const resolved = { videoId: '7686048214555031878', mediaUrl, filename: 'douyin_test.mp4', title: '原始标题 #영상제목', headers: { 'User-Agent': 'Chromium', Referer: sourceUrl, Accept: '*/*' }, resolver: 'douyin-browser', resolveMs: 10 }
 
 test('Douyin does not require or call Cobalt; stores exactly the returned MP4 bytes', async () => {
   const requests: string[] = []
@@ -23,6 +23,8 @@ test('Douyin does not require or call Cobalt; stores exactly the returned MP4 by
   assert.equal(result.needsSelection, false)
   assert.equal(result.source?.bytes, mp4.length)
   assert.ok(result.source?.blobPath)
+  assert.equal(result.source?.title, resolved.title)
+  assert.match(result.source!.blobPath, /^[\x20-\x7e]+$/)
 })
 
 test('Instagram keeps its Cobalt request, media authentication and source response', async () => {

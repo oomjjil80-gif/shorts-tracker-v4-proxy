@@ -90,7 +90,9 @@ export async function resolveDouyin(sourceUrl: string) {
     const title = (await page.title()).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 100)
     return {
       videoId, mediaUrl,
-      filename: `douyin_${videoId}_${title || 'source'}.mp4`,
+      // Signed-token scope validation in Blob must receive an ASCII pathname.
+      // Preserve the display title as metadata instead of putting it in the path.
+      filename: `douyin_${videoId}.mp4`, title,
       headers: { 'User-Agent': await browser.userAgent(), Referer: finalUrl.href, Accept: '*/*' },
       resolver: 'douyin-browser',
       resolveMs: Date.now() - started

@@ -150,12 +150,6 @@ export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
   if (req.method === 'GET') {
-    if (req.query?.douyinSelfTest === '1') {
-      const expected='douyin-7686048214555031878'
-      if(String(req.query?.token||'')!==expected) return res.status(404).json({ok:false})
-      try { return res.status(200).json(await collectSource({sourceUrl:'https://www.douyin.com/video/7686048214555031878'})) }
-      catch(e:any) { return res.status(400).json({error:{code:e?.code||'SOURCE_COLLECT_FAILED',message:e?.message||String(e)}}) }
-    }
     return res.status(200).json({
       ok: true,
       capabilities: {
@@ -163,7 +157,8 @@ export default async function handler(req: Request, res: Response) {
         visualDirector: true,
         longformChapterFallback: true,
         sourceCollector: true,
-        sourceCollectorConfigured: Boolean(process.env.COBALT_API_URL)
+        sourceCollectorConfigured: Boolean(process.env.COBALT_API_URL),
+        sourceCollectorResolvers: { douyin: 'browser-v1', otherPlatforms: 'cobalt' }
       }
     })
   }

@@ -28,7 +28,8 @@ try {
   console.log(JSON.stringify({ stage: 'source_collect', ok: true, source: collected.source }))
 
   const playback = await post({ taskType: 'source_playback', blobPath: collected.source.blobPath })
-  assert.equal(playback.httpStatus, 200)
+  report.playback = { httpStatus: playback.httpStatus, ok: playback.data.ok === true, error: playback.data.error }
+  assert.equal(playback.httpStatus, 200, JSON.stringify(playback.data.error))
   assert.equal(playback.data.ok, true)
   assert.ok(playback.data.playbackUrl)
   // Do not put the temporary signed playback credential in logs or reports.

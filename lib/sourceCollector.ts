@@ -38,7 +38,7 @@ export async function collectSource(body: any, deps: Dependencies = defaults) {
   }
   const douyin = src.hostname === 'douyin.com' || src.hostname.endsWith('.douyin.com')
   let mediaUrl = '', mediaTitle = '', videoId = ''
-  let resolver = '', resolveMs = 0
+  let resolver = '', resolveMs = 0, sourceTitle = ''
   let mediaHeaders: Record<string, string>
 
   if (douyin) {
@@ -49,6 +49,7 @@ export async function collectSource(body: any, deps: Dependencies = defaults) {
     videoId = result.videoId
     resolver = result.resolver
     resolveMs = result.resolveMs
+    sourceTitle = result.title
   } else {
     // Keep the working Cobalt request and picker response contract unchanged.
     const cobaltBase = String(deps.env.COBALT_API_URL || '').trim().replace(/\/$/, '')
@@ -106,6 +107,6 @@ export async function collectSource(body: any, deps: Dependencies = defaults) {
   const blob = await deps.put(path, buf, { access: 'private', addRandomSuffix: false, contentType })
   return {
     ok: true, needsSelection: false,
-    source: { id, originalUrl: src.toString(), platform: src.hostname, filename, bytes: buf.length, contentType, blobPath: path, blobUrl: blob.url || null, collectedAt: new Date().toISOString(), ...(douyin ? { resolver, resolveMs, videoId } : {}) }
+    source: { id, originalUrl: src.toString(), platform: src.hostname, filename, bytes: buf.length, contentType, blobPath: path, blobUrl: blob.url || null, collectedAt: new Date().toISOString(), ...(douyin ? { resolver, resolveMs, videoId, title: sourceTitle } : {}) }
   }
 }
