@@ -2,6 +2,7 @@ import type { Request, Response } from 'express'
 import { runVisualDirector } from '../lib/visualDirectorCore.js'
 import { issueSignedToken, presignUrl } from '@vercel/blob'
 import { collectSource } from '../lib/sourceCollector.js'
+import { getSourceAsset, listSourceAssets } from '../lib/sourceAssetRegistry.js'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -15,7 +16,7 @@ function setCors(req: Request, res: Response) {
     res.setHeader('Access-Control-Allow-Origin', origin)
     res.setHeader('Vary', 'Origin')
   }
-  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept')
 }
 
@@ -149,6 +150,18 @@ function extractText(data: any) {
 export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
+  const sourceRequest = req.method === 'GET' ? req.query : req.body
+  if (['GET', 'POST'].includes(req.method || '') && ['source_asset', 'source_latest', 'source_playback'].includes(sourceRequest?.taskType)) {
+    res.setHeader('Cache-Control', 'private, no-store')
+    try {
+      if (sourceRequest.taskType === 'source_latest') return res.status(200).json({ ok: true, ...await listSourceAssets(sourceRequest) })
+      if (sourceRequest.taskType === 'source_asset') return res.status(200).json({ ok: true, source: await getSourceAsset(String(sourceRequest.sourceAssetId || '')) })
+      const source = sourceRequest.sourceAssetId ? await getSourceAsset(String(sourceRequest.sourceAssetId)) : null
+      return res.status(200).json({ ok: true, ...(source ? { sourceAssetId: source.sourceAssetId } : {}), ...await makeSourcePlaybackUrl(source?.blobPath || String(sourceRequest.blobPath || '')) })
+    } catch (e: any) {
+      return res.status(e?.status || 400).json({ ok: false, error: { code: e?.code || 'SOURCE_ASSET_FAILED', message: e?.message || String(e) } })
+    }
+  }
   if (req.method === 'GET') {
     return res.status(200).json({
       ok: true,
@@ -157,18 +170,16 @@ export default async function handler(req: Request, res: Response) {
         visualDirector: true,
         longformChapterFallback: true,
         sourceCollector: true,
+        sourceAssetRegistry: 'private-blob-v1',
         sourceCollectorConfigured: Boolean(process.env.COBALT_API_URL),
         sourceCollectorResolvers: { douyin: 'browser-v1', otherPlatforms: 'cobalt' }
       }
     })
   }
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Method not allowed' })
-  if (req.body?.taskType === 'source_playback') {
-    try { return res.status(200).json({ok:true,...await makeSourcePlaybackUrl(String(req.body?.blobPath||''))}) }
-    catch(e:any) { return res.status(400).json({error:{code:'SOURCE_PLAYBACK_FAILED',message:e?.message||String(e)}}) }
-  }
   if (req.body?.taskType === 'source_collect') {
-    try { return res.status(200).json(await collectSource(req.body)) } catch(e:any) { return res.status(e?.code==='COLLECTOR_NOT_CONFIGURED'?503:400).json({error:{code:e?.code||'SOURCE_COLLECT_FAILED',message:e?.message||String(e)}}) }
+    res.setHeader('Cache-Control', 'private, no-store')
+    try { return res.status(200).json(await collectSource(req.body)) } catch(e:any) { return res.status(e?.status || (e?.code==='COLLECTOR_NOT_CONFIGURED'?503:400)).json({ok:false,error:{code:e?.code||'SOURCE_COLLECT_FAILED',message:e?.message||String(e)}}) }
   }
   if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: { message: 'OPENAI_API_KEY is not configured' } })
 

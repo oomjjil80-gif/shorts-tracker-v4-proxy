@@ -1,9 +1,11 @@
 import { put } from '@vercel/blob'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { resolveDouyin, validateDouyinMedia } from './douyinResolver.js'
+import { probeSourceMedia } from './sourceMediaMetadata.js'
+import { registerSourceAsset } from './sourceAssetRegistry.js'
 
 const SOURCE_HOSTS = new Set(['instagram.com','www.instagram.com','tiktok.com','www.tiktok.com','vm.tiktok.com','reddit.com','www.reddit.com','v.redd.it','x.com','www.x.com','twitter.com','www.twitter.com','youtube.com','www.youtube.com','youtu.be','facebook.com','www.facebook.com','fb.watch','bilibili.com','www.bilibili.com','xiaohongshu.com','www.xiaohongshu.com','douyin.com','www.douyin.com','v.douyin.com'])
-const defaults = { fetch, put, resolveDouyin, env: process.env }
+const defaults = { fetch, put, resolveDouyin, probeSourceMedia, registerSourceAsset, env: process.env }
 type Dependencies = typeof defaults
 
 export async function readSourceBytes(response: globalThis.Response, max: number): Promise<Buffer> {
@@ -104,9 +106,15 @@ export async function collectSource(body: any, deps: Dependencies = defaults) {
   const filename = String(mediaTitle || ('source-' + id + '.mp4')).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 160)
   const path = 'source-collector/' + new Date().toISOString().slice(0, 10) + '/' + id + '-' + filename
   const contentType = douyin ? 'video/mp4' : response.headers.get('content-type') || 'video/mp4'
+  const metadata = await deps.probeSourceMedia(buf)
   const blob = await deps.put(path, buf, { access: 'private', addRandomSuffix: false, contentType })
+  const source = await deps.registerSourceAsset({
+    id, originalUrl: src.toString(), platform: src.hostname, filename, bytes: buf.length,
+    contentType, blobPath: path, blobUrl: blob.url || null, collectedAt: new Date().toISOString(),
+    ...metadata, sha256: createHash('sha256').update(buf).digest('hex'),
+    ...(douyin ? { resolver, resolveMs, videoId, title: sourceTitle } : {})
+  })
   return {
-    ok: true, needsSelection: false,
-    source: { id, originalUrl: src.toString(), platform: src.hostname, filename, bytes: buf.length, contentType, blobPath: path, blobUrl: blob.url || null, collectedAt: new Date().toISOString(), ...(douyin ? { resolver, resolveMs, videoId, title: sourceTitle } : {}) }
+    ok: true, needsSelection: false, sourceAssetId: source.sourceAssetId, source
   }
 }

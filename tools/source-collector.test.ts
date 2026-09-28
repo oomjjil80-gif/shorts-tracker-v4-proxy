@@ -1,24 +1,31 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { collectSource, readSourceBytes } from '../lib/sourceCollector.js'
+import { createSourceAssetId, type SourceAssetInput } from '../lib/sourceAssetRegistry.js'
 import { validateDouyinSource, validateDouyinMedia } from '../lib/douyinResolver.js'
 
 const sourceUrl = 'https://www.douyin.com/video/7686048214555031878'
 const mediaUrl = 'https://v3-dy-o.zjcdn.com/test.mp4?__vid=7686048214555031878'
 const mp4 = Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex')
+const assetDeps = {
+  probeSourceMedia: async () => ({ duration: 31, width: 576, height: 1024, videoCodec: 'AVC', audioCodec: 'AAC' }),
+  registerSourceAsset: async (source: SourceAssetInput) => ({ ...source, sourceAssetId: createSourceAssetId(), createdAt: new Date().toISOString(), schemaVersion: 1 as const })
+}
 const resolved = { videoId: '7686048214555031878', mediaUrl, filename: 'douyin_test.mp4', title: '原始标题 #영상제목', headers: { 'User-Agent': 'Chromium', Referer: sourceUrl, Accept: '*/*' }, resolver: 'douyin-browser', resolveMs: 10 }
 
 test('Douyin does not require or call Cobalt; stores exactly the returned MP4 bytes', async () => {
   const requests: string[] = []
   let saved: Buffer | undefined
   const result = await collectSource({ sourceUrl }, {
-    env: {},
+    ...assetDeps, env: {},
     resolveDouyin: async url => { assert.equal(url, sourceUrl); return resolved },
     fetch: async (url, options) => { requests.push(String(url)); assert.equal(new Headers(options?.headers).get('Authorization'), null); return new Response(mp4) },
     put: async (path, body, options) => { saved = body as Buffer; assert.equal(options.access, 'private'); assert.match(path, /^source-collector\//); return { url: 'https://example.invalid/blob' } as any }
   })
   assert.deepEqual(requests, [mediaUrl])
   assert.deepEqual(saved, mp4)
+  assert.match(result.sourceAssetId!, /^src_/)
+  assert.equal(result.source?.duration, 31)
   assert.equal(result.ok, true)
   assert.equal(result.needsSelection, false)
   assert.equal(result.source?.bytes, mp4.length)
@@ -31,7 +38,7 @@ test('Instagram keeps its Cobalt request, media authentication and source respon
   let calls = 0
   const instagram = 'https://www.instagram.com/reel/DZcosYrM7n6/'
   const result = await collectSource({ sourceUrl: instagram }, {
-    env: { COBALT_API_URL: 'https://cobalt.example/', COBALT_API_KEY: 'fixture-key' },
+    ...assetDeps, env: { COBALT_API_URL: 'https://cobalt.example/', COBALT_API_KEY: 'fixture-key' },
     resolveDouyin: async () => { throw new Error('Instagram must not launch Chromium') },
     fetch: async (url, options) => {
       calls++
@@ -54,7 +61,7 @@ test('Instagram keeps its Cobalt request, media authentication and source respon
 test('Cobalt picker still returns without downloading or storing anything', async () => {
   const picker = { status: 'picker', picker: [{ url: 'https://example.invalid/photo' }] }
   const result = await collectSource({ sourceUrl: 'https://www.instagram.com/p/test/' }, {
-    env: { COBALT_API_URL: 'https://cobalt.example' },
+    ...assetDeps, env: { COBALT_API_URL: 'https://cobalt.example' },
     resolveDouyin: async () => { throw new Error('unexpected browser') },
     fetch: async () => Response.json(picker),
     put: async () => { throw new Error('unexpected upload') }
@@ -66,7 +73,7 @@ test('Cobalt picker still returns without downloading or storing anything', asyn
 test('empty, HTML and oversized Douyin responses never reach Blob', async () => {
   for (const payload of [Buffer.alloc(0), Buffer.from('<html>verification required</html>'), Buffer.alloc(101)]) {
     await assert.rejects(collectSource({ sourceUrl }, {
-      env: { SOURCE_COLLECTOR_MAX_BYTES: '100' }, resolveDouyin: async () => resolved,
+      ...assetDeps, env: { SOURCE_COLLECTOR_MAX_BYTES: '100' }, resolveDouyin: async () => resolved,
       fetch: async () => new Response(payload),
       put: async () => { assert.fail('invalid data reached Blob') }
     }))
@@ -80,9 +87,19 @@ test('rejects another video and prevents CDN redirects to an arbitrary server', 
   assert.throws(() => validateDouyinSource('https://www.douyin.com@127.0.0.1/video/7686048214555031878'))
   let calls = 0
   await assert.rejects(collectSource({ sourceUrl }, {
-    env: {}, resolveDouyin: async () => resolved,
+    ...assetDeps, env: {}, resolveDouyin: async () => resolved,
     fetch: async () => { calls++; return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/private' } }) },
     put: async () => { assert.fail('unexpected upload') }
   }), /unexpected media host/)
   assert.equal(calls, 1)
+})
+
+ test('collection never reports success if the durable registry write fails', async () => {
+  let uploaded = false
+  await assert.rejects(collectSource({ sourceUrl }, {
+    ...assetDeps, env: {}, resolveDouyin: async () => resolved,
+    fetch: async () => new Response(mp4),
+    put: async () => { uploaded = true; return { url: 'https://example.invalid/blob' } as any },
+    registerSourceAsset: async () => { assert.equal(uploaded, true); throw new Error('registry unavailable') }
+  }), /registry unavailable/)
 })
