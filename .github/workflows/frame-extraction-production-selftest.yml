@@ -1,0 +1,107 @@
+name: Frame extraction production self-test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/frame-extraction-production-selftest.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for production alias (cold start includes first ffmpeg-binary copy)
+        run: sleep 40
+      - name: Exercise the full frame-extraction contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://shorts-tracker-v4-proxy.vercel.app'
+          CCTV_ID='src_8209365874293_9772de17cf634ad9bd28513e85125918'
+
+          echo '--- capabilities ---'
+          CAPS=$(curl -fsS "$BASE/api/story")
+          echo "$CAPS"
+          echo "$CAPS" | grep -q '"sourceFrameExtraction":"ffmpeg-server-v1"'
+          echo 'CAPS_OK'
+
+          echo '--- source_asset (duration/bytes sanity) ---'
+          ASSET=$(curl -fsS "$BASE/api/story?taskType=source_asset&sourceAssetId=$CCTV_ID")
+          echo "$ASSET"
+          node -e "const d=JSON.parse(process.argv[1]); if(!d.ok||!d.source||!(d.source.duration>0)) throw new Error('bad source_asset'); console.log('duration',d.source.duration,'bytes',d.source.bytes,'sha256',d.source.sha256)" "$ASSET"
+
+          echo '--- source_download (magic bytes) ---'
+          curl -fsS "$BASE/api/story?taskType=source_download&sourceAssetId=$CCTV_ID" -o /tmp/cctv.mp4
+          HEAD=$(head -c 12 /tmp/cctv.mp4 | od -An -tx1 | tr -d ' \n')
+          echo "download bytes: $(stat -c%s /tmp/cctv.mp4), head hex: $HEAD"
+          case "$HEAD" in *66747970*) echo 'DOWNLOAD_FTYP_OK' ;; *) echo "unexpected header: $HEAD"; exit 1 ;; esac
+
+          echo '--- source_frame single (second=8.5) ---'
+          curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$CCTV_ID&second=8.5" -o /tmp/frame_8_5.jpg
+          SIZE=$(stat -c%s /tmp/frame_8_5.jpg)
+          MAGIC=$(head -c 3 /tmp/frame_8_5.jpg | od -An -tx1 | tr -d ' \n')
+          echo "frame bytes: $SIZE, magic: $MAGIC"
+          test "$MAGIC" = "ffd8ff"
+          test "$SIZE" -gt 2000
+          echo 'FRAME_SINGLE_OK'
+
+          echo '--- source_frame out-of-range second (clamp, must not fail) ---'
+          curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$CCTV_ID&second=9999" -o /tmp/frame_clamped.jpg
+          MAGIC2=$(head -c 3 /tmp/frame_clamped.jpg | od -An -tx1 | tr -d ' \n')
+          test "$MAGIC2" = "ffd8ff"
+          echo 'FRAME_CLAMP_OK'
+
+          echo '--- source_frames batch across the whole clip ---'
+          FRAMES=$(curl -fsS "$BASE/api/story?taskType=source_frames&sourceAssetId=$CCTV_ID&seconds=0,4,8,12,16,20,24,28")
+          node -e "
+            const d=JSON.parse(process.argv[1]);
+            if(!d.ok||!Array.isArray(d.frames)||d.frames.length!==8) throw new Error('expected 8 frames, got '+(d.frames&&d.frames.length));
+            for(const f of d.frames){
+              const b64=f.dataUrl.split(',')[1]||'';
+              const bytes=Buffer.from(b64,'base64');
+              if(bytes.length<500||bytes[0]!==0xff||bytes[1]!==0xd8) throw new Error('bad frame at second '+f.second);
+            }
+            console.log('BATCH_OK', d.frames.length, 'frames');
+          " "$FRAMES"
+          echo "$FRAMES" > /tmp/frames_batch.json
+          echo 'FRAMES_BATCH_OK'
+
+          echo '--- source_contact_sheet ---'
+          curl -fsSD /tmp/sheet_headers.txt "$BASE/api/story?taskType=source_contact_sheet&sourceAssetId=$CCTV_ID&interval=4" -o /tmp/sheet.jpg
+          cat /tmp/sheet_headers.txt
+          SHEET_MAGIC=$(head -c 3 /tmp/sheet.jpg | od -An -tx1 | tr -d ' \n')
+          test "$SHEET_MAGIC" = "ffd8ff"
+          echo 'CONTACT_SHEET_OK'
+
+          echo '--- frame content dump for manual review (base64, one line per frame) ---'
+          node -e "
+            const d=JSON.parse(require('fs').readFileSync('/tmp/frames_batch.json','utf8'));
+            for(const f of d.frames){ console.log('FRAME_B64_SECOND=' + f.second); console.log(f.dataUrl.split(',')[1]); }
+          "
+
+          echo '--- regression: another registered source asset, if one exists ---'
+          LATEST=$(curl -fsS "$BASE/api/story?taskType=source_latest&limit=10")
+          echo "$LATEST" | node -e "
+            let raw=''; process.stdin.on('data',c=>raw+=c); process.stdin.on('end',()=>{
+              const d=JSON.parse(raw);
+              const other=(d.sources||[]).find(s=>s.sourceAssetId && s.sourceAssetId!=='$CCTV_ID');
+              console.log(other?('REGRESSION_TARGET='+other.sourceAssetId):'REGRESSION_TARGET=none');
+            });
+          " > /tmp/regression_target.txt
+          cat /tmp/regression_target.txt
+          REGRESSION_ID=$(grep -oP '(?<=REGRESSION_TARGET=)\S+' /tmp/regression_target.txt || echo none)
+          if [ "$REGRESSION_ID" != "none" ]; then
+            echo "--- regression source_download for $REGRESSION_ID ---"
+            curl -fsS "$BASE/api/story?taskType=source_download&sourceAssetId=$REGRESSION_ID" -o /tmp/regression.mp4
+            RHEAD=$(head -c 12 /tmp/regression.mp4 | od -An -tx1 | tr -d ' \n')
+            case "$RHEAD" in *66747970*) echo 'REGRESSION_DOWNLOAD_OK' ;; *) echo "unexpected regression header: $RHEAD"; exit 1 ;; esac
+            echo "--- regression source_frame for $REGRESSION_ID ---"
+            curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$REGRESSION_ID&second=1" -o /tmp/regression_frame.jpg
+            RMAGIC=$(head -c 3 /tmp/regression_frame.jpg | od -An -tx1 | tr -d ' \n')
+            test "$RMAGIC" = "ffd8ff"
+            echo 'REGRESSION_FRAME_OK'
+          else
+            echo 'REGRESSION_SKIPPED_NO_OTHER_SOURCE'
+          fi
+
+          echo 'SELFTEST_OK'
