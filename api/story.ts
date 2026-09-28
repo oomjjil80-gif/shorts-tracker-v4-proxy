@@ -152,11 +152,19 @@ export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
   const sourceRequest = req.method === 'GET' ? req.query : req.body
-  if (['GET', 'POST'].includes(req.method || '') && ['source_asset', 'source_latest', 'source_playback', 'source_download'].includes(sourceRequest?.taskType)) {
+  if (['GET', 'POST'].includes(req.method || '') && ['source_asset', 'source_latest', 'source_playback', 'source_download', 'source_frame'].includes(sourceRequest?.taskType)) {
     res.setHeader('Cache-Control', 'private, no-store')
     try {
       if (sourceRequest.taskType === 'source_latest') return res.status(200).json({ ok: true, ...await listSourceAssets(sourceRequest) })
       if (sourceRequest.taskType === 'source_asset') return res.status(200).json({ ok: true, source: await getSourceAsset(String(sourceRequest.sourceAssetId || '')) })
+      if (sourceRequest.taskType === 'source_frame') {
+        const source = await getSourceAsset(String(sourceRequest.sourceAssetId || ''))
+        const second = Math.max(0, Math.min(Number(source.duration || 0) || 3600, Number(sourceRequest.second || 0)))
+        const playback = await makeSourcePlaybackUrl(source.blobPath)
+        const cloud = 'https://res.cloudinary.com/demo/video/fetch'
+        const frameUrl = cloud + '/so_' + second + ',f_jpg/' + encodeURIComponent(playback.playbackUrl)
+        return res.status(200).json({ ok:true, sourceAssetId:source.sourceAssetId, second, frameUrl })
+      }
       if (sourceRequest.taskType === 'source_download') {
         const source = await getSourceAsset(String(sourceRequest.sourceAssetId || ''))
         const result = await get(source.blobPath, { access: 'private' })
