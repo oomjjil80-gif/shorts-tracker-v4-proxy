@@ -61,7 +61,7 @@ async function collectSource(body:any){
     let item:any=null
     const loader=router?.loaderData||{}
     for(const v of Object.values(loader) as any[]){ if(v?.videoInfoRes?.item_list?.[0]){item=v.videoInfoRes.item_list[0];break} }
-    if(!item){ const vk=Object.keys(loader).find(k=>k.includes('video_')&&k.includes('/page')); const v=vk?loader[vk]:null; throw new Error('Douyin videoInfoRes not found; loaderKeys='+Object.keys(loader).slice(0,12).join(',')+'; videoPageKeys='+(v&&typeof v==='object'?Object.keys(v).slice(0,20).join(','):'none')) }
+    if(!item){ const vk=Object.keys(loader).find(k=>k.includes('video_')&&k.includes('/page')); const v=vk?loader[vk]:null; throw new Error('Douyin videoInfoRes not found; loaderKeys='+Object.keys(loader).slice(0,12).join(',')+'; videoPageKeys='+(v&&typeof v==='object'?Object.keys(v).slice(0,80).join(','):'none')) }
     mediaTitle=String(item.desc||mediaTitle||('douyin_'+id)).replace(/[\\/:*?"<>|]/g,'_').slice(0,120)
     const list=item.video?.play_addr?.url_list||item.video?.play_addr_h264?.url_list||item.video?.download_addr?.url_list||[]
     mediaUrl=String(list[0]||'').replace('/playwm/','/play/')
