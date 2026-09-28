@@ -225,6 +225,10 @@ export default async function handler(req: Request, res: Response) {
     try { return res.status(200).json({ok:true,...await makeSourcePlaybackUrl(String(req.body?.blobPath||''))}) }
     catch(e:any) { return res.status(400).json({error:{code:'SOURCE_PLAYBACK_FAILED',message:e?.message||String(e)}}) }
   }
+  if (req.method === 'GET' && req.query?.douyinSelfTest === '1') {
+    try { return res.status(200).json(await collectSource({sourceUrl:'https://www.douyin.com/video/7686048214555031878'})) }
+    catch(e:any) { return res.status(400).json({error:{code:e?.code||'SOURCE_COLLECT_FAILED',message:e?.message||String(e)}}) }
+  }
   if (req.body?.taskType === 'source_collect') {
     try { return res.status(200).json(await collectSource(req.body)) } catch(e:any) { return res.status(e?.code==='COLLECTOR_NOT_CONFIGURED'?503:400).json({error:{code:e?.code||'SOURCE_COLLECT_FAILED',message:e?.message||String(e)}}) }
   }
