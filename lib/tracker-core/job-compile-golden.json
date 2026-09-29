@@ -1,0 +1,67 @@
+{
+  "jobId": "job_golden_1",
+  "sourceAsset": {
+    "sourceAssetId": "src_golden_1",
+    "blobPath": "source-collector/golden/source.mp4",
+    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "duration": 40,
+    "width": 576,
+    "height": 1024
+  },
+  "plan": {
+    "schema": "job-plan/1",
+    "profile": "source_shorts",
+    "sourceAssetId": "src_golden_1",
+    "variantPlan": {
+      "profile": "V1",
+      "timeDomain": "source",
+      "plansTimeDomain": "source",
+      "beats": [
+        {
+          "label": "결말",
+          "trimStart": 20,
+          "trimEnd": 26
+        },
+        {
+          "label": "도입",
+          "trimStart": 5,
+          "trimEnd": 10.5
+        }
+      ],
+      "effectCaptions": [
+        {
+          "text": "퍽!",
+          "start": 21,
+          "end": 22
+        }
+      ],
+      "headline": "왜 저럴까?",
+      "events": [
+        {
+          "start": 6,
+          "end": 8,
+          "text": "자막"
+        }
+      ],
+      "callouts": [
+        {
+          "start": 22,
+          "end": 23,
+          "text": "!",
+          "suppressSubtitle": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "manifestHash": "e408982709a678d798e177636600dbeae71889c888eec9024d902960fb84b3a5",
+    "identity": [
+      {
+        "sourceAssetId": "src_golden_1",
+        "blobPath": "source-collector/golden/source.mp4",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    ],
+    "totalDuration": 11.5
+  }
+}
