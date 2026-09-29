@@ -33,6 +33,18 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
         if (r.status === 'ok') { provider = 'openai'; model = r.model }
       }
       const storyRef = semantic.story ? (await putAddressed(blobs, 'stories', semantic.story)).path : null
+      const storySummary = semantic.story ? {
+        storyType: semantic.story.storyType,
+        confidence: semantic.story.confidence,
+        causalStart: semantic.story.causalStart,
+        setupRanges: semantic.story.setupRanges,
+        escalationRanges: semantic.story.escalationRanges,
+        payoffRange: semantic.story.payoffRange,
+        recommendedEnd: semantic.story.recommendedEnd,
+        excludeRanges: semantic.story.excludeRanges,
+        hookStrategy: semantic.story.hookStrategy,
+        previewRange: semantic.story.previewRange
+      } : null
 
       let variants
       try { variants = planVariants(analysis, semantic) }
@@ -50,7 +62,7 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
         outputRef: stored[0].planRef, outputHash: sha256(stored.map((s) => s.planRef).join('|')), planRef: stored[0].planRef,
         result: {
           variants: stored, provider, model, promptVersion: options.openAi ? AI_PLANNER_PROMPT_VERSION : null,
-          semantic: { status: semantic.status, reason: semantic.reason, storyRef, warnings },
+          semantic: { status: semantic.status, reason: semantic.reason, storyRef, storySummary, warnings },
           // kept for older readers: why the model was not used
           fallback: semantic.status === 'ok' ? null : { reason: `${semantic.status}: ${semantic.reason ?? ''}`.slice(0, 300) }
         },
