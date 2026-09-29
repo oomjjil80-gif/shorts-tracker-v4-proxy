@@ -27,5 +27,7 @@ After changing the frontend core: `node tools/tracker-core-manifest.mjs --write`
 DATABASE_URL=postgres://…   npm run db:migrate     # applies db/*.sql
 DATABASE_URL=… BLOB_READ_WRITE_TOKEN=… npm run worker   # any always-on Node process
 ```
-API (`api/jobs.ts`, header `X-Sync-Key`): `POST {action:create|decision|cancel}`, `GET ?id=`.
+API: routed through the existing `api/story.ts` (Vercel Hobby allows 12 Serverless Functions; do NOT add `api/jobs.ts`), header `X-Sync-Key`:
+`POST /api/story {taskType: job_create|job_decision|job_cancel, …}`, `GET /api/story?taskType=job_get&id=…`.
+HTTP adapter + domain logic live in `lib/jobs/*` (not counted as functions); `tools/function-count.test.ts` guards the limit.
 No Postgres provider is bound: any `DATABASE_URL` works (node-postgres). Not yet hosted: the Worker process and the database.
