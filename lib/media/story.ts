@@ -10,12 +10,23 @@ export const EXCLUDE_REASONS = ['intro_confusion', 'repeat', 'dead_air', 'produc
 // Reasons that make footage "not the story" (contamination) vs. merely slow/repeated.
 export const OFFSTORY_REASONS: ReadonlyArray<ExcludeReason> = ['intro_confusion', 'product_demo', 'foreign_text', 'post_payoff', 'unrelated']
 export const PACING_REASONS: ReadonlyArray<ExcludeReason> = ['repeat', 'dead_air']
-export const STORY_LIMITS = { minConfidence: 0.6, previewMinConfidence: 0.75, maxPreviewSeconds: 3, maxCaptions: 2, maxCaptionChars: 20, maxTailAfterPayoff: 1.5 }
+export const STORY_LIMITS = {
+  minConfidence: 0.6,
+  previewMinConfidence: 0.75,
+  maxPreviewSeconds: 3,
+  maxCaptions: 6,
+  maxNarrativeCaptions: 4,
+  maxEffectCaptions: 2,
+  maxCaptionChars: 20,
+  maxEffectChars: 8,
+  maxTailAfterPayoff: 1.5
+}
 
 export type StoryType = (typeof STORY_TYPES)[number]
 export type ExcludeReason = (typeof EXCLUDE_REASONS)[number]
 export type Range = { start: number; end: number }
-export type StoryCaption = { kind: 'hook' | 'payoff'; start: number; end: number; text: string; basis: string }
+export type StoryCaptionKind = 'hook' | 'context' | 'payoff' | 'effect'
+export type StoryCaption = { kind: StoryCaptionKind; start: number; end: number; text: string; basis: string }
 
 export type StoryAnalysis = {
   schema: typeof STORY_SCHEMA
@@ -32,6 +43,8 @@ export type StoryAnalysis = {
   previewRange: Range | null
   hookConfidence: number
   hookReason: string
+  // Grounded Korean presentation cues. `hook` becomes the persistent top headline;
+  // context/payoff become timed explanation captions; effect becomes a short pop caption.
   minimalCaptions: StoryCaption[]
   publishabilityWarnings: string[]
   model: string
@@ -100,18 +113,31 @@ export function validateStory(raw: any, a: SourceAnalysis, meta: { model: string
   }
 
   const captions: StoryCaption[] = []
+  const allowedKinds: StoryCaptionKind[] = ['hook', 'context', 'payoff', 'effect']
   for (const [i, c] of (Array.isArray(raw.minimalCaptions) ? raw.minimalCaptions : []).entries()) {
     const text = String(c?.text ?? '').trim(), basis = String(c?.basis ?? '').trim()
     const r = range(c, `minimalCaptions[${i}]`)
     if (!r) continue
-    if (c.kind !== 'hook' && c.kind !== 'payoff') { errors.push(`minimalCaptions[${i}]: kind must be hook|payoff`); continue }
-    if (!text || [...text].length > STORY_LIMITS.maxCaptionChars) { errors.push(`minimalCaptions[${i}]: text must be 1..${STORY_LIMITS.maxCaptionChars} chars`); continue }
+    if (!allowedKinds.includes(c.kind)) { errors.push(`minimalCaptions[${i}]: kind must be hook|context|payoff|effect`); continue }
+    const maxChars = c.kind === 'effect' ? STORY_LIMITS.maxEffectChars : STORY_LIMITS.maxCaptionChars
+    if (!text || [...text].length > maxChars) { errors.push(`minimalCaptions[${i}]: text must be 1..${maxChars} chars`); continue }
     if (!basis) { errors.push(`minimalCaptions[${i}]: missing visual basis (caption would be invented)`); continue }
     if (/[\n{}]/.test(text)) { errors.push(`minimalCaptions[${i}]: invalid characters`); continue }
     if (c.kind === 'payoff' && payoff && overlap(r, payoff) < 0.5 * (r.end - r.start)) { warnings.push(`minimalCaptions[${i}]: payoff caption outside payoff, dropped`); continue }
     captions.push({ kind: c.kind, start: r.start, end: r.end, text, basis })
   }
-  if (captions.length > STORY_LIMITS.maxCaptions) { warnings.push(`only ${STORY_LIMITS.maxCaptions} captions kept (minimal text)`); captions.length = STORY_LIMITS.maxCaptions }
+
+  if (captions.filter((c) => c.kind !== 'effect').length > STORY_LIMITS.maxNarrativeCaptions) {
+    warnings.push(`only ${STORY_LIMITS.maxNarrativeCaptions} narrative captions kept`)
+    let kept = 0
+    for (let i = captions.length - 1; i >= 0; i--) if (captions[i].kind !== 'effect' && ++kept > STORY_LIMITS.maxNarrativeCaptions) captions.splice(i, 1)
+  }
+  if (captions.filter((c) => c.kind === 'effect').length > STORY_LIMITS.maxEffectCaptions) {
+    warnings.push(`only ${STORY_LIMITS.maxEffectCaptions} effect captions kept`)
+    let kept = 0
+    for (let i = captions.length - 1; i >= 0; i--) if (captions[i].kind === 'effect' && ++kept > STORY_LIMITS.maxEffectCaptions) captions.splice(i, 1)
+  }
+  if (captions.length > STORY_LIMITS.maxCaptions) captions.length = STORY_LIMITS.maxCaptions
 
   if (errors.length || !payoff) return { story: null, errors: errors.length ? errors : ['payoffRange missing'], warnings }
   return {
