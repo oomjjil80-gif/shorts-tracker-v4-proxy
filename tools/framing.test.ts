@@ -50,7 +50,7 @@ test('smart-framed render removes embedded bars and fills the final 9:16 canvas'
       editorialPlan: { headline: '', events: [] }, subtitleEvents: [], sourceCallouts: [], sourceEffectCaptions: []
     }
     await renderPayload(payload, { sourceFile: source, sourceHasAudio: false, workDir: work, outPath: out, sourceFraming: framing })
-    const finalFraming = await detectSourceFraming(out)
+    const finalFraming = await detectSourceFraming(out, { lumaThreshold: 12, activeFraction: 0.05 })
     assert.equal(finalFraming.mode, 'full', JSON.stringify(finalFraming))
     const graph = buildFilterGraph([{ start: 0, duration: 2, trimStart: 0, trimEnd: 2, volume: 1, mute: false }], { sourceHasAudio: false, assPath: '', fontsDir: '', hasOverlays: false, sourceFraming: framing })
     assert.match(graph, /gblur=/); assert.match(graph, /overlay=/); assert.match(graph, /crop=576:/)
