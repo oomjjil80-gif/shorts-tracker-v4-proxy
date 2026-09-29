@@ -30,6 +30,19 @@ async function main() {
   let stopping = false
   for (const sig of ['SIGTERM', 'SIGINT'] as const) process.on(sig, () => { stopping = true })
   console.log(`[worker ${workerId}] started`)
+
+  // TEMPORARY read-only rollout diagnostic: expose the exact persisted error_json for the two P0 jobs
+  // that hit the newly implemented RENDER stage immediately after the P1 deployment.
+  for (const jobId of ['job_ca000e83-f086-41f0-95aa-c57def2f6ad7', 'job_be97c43d-7c4c-40a9-8d66-85a5e901f80d']) {
+    try {
+      const runs = await store.listStageRuns(jobId)
+      const failed = [...runs].reverse().find((r) => r.stage === 'RENDER' && r.status === 'FAILED')
+      console.log(`[diag render-failure] job=${jobId} ${failed ? JSON.stringify({ attempt: failed.attempt, error: failed.error, startedAt: failed.startedAt, finishedAt: failed.finishedAt }) : 'no failed RENDER row'}`)
+    } catch (e: any) {
+      console.log(`[diag render-failure] job=${jobId} lookup_error=${JSON.stringify(String(e?.message || e))}`)
+    }
+  }
+
   while (!stopping) {
     try {
       const out = await runOnce({ store, blobs, workerId, executors, resolveSourceAsset: (id) => getSourceAsset(id) as any, resolveSourceFile: createBlobSourceFileResolver(blobGet as any), leaseMs: 120_000 })
