@@ -1,0 +1,94 @@
+name: P1 semantic Golden E2E
+
+on:
+  push:
+    branches: [diag/p1-semantic-golden-e2e-20260929]
+    paths:
+      - '.github/workflows/p1-semantic-golden-e2e.yml'
+
+jobs:
+  golden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run real Production semantic Golden Source job
+        shell: bash
+        run: |
+          set -euo pipefail
+          API='https://shorts-tracker-v4-proxy.vercel.app/api/story'
+          SRC='src_8209365874293_9772de17cf634ad9bd28513e85125918'
+          SYNC="$(openssl rand -hex 24)"
+          IDEM="semantic-golden-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p artifacts
+
+          body="$(jq -nc --arg src "$SRC" --arg idem "$IDEM" '{taskType:"job_create",profile:"source_shorts",sourceAssetId:$src,idempotencyKey:$idem,budgetUsd:1}')"
+          curl -fsS -X POST "$API" -H 'Content-Type: application/json' -H "X-Sync-Key: $SYNC" -d "$body" > artifacts/create.json
+          JOB="$(jq -r '.job.id // empty' artifacts/create.json)"
+          test -n "$JOB"
+          echo "JOB_ID=$JOB"
+
+          reached_decision=0
+          for i in $(seq 1 150); do
+            curl -fsS -H "X-Sync-Key: $SYNC" "$API?taskType=job_get&id=$JOB" > artifacts/job.json
+            status="$(jq -r '.job.status' artifacts/job.json)"
+            stage="$(jq -r '.job.stage' artifacts/job.json)"
+            wait="$(jq -r '.job.waitReason // ""' artifacts/job.json)"
+            semantic="$(jq -r '.job.planner.semantic // ""' artifacts/job.json)"
+            echo "poll=$i status=$status stage=$stage wait=$wait semantic=$semantic"
+            if [[ "$status" == 'FAILED' || "$status" == 'CANCELLED' ]]; then
+              jq '.job | {status,stage,waitReason,error,planner,variants,runs}' artifacts/job.json
+              exit 1
+            fi
+            if [[ "$status" == 'WAITING_USER' && "$wait" == 'QC_BLOCKED' ]]; then
+              jq '.job | {status,stage,waitReason,planner,variants,runs}' artifacts/job.json
+              exit 1
+            fi
+            if [[ "$status" == 'WAITING_USER' && "$wait" == 'DECISION' ]]; then
+              reached_decision=1
+              break
+            fi
+            sleep 5
+          done
+          test "$reached_decision" = 1
+
+          jq '.job | {id,status,stage,planner,variants}' artifacts/job.json
+          test "$(jq -r '.job.planner.semantic // ""' artifacts/job.json)" = 'ok'
+
+          curl -fsS -H "X-Sync-Key: $SYNC" "$API?taskType=job_preview&id=$JOB" > artifacts/preview.json
+          jq '.previews | map({variantId,label,durationSec,qc,contentQc,publishable,recommended})' artifacts/preview.json
+
+          while IFS=$'\t' read -r vid url; do
+            [[ -z "$vid" || -z "$url" ]] && continue
+            curl -LfsS "$url" -o "artifacts/${vid}.mp4"
+          done < <(jq -r '.previews[] | [.variantId,.url] | @tsv' artifacts/preview.json)
+
+          manifest="$(jq -r '[.job.variants[] | select(.publishable==true)] | (map(select(.recommended==true))[0] // .[0] // {}) | .manifestHash // empty' artifacts/job.json)"
+          test -n "$manifest"
+          decision="$(jq -nc --arg job "$JOB" --arg hash "$manifest" '{taskType:"job_decision",jobId:$job,manifestHash:$hash}')"
+          curl -fsS -X POST "$API" -H 'Content-Type: application/json' -H "X-Sync-Key: $SYNC" -d "$decision" > artifacts/decision.json
+
+          complete=0
+          for i in $(seq 1 90); do
+            curl -fsS -H "X-Sync-Key: $SYNC" "$API?taskType=job_get&id=$JOB" > artifacts/final-job.json
+            status="$(jq -r '.job.status' artifacts/final-job.json)"
+            stage="$(jq -r '.job.stage' artifacts/final-job.json)"
+            echo "final-poll=$i status=$status stage=$stage"
+            if [[ "$status" == 'COMPLETE' ]]; then complete=1; break; fi
+            if [[ "$status" == 'FAILED' || "$status" == 'CANCELLED' ]]; then
+              jq '.job | {status,stage,error,runs}' artifacts/final-job.json
+              exit 1
+            fi
+            sleep 3
+          done
+          test "$complete" = 1
+          jq '.job | {id,status,stage,planner,variants,final}' artifacts/final-job.json
+          test "$(jq -r '.job.final.publishable' artifacts/final-job.json)" = 'true'
+      - name: Upload E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1-semantic-golden-e2e
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 3
