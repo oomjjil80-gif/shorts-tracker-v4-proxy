@@ -5,9 +5,14 @@ import { canonicalize } from '../tracker-core/renderManifest.js'
 export interface JobBlobStore {
   putJson(path: string, value: unknown): Promise<{ path: string; sha256: string }>
   getJson<T = unknown>(path: string): Promise<T | null>
+  // Binary artifacts (rendered MP4, contact sheets). Content-addressed by the caller; never overwritten.
+  putBytes(path: string, bytes: Buffer, contentType: string): Promise<{ path: string; sha256: string; bytes: number }>
+  getBytes(path: string): Promise<Buffer | null>
+  // Short-lived URL a browser can play (private blobs only; never stored, never part of any hash).
+  presign?(path: string, validForMs?: number): Promise<{ url: string; validUntil: number } | null>
 }
 
-export const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
+export const sha256 = (data: string | Buffer) => createHash('sha256').update(data).digest('hex')
 
 // Content-addressed: same value => same path. Immutable by construction (never overwritten).
 export async function putAddressed(store: JobBlobStore, prefix: string, value: unknown): Promise<{ path: string; sha256: string }> {
@@ -15,10 +20,14 @@ export async function putAddressed(store: JobBlobStore, prefix: string, value: u
   return store.putJson(`${prefix}/${hash}.json`, value)
 }
 
-export function createMemoryBlobStore(): JobBlobStore & { files: Map<string, string> } {
+export function createMemoryBlobStore(): JobBlobStore & { files: Map<string, string>; binaries: Map<string, Buffer> } {
   const files = new Map<string, string>()
+  const binaries = new Map<string, Buffer>()
   return {
-    files,
+    files, binaries,
+    async putBytes(path, bytes) { if (!binaries.has(path)) binaries.set(path, Buffer.from(bytes)); return { path, sha256: sha256(binaries.get(path)!), bytes: binaries.get(path)!.length } },
+    async getBytes(path) { const b = binaries.get(path); return b ? Buffer.from(b) : null },
+    async presign(path) { return binaries.has(path) || files.has(path) ? { url: `memory://${path}`, validUntil: Date.now() + 3_600_000 } : null },
     async putJson(path, value) {
       const body = JSON.stringify(value)
       if (!files.has(path)) files.set(path, body)
@@ -47,6 +56,29 @@ export function createVercelJobBlobStore(deps?: { put?: any; get?: any }): JobBl
       const result: any = await get(path, { access: 'private', useCache: false })
       if (!result || result.statusCode !== 200 || !result.stream) return null
       return JSON.parse(await new Response(result.stream).text())
+    },
+    async putBytes(path, bytes, contentType) {
+      const { put } = await lazy()
+      try {
+        await put(path, bytes, { access: 'private', addRandomSuffix: false, allowOverwrite: false, contentType })
+      } catch (e: any) {
+        if (!/already exists|exists/i.test(String(e?.message || e))) throw e
+      }
+      return { path, sha256: sha256(bytes), bytes: bytes.length }
+    },
+    async getBytes(path) {
+      const { get } = await lazy()
+      const result: any = await get(path, { access: 'private', useCache: false })
+      if (!result || result.statusCode !== 200 || !result.stream) return null
+      return Buffer.from(await new Response(result.stream).arrayBuffer())
+    },
+    async presign(path, validForMs = 60 * 60 * 1000) {
+      const mod: any = deps?.put && deps?.get ? deps : await import('@vercel/blob')
+      if (!mod.issueSignedToken || !mod.presignUrl) return null
+      const token = await mod.issueSignedToken({ pathname: path, operations: ['get'] })
+      const validUntil = Date.now() + validForMs
+      const signed = await mod.presignUrl(token, { pathname: path, operation: 'get', validUntil, access: 'private' })
+      return { url: signed.presignedUrl, validUntil }
     }
   }
 }

@@ -1,13 +1,14 @@
 import type { JobStore } from '../lib/jobs/store.js'
 import type { JobBlobStore } from '../lib/jobs/blobs.js'
 import { LeaseLostError, type Job } from '../lib/jobs/types.js'
-import { StageError, type SourceAssetLike, type StageExecutor } from './types.js'
+import { StageError, type SourceAssetLike, type SourceFile, type StageExecutor } from './types.js'
 
 export type RunDeps = {
   store: JobStore
   blobs: JobBlobStore
   executors: StageExecutor[]
   resolveSourceAsset: (id: string) => Promise<SourceAssetLike>
+  resolveSourceFile?: (asset: SourceAssetLike) => Promise<SourceFile>
   workerId: string
   leaseMs?: number
   heartbeatMs?: number
@@ -46,9 +47,13 @@ export async function runOnce(deps: RunDeps): Promise<RunOutcome> {
     }, deps.heartbeatMs ?? Math.max(1000, Math.floor(leaseMs / 3)))
 
     try {
-      const res = await exec.run({ job, attempt, blobs, resolveSourceAsset: deps.resolveSourceAsset, signal: abort.signal })
+      const res = await exec.run({
+        job, attempt, blobs, resolveSourceAsset: deps.resolveSourceAsset, signal: abort.signal,
+        resolveSourceFile: deps.resolveSourceFile ?? (async () => { throw new StageError('NO_SOURCE_FILE_RESOLVER', 'worker has no source file resolver') }),
+        previous: (stage) => store.getLatestSucceeded(job.id, stage)
+      })
       if (leaseLost) return { ran: true, jobId: job.id, stage: job.stage, outcome: 'lease_lost' }
-      const done = await store.completeStage({ jobId: job.id, workerId, attempt, outputRef: res.outputRef, outputHash: res.outputHash, result: res.result, usage: res.usage, costUsd: res.costUsd, provider: res.provider, model: res.model, kind: res.kind, wait: res.wait })
+      const done = await store.completeStage({ jobId: job.id, workerId, attempt, outputRef: res.outputRef, outputHash: res.outputHash, result: res.result, usage: res.usage, costUsd: res.costUsd, provider: res.provider, model: res.model, kind: res.kind, wait: res.wait, planRef: res.planRef })
       return { ran: true, jobId: job.id, stage: job.stage, outcome: done.status === 'CANCELLED' ? 'cancelled' : done.status === 'WAITING_USER' ? 'waiting' : 'completed', job: done }
     } catch (e: any) {
       if (leaseLost || e instanceof LeaseLostError) return { ran: true, jobId: job.id, stage: job.stage, outcome: 'lease_lost' }

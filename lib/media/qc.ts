@@ -1,0 +1,215 @@
+// AUTO_QC for a rendered Shorts MP4. Every check measures the actual output file.
+// A check that cannot run is UNKNOWN (=> BLOCK); nothing here ever defaults to PASS.
+import { open, readFile, stat, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { runCheck, runGate, type CheckResult, type GateResult } from '../qc/gate.js'
+import { sha256 } from '../jobs/blobs.js'
+import { sourceRangeToOutputRanges } from '../tracker-core/renderManifest.js'
+import { assFromPayload, CANVAS, FONTS_DIR, SAFE, type OverlayEvent } from './ass.js'
+import type { SourceAnalysis } from './analyze.js'
+import { contactSheet, detectBlack, detectFreeze, detectSilence, frameSignature, fullDecode, probe, runOk, signatureDistance, volumeStats, type Interval } from './ffmpeg.js'
+import { extractRenderPlan, OUTPUT } from './render.js'
+
+export const QC_THRESHOLDS = {
+  minBytes: 20_000, durationToleranceSec: 0.25, maxBlackSec: 0.3, unexplainedFreezeSec: 1.5, minFrameLuma: 6,
+  frameMatchMaxDist: 45, frameMismatchMargin: 15, deadAudioDb: -60, maxSilentExcess: 0.2, minOverlayDelta: 6
+}
+
+const pass = (evidence?: unknown) => ({ status: 'PASS' as const, evidence })
+const fail = (evidence?: unknown) => ({ status: 'FAIL' as const, evidence })
+const ok = (cond: boolean, evidence?: unknown) => (cond ? pass(evidence) : fail(evidence))
+const overlapSec = (a: Interval, b: Interval) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start))
+
+async function topLevelAtoms(file: string): Promise<Array<{ type: string; offset: number; size: number }>> {
+  const fh = await open(file, 'r')
+  try {
+    const { size } = await fh.stat()
+    const atoms: Array<{ type: string; offset: number; size: number }> = []
+    let pos = 0
+    const head = Buffer.alloc(16)
+    while (pos + 8 <= size && atoms.length < 64) {
+      await fh.read(head, 0, 16, pos)
+      let sz = head.readUInt32BE(0)
+      const type = head.toString('latin1', 4, 8)
+      if (sz === 1) sz = Number(head.readBigUInt64BE(8))
+      if (sz === 0) sz = size - pos
+      if (sz < 8) break
+      atoms.push({ type, offset: pos, size: sz })
+      pos += sz
+    }
+    return atoms
+  } finally { await fh.close() }
+}
+
+async function grayFrame(file: string, t: number, w: number, h: number, vf?: string): Promise<Buffer> {
+  const r = await runOk(['-ss', String(Math.max(0, t)), '-i', file, '-frames:v', '1', '-vf', `${vf ? vf + ',' : ''}scale=${w}:${h}:flags=area,format=gray`, '-f', 'rawvideo', '-'])
+  if (r.stdout.length !== w * h) throw new Error(`frame at ${t}s could not be decoded`)
+  return r.stdout
+}
+
+// Renders one overlay event alone on flat gray so its true pixel extent can be measured.
+async function overlayMask(ass: string, workDir: string, t: number, tag: string): Promise<Buffer> {
+  const assPath = join(workDir, `qc-${tag}.ass`)
+  await writeFile(assPath, ass, 'utf8')
+  const esc = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
+  const r = await runOk(['-f', 'lavfi', '-i', `color=c=0x808080:s=${CANVAS.w}x${CANVAS.h}:r=30:d=${(t + 0.5).toFixed(2)}`, '-vf', `ass=filename='${esc(assPath)}':fontsdir='${esc(FONTS_DIR)}',format=gray`, '-ss', String(t), '-frames:v', '1', '-f', 'rawvideo', '-'])
+  if (r.stdout.length !== CANVAS.w * CANVAS.h) throw new Error('overlay mask frame missing')
+  return r.stdout
+}
+
+function bbox(mask: Buffer, w: number, h: number): { x0: number; y0: number; x1: number; y1: number; pixels: number } | null {
+  let x0 = w, y0 = h, x1 = -1, y1 = -1, pixels = 0
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (Math.abs(mask[y * w + x] - 128) > 8) { pixels++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y }
+  return pixels ? { x0, y0, x1, y1, pixels } : null
+}
+
+export type RenderQcInput = {
+  renderPath: string; expectedRenderHash: string; payload: any; sourceFile: string; analysis: SourceAnalysis
+  render: { overlayEvents: OverlayEvent[]; assSha256: string | null }
+  workDir: string; contactSheetOut?: string
+}
+export type RenderQcResult = { gate: GateResult; metrics: Record<string, unknown> }
+
+export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
+  const T = QC_THRESHOLDS
+  const metrics: Record<string, unknown> = {}
+  const plan = (() => { try { return extractRenderPlan(i.payload) } catch { return null } })()
+  const total = plan?.total ?? Number(i.payload?.totalDuration)
+  const to = { timeoutMs: 180_000 }
+  let info: Awaited<ReturnType<typeof probe>> | null = null
+  const getInfo = async () => (info ??= await probe(i.renderPath))
+  const sourceSilent = i.analysis.audio.intentionallySilent
+
+  const checks: Array<() => Promise<CheckResult>> = [
+    () => runCheck('file.integrity', true, async () => {
+      const bytes = (await stat(i.renderPath)).size
+      const hash = sha256(await readFile(i.renderPath))
+      metrics.bytes = bytes
+      return ok(bytes >= T.minBytes && hash === i.expectedRenderHash, { bytes, minBytes: T.minBytes, hashMatches: hash === i.expectedRenderHash })
+    }, to),
+    () => runCheck('container.mp4_faststart', true, async () => {
+      const atoms = await topLevelAtoms(i.renderPath)
+      const ftyp = atoms.find((a) => a.type === 'ftyp'), moov = atoms.find((a) => a.type === 'moov'), mdat = atoms.find((a) => a.type === 'mdat')
+      return ok(!!ftyp && ftyp.offset === 0 && !!moov && !!mdat && moov.offset < mdat.offset, { atoms: atoms.map((a) => a.type) })
+    }, to),
+    () => runCheck('video.format', true, async () => {
+      const v = await getInfo()
+      metrics.video = { codec: v.videoCodec, profile: v.profile, w: v.width, h: v.height, fps: v.fps, pixFmt: v.pixFmt }
+      return ok(v.videoCodec === 'h264' && v.pixFmt === 'yuv420p' && v.width === OUTPUT.width && v.height === OUTPUT.height && v.sar === '1:1' && v.fps !== null && Math.abs(v.fps - OUTPUT.fps) < 0.1 && ['High', 'Main'].includes(v.profile ?? ''), metrics.video)
+    }, to),
+    () => runCheck('audio.format', true, async () => {
+      const v = await getInfo()
+      metrics.audio = { codec: v.audioCodec, hz: v.sampleRate, ch: v.channels }
+      return ok(v.hasAudio && v.audioCodec === 'aac' && v.sampleRate === 44100 && v.channels === 2, metrics.audio)
+    }, to),
+    () => runCheck('decode.full', true, async () => {
+      const d = await fullDecode(i.renderPath)
+      metrics.decodedSeconds = d.decodedSeconds
+      return ok(d.ok && d.decodedSeconds !== null && Math.abs(d.decodedSeconds - total) <= T.durationToleranceSec + 0.1, d)
+    }, { timeoutMs: 300_000 }),
+    () => runCheck('duration.matches_manifest', true, async () => {
+      const v = await getInfo()
+      metrics.duration = v.duration
+      return ok(v.duration !== null && Number.isFinite(total) && Math.abs(v.duration - total) <= T.durationToleranceSec, { rendered: v.duration, manifest: total, tolerance: T.durationToleranceSec })
+    }, to),
+    () => runCheck('visual.no_black', true, async () => {
+      const black = await detectBlack(i.renderPath)
+      const sum = black.reduce((s, b) => s + (b.end - b.start), 0)
+      return ok(sum <= T.maxBlackSec, { black, totalBlackSec: sum })
+    }, to),
+    () => runCheck('visual.no_unexplained_freeze', true, async () => {
+      if (!plan) throw new Error('manifest not renderable')
+      const frozen = await detectFreeze(i.renderPath, { minDuration: T.unexplainedFreezeSec })
+      // freezes that already exist in the source (static camera) are not defects of the render
+      const explained: Interval[] = i.analysis.ranges.freeze.flatMap((f) => sourceRangeToOutputRanges(plan.cuts.map((c) => ({ start: c.start, duration: c.duration, trimStart: c.trimStart, trimEnd: c.trimEnd })), f.start, f.end))
+      const bad = frozen.filter((f) => overlapSec(f, f) > 0 && explained.reduce((s, e) => s + overlapSec(f, e), 0) < 0.9 * (f.end - f.start))
+      return ok(bad.length === 0, { frozen, explainedBySource: explained, unexplained: bad })
+    }, to),
+    () => runCheck('visual.first_last_frame', true, async () => {
+      const v = await getInfo()
+      const dur = v.duration ?? total
+      const luma = async (t: number) => { const g = await grayFrame(i.renderPath, t, 32, 56); return g.reduce((s, x) => s + x, 0) / g.length }
+      const [a, b] = [await luma(0.05), await luma(Math.max(0, dur - 0.15))]
+      return ok(a > T.minFrameLuma && b > T.minFrameLuma, { firstLuma: a, lastLuma: b, min: T.minFrameLuma })
+    }, to),
+    () => runCheck('audio.present_and_alive', true, async () => {
+      const v = await getInfo()
+      if (!v.hasAudio) return fail({ reason: 'no audio stream' })
+      if (sourceSilent) return pass({ intentionallySilent: true, note: 'source has no audible audio; silent track by design' })
+      const vol = await volumeStats(i.renderPath)
+      const silent = await detectSilence(i.renderPath, { minDuration: 0.5 })
+      const silentSec = silent.reduce((s, x) => s + (x.end - x.start), 0)
+      const expectedSilent = plan ? i.analysis.ranges.silent.flatMap((r) => sourceRangeToOutputRanges(plan.cuts.map((c) => ({ start: c.start, duration: c.duration, trimStart: c.trimStart, trimEnd: c.trimEnd })), r.start, r.end)).reduce((s, x) => s + (x.end - x.start), 0) : 0
+      const ratio = silentSec / Math.max(0.1, total), expectedRatio = expectedSilent / Math.max(0.1, total)
+      return ok(vol.meanDb !== null && vol.meanDb > T.deadAudioDb && ratio <= expectedRatio + T.maxSilentExcess, { ...vol, silentRatio: ratio, expectedSilentRatio: expectedRatio })
+    }, to),
+    () => runCheck('audio.no_clipping', false, async () => {
+      const vol = await volumeStats(i.renderPath)
+      return vol.maxDb === null ? pass({ note: 'silent' }) : ok(vol.maxDb < -0.05, vol)
+    }, to),
+    () => runCheck('timeline.segment_order_and_trim', true, async () => {
+      if (!plan) throw new Error('manifest not renderable')
+      const n = plan.cuts.length
+      const probeAt = plan.cuts.map((c) => Math.min(0.5, c.duration / 2))
+      const outSig: Buffer[] = [], srcSig: Buffer[] = []
+      for (let k = 0; k < n; k++) {
+        outSig.push(await frameSignature(i.renderPath, plan.cuts[k].start + probeAt[k]))
+        srcSig.push(await frameSignature(i.sourceFile, plan.cuts[k].trimStart + probeAt[k], { cover: true }))
+      }
+      const rows = outSig.map((o, k) => {
+        const d = srcSig.map((s) => signatureDistance(o, s))
+        const best = Math.min(...d.filter((_, j) => j !== k), Infinity)
+        return { cut: k + 1, dist: Number(d[k].toFixed(1)), bestOther: Number.isFinite(best) ? Number(best.toFixed(1)) : null, ok: d[k] <= T.frameMatchMaxDist && !(best + T.frameMismatchMargin < d[k]) }
+      })
+      return ok(rows.every((r) => r.ok), rows)
+    }, { timeoutMs: 240_000 }),
+    () => runCheck('overlay.matches_manifest', true, async () => {
+      const expected = assFromPayload({ ...i.payload, totalDuration: total })
+      const key = (e: OverlayEvent) => `${e.kind}|${e.text}|${e.start.toFixed(2)}|${e.end.toFixed(2)}`
+      const a = expected.events.map(key).sort(), b = (i.render.overlayEvents || []).map(key).sort()
+      const assHash = expected.events.length ? sha256(expected.ass) : null
+      return ok(JSON.stringify(a) === JSON.stringify(b) && assHash === i.render.assSha256, { expectedCount: a.length, renderedCount: b.length })
+    }, to),
+    () => runCheck('overlay.safe_area_no_clipping', true, async () => {
+      const built = assFromPayload({ ...i.payload, totalDuration: total })
+      if (!built.events.length) return pass({ overlays: 0 })
+      const rows: unknown[] = []
+      let allOk = true
+      for (const [k, ev] of built.events.slice(0, 12).entries()) {
+        const mid = Math.min(total - 0.05, (ev.start + ev.end) / 2)
+        // isolate this one event: same script, only this Dialogue line
+        const lines = built.ass.split('\n')
+        const head = lines.filter((l) => !l.startsWith('Dialogue:'))
+        const dlg = lines.filter((l) => l.startsWith('Dialogue:'))
+        const mine = dlg.find((l) => l.includes(ev.text.replace(/\s+/g, ' ').split(' ')[0]) && l.includes(`,${ev.kind === 'headline' ? 'Head' : ev.kind === 'subtitle' ? 'Sub' : 'Fx'},`)) || dlg[k]
+        const ass = [...head.slice(0, head.findIndex((l) => l.startsWith('Format: Layer')) + 1), mine ?? ''].join('\n')
+        const mask = await overlayMask(ass, i.workDir, mid, `${k}`)
+        const box = bbox(mask, CANVAS.w, CANVAS.h)
+        const okBox = !!box && box.x0 >= CANVAS.w * SAFE.left && box.x1 <= CANVAS.w * (1 - SAFE.right) && box.y0 >= CANVAS.h * SAFE.top && box.y1 <= CANVAS.h * SAFE.bottom
+        if (!okBox) allOk = false
+        rows.push({ kind: ev.kind, text: ev.text.slice(0, 20), box, ok: okBox })
+      }
+      return ok(allOk, rows)
+    }, { timeoutMs: 240_000 }),
+    () => runCheck('overlay.visible_in_output', true, async () => {
+      if (!plan) throw new Error('manifest not renderable')
+      const built = assFromPayload({ ...i.payload, totalDuration: total })
+      const texts = built.events.filter((e) => e.kind !== 'headline').slice(0, 6)
+      if (!texts.length) return pass({ overlays: 0 })
+      const rows: unknown[] = []
+      for (const ev of texts) {
+        const t = Math.min(total - 0.05, (ev.start + ev.end) / 2)
+        const cut = plan.cuts.find((c) => t >= c.start && t < c.start + c.duration) ?? plan.cuts[plan.cuts.length - 1]
+        const outG = await grayFrame(i.renderPath, t, 270, 480)
+        const srcG = await grayFrame(i.sourceFile, cut.trimStart + (t - cut.start), 270, 480, 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
+        let delta = 0
+        for (let p = 0; p < outG.length; p++) delta += Math.abs(outG[p] - srcG[p])
+        rows.push({ text: ev.text.slice(0, 16), t: Number(t.toFixed(2)), meanDelta: Number((delta / outG.length).toFixed(2)) })
+      }
+      return ok((rows as Array<{ meanDelta: number }>).every((r) => r.meanDelta >= 0.4), rows)
+    }, { timeoutMs: 240_000 })
+  ]
+  const gate = await runGate(checks)
+  if (i.contactSheetOut) { try { await contactSheet(i.renderPath, i.contactSheetOut, { cols: 6, rows: 3, tileWidth: 160, duration: total }) } catch { /* optional artifact */ } }
+  return { gate, metrics }
+}
