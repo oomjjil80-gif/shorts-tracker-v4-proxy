@@ -17,18 +17,11 @@ import { decisionExecutor, finalExecutor, packageExecutor } from './stages/finis
 
 const workerId = process.env.WORKER_ID || `${hostname()}-${process.pid}`
 const pollMs = Number(process.env.WORKER_POLL_MS || 2000)
-// Model-assisted planning is paid, so every route is explicit opt-in.
+// Model-assisted planning is a paid external call, so it is explicit opt-in even if a provider key exists.
 const openAi = process.env.WORKER_AI_PLANNER === 'on' && process.env.OPENAI_API_KEY
   ? { apiKey: process.env.OPENAI_API_KEY, model: process.env.OPENAI_PLAN_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini' }
   : null
-// Railway does not need a provider key. The existing Vercel API owns the provider call; this worker only signs the request.
-const semanticProxy = process.env.WORKER_SEMANTIC_PLAN_PROXY === 'on' && process.env.BLOB_READ_WRITE_TOKEN
-  ? {
-      endpoint: process.env.SEMANTIC_PLAN_PROXY_URL || 'https://shorts-tracker-v4-proxy.vercel.app/api/story',
-      proofKey: process.env.BLOB_READ_WRITE_TOKEN
-    }
-  : null
-const executors = [analyzeExecutor, createPlanExecutor({ openAi, semanticProxy }), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor]
+const executors = [analyzeExecutor, createPlanExecutor({ openAi }), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor]
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function main() {
@@ -37,7 +30,7 @@ async function main() {
   const blobs = createVercelJobBlobStore()
   let stopping = false
   for (const sig of ['SIGTERM', 'SIGINT'] as const) process.on(sig, () => { stopping = true })
-  console.log(`[worker ${workerId}] started planner=${semanticProxy ? 'semantic-proxy' : openAi ? 'direct-openai' : 'heuristic'}`)
+  console.log(`[worker ${workerId}] started`)
   while (!stopping) {
     try {
       const out = await runOnce({ store, blobs, workerId, executors, resolveSourceAsset: (id) => getSourceAsset(id) as any, resolveSourceFile: createBlobSourceFileResolver(blobGet as any), leaseMs: 120_000 })
