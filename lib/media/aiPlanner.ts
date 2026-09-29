@@ -1,55 +1,86 @@
-// Optional model-assisted planning (headline / short captions / better beat choice) on top of the deterministic plan.
-// One model, one call. Any failure, timeout or invalid answer => the caller falls back to the deterministic plan and
-// records why. The model never sees or produces anything that is not validated by validateVariant().
+// Semantic story analysis (one vision-model call). The model does NOT cut the video: it only describes the story
+// structure in source time (causal start, payoff, what to exclude and why, whether a preview hook is safe, at most two
+// grounded captions). The deterministic planner builds the edit from it, and validateStory() rejects anything that
+// does not fit the measured source. Any failure => semantic status != ok => content checks UNKNOWN (never PASS).
 import type { SourceAnalysis } from './analyze.js'
-import { validateVariant, type VariantSpec } from './plan.js'
+import { EXCLUDE_REASONS, STORY_LIMITS, STORY_TYPES, semanticFromStory, validateStory, type SemanticResult } from './story.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-shorts-plan/1'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/2'
 
-const SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['variants'],
-  properties: { variants: { type: 'array', minItems: 1, maxItems: 3, items: {
-    type: 'object', additionalProperties: false, required: ['label', 'rationale', 'beats', 'headline', 'events'],
-    properties: {
-      label: { type: 'string' }, rationale: { type: 'string' }, headline: { type: 'string' },
-      beats: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object', additionalProperties: false, required: ['trimStart', 'trimEnd'], properties: { trimStart: { type: 'number' }, trimEnd: { type: 'number' } } } },
-      events: { type: 'array', maxItems: 6, items: { type: 'object', additionalProperties: false, required: ['start', 'end', 'text'], properties: { start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' } } } }
-    } } } }
+const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
+export const STORY_JSON_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: ['storyType', 'confidence', 'causalStart', 'setupRanges', 'escalationRanges', 'payoffRange', 'recommendedEnd', 'excludeRanges', 'hookStrategy', 'previewRange', 'hookConfidence', 'hookReason', 'minimalCaptions', 'publishabilityWarnings'],
+  properties: {
+    storyType: { type: 'string', enum: [...STORY_TYPES] },
+    confidence: { type: 'number' },
+    causalStart: { type: 'number' },
+    setupRanges: { type: 'array', items: range },
+    escalationRanges: { type: 'array', items: range },
+    payoffRange: range,
+    recommendedEnd: { type: 'number' },
+    excludeRanges: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['start', 'end', 'reason'], properties: { start: { type: 'number' }, end: { type: 'number' }, reason: { type: 'string', enum: [...EXCLUDE_REASONS] } } } },
+    hookStrategy: { type: 'string', enum: ['chronological', 'preview'] },
+    previewRange: { anyOf: [range, { type: 'null' }] },
+    hookConfidence: { type: 'number' },
+    hookReason: { type: 'string' },
+    minimalCaptions: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['kind', 'start', 'end', 'text', 'basis'], properties: { kind: { type: 'string', enum: ['hook', 'payoff'] }, start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, basis: { type: 'string' } } } },
+    publishabilityWarnings: { type: 'array', items: { type: 'string' } }
+  }
 }
 
-export type AiPlannerDeps = { apiKey: string; model: string; fetchImpl?: typeof fetch; contactSheetJpeg?: Buffer | null; timeoutMs?: number }
+export function storyPrompt(a: SourceAnalysis): string {
+  const signals = {
+    durationSec: a.media.duration, hasAudio: a.media.hasAudio,
+    scenes: a.scenes, usable: a.usable, black: a.ranges.black, frozen: a.ranges.freeze, silent: a.ranges.silent,
+    perSecond: a.timeline.map((s) => [s.t, s.visual, s.audioDb])
+  }
+  return [
+    'You are the story editor for vertical YouTube Shorts cut from ONE source video. The image is a keyframe sheet; each tile is labeled with its SOURCE time in seconds.',
+    'Describe the story structure. ALL times are SOURCE seconds within the video duration.',
+    '- causalStart: where the event starts making sense for a first-time viewer (skip confusing intros, title cards, previews of later moments).',
+    '- setupRanges / escalationRanges / payoffRange: the causal story. payoffRange = the moment the story pays off (the funniest/most surprising/resolving action).',
+    `- recommendedEnd: where the Short should end: right after the payoff (at most ${STORY_LIMITS.maxTailAfterPayoff}s after payoffRange.end). NEVER the file end just because the file continues.`,
+    '- excludeRanges: footage that is not the story: intro_confusion, repeat (same action again), dead_air (nothing happens and it is not needed to understand), product_demo (product/robot/device demo, ads), foreign_text (burned-in foreign-language product text or titles), post_payoff, unrelated.',
+    '  Do NOT exclude calm moments that are needed to understand the action or the relationship between people.',
+    '- hookStrategy: "chronological" by default. "preview" ONLY if showing a <=3s moment from the escalation/payoff first is clearly understandable on its own AND returning to the start will not confuse; give previewRange and hookConfidence (0..1). Otherwise previewRange=null.',
+    `- minimalCaptions: at most ${STORY_LIMITS.maxCaptions} short Korean captions (<=${STORY_LIMITS.maxCaptionChars} chars), only a hook question and/or a payoff punchline, each tied to what is VISIBLE (basis). No narration, no invented facts, no fake dialogue, no names/places/ages you cannot see. Empty array if the video is clear without text.`,
+    '- publishabilityWarnings: anything that still makes it hard to publish (e.g. watermark, burned-in foreign text you could not avoid).',
+    '- storyType + confidence: be honest; use "unclear" and a low confidence if you cannot tell.',
+    'Measured signals (per second: [t, visualChange, audioDb]):', JSON.stringify(signals)
+  ].join('\n')
+}
 
-export async function aiPlanVariants(a: SourceAnalysis, baseline: VariantSpec[], deps: AiPlannerDeps): Promise<{ variants: VariantSpec[]; model: string; usage: unknown }> {
+export type StoryModelDeps = { apiKey: string; model: string; fetchImpl?: typeof fetch; keyframeJpeg?: Buffer | null; timeoutMs?: number }
+export type StoryModelResult = SemanticResult & { model: string; usage: unknown; warnings: string[] }
+
+// Never throws: returns a SemanticResult whose status says why it could not be trusted.
+export async function aiAnalyzeStory(a: SourceAnalysis, deps: StoryModelDeps): Promise<StoryModelResult> {
   const f = deps.fetchImpl ?? fetch
-  const summary = { duration: a.media.duration, scenes: a.scenes, highlights: a.highlights, usable: a.usable, silent: a.ranges.silent, hasAudio: a.media.hasAudio, baseline: baseline.map((v) => ({ id: v.id, beats: v.beats.map((b) => [b.trimStart, b.trimEnd]) })) }
-  const content: any[] = [{ type: 'input_text', text: [
-    'You edit vertical YouTube Shorts from ONE source video. The source video carries the story; text is minimal.',
-    'Return 1-3 genuinely different edits (different hook / order / length). All times are SOURCE seconds. Beats must be inside usable ranges, >=0.8s, total <=58s.',
-    'headline: <=24 chars, only if it adds curiosity (else empty string). events: short Korean captions (<=20 chars) in SOURCE time, only where they help (may be empty).',
-    'Do not invent facts you cannot see. Analysis JSON:', JSON.stringify(summary)
-  ].join('\n') }]
-  if (deps.contactSheetJpeg) content.push({ type: 'input_image', image_url: `data:image/jpeg;base64,${deps.contactSheetJpeg.toString('base64')}` })
+  let model = deps.model, usage: unknown = null
+  const out = (status: SemanticResult['status'], reason: string, warnings: string[] = []): StoryModelResult => ({ status, reason, story: null, model, usage, warnings })
+  if (!deps.keyframeJpeg) return out('failed', 'no keyframe sheet: a story cannot be judged from numbers alone')
+  const content: any[] = [{ type: 'input_text', text: storyPrompt(a) }, { type: 'input_image', image_url: `data:image/jpeg;base64,${deps.keyframeJpeg.toString('base64')}` }]
   const ctl = new AbortController()
-  const timer = setTimeout(() => ctl.abort(), deps.timeoutMs ?? 60_000)
+  const timer = setTimeout(() => ctl.abort(), deps.timeoutMs ?? 90_000)
   try {
-    const res = await f('https://api.openai.com/v1/responses', {
-      method: 'POST', signal: ctl.signal,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${deps.apiKey}` },
-      body: JSON.stringify({ model: deps.model, input: [{ role: 'user', content }], text: { format: { type: 'json_schema', name: 'shorts_plan', strict: true, schema: SCHEMA } } })
-    })
+    let res: Response
+    try {
+      res = await f('https://api.openai.com/v1/responses', {
+        method: 'POST', signal: ctl.signal,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${deps.apiKey}` },
+        body: JSON.stringify({ model: deps.model, input: [{ role: 'user', content }], text: { format: { type: 'json_schema', name: 'story_analysis', strict: true, schema: STORY_JSON_SCHEMA } } })
+      })
+    } catch (e: any) { return out('failed', `provider unreachable: ${String(e?.message || e).slice(0, 200)}`) }
     const data: any = await res.json().catch(() => null)
-    if (!res.ok) throw new Error(`provider ${res.status}: ${data?.error?.message || 'error'}`)
+    if (!res.ok) return out('failed', `provider ${res.status}: ${String(data?.error?.message || 'error').slice(0, 200)}`)
+    model = data?.model || deps.model; usage = data?.usage ?? null
     const text = data?.output_text ?? data?.output?.flatMap((o: any) => o?.content || []).find((c: any) => typeof c?.text === 'string')?.text
-    if (typeof text !== 'string') throw new Error('provider returned no text')
+    if (typeof text !== 'string') return out('failed', 'provider returned no text')
     let parsed: any
-    try { parsed = JSON.parse(text) } catch { throw new Error('provider returned invalid JSON') }
-    const out: VariantSpec[] = (parsed.variants || []).map((v: any, i: number) => ({
-      id: `v${i + 1}`, label: String(v.label || `안 ${i + 1}`).slice(0, 30), rationale: String(v.rationale || '').slice(0, 200),
-      beats: (v.beats || []).map((b: any, j: number) => ({ label: `beat ${j + 1}`, trimStart: Number(b.trimStart), trimEnd: Number(b.trimEnd) })),
-      ...(v.headline ? { headline: String(v.headline) } : {}), events: (v.events || []).map((e: any) => ({ start: Number(e.start), end: Number(e.end), text: String(e.text) }))
-    }))
-    const valid = out.filter((v) => validateVariant(v, a).length === 0)
-    if (!valid.length) throw new Error(`no valid variant in model output (${out.map((v) => validateVariant(v, a).join('; ')).join(' | ') || 'empty'})`)
-    return { variants: valid, model: data?.model || deps.model, usage: data?.usage ?? null }
+    try { parsed = JSON.parse(text) } catch { return out('failed', 'provider returned invalid JSON') }
+    const v = validateStory(parsed, a, { model, promptVersion: AI_PLANNER_PROMPT_VERSION })
+    if (!v.story) return out('invalid', v.errors.join('; ').slice(0, 500), v.warnings)
+    return { ...semanticFromStory(v.story), model, usage, warnings: v.warnings }
   } finally { clearTimeout(timer) }
 }

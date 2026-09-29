@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { assTime, assColor, buildAss, fitFontSize, sanitizeText, SAFE } from '../lib/media/ass.js'
 import { chronologicalBeats, planVariants, validateVariant, variantDistance, toJobPlan, PLAN_LIMITS } from '../lib/media/plan.js'
 import { computeHighlights, subtractIntervals, type SourceAnalysis } from '../lib/media/analyze.js'
-import { aiPlanVariants } from '../lib/media/aiPlanner.js'
+import { aiAnalyzeStory } from '../lib/media/aiPlanner.js'
 import { createPlanExecutor } from '../worker/stages/plan.js'
 import { createMemoryBlobStore } from '../lib/jobs/blobs.js'
 
@@ -51,17 +51,15 @@ test('plan: quiet uniform footage is kept whole; dead air in an otherwise active
   assert.ok(v.every((x) => x.beats.reduce((s, b) => s + b.trimEnd - b.trimStart, 0) <= PLAN_LIMITS.maxOutputSeconds + 0.01))
 })
 
-test('plan: variants are meaningfully different or not offered; hook-first only when the peak is not already the opening', () => {
+test('plan: without a validated story there is exactly one chronological cut — never a hook-first edit from visual activity', () => {
   const peakLate = analysis({ duration: 30, visual: (t) => (t >= 22 && t < 25 ? 0.9 : 0.05) })
   peakLate.highlights = computeHighlights(peakLate.timeline)
   const vs = planVariants(peakLate)
-  assert.ok(vs.length >= 2)
-  assert.ok(Math.abs(vs[0].beats[0].trimStart - vs[1].beats[0].trimStart) > 3, 'recommended opens differently from the chronological cut')
-  for (let i = 0; i < vs.length; i++) for (let j = i + 1; j < vs.length; j++) assert.ok(variantDistance(vs[i].beats, vs[j].beats) >= 0.15)
-  const peakEarly = analysis({ duration: 30, visual: (t) => (t < 3 ? 0.9 : 0.05) })
-  peakEarly.highlights = computeHighlights(peakEarly.timeline)
-  assert.equal(planVariants(peakEarly)[0].label.includes('원본 순서'), true)
-  // identical edits collapse to one
+  assert.equal(vs.length, 1)
+  assert.equal(vs[0].kind, 'chronological')
+  assert.ok(vs[0].beats[0].trimStart < 1, 'opens at the start, not at the activity peak')
+  for (let i = 1; i < vs[0].beats.length; i++) assert.ok(vs[0].beats[i].trimStart >= vs[0].beats[i - 1].trimEnd, 'source order')
+  assert.deepEqual(vs[0].events ?? [], [], 'no text without a grounded story')
   const same = [{ label: 'a', trimStart: 0, trimEnd: 10 }]
   assert.equal(variantDistance(same, same), 0)
 })
@@ -80,33 +78,49 @@ test('plan validation rejects out-of-range, too-short, black-covering, over-long
   assert.deepEqual([jp.schema, jp.profile, jp.variantPlan.plansTimeDomain, jp.variantPlan.headline], ['job-plan/1', 'source_shorts', 'source', 'H'])
 })
 
-const okModel = { variants: [{ label: 'AI안', rationale: 'r', headline: '왜 안 피할까', beats: [{ trimStart: 2, trimEnd: 8 }, { trimStart: 12, trimEnd: 20 }], events: [{ start: 3, end: 5, text: '잠깐?' }] }] }
+const okStory = {
+  storyType: 'single_event', confidence: 0.9, causalStart: 1, setupRanges: [{ start: 1, end: 6 }], escalationRanges: [{ start: 6, end: 14 }],
+  payoffRange: { start: 14, end: 19 }, recommendedEnd: 19.5, excludeRanges: [{ start: 22, end: 30, reason: 'product_demo' }],
+  hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.2, hookReason: 'short causal event',
+  minimalCaptions: [{ kind: 'payoff', start: 15, end: 17, text: '결국 따라간다', basis: 'child crawls after the man' }], publishabilityWarnings: []
+}
 const fakeFetch = (body: any, status = 200) => (async () => ({ ok: status < 400, status, json: async () => body })) as unknown as typeof fetch
+const JPEG = Buffer.from('fake-jpeg')
 
-test('AI planner: valid structured output is accepted; invalid/failed output throws (caller falls back and records why)', async () => {
+test('semantic story model: valid output => ok; provider/parse/validation failures => failed/invalid (never ok); no keyframes => failed', async () => {
   const a = analysis()
-  const good = await aiPlanVariants(a, [], { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okModel), usage: { total_tokens: 5 } }) })
-  assert.equal(good.variants[0].headline, '왜 안 피할까'); assert.equal(good.model, 'gpt-x')
-  await assert.rejects(() => aiPlanVariants(a, [], { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ output_text: 'not json' }) }), /invalid JSON/)
-  await assert.rejects(() => aiPlanVariants(a, [], { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ error: { message: 'quota' } }, 429) }), /provider 429/)
-  const outside = { variants: [{ ...okModel.variants[0], beats: [{ trimStart: 0, trimEnd: 99 }] }] }
-  await assert.rejects(() => aiPlanVariants(a, [], { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ output_text: JSON.stringify(outside) }) }), /no valid variant/)
+  const good = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okStory), usage: { total_tokens: 5 } }) })
+  assert.equal(good.status, 'ok'); assert.equal(good.model, 'gpt-x'); assert.equal(good.story!.payoffRange.end, 19)
+  assert.equal((await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ output_text: 'not json' }) })).status, 'failed')
+  const down = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ error: { message: 'quota' } }, 429) })
+  assert.equal(down.status, 'failed'); assert.match(down.reason!, /provider 429/)
+  const outside = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ output_text: JSON.stringify({ ...okStory, payoffRange: { start: 25, end: 99 } }) }) })
+  assert.equal(outside.status, 'invalid'); assert.match(outside.reason!, /outside source/)
+  const low = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ output_text: JSON.stringify({ ...okStory, confidence: 0.3 }) }) })
+  assert.equal(low.status, 'low_confidence')
+  assert.equal((await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: null, fetchImpl: fakeFetch({}) })).status, 'failed')
 })
 
-test('PLAN stage: model failure falls back to the deterministic plan and records the reason; success records model + prompt version', async () => {
+test('PLAN stage: model failure keeps the deterministic plan and records semantic status; success stores the story and plans from it', async () => {
   const blobs = createMemoryBlobStore()
   const a = analysis({ visual: (t) => (t >= 22 && t < 25 ? 0.9 : 0.05) }); a.highlights = computeHighlights(a.timeline)
   const ref = (await blobs.putJson('analysis/x.json', a)).path
+  const sheet = (await blobs.putBytes('analysis/keyframes/x.jpg', JPEG, 'image/jpeg')).path
   const job: any = { id: 'job_1', sourceAssetId: a.sourceAssetId, planRev: 0 }
-  const previous = async () => ({ outputRef: ref, result: {} }) as any
+  const previous = async () => ({ outputRef: ref, result: { keyframeSheetRef: sheet } }) as any
   const failing = createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ error: { message: 'down' } }, 500) } })
   const r1: any = await failing.run({ job, blobs, previous, signal: new AbortController().signal } as any)
-  assert.equal(r1.result.provider, 'heuristic'); assert.match(r1.result.fallback.reason, /provider 500/)
-  assert.ok(r1.result.variants.length >= 1 && r1.planRef === r1.result.variants[0].planRef)
-  const working = createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okModel) }) } })
+  assert.equal(r1.result.provider, 'heuristic'); assert.equal(r1.result.semantic.status, 'failed'); assert.match(r1.result.fallback.reason, /provider 500/)
+  assert.equal(r1.result.variants.length, 1); assert.equal(r1.planRef, r1.result.variants[0].planRef)
+  const none: any = await createPlanExecutor().run({ job, blobs, previous, signal: new AbortController().signal } as any)
+  assert.equal(none.result.semantic.status, 'unavailable'); assert.equal(none.result.semantic.storyRef, null)
+  const working = createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okStory) }) } })
   const r2: any = await working.run({ job, blobs, previous, signal: new AbortController().signal } as any)
-  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion], ['openai', 'gpt-x', null, 'source-shorts-plan/1'])
+  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion, r2.result.semantic.status], ['openai', 'gpt-x', null, 'source-story-analysis/2', 'ok'])
+  const story: any = await blobs.getJson(r2.result.semantic.storyRef)
+  assert.equal(story.schema, 'story-analysis/1')
   const stored: any = await blobs.getJson(r2.planRef)
-  assert.equal(stored.variantPlan.headline, '왜 안 피할까'); assert.equal(stored.variantPlan.plansTimeDomain, 'source')
+  assert.ok(stored.variantPlan.beats.every((b: any) => b.trimEnd <= 19.5 + 1e-6), 'plan ends at the payoff, not at the file end')
+  assert.deepEqual(stored.variantPlan.events.map((e: any) => e.text), ['결국 따라간다']); assert.equal(stored.variantPlan.plansTimeDomain, 'source')
   await assert.rejects(() => createPlanExecutor().run({ job, blobs, previous: async () => null, signal: new AbortController().signal } as any), /ANALYZE/)
 })

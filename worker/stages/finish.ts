@@ -43,10 +43,13 @@ export const packageExecutor: StageExecutor = {
       finalRenderRef: fin.outputRef, renderHash: v.renderHash, manifestHash: v.manifestHash, sourceAssetId: job.sourceAssetId,
       durationSec: v.duration, variant: { id: v.variantId, label: v.label },
       qc: { decision: v.gate.decision, counts: v.gate.counts, checks: v.gate.checks.map((c: any) => ({ id: c.id, required: c.required, status: c.status })) },
+      contentQc: v.contentGate ? { decision: v.contentGate.decision, reasons: v.contentGate.reasons, checks: v.contentGate.checks.map((c: any) => ({ id: c.id, required: c.required, status: c.status })) } : { decision: 'BLOCK', reasons: ['UNKNOWN: content gate not recorded'], checks: [] },
+      // true only if BOTH the technical and the content gate passed; an approved-but-not-publishable video stays flagged
+      publishable: v.publishable === true,
       override: (decision?.result as any)?.override ?? null,
       metadata: { title: null, description: null, tags: [], pinnedComment: null }
     }
     const stored = await putAddressed(blobs, 'packages', pkg)
-    return { outputRef: stored.path, outputHash: sha256(stored.path), result: { packageRef: stored.path, finalRenderRef: fin.outputRef, renderHash: v.renderHash, manifestHash: v.manifestHash, durationSec: v.duration } }
+    return { outputRef: stored.path, outputHash: sha256(stored.path), result: { packageRef: stored.path, finalRenderRef: fin.outputRef, renderHash: v.renderHash, manifestHash: v.manifestHash, durationSec: v.duration, publishable: v.publishable === true } }
   }
 }

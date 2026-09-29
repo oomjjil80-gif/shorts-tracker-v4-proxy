@@ -168,3 +168,15 @@ export async function contactSheet(file: string, out: string, o: { cols: number;
   const fps = Math.max(0.05, n / Math.max(1, o.duration))
   await runOk(['-y', '-i', file, '-an', '-vf', `fps=${fps.toFixed(4)},scale=${o.tileWidth}:-2,tile=${o.cols}x${o.rows}:padding=4:margin=4:color=0x202020`, '-frames:v', '1', '-q:v', '4', out])
 }
+
+// Keyframe sheet for semantic review: ~1 frame per second (max 40 tiles), each tile stamped with its SOURCE second.
+export async function keyframeSheet(file: string, out: string, o: { duration: number; fontFile: string; maxTiles?: number; tileWidth?: number }): Promise<{ tiles: number; everySec: number }> {
+  const maxTiles = o.maxTiles ?? 40
+  const everySec = Math.max(1, Math.ceil(o.duration / maxTiles))
+  const tiles = Math.max(1, Math.ceil(o.duration / everySec))
+  const cols = Math.min(8, tiles), rows = Math.ceil(tiles / cols)
+  const esc = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
+  const label = `drawtext=fontfile='${esc(o.fontFile)}':text='%{eif\\:t\\:d}s':x=6:y=6:fontsize=26:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=4`
+  await runOk(['-y', '-i', file, '-an', '-vf', `fps=1/${everySec},scale=${o.tileWidth ?? 180}:-2,${label},tile=${cols}x${rows}:padding=4:margin=4:color=0x202020`, '-frames:v', '1', '-q:v', '4', out])
+  return { tiles, everySec }
+}
