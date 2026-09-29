@@ -13,11 +13,21 @@
     "express": "^4.18.2",
     "ffmpeg-static": "5.2.0",
     "mediainfo.js": "0.3.8",
+    "pg": "^8.23.0",
     "puppeteer-core": "25.11.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17",
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.23.1",
     "tsx": "4.23.15",
     "typescript": "7.0.2"
+  },
+  "scripts": {
+    "test": "tsx --test tools/*.test.ts tools/*.test.mjs",
+    "typecheck": "tsc --noEmit -p .",
+    "worker": "tsx worker/index.ts",
+    "db:migrate": "tsx tools/migrate.ts",
+    "sync-core": "node tools/sync-tracker-core.mjs"
   }
 }
