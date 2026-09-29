@@ -6,6 +6,10 @@ import { assFromPayload, FONTS_DIR, type OverlayEvent } from './ass.js'
 import { runOk } from './ffmpeg.js'
 
 export const OUTPUT = { width: 1080, height: 1920, fps: 30 } as const
+// Container hosts can expose dozens of CPUs while the Railway service has a much smaller memory/process budget.
+// Letting libx264 auto-detect the host produced 60 encoder threads in Production. Bound it explicitly so a 1080x1920
+// Shorts render has predictable memory/thread usage. This is an encoder setting only; output quality stays CRF-driven.
+export const VIDEO_ENCODER_THREADS = 4
 
 export class UnsupportedManifestError extends Error {
   constructor(message: string) { super(message); this.name = 'UnsupportedManifestError' }
@@ -67,7 +71,7 @@ export async function renderPayload(payload: any, o: { sourceFile: string; sourc
   const args = ['-y']
   for (const c of cuts) args.push('-ss', c.trimStart.toFixed(3), '-t', c.duration.toFixed(3), '-i', o.sourceFile)
   args.push('-filter_complex_script', graphPath, '-map', '[vout]', '-map', '[aout]',
-    '-c:v', 'libx264', '-profile:v', 'high', '-level', '4.1', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', '19', '-maxrate', '14M', '-bufsize', '28M', '-r', String(OUTPUT.fps), '-g', '60', '-sc_threshold', '0',
+    '-c:v', 'libx264', '-threads:v', String(VIDEO_ENCODER_THREADS), '-profile:v', 'high', '-level', '4.1', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', '19', '-maxrate', '14M', '-bufsize', '28M', '-r', String(OUTPUT.fps), '-g', '60', '-sc_threshold', '0',
     '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2',
     '-t', total.toFixed(3), '-movflags', '+faststart', '-map_metadata', '-1', o.outPath)
   await runOk(args, { signal: o.signal, timeoutMs: 15 * 60_000 })
