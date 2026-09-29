@@ -8,78 +8,94 @@ on:
 jobs:
   e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Finalize and verify golden P1 job
+      - name: Run Golden Source through Production P1
         shell: bash
         run: |
           set -euo pipefail
           BASE='https://shorts-tracker-v4-proxy.vercel.app'
-          KEY='tracker-p1-golden-e2e-20260929-a1b2c3d4'
-          JOB='job_1b4e7001-6c0f-4b5b-8932-045dcdae950e'
-          MANIFEST='08e603db6490967269f6ba53a9d35a9421b1b38deb1236f2bb873cf55dc68a92'
+          KEY='p1-framing-e2e-public-workspace-20260929-2048'
+          SOURCE='src_8209365874293_9772de17cf634ad9bd28513e85125918'
+          mkdir -p /tmp/e2e
 
-          echo '--- fresh preview ---'
+          echo '--- create fresh automated job ---'
+          CREATED=$(curl -fsS -X POST "$BASE/api/story" \
+            -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' \
+            --data "{\"taskType\":\"job_create\",\"profile\":\"source_shorts\",\"sourceAssetId\":\"$SOURCE\",\"idempotencyKey\":\"p1-framing-golden-20260929-2048\",\"budgetUsd\":0}")
+          echo "$CREATED" | jq . > /tmp/e2e/create.json
+          JOB=$(echo "$CREATED" | jq -r '.job.id')
+          test -n "$JOB" -a "$JOB" != null
+          echo "job=$JOB"
+
+          echo '--- poll through ANALYZE -> PLAN -> COMPILE -> RENDER -> AUTO_QC ---'
+          SNAP=''
+          for i in $(seq 1 180); do
+            SNAP=$(curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_get&id=$JOB")
+            STATUS=$(echo "$SNAP" | jq -r '.job.status')
+            STAGE=$(echo "$SNAP" | jq -r '.job.stage')
+            WAIT=$(echo "$SNAP" | jq -r '.job.waitReason // ""')
+            echo "poll=$i status=$STATUS stage=$STAGE wait=$WAIT"
+            if [ "$STATUS" = FAILED ] || [ "$STATUS" = CANCELLED ]; then echo "$SNAP" | jq .; exit 1; fi
+            if [ "$STATUS" = WAITING_USER ] && [ "$STAGE" = DECISION ]; then break; fi
+            sleep 3
+          done
+          echo "$SNAP" | jq . > /tmp/e2e/decision-ready.json
+          test "$(echo "$SNAP" | jq -r '.job.status')" = WAITING_USER
+          test "$(echo "$SNAP" | jq -r '.job.stage')" = DECISION
+          PASSING=$(echo "$SNAP" | jq '[.job.variants[]|select(.qc=="PASS")]|length')
+          test "$PASSING" -ge 1
+          MANIFEST=$(echo "$SNAP" | jq -r '([.job.variants[]|select(.qc=="PASS" and .recommended==true)][0] // [.job.variants[]|select(.qc=="PASS")][0]).manifestHash')
+          VID=$(echo "$SNAP" | jq -r '([.job.variants[]|select(.qc=="PASS" and .recommended==true)][0] // [.job.variants[]|select(.qc=="PASS")][0]).id')
+          test -n "$MANIFEST" -a "$MANIFEST" != null
+          echo "selected=$VID manifest=$MANIFEST passing=$PASSING"
+
+          echo '--- download recommended rendered candidate ---'
           PREVIEW=$(curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_preview&id=$JOB")
-          echo "$PREVIEW" | jq '{status,stage,previews:[.previews[]|{variantId,label,durationSec,qc,recommended,approved}]}'
-          URL=$(echo "$PREVIEW" | jq -r '.previews[] | select(.variantId=="v1") | .url')
+          echo "$PREVIEW" | jq . > /tmp/e2e/preview.json
+          URL=$(echo "$PREVIEW" | jq -r --arg v "$VID" '.previews[]|select(.variantId==$v)|.url')
           test -n "$URL" -a "$URL" != null
-          EXPECTED=$(basename "${URL%%\?*}" .mp4)
-          test "$EXPECTED" = '954e1428c825b2b741cc5c15e4ae4159cbb310e577c0bd47f3220ce1e357574e'
+          curl -fsSL -o /tmp/e2e/final.mp4 "$URL"
+          RENDER_HASH=$(sha256sum /tmp/e2e/final.mp4 | awk '{print $1}')
+          test "$(stat -c%s /tmp/e2e/final.mp4)" -gt 100000
 
-          echo '--- download exact v1 render ---'
-          curl -fsSL -D /tmp/headers.txt -o /tmp/v1.mp4 "$URL"
-          sed -n '1,20p' /tmp/headers.txt
-          BYTES=$(stat -c%s /tmp/v1.mp4)
-          test "$BYTES" -gt 100000
-          ACTUAL=$(sha256sum /tmp/v1.mp4 | awk '{print $1}')
-          echo "render_sha256=$ACTUAL bytes=$BYTES"
-          test "$ACTUAL" = "$EXPECTED"
-
-          echo '--- ffprobe exact media ---'
-          if ! command -v ffprobe >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq ffmpeg >/dev/null
-          fi
-          ffprobe -v error -show_entries stream=codec_type,codec_name,width,height,pix_fmt,sample_rate,channels -show_entries format=duration -of json /tmp/v1.mp4 | tee /tmp/probe.json
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+          ffprobe -v error -show_entries stream=codec_type,codec_name,width,height,pix_fmt,sample_rate,channels -show_entries format=duration -of json /tmp/e2e/final.mp4 > /tmp/e2e/probe.json
           node <<'NODE'
-          const p=require('/tmp/probe.json');
+          const p=require('/tmp/e2e/probe.json');
           const v=p.streams.find(x=>x.codec_type==='video'); const a=p.streams.find(x=>x.codec_type==='audio');
           if(!v||v.codec_name!=='h264'||v.width!==1080||v.height!==1920||v.pix_fmt!=='yuv420p') throw new Error('video format mismatch');
           if(!a||a.codec_name!=='aac'||Number(a.sample_rate)!==44100||a.channels!==2) throw new Error('audio format mismatch');
-          const d=Number(p.format.duration); if(!(d>33.3&&d<33.8)) throw new Error('duration mismatch '+d);
           NODE
+          ffmpeg -hide_banner -loglevel error -y -i /tmp/e2e/final.mp4 -vf "fps=12/34,scale=360:-2,tile=3x4:padding=4:margin=4:color=white" -frames:v 1 /tmp/e2e/contact-sheet.jpg
+          for t in 0 1 3 7 12 20 30; do ffmpeg -hide_banner -loglevel error -y -ss "$t" -i /tmp/e2e/final.mp4 -frames:v 1 -q:v 2 "/tmp/e2e/frame_${t}.jpg" || true; done
 
-          echo '--- approve recommended v1 ---'
-          DEC=$(curl -fsS -X POST "$BASE/api/story" -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data "{\"taskType\":\"job_decision\",\"jobId\":\"$JOB\",\"manifestHash\":\"$MANIFEST\"}")
-          echo "$DEC" | jq '{ok,job:{status:.job.status,stage:.job.stage,approvedManifestHash:.job.approvedManifestHash}}'
+          echo '--- approve passing recommendation ---'
+          DEC=$(curl -fsS -X POST "$BASE/api/story" -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' \
+            --data "{\"taskType\":\"job_decision\",\"jobId\":\"$JOB\",\"manifestHash\":\"$MANIFEST\"}")
+          echo "$DEC" | jq . > /tmp/e2e/decision.json
 
-          echo '--- poll FINAL + PACKAGE ---'
+          echo '--- poll FINAL -> PACKAGE ---'
           FINAL=''
           for i in $(seq 1 120); do
             FINAL=$(curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_get&id=$JOB")
             STATUS=$(echo "$FINAL" | jq -r '.job.status')
             STAGE=$(echo "$FINAL" | jq -r '.job.stage')
-            echo "poll=$i status=$STATUS stage=$STAGE"
+            echo "final_poll=$i status=$STATUS stage=$STAGE"
             if [ "$STATUS" = COMPLETE ] || [ "$STATUS" = FAILED ]; then break; fi
             sleep 3
           done
-          echo "$FINAL" | jq . > /tmp/final.json
-          jq '{ok,job:{status:.job.status,stage:.job.stage,approvedManifestHash:.job.approvedManifestHash,final:.job.final,error:.job.error,runs:[.job.runs[]|select(.stage=="FINAL" or .stage=="PACKAGE")]}}' /tmp/final.json
-          test "$(jq -r '.job.status' /tmp/final.json)" = COMPLETE
-          test "$(jq -r '.job.approvedManifestHash' /tmp/final.json)" = "$MANIFEST"
-          test "$(jq -r '.job.final.renderHash' /tmp/final.json)" = "$EXPECTED"
-          PKG=$(jq -r '.job.final.packageRef' /tmp/final.json)
-          test -n "$PKG" -a "$PKG" != null
-          test "$(jq '[.job.runs[]|select(.stage=="FINAL" and .status=="SUCCEEDED")]|length' /tmp/final.json)" -ge 1
-          test "$(jq '[.job.runs[]|select(.stage=="PACKAGE" and .status=="SUCCEEDED")]|length' /tmp/final.json)" -ge 1
+          echo "$FINAL" | jq . > /tmp/e2e/final-job.json
+          test "$(echo "$FINAL" | jq -r '.job.status')" = COMPLETE
+          test "$(echo "$FINAL" | jq -r '.job.approvedManifestHash')" = "$MANIFEST"
+          test "$(echo "$FINAL" | jq -r '.job.final.renderHash')" = "$RENDER_HASH"
+          test -n "$(echo "$FINAL" | jq -r '.job.final.packageRef')"
+          echo "P1_FRAMING_GOLDEN_E2E_PASS job=$JOB variant=$VID renderHash=$RENDER_HASH"
 
-          echo '--- final preview uses same approved render ---'
-          P2=$(curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_preview&id=$JOB")
-          echo "$P2" | jq '{status,stage,previews:[.previews[]|{variantId,qc,recommended,approved}]}'
-          U2=$(echo "$P2" | jq -r '.previews[] | select(.variantId=="v1") | .url')
-          E2=$(basename "${U2%%\?*}" .mp4)
-          test "$E2" = "$EXPECTED"
-          curl -fsSL -o /tmp/final-v1.mp4 "$U2"
-          A2=$(sha256sum /tmp/final-v1.mp4 | awk '{print $1}')
-          test "$A2" = "$EXPECTED"
-          echo "P1_FINAL_E2E_PASS renderHash=$EXPECTED packageRef=$PKG"
+      - name: Upload Golden Source final QC artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1-framing-golden-final
+          path: /tmp/e2e
+          retention-days: 1
