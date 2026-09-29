@@ -45,6 +45,7 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
         hookStrategy: semantic.story.hookStrategy,
         previewRange: semantic.story.previewRange
       } : null
+      console.info(`[plan] job=${job.id} semantic=${semantic.status} provider=${provider} story=${JSON.stringify(storySummary)}`)
 
       let variants
       try { variants = planVariants(analysis, semantic) }
