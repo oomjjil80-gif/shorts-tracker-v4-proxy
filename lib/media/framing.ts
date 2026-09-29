@@ -52,7 +52,7 @@ export async function detectSourceFraming(file: string, opts: { sampleFrames?: n
   if (!n) throw new Error('no frames decoded for framing analysis')
 
   const luma = Math.max(8, Math.min(80, Math.round(opts.lumaThreshold ?? 28)))
-  const activeFraction = Math.max(0.15, Math.min(0.75, opts.activeFraction ?? 0.36))
+  const activeFraction = Math.max(0.02, Math.min(0.75, opts.activeFraction ?? 0.36))
   const rowScores: number[] = []
   for (let y = 0; y < sh; y++) {
     const perFrame: number[] = []
