@@ -1,0 +1,36 @@
+name: P1 rendered visual QC
+
+on:
+  push:
+    paths:
+      - '.github/workflows/p1-visual-qc.yml'
+
+jobs:
+  visual-qc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download approved v1 and make QC frames
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://shorts-tracker-v4-proxy.vercel.app'
+          KEY='tracker-p1-golden-e2e-20260929-a1b2c3d4'
+          JOB='job_1b4e7001-6c0f-4b5b-8932-045dcdae950e'
+          PREVIEW=$(curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_preview&id=$JOB")
+          URL=$(echo "$PREVIEW" | jq -r '.previews[]|select(.variantId=="v1")|.url')
+          test -n "$URL" -a "$URL" != null
+          mkdir -p /tmp/qc
+          curl -fsSL -o /tmp/qc/v1.mp4 "$URL"
+          test "$(sha256sum /tmp/qc/v1.mp4|awk '{print $1}')" = '954e1428c825b2b741cc5c15e4ae4159cbb310e577c0bd47f3220ce1e357574e'
+          ffmpeg -hide_banner -loglevel error -y -i /tmp/qc/v1.mp4 -vf "fps=12/33.5,scale=360:-2,tile=3x4:padding=4:margin=4:color=white" -frames:v 1 /tmp/qc/contact-sheet.jpg
+          for t in 0 0.5 1 2 3 5 10 20 30 33; do
+            name=$(echo "$t"|tr '.' '_')
+            ffmpeg -hide_banner -loglevel error -y -ss "$t" -i /tmp/qc/v1.mp4 -frames:v 1 -q:v 2 "/tmp/qc/frame_${name}.jpg"
+          done
+          echo 'VISUAL_QC_FRAMES_READY'
+      - name: Upload QC frames
+        uses: actions/upload-artifact@v4
+        with:
+          name: p1-v1-visual-qc
+          path: /tmp/qc/*.jpg
+          retention-days: 1
