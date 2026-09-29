@@ -8,6 +8,15 @@ export type SourceFraming = {
   sampleCount: number
   detector: 'luma-bands-v1'
 }
+export type CanvasFill = {
+  topMeanLuma: number
+  bottomMeanLuma: number
+  topActiveFraction: number
+  bottomActiveFraction: number
+  filled: boolean
+  sampleCount: number
+  detector: 'outer-fill-v1'
+}
 
 const median = (xs: number[]) => {
   if (!xs.length) return 0
@@ -89,6 +98,55 @@ export async function detectSourceFraming(file: string, opts: { sampleFrames?: n
     confidence,
     sampleCount: n,
     detector: 'luma-bands-v1'
+  }
+}
+
+// Output QC is intentionally different from source framing detection. It measures only the outer 6% of
+// the rendered canvas over several frames. A blurred/darkened fill still contains picture energy there;
+// true letterbox bars remain near-black with almost no active pixels. This avoids mistaking a valid blur
+// background for the original embedded picture while still blocking persistent black padding.
+export async function measureOuterCanvasFill(file: string, opts: { sampleFrames?: number; scaledWidth?: number; borderFraction?: number; activeLuma?: number } = {}): Promise<CanvasFill> {
+  const info = await probe(file)
+  if (!info.hasVideo || !info.width || !info.height || !info.duration) throw new Error('cannot measure canvas fill without video dimensions/duration')
+  const sw = Math.max(96, Math.round(opts.scaledWidth ?? 160))
+  const sh = Math.max(2, evenUp(sw * info.height / info.width))
+  const wanted = Math.max(3, Math.min(10, Math.round(opts.sampleFrames ?? 7)))
+  const fps = Math.max(0.02, wanted / Math.max(info.duration, 0.1))
+  const raw = await runOk(['-i', file, '-an', '-vf', `fps=${fps.toFixed(6)},scale=${sw}:${sh}:flags=area,format=gray`, '-frames:v', String(wanted), '-f', 'rawvideo', '-pix_fmt', 'gray', '-'])
+  const frameSize = sw * sh
+  const n = Math.min(wanted, Math.floor(raw.stdout.length / frameSize))
+  if (!n) throw new Error('no frames decoded for canvas-fill analysis')
+  const border = Math.max(2, Math.round(sh * Math.max(0.03, Math.min(0.12, opts.borderFraction ?? 0.06))))
+  const activeLuma = Math.max(2, Math.min(30, Math.round(opts.activeLuma ?? 8)))
+
+  const stats = (y0: number, y1: number) => {
+    const means: number[] = [], actives: number[] = []
+    const pixels = (y1 - y0) * sw
+    for (let f = 0; f < n; f++) {
+      let sum = 0, active = 0
+      const frame = f * frameSize
+      for (let y = y0; y < y1; y++) for (let x = 0; x < sw; x++) {
+        const v = raw.stdout[frame + y * sw + x]
+        sum += v
+        if (v >= activeLuma) active++
+      }
+      means.push(sum / Math.max(1, pixels))
+      actives.push(active / Math.max(1, pixels))
+    }
+    return { mean: median(means), active: median(actives) }
+  }
+  const top = stats(0, border), bottom = stats(sh - border, sh)
+  // Either average picture energy or a meaningful proportion of non-black pixels is enough. Both borders
+  // must be filled because a single remaining black band is still a bad Shorts frame.
+  const borderFilled = (s: { mean: number; active: number }) => s.mean >= 4 || s.active >= 0.12
+  return {
+    topMeanLuma: Math.round(top.mean * 100) / 100,
+    bottomMeanLuma: Math.round(bottom.mean * 100) / 100,
+    topActiveFraction: Math.round(top.active * 1000) / 1000,
+    bottomActiveFraction: Math.round(bottom.active * 1000) / 1000,
+    filled: borderFilled(top) && borderFilled(bottom),
+    sampleCount: n,
+    detector: 'outer-fill-v1'
   }
 }
 
