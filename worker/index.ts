@@ -6,10 +6,21 @@ import { createJobStore } from '../lib/jobs/store.js'
 import { createVercelJobBlobStore } from '../lib/jobs/blobs.js'
 import { getSourceAsset } from '../lib/sourceAssetRegistry.js'
 import { runOnce } from './runJob.js'
+import { get as blobGet } from '@vercel/blob'
+import { createBlobSourceFileResolver } from './sourceFile.js'
+import { analyzeExecutor } from './stages/analyze.js'
+import { createPlanExecutor } from './stages/plan.js'
 import { compileExecutor } from './stages/compile.js'
+import { renderExecutor } from './stages/render.js'
+import { autoQcExecutor } from './stages/autoQc.js'
+import { decisionExecutor, finalExecutor, packageExecutor } from './stages/finish.js'
 
 const workerId = process.env.WORKER_ID || `${hostname()}-${process.pid}`
 const pollMs = Number(process.env.WORKER_POLL_MS || 2000)
+const openAi = process.env.OPENAI_API_KEY && process.env.WORKER_AI_PLANNER !== 'off'
+  ? { apiKey: process.env.OPENAI_API_KEY, model: process.env.OPENAI_PLAN_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini' }
+  : null
+const executors = [analyzeExecutor, createPlanExecutor({ openAi }), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor]
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function main() {
@@ -21,7 +32,7 @@ async function main() {
   console.log(`[worker ${workerId}] started`)
   while (!stopping) {
     try {
-      const out = await runOnce({ store, blobs, workerId, executors: [compileExecutor], resolveSourceAsset: (id) => getSourceAsset(id) as any })
+      const out = await runOnce({ store, blobs, workerId, executors, resolveSourceAsset: (id) => getSourceAsset(id) as any, resolveSourceFile: createBlobSourceFileResolver(blobGet as any), leaseMs: 120_000 })
       if (out.ran) console.log(`[worker ${workerId}] job=${out.jobId} stage=${out.stage} -> ${out.outcome}`)
       else await sleep(pollMs)
     } catch (e: any) {

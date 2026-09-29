@@ -28,7 +28,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_decision', 'job_cancel'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_decision', 'job_cancel'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && t.startsWith('job_')
 
@@ -37,13 +37,36 @@ const STATUS_BY_CODE: Record<string, number> = {
   JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503
 }
 
+const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
+
+// What the phone needs: one progress line, the variants, and (later) the final file. No logs, no JSON.
 function view(job: Job, runs: StageRun[]) {
-  const compile = [...runs].reverse().find((r) => r.stage === 'COMPILE' && r.status === 'SUCCEEDED')
+  const compile = latest(runs, 'COMPILE')
+  const qc = latest(runs, 'AUTO_QC')
+  const render = latest(runs, 'RENDER')
+  const plan = latest(runs, 'PLAN')
+  const pkg = latest(runs, 'PACKAGE')
+  const rq: any[] = (qc?.result as any)?.variants || []
+  const rr: any[] = (render?.result as any)?.variants || []
+  const cv: any[] = (compile?.result as any)?.variants || []
+  const recommended = (qc?.result as any)?.recommendedVariantId ?? null
+  const variants = (rq.length ? rq : rr.length ? rr : cv).map((v) => ({
+    id: v.variantId, label: v.label, manifestHash: v.manifestHash, durationSec: v.duration ?? v.totalDuration ?? null,
+    rendered: rr.some((x) => x.variantId === v.variantId), qc: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.gate?.decision ?? null) : null,
+    recommended: v.variantId === recommended, approved: !!job.approvedManifestHash && v.manifestHash === job.approvedManifestHash
+  }))
+  const lastFail = [...runs].reverse().find((r) => r.status === 'FAILED')
+  const stages = (PIPELINES[job.profile] || []).map((stage, i, all) => ({
+    stage, state: job.status === 'COMPLETE' || all.indexOf(job.stage) > i ? 'done' : stage === job.stage ? (job.status === 'FAILED' || job.status === 'CANCELLED' ? 'stopped' : job.status === 'WAITING_USER' ? 'waiting' : 'active') : 'pending'
+  }))
   return {
     id: job.id, profile: job.profile, sourceAssetId: job.sourceAssetId, status: job.status, stage: job.stage, waitReason: job.waitReason,
     budgetUsd: job.budgetUsd, spentUsd: job.spentUsd, planRev: job.planRev, approvedManifestHash: job.approvedManifestHash,
     cancelRequested: job.cancelRequested, createdAt: job.createdAt, updatedAt: job.updatedAt,
+    stages, variants, planner: plan ? { provider: (plan.result as any)?.provider ?? null, fallback: (plan.result as any)?.fallback ?? null } : null,
     manifest: compile ? { hash: compile.outputHash, ref: compile.outputRef, gate: (compile.result as any)?.gate ?? null } : null,
+    final: pkg ? { packageRef: (pkg.result as any)?.packageRef ?? null, renderHash: (pkg.result as any)?.renderHash ?? null, durationSec: (pkg.result as any)?.durationSec ?? null } : null,
+    error: job.status === 'FAILED' ? (lastFail?.error as any)?.message ?? 'failed' : null,
     runs: runs.map((r) => ({ stage: r.stage, kind: r.kind, attempt: r.attempt, status: r.status, error: r.error, finishedAt: r.finishedAt }))
   }
 }
@@ -66,12 +89,32 @@ export function createJobsHttp(deps: JobsDeps) {
       const workspaceId = workspaceOf(req)
       const input: any = req.method === 'GET' ? req.query || {} : req.body && typeof req.body === 'object' ? req.body : {}
       const taskType = String(input.taskType || '')
-      const expectedMethod = taskType === 'job_get' ? 'GET' : 'POST'
+      const expectedMethod = taskType === 'job_get' || taskType === 'job_preview' ? 'GET' : 'POST'
       if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)
       if (req.method !== expectedMethod) throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires ${expectedMethod}`)
 
       // routing/validation errors never need the database
       const store = await deps.getStore()
+
+      if (taskType === 'job_preview') {
+        // Short-lived playback URLs for renders that belong to THIS job (paths come from its own stage results, never from the caller).
+        const id = need(String(req.query?.id || ''), 'id is required')
+        const job = await store.getJob(id, workspaceId)
+        if (!job) throw new JobError('NOT_FOUND', 'job not found')
+        const runs = await store.listStageRuns(job.id)
+        const qc = latest(runs, 'AUTO_QC'), render = latest(runs, 'RENDER')
+        const rows: any[] = (qc?.result as any)?.variants || (render?.result as any)?.variants || []
+        const recommended = (qc?.result as any)?.recommendedVariantId ?? null
+        const previews = []
+        for (const v of rows) {
+          if (typeof v.renderRef !== 'string' || !v.renderRef.startsWith('renders/')) continue
+          const signed = await deps.blobs.presign?.(v.renderRef)
+          const sheet = typeof v.posterRef === 'string' && v.posterRef.startsWith('renders/') ? await deps.blobs.presign?.(v.posterRef) : null
+          if (!signed) continue
+          previews.push({ variantId: v.variantId, label: v.label, durationSec: v.duration ?? null, qc: v.gate?.decision ?? null, recommended: v.variantId === recommended, approved: !!job.approvedManifestHash && v.manifestHash === job.approvedManifestHash, url: signed.url, validUntil: signed.validUntil, posterUrl: sheet?.url ?? null })
+        }
+        return res.status(200).json({ ok: true, jobId: job.id, status: job.status, stage: job.stage, previews })
+      }
 
       if (taskType === 'job_get') {
         const id = need(String(req.query?.id || ''), 'id is required')

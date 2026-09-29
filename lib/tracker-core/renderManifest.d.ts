@@ -12,3 +12,4 @@ export type RenderManifest = {
 export function canonicalize(value: unknown): string
 export function sha256Hex(text: string): string
 export function compileRenderManifest(input: { episode: any; assetManifestResult?: any; variantPlan?: any; now?: number }): RenderManifest
+export function sourceRangeToOutputRanges(segments: Array<{ start: number; duration: number; trimStart: number; trimEnd: number; speed?: number }>, srcStart: number, srcEnd: number): Array<{ start: number; end: number }>

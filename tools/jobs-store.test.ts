@@ -186,3 +186,27 @@ test('decision: only a manifest this job compiled, with a PASSing gate (or expli
   assert.deepEqual([revised.stage, revised.planRev, revised.approvedManifestHash, revised.planRef], ['COMPILE', 2, null, 'plans/2.json'])
   await assert.rejects(() => store.revisePlan({ jobId: job.id, workspaceId: 'ws1', expectedRev: 1, planRef: 'plans/3.json' }), (e: any) => e.code === 'PLAN_REV_CONFLICT')
 })
+
+test('P1: PLAN sets plan_ref/plan_rev; decision uses AUTO_QC per-variant gates (BLOCKed variant needs an override reason)', async () => {
+  const { store, base } = await setup()
+  const { job } = await store.createJob({ ...base, idempotencyKey: 'p1-decide' })
+  assert.equal(job.stage, 'ANALYZE')
+  const H1 = 'c'.repeat(64), H2 = 'd'.repeat(64)
+  const step = async (stages: any[], extra: any = {}) => {
+    await store.claimJob({ workerId: 'w', stages })
+    const { attempt } = await store.startStageRun({ jobId: job.id, workerId: 'w' })
+    return store.completeStage({ jobId: job.id, workerId: 'w', attempt, ...extra })
+  }
+  await step(['ANALYZE'])
+  const afterPlan = await step(['PLAN'], { planRef: 'plans/a.json', outputRef: 'plans/a.json' })
+  assert.deepEqual([afterPlan.stage, afterPlan.planRev, afterPlan.planRef], ['COMPILE', 1, 'plans/a.json'])
+  await step(['COMPILE'], { outputHash: H1, result: { variants: [{ manifestHash: H1, gate: { decision: 'PASS' } }, { manifestHash: H2, gate: { decision: 'PASS' } }] } })
+  await step(['RENDER'])
+  await step(['AUTO_QC'], { result: { variants: [{ manifestHash: H1, gate: { decision: 'PASS' } }, { manifestHash: H2, gate: { decision: 'BLOCK' } }] } })
+  await store.claimJob({ workerId: 'w', stages: ['DECISION'] })
+  await store.setWaiting({ jobId: job.id, workerId: 'w', reason: 'DECISION' })
+  await assert.rejects(() => store.recordDecision({ jobId: job.id, workspaceId: 'ws1', manifestHash: H2 }), (e: any) => e.code === 'QC_NOT_PASSED')
+  await assert.rejects(() => store.recordDecision({ jobId: job.id, workspaceId: 'ws1', manifestHash: 'e'.repeat(64) }), (e: any) => e.code === 'UNKNOWN_MANIFEST')
+  const ok = await store.recordDecision({ jobId: job.id, workspaceId: 'ws1', manifestHash: H1 })
+  assert.deepEqual([ok.stage, ok.approvedManifestHash], ['FINAL', H1])
+})

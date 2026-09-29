@@ -101,6 +101,12 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
 
     async appendStageRun(run: StageRunInput): Promise<StageRun> { return insertRun(db, run) },
 
+    // Latest successful run of a stage: how stages hand data to each other without extra job columns.
+    async getLatestSucceeded(jobId: string, stage: JobStage): Promise<StageRun | null> {
+      const r = await db.query(`SELECT * FROM job_stage_runs WHERE job_id=$1 AND stage=$2 AND status='SUCCEEDED' ORDER BY id DESC LIMIT 1`, [jobId, stage])
+      return r.rows[0] ? mapRun(r.rows[0]) : null
+    },
+
     // Atomically take the oldest runnable job for one of `stages`. A RUNNING job whose lease expired
     // (crashed worker) is runnable again. Cancel-requested jobs are never claimed; orphaned ones are closed first.
     async claimJob(input: { workerId: string; stages: readonly JobStage[]; leaseMs?: number }): Promise<Job | null> {
@@ -165,6 +171,8 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
     async completeStage(input: {
       jobId: string; workerId: string; attempt: number; kind?: StageRunKind; outputRef?: string | null; outputHash?: string | null
       result?: unknown; usage?: unknown; costUsd?: number; provider?: string | null; model?: string | null; wait?: WaitReason
+      // PLAN stage: the plan blob the job continues from (bumps plan_rev)
+      planRef?: string | null
     }): Promise<Job> {
       const now = clock()
       if (input.wait && !WAIT_REASONS.includes(input.wait)) throw new JobError('BAD_WAIT_REASON', String(input.wait))
@@ -180,8 +188,9 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
           if (next) { status = 'QUEUED'; stage = next } else status = 'COMPLETE'
         }
         const r = await tx.query(
-          `UPDATE production_jobs SET status=$2, stage=$3, wait_reason=$4, spent_usd=spent_usd+$5, ${cleared}, run_after=NULL, updated_at=$6::timestamptz WHERE id=$1 RETURNING *`,
-          [job.id, status, stage, wait, input.costUsd ?? 0, iso(now)])
+          `UPDATE production_jobs SET status=$2, stage=$3, wait_reason=$4, spent_usd=spent_usd+$5, ${cleared}, run_after=NULL, updated_at=$6::timestamptz,
+             plan_ref = COALESCE($7, plan_ref), plan_rev = plan_rev + CASE WHEN $7::text IS NULL THEN 0 ELSE 1 END WHERE id=$1 RETURNING *`,
+          [job.id, status, stage, wait, input.costUsd ?? 0, iso(now), input.planRef ?? null])
         return mapJob(r.rows[0])
       })
     },
@@ -272,10 +281,19 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
         if (job.workspaceId !== input.workspaceId) throw new JobError('NOT_FOUND', 'job not found')
         if (job.cancelRequested) throw new JobError('JOB_CLOSED', 'cancel requested')
         if (job.status !== 'WAITING_USER' || job.waitReason !== 'DECISION' || job.stage !== 'DECISION') throw new JobError('NOT_AWAITING_DECISION', `job is ${job.status}/${job.stage}`)
+        // The hash must be a manifest this job compiled (single-variant P0 jobs: output_hash; P1 jobs: one of result.variants).
         const runs = await tx.query(
-          `SELECT result_json FROM job_stage_runs WHERE job_id=$1 AND stage='COMPILE' AND status='SUCCEEDED' AND output_hash=$2 ORDER BY id DESC LIMIT 1`, [job.id, input.manifestHash])
+          `SELECT result_json FROM job_stage_runs WHERE job_id=$1 AND stage='COMPILE' AND status='SUCCEEDED'
+             AND (output_hash=$2 OR result_json->'variants' @> jsonb_build_array(jsonb_build_object('manifestHash', $2::text))) ORDER BY id DESC LIMIT 1`, [job.id, input.manifestHash])
         if (!runs.rows[0]) throw new JobError('UNKNOWN_MANIFEST', 'manifestHash was not produced by this job')
-        const gatePass = runs.rows[0].result_json?.gate?.decision === 'PASS'
+        // The deciding gate is AUTO_QC's verdict for exactly this manifest when the job has one (P1), else the compile gate (P0).
+        const qc = await tx.query(
+          `SELECT result_json FROM job_stage_runs WHERE job_id=$1 AND stage='AUTO_QC' AND status='SUCCEEDED' ORDER BY id DESC LIMIT 1`, [job.id])
+        let gatePass: boolean
+        if (qc.rows[0]) {
+          const entry = (qc.rows[0].result_json?.variants || []).find((v: any) => v?.manifestHash === input.manifestHash)
+          gatePass = entry?.gate?.decision === 'PASS'
+        } else gatePass = runs.rows[0].result_json?.gate?.decision === 'PASS' || (runs.rows[0].result_json?.variants || []).find((v: any) => v?.manifestHash === input.manifestHash)?.gate?.decision === 'PASS'
         const reason = String(input.override?.reason || '').trim()
         if (!gatePass && !reason) throw new JobError('QC_NOT_PASSED', 'required QC checks have not all passed; an override reason is required')
         const a = await tx.query(`SELECT COALESCE(MAX(attempt),0)+1 AS n FROM job_stage_runs WHERE job_id=$1 AND stage='DECISION' AND kind='run'`, [job.id])
