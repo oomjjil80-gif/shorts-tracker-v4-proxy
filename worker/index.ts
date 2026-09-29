@@ -33,8 +33,19 @@ async function main() {
   while (!stopping) {
     try {
       const out = await runOnce({ store, blobs, workerId, executors, resolveSourceAsset: (id) => getSourceAsset(id) as any, resolveSourceFile: createBlobSourceFileResolver(blobGet as any), leaseMs: 120_000 })
-      if (out.ran) console.log(`[worker ${workerId}] job=${out.jobId} stage=${out.stage} -> ${out.outcome}`)
-      else await sleep(pollMs)
+      if (out.ran) {
+        let detail = ''
+        if (out.outcome === 'failed' || out.outcome === 'retry') {
+          try {
+            const runs = await store.listStageRuns(out.jobId)
+            const last = [...runs].reverse().find((r) => r.stage === out.stage && r.status === 'FAILED')
+            if (last?.error) detail = ` error=${JSON.stringify(last.error)}`
+          } catch (e: any) {
+            detail = ` error_lookup_failed=${JSON.stringify(String(e?.message || e))}`
+          }
+        }
+        console.log(`[worker ${workerId}] job=${out.jobId} stage=${out.stage} -> ${out.outcome}${detail}`)
+      } else await sleep(pollMs)
     } catch (e: any) {
       console.error(`[worker ${workerId}] error`, e?.message || e)
       await sleep(pollMs)
