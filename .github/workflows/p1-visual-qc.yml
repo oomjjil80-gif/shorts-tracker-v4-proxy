@@ -9,6 +9,11 @@ jobs:
   visual-qc:
     runs-on: ubuntu-latest
     steps:
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
       - name: Download approved v1 and make QC frames
         shell: bash
         run: |
