@@ -6,6 +6,23 @@ import { probe } from '../../lib/media/ffmpeg.js'
 import { renderPayload, UnsupportedManifestError } from '../../lib/media/render.js'
 import { StageError, type StageExecutor } from '../types.js'
 
+type CompiledForRender = { variantId: string; label: string; manifestHash: string; manifestRef: string; gate: { decision: string }; identity: any[] }
+
+// P0 production jobs that were already parked at RENDER before P1 was deployed have the old single-manifest
+// COMPILE result shape (outputRef/outputHash + result.gate), while P1 COMPILE stores result.variants[]. Keep those
+// durable jobs renderable instead of forcing a recompile or silently abandoning them.
+export function compiledVariantsFromRun(compile: any): CompiledForRender[] {
+  const variants = compile?.result?.variants
+  if (Array.isArray(variants) && variants.length) return variants as CompiledForRender[]
+  if (compile?.outputRef && compile?.outputHash && compile?.result?.gate) {
+    return [{
+      variantId: 'v1', label: '추천', manifestHash: String(compile.outputHash), manifestRef: String(compile.outputRef),
+      gate: compile.result.gate, identity: Array.isArray(compile.result.identity) ? compile.result.identity : []
+    }]
+  }
+  return []
+}
+
 // RENDER: each compile-PASS variant is rendered ONCE at final quality (1080x1920 H.264/AAC MP4, faststart) straight
 // from its immutable RenderManifest + the Registry-verified source file. Choosing a variant later promotes that same file.
 export const renderExecutor: StageExecutor = {
@@ -14,7 +31,7 @@ export const renderExecutor: StageExecutor = {
   inputHash: (job) => sha256(`render|${job.id}|${job.planRev}`),
   async run({ job, blobs, previous, resolveSourceAsset, resolveSourceFile, signal }) {
     const compile = await previous('COMPILE')
-    const compiled = ((compile?.result as any)?.variants || []) as Array<{ variantId: string; label: string; manifestHash: string; manifestRef: string; gate: { decision: string }; identity: any[] }>
+    const compiled = compiledVariantsFromRun(compile)
     if (!compiled.length) throw new StageError('COMPILE_MISSING', 'RENDER requires a completed COMPILE stage')
     const todo = compiled.filter((v) => v.gate?.decision === 'PASS')
     if (!todo.length) throw new StageError('NO_RENDERABLE_VARIANT', 'no variant passed the compile gate')
