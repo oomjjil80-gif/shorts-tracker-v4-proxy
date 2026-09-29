@@ -52,9 +52,9 @@ jobs:
           echo 'FRAME_CLAMP_OK'
 
           echo '--- source_frames batch across the whole clip ---'
-          FRAMES=$(curl -fsS "$BASE/api/story?taskType=source_frames&sourceAssetId=$CCTV_ID&seconds=0,4,8,12,16,20,24,28")
+          curl -fsS "$BASE/api/story?taskType=source_frames&sourceAssetId=$CCTV_ID&seconds=0,4,8,12,16,20,24,28" -o /tmp/frames_batch.json
           node -e "
-            const d=JSON.parse(process.argv[1]);
+            const d=JSON.parse(require('fs').readFileSync('/tmp/frames_batch.json','utf8'));
             if(!d.ok||!Array.isArray(d.frames)||d.frames.length!==8) throw new Error('expected 8 frames, got '+(d.frames&&d.frames.length));
             for(const f of d.frames){
               const b64=f.dataUrl.split(',')[1]||'';
@@ -62,8 +62,7 @@ jobs:
               if(bytes.length<500||bytes[0]!==0xff||bytes[1]!==0xd8) throw new Error('bad frame at second '+f.second);
             }
             console.log('BATCH_OK', d.frames.length, 'frames');
-          " "$FRAMES"
-          echo "$FRAMES" > /tmp/frames_batch.json
+          "
           echo 'FRAMES_BATCH_OK'
 
           echo '--- source_contact_sheet ---'
