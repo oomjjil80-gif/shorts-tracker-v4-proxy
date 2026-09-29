@@ -82,7 +82,10 @@ const okStory = {
   storyType: 'single_event', confidence: 0.9, causalStart: 1, setupRanges: [{ start: 1, end: 6 }], escalationRanges: [{ start: 6, end: 14 }],
   payoffRange: { start: 14, end: 19 }, recommendedEnd: 19.5, excludeRanges: [{ start: 22, end: 30, reason: 'product_demo' }],
   hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.2, hookReason: 'short causal event',
-  minimalCaptions: [{ kind: 'payoff', start: 15, end: 17, text: '결국 따라간다', basis: 'child crawls after the man' }], publishabilityWarnings: []
+  minimalCaptions: [
+    { kind: 'hook', start: 1, end: 2.8, text: '왜 저러는 걸까?', basis: 'person visibly follows the device' },
+    { kind: 'payoff', start: 15, end: 17, text: '결국 따라간다', basis: 'child crawls after the man' }
+  ], publishabilityWarnings: []
 }
 const fakeFetch = (body: any, status = 200) => (async () => ({ ok: status < 400, status, json: async () => body })) as unknown as typeof fetch
 const JPEG = Buffer.from('fake-jpeg')
@@ -116,11 +119,11 @@ test('PLAN stage: model failure keeps the deterministic plan and records semanti
   assert.equal(none.result.semantic.status, 'unavailable'); assert.equal(none.result.semantic.storyRef, null)
   const working = createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okStory) }) } })
   const r2: any = await working.run({ job, blobs, previous, signal: new AbortController().signal } as any)
-  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion, r2.result.semantic.status], ['openai', 'gpt-x', null, 'source-story-analysis/3', 'ok'])
+  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion, r2.result.semantic.status], ['openai', 'gpt-x', null, 'source-story-analysis/5', 'ok'])
   const story: any = await blobs.getJson(r2.result.semantic.storyRef)
   assert.equal(story.schema, 'story-analysis/1')
   const stored: any = await blobs.getJson(r2.planRef)
   assert.ok(stored.variantPlan.beats.every((b: any) => b.trimEnd <= 19.5 + 1e-6), 'plan ends at the payoff, not at the file end')
-  assert.deepEqual(stored.variantPlan.events.map((e: any) => e.text), ['결국 따라간다']); assert.equal(stored.variantPlan.plansTimeDomain, 'source')
+  assert.deepEqual(stored.variantPlan.events.map((e: any) => e.text), ['왜 저러는 걸까?', '결국 따라간다']); assert.equal(stored.variantPlan.plansTimeDomain, 'source')
   await assert.rejects(() => createPlanExecutor().run({ job, blobs, previous: async () => null, signal: new AbortController().signal } as any), /ANALYZE/)
 })

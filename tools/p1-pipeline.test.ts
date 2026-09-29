@@ -164,7 +164,10 @@ test('with a semantic story model: chronological story edit, captions grounded, 
     storyType: 'single_event', confidence: 0.9, causalStart: 0, setupRanges: [{ start: 0, end: 3 }], escalationRanges: [{ start: 3, end: 6 }],
     payoffRange: { start: 9, end: 11.5 }, recommendedEnd: 11.8, excludeRanges: [{ start: 6, end: 9, reason: 'repeat' }],
     hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.1, hookReason: '',
-    minimalCaptions: [{ kind: 'payoff', start: 9.5, end: 11, text: '마지막 장면', basis: 'colour bars change' }], publishabilityWarnings: []
+    minimalCaptions: [
+      { kind: 'hook', start: 0, end: 1.8, text: '무슨 일이 생길까?', basis: 'the visible setup begins' },
+      { kind: 'payoff', start: 9.5, end: 11, text: '마지막 장면', basis: 'colour bars change' }
+    ], publishabilityWarnings: []
   }
   const fetchImpl = (async () => ({ ok: true, status: 200, json: async () => ({ model: 'gpt-test', output_text: JSON.stringify(story) }) })) as unknown as typeof fetch
   const { store, drive } = await setup([analyzeExecutor, createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl } }), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor])

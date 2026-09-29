@@ -3,9 +3,9 @@
 // grounded captions). The deterministic planner builds the edit from it, and validateStory() rejects anything that
 // does not fit the measured source. Any failure => semantic status != ok => content checks UNKNOWN (never PASS).
 import type { SourceAnalysis } from './analyze.js'
-import { EXCLUDE_REASONS, STORY_LIMITS, STORY_TYPES, semanticFromStory, validateStory, type SemanticResult } from './story.js'
+import { EXCLUDE_REASONS, STORY_LIMITS, STORY_TYPES, overlap, semanticFromStory, validateStory, type SemanticResult } from './story.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/4'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/5'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
 export const STORY_JSON_SCHEMA = {
@@ -39,19 +39,21 @@ export function storyPrompt(a: SourceAnalysis): string {
     'You are the story editor for vertical YouTube Shorts cut from ONE source video. The image is a keyframe sheet; each tile is labeled with its SOURCE time in seconds.',
     'Describe the story structure. ALL times are SOURCE seconds within the video duration.',
     'PRIMARY STORY RULE: choose the strongest self-contained viewer story, not the uploader\'s full source-file purpose. Human/animal action, reaction, relationship, humor, surprise or emotion normally outranks a later product explanation/demo when that human/animal arc already has its own payoff.',
+    'MANDATORY OPENING AUDIT: inspect the 0s tile and the first ~2 seconds before choosing causalStart. A Korean upload-ready Short must NOT begin on burned-in Chinese/English/Japanese/other foreign-language title cards, captions, product labels, or large source text. Mark every such opening span as foreign_text and/or intro_confusion, and place causalStart AFTER that text disappears. Even a very brief foreign-language flash at the first frame is not acceptable as the opening.',
+    'If the first clean frame is only visible on the next timestamped tile, prefer starting at that clean timestamp rather than preserving a few tenths of a second of contaminated footage.',
     'MANDATORY TAIL AUDIT: inspect the final ~35% of the keyframe sheet separately. If people/animals finish their action or leave and the source switches to a product/robot/device operating, cleaning, demonstrating features, returning to dock, showing branding/titles, or otherwise explaining the product, that transition starts off-story footage. Mark it product_demo and/or post_payoff through the file end.',
     'Do NOT treat a late product/device activation, cleaning result, feature demonstration, or return-to-dock as the payoff merely because it explains the preceding joke or is visually active. It is the payoff only when the whole causal story is genuinely a product demonstration and there is no earlier self-contained human/animal payoff.',
     'If a human/animal payoff and a product-demo resolution are both plausible, prefer the human/animal payoff for a viral source-first Short. If you cannot decide confidently, use storyType="unclear" or lower confidence instead of guessing a publishable story.',
-    '- causalStart: where the event starts making sense for a first-time viewer (skip confusing intros, title cards, previews of later moments).',
+    '- causalStart: where the event starts making sense for a first-time viewer, AFTER any opening foreign-language/source title text has disappeared (skip confusing intros, title cards, previews of later moments).',
     '- setupRanges / escalationRanges / payoffRange: the causal story. payoffRange = the moment the chosen viewer story pays off (the funniest/most surprising/resolving action), NOT a later product demo unless the product demo itself is the primary story.',
     `- recommendedEnd: where the Short should end: right after the payoff (at most ${STORY_LIMITS.maxTailAfterPayoff}s after payoffRange.end). NEVER the file end just because the file continues. For a simple single event, prefer a compact edit around 12–22 seconds when the causal story fits; go longer only when required to understand the setup and payoff.`,
-    '- excludeRanges: footage that is not the story: intro_confusion, repeat (same action again), dead_air (nothing happens and it is not needed to understand), product_demo (product/robot/device demo, ads), foreign_text (burned-in foreign-language product text or titles), post_payoff, unrelated.',
+    '- excludeRanges: footage that is not the story: intro_confusion, repeat (same action again), dead_air (nothing happens and it is not needed to understand), product_demo (product/robot/device demo, ads), foreign_text (burned-in foreign-language source text or titles), post_payoff, unrelated.',
     '  IMPORTANT REPEAT RULE: repeat means the SAME subject/action adds no new story information. A second person or animal copying, reacting to, following, interrupting, joining, or escalating the first subject is NOT repeat when that new participant changes the relationship, humor, surprise, or meaning. Keep that beat as escalation/payoff.',
     '  Before labeling footage repeat, compare who is acting and whether the reaction creates a new causal beat. If a new participant creates the punchline, the payoff must include that reaction.',
     '  Do NOT exclude calm moments that are needed to understand the action or the relationship between people.',
     '  When an appended product/demo tail exists, exclude the COMPLETE tail from its transition point to the end, including product text and clean-up/result shots.',
     '- hookStrategy: "chronological" by default. "preview" ONLY if showing a <=3s moment from the escalation/payoff first is clearly understandable on its own AND returning to the start will not confuse; give previewRange and hookConfidence (0..1). Otherwise previewRange=null.',
-    `- minimalCaptions: at most ${STORY_LIMITS.maxCaptions} short Korean captions (<=${STORY_LIMITS.maxCaptionChars} chars), only a hook question and/or a payoff punchline, each tied to what is VISIBLE (basis). No narration, no invented facts, no fake dialogue, no names/places/ages you cannot see. Empty array if the video is clear without text.`,
+    `- minimalCaptions: REQUIRED for a publishable source-first Korean Short. Return 1 or 2 short KOREAN captions (<=${STORY_LIMITS.maxCaptionChars} chars), each tied to what is VISIBLE (basis). The FIRST caption must be kind="hook", begin at/just after causalStart, appear within the first ~1 second of the clean edit, and briefly explain or question the visible setup so a Korean viewer instantly understands what to watch. A second kind="payoff" caption is optional when it improves the punchline. No narration, no invented facts, no fake dialogue, no names/places/ages you cannot see. Do NOT return an empty array; if no grounded Korean opening caption can be written, lower confidence or use storyType="unclear".`,
     '- publishabilityWarnings: anything that still makes it hard to publish (e.g. watermark, burned-in foreign text you could not avoid).',
     '- storyType + confidence: be honest; use "unclear" and a low confidence if you cannot tell.',
     'Measured signals (per second: [t, visualChange, audioDb]):', JSON.stringify(signals)
@@ -88,6 +90,18 @@ export async function aiAnalyzeStory(a: SourceAnalysis, deps: StoryModelDeps): P
     try { parsed = JSON.parse(text) } catch { return out('failed', 'provider returned invalid JSON') }
     const v = validateStory(parsed, a, { model, promptVersion: AI_PLANNER_PROMPT_VERSION })
     if (!v.story) return out('invalid', v.errors.join('; ').slice(0, 500), v.warnings)
+
+    // P1 publishability contract: a clean opening + a rendered Korean opening hook are mandatory.
+    // This is generic (no source ids/timestamps): if the model sees foreign opening text, it must move causalStart past it.
+    const openingProbe = { start: v.story.causalStart, end: Math.min(a.media.duration, v.story.causalStart + 0.5) }
+    const openingForeign = v.story.excludeRanges.filter((x) => (x.reason === 'foreign_text' || x.reason === 'intro_confusion') && overlap(x, openingProbe) > 0.03)
+    if (openingForeign.length) return out('invalid', `causalStart still overlaps opening contamination: ${openingForeign.map((x) => `${x.reason}:${x.start}-${x.end}`).join(', ')}`.slice(0, 500), v.warnings)
+
+    const hook = v.story.minimalCaptions.find((c) => c.kind === 'hook')
+    if (!hook) return out('invalid', 'publishable source-first Short requires one grounded Korean opening hook/context caption', v.warnings)
+    if (!/[가-힣]/.test(hook.text)) return out('invalid', 'opening hook/context caption must contain Korean text', v.warnings)
+    if (hook.start < v.story.causalStart - 0.05 || hook.start > v.story.causalStart + 1.0) return out('invalid', `opening hook must begin within 1s of causalStart (${v.story.causalStart}), got ${hook.start}`, v.warnings)
+
     return { ...semanticFromStory(v.story), model, usage, warnings: v.warnings }
   } finally { clearTimeout(timer) }
 }
