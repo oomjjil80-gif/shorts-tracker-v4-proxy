@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { sha256 } from '../../lib/jobs/blobs.js'
 import { probe } from '../../lib/media/ffmpeg.js'
+import { detectSourceFraming } from '../../lib/media/framing.js'
 import { renderPayload, UnsupportedManifestError } from '../../lib/media/render.js'
 import { StageError, type StageExecutor } from '../types.js'
 
@@ -41,6 +42,9 @@ export const renderExecutor: StageExecutor = {
     const work = await mkdtemp(join(tmpdir(), 'tracker-render-'))
     try {
       const info = await probe(file.path)
+      // Deterministic source normalization: if a nominally vertical upload contains the real picture inside persistent
+      // black title/padding bands, remove those bands and use a blurred 9:16 fill. It is derived only from verified bytes.
+      const sourceFraming = await detectSourceFraming(file.path)
       const out: any[] = []
       for (const v of todo) {
         if (signal.aborted) throw new Error('aborted')
@@ -50,15 +54,15 @@ export const renderExecutor: StageExecutor = {
         const dir = join(work, v.variantId)
         const outPath = join(dir, 'final.mp4')
         let r
-        try { r = await renderPayload(manifest.payload, { sourceFile: file.path, sourceHasAudio: info.hasAudio, workDir: dir, outPath, signal }) }
+        try { r = await renderPayload(manifest.payload, { sourceFile: file.path, sourceHasAudio: info.hasAudio, workDir: dir, outPath, signal, sourceFraming }) }
         catch (e: any) { throw e instanceof UnsupportedManifestError ? new StageError('MANIFEST_UNSUPPORTED', e.message) : e }
         const bytes = await readFile(outPath)
         const renderHash = sha256(bytes)
         const stored = await blobs.putBytes(`renders/${renderHash}.mp4`, bytes, 'video/mp4')
         const rInfo = await probe(outPath)
-        out.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, manifestRef: v.manifestRef, renderRef: stored.path, renderHash, bytes: bytes.length, duration: rInfo.duration, overlayEvents: r.overlayEvents, assSha256: r.assPath ? sha256(r.ass) : null })
+        out.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, manifestRef: v.manifestRef, renderRef: stored.path, renderHash, bytes: bytes.length, duration: rInfo.duration, overlayEvents: r.overlayEvents, assSha256: r.assPath ? sha256(r.ass) : null, sourceFraming })
       }
-      return { outputRef: out[0].renderRef, outputHash: out[0].renderHash, result: { variants: out }, provider: 'ffmpeg', model: 'libx264+libass' }
+      return { outputRef: out[0].renderRef, outputHash: out[0].renderHash, result: { variants: out, sourceFraming }, provider: 'ffmpeg', model: 'libx264+libass' }
     } finally { await rm(work, { recursive: true, force: true }); await file.cleanup() }
   }
 }
