@@ -19,7 +19,7 @@ function setCors(req: Request, res: Response) {
     res.setHeader('Vary', 'Origin')
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Sync-Key')
 }
 
 
@@ -153,6 +153,12 @@ export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
   const sourceRequest = req.method === 'GET' ? req.query : req.body
+  // Production Jobs: routing only. The HTTP adapter and all domain logic live in lib/jobs/*
+  // (kept out of api/ so it does not count as a separate Vercel Serverless Function).
+  if (['GET', 'POST'].includes(req.method || '') && typeof sourceRequest?.taskType === 'string' && sourceRequest.taskType.startsWith('job_')) {
+    const { defaultJobsHttp } = await import('../lib/jobs/http.js')
+    return defaultJobsHttp(req, res)
+  }
   if (['GET', 'POST'].includes(req.method || '') && ['source_asset', 'source_latest', 'source_playback', 'source_download', 'source_frame', 'source_frames', 'source_contact_sheet'].includes(sourceRequest?.taskType)) {
     res.setHeader('Cache-Control', 'private, no-store')
     try {

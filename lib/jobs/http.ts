@@ -1,12 +1,14 @@
 import type { Request, Response } from 'express'
 import { createHash } from 'node:crypto'
-import { canonicalize } from '../lib/tracker-core/renderManifest.js'
-import { createPgDbFromEnv } from '../lib/jobs/db.js'
-import { createJobStore, type JobStore } from '../lib/jobs/store.js'
-import { createVercelJobBlobStore, putAddressed, type JobBlobStore } from '../lib/jobs/blobs.js'
-import { PIPELINES } from '../lib/jobs/pipeline.js'
-import { JobError, type Job, type StageRun } from '../lib/jobs/types.js'
+import { canonicalize } from '../tracker-core/renderManifest.js'
+import { createPgDbFromEnv } from './db.js'
+import { createJobStore, type JobStore } from './store.js'
+import { createVercelJobBlobStore, putAddressed, type JobBlobStore } from './blobs.js'
+import { PIPELINES } from './pipeline.js'
+import { JobError, type Job, type StageRun } from './types.js'
 
+// HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
+// (Hobby plan allows 12 functions). CORS is applied by the router. Domain logic stays in store/gate/pipeline.
 // Short requests only: validate, write DB rows, return. Rendering / AI never runs inside a Vercel request.
 // Workspace = sha256(X-Sync-Key), the same isolation the cloud-sync API uses.
 
@@ -20,26 +22,18 @@ export type JobsDeps = {
   sourceExists?: (sourceAssetId: string) => Promise<boolean>
 }
 
-function setCors(req: Request, res: Response) {
-  const origin = String(req.headers.origin || '')
-  const allowed =
-    /^http:\/\/localhost(?::\d+)?$/i.test(origin) ||
-    /^http:\/\/127\.0\.0\.1(?::\d+)?$/i.test(origin) ||
-    /^https:\/\/shorts-production-tracker\.vercel\.app$/i.test(origin) ||
-    /^https:\/\/shorts-production-tracker-[a-z0-9-]+\.vercel\.app$/i.test(origin)
-  if (allowed) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin') }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Sync-Key')
-}
-
 function workspaceOf(req: Request): string {
   const key = String(req.headers['x-sync-key'] || '').trim()
   if (key.length < 24) throw new JobError('UNAUTHORIZED', '유효한 X-Sync-Key가 필요합니다.')
   return createHash('sha256').update(key).digest('hex')
 }
 
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_decision', 'job_cancel'] as const
+export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
+export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && t.startsWith('job_')
+
 const STATUS_BY_CODE: Record<string, number> = {
-  UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
+  METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
   JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503
 }
 
@@ -65,26 +59,30 @@ function need<T>(cond: T, message: string): NonNullable<T> {
   return cond as NonNullable<T>
 }
 
-export function createJobsHandler(deps: JobsDeps) {
+export function createJobsHttp(deps: JobsDeps) {
   return async function handler(req: Request, res: Response) {
-    setCors(req, res)
-    if (req.method === 'OPTIONS') return res.status(204).end()
+    res.setHeader('Cache-Control', 'private, no-store')
     try {
-      if (req.method !== 'GET' && req.method !== 'POST') throw new JobError('BAD_REQUEST', 'Method not allowed')
       const workspaceId = workspaceOf(req)
+      const input: any = req.method === 'GET' ? req.query || {} : req.body && typeof req.body === 'object' ? req.body : {}
+      const taskType = String(input.taskType || '')
+      const expectedMethod = taskType === 'job_get' ? 'GET' : 'POST'
+      if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)
+      if (req.method !== expectedMethod) throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires ${expectedMethod}`)
+
+      // routing/validation errors never need the database
       const store = await deps.getStore()
 
-      if (req.method === 'GET') {
+      if (taskType === 'job_get') {
         const id = need(String(req.query?.id || ''), 'id is required')
         const job = await store.getJob(id, workspaceId)
         if (!job) throw new JobError('NOT_FOUND', 'job not found')
         return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)) })
       }
 
-      const body: any = req.body && typeof req.body === 'object' ? req.body : {}
-      const action = String(body.action || '')
+      const body: any = input
 
-      if (action === 'create') {
+      if (taskType === 'job_create') {
         const profile = String(body.profile || '')
         need(PIPELINES[profile], `unknown profile: ${profile}`)
         const sourceAssetId = matching(body.sourceAssetId, /^src_[A-Za-z0-9_]{8,120}$/, 'sourceAssetId is invalid')
@@ -108,7 +106,7 @@ export function createJobsHandler(deps: JobsDeps) {
         return res.status(created ? 201 : 200).json({ ok: true, created, job: view(job, await store.listStageRuns(job.id)) })
       }
 
-      if (action === 'decision') {
+      if (taskType === 'job_decision') {
         const jobId = need(String(body.jobId || ''), 'jobId is required')
         const manifestHash = matching(body.manifestHash, /^[0-9a-f]{64}$/, 'manifestHash must be a SHA-256 hex')
         const reason = body.override ? String(body.override.reason || '') : ''
@@ -116,13 +114,12 @@ export function createJobsHandler(deps: JobsDeps) {
         return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)) })
       }
 
-      if (action === 'cancel') {
+      if (taskType === 'job_cancel') {
         const jobId = need(String(body.jobId || ''), 'jobId is required')
         const job = await store.requestCancel({ jobId, workspaceId })
         return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)) })
       }
 
-      throw new JobError('BAD_REQUEST', `unknown action: ${action || '(none)'}`)
     } catch (e: any) {
       const code = e instanceof JobError ? e.code : 'INTERNAL'
       const status = STATUS_BY_CODE[code] ?? (e instanceof JobError ? 400 : 500)
@@ -133,7 +130,7 @@ export function createJobsHandler(deps: JobsDeps) {
 }
 
 let cachedStore: Promise<JobStore> | null = null
-const defaultHandler = createJobsHandler({
+export const defaultJobsHttp = createJobsHttp({
   getStore: () => {
     if (!process.env.DATABASE_URL) return Promise.reject(new JobError('JOBS_DB_NOT_CONFIGURED', 'Production Job database (DATABASE_URL) is not configured'))
     cachedStore ??= createPgDbFromEnv().then((db) => createJobStore(db))
@@ -142,9 +139,8 @@ const defaultHandler = createJobsHandler({
   },
   blobs: createVercelJobBlobStore(),
   sourceExists: async (id) => {
-    const { getSourceAsset } = await import('../lib/sourceAssetRegistry.js')
+    const { getSourceAsset } = await import('../sourceAssetRegistry.js')
     try { await getSourceAsset(id); return true } catch (e: any) { if (e?.code === 'SOURCE_ASSET_NOT_FOUND') return false; throw e }
   }
 })
 
-export default defaultHandler

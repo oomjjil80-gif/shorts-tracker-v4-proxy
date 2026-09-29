@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { createTestDb } from './testDb.js'
 import { createJobStore } from '../lib/jobs/store.js'
 import { createMemoryBlobStore } from '../lib/jobs/blobs.js'
-import { createJobsHandler } from '../api/jobs.js'
+import { createJobsHttp } from '../lib/jobs/http.js'
 import { runOnce } from '../worker/runJob.js'
 import { compileExecutor } from '../worker/stages/compile.js'
 
@@ -16,7 +16,7 @@ async function setup() {
   const store = createJobStore(db)
   const blobs = createMemoryBlobStore()
   const known = new Set([golden.sourceAsset.sourceAssetId])
-  const handler = createJobsHandler({ getStore: async () => store, blobs, sourceExists: async (id) => known.has(id) })
+  const handler = createJobsHttp({ getStore: async () => store, blobs, sourceExists: async (id: string) => known.has(id) })
   const call = async (method: string, opts: { body?: any; query?: any; key?: string | null } = {}) => {
     let status = 0, json: any = null
     const headers: Record<string, string> = {}
@@ -27,7 +27,7 @@ async function setup() {
   }
   return { store, blobs, call }
 }
-const body = (over: any = {}) => ({ action: 'create', profile: 'source_shorts', sourceAssetId: golden.sourceAsset.sourceAssetId, idempotencyKey: 'idem-api-0001', plan: golden.plan, ...over })
+const body = (over: any = {}) => ({ taskType: 'job_create', profile: 'source_shorts', sourceAssetId: golden.sourceAsset.sourceAssetId, idempotencyKey: 'idem-api-0001', plan: golden.plan, ...over })
 
 test('POST create: 201 first, 200 + same job on repeat (idempotent); stores plan blob content-addressed', async () => {
   const { call, blobs } = await setup()
@@ -37,7 +37,7 @@ test('POST create: 201 first, 200 + same job on repeat (idempotent); stores plan
   assert.equal(a.json.job.id, b.json.job.id); assert.equal(b.json.created, false)
   assert.equal(a.json.job.stage, 'COMPILE'); assert.equal(a.json.job.status, 'QUEUED')
   assert.equal([...blobs.files.keys()].filter((k) => k.startsWith('plans/')).length, 1)
-  assert.equal(a.headers['Access-Control-Allow-Origin'], 'https://shorts-production-tracker.vercel.app')
+  assert.equal(a.headers['Cache-Control'], 'private, no-store')
   const c = await call('POST', { body: body({ idempotencyKey: 'idem-api-0002' }) })
   assert.notEqual(c.json.job.id, a.json.job.id)
   const reused = await call('POST', { body: body({ plan: { ...golden.plan, variantPlan: { ...golden.plan.variantPlan, headline: 'x' } } }) })
@@ -49,9 +49,9 @@ test('auth + validation: missing key 401, other workspace 404, bad input 400, un
   assert.equal((await call('POST', { body: body(), key: null })).status, 401)
   assert.equal((await call('POST', { body: body(), key: 'short' })).status, 401)
   const a = await call('POST', { body: body() })
-  assert.equal((await call('GET', { query: { id: a.json.job.id } })).status, 200)
-  assert.equal((await call('GET', { query: { id: a.json.job.id }, key: 'z'.repeat(32) })).status, 404)
-  for (const bad of [{ profile: 'nope' }, { sourceAssetId: 'x' }, { idempotencyKey: 'short' }, { budgetUsd: 9999 }, { plan: { schema: 'wrong' } }, { plan: { ...golden.plan, sourceAssetId: 'src_other_0001' } }, { plan: { ...golden.plan, variantPlan: { beats: [] } } }, { action: 'explode' }]) {
+  assert.equal((await call('GET', { query: { taskType: 'job_get', id: a.json.job.id } })).status, 200)
+  assert.equal((await call('GET', { query: { taskType: 'job_get', id: a.json.job.id }, key: 'z'.repeat(32) })).status, 404)
+  for (const bad of [{ profile: 'nope' }, { sourceAssetId: 'x' }, { idempotencyKey: 'short' }, { budgetUsd: 9999 }, { plan: { schema: 'wrong' } }, { plan: { ...golden.plan, sourceAssetId: 'src_other_0001' } }, { plan: { ...golden.plan, variantPlan: { beats: [] } } }, { taskType: 'job_explode' }]) {
     const r = await call('POST', { body: body({ idempotencyKey: `idem-bad-${Math.random().toString(36).slice(2, 10)}`, ...bad }) })
     assert.equal(r.status, 400, JSON.stringify(bad)); assert.equal(r.json.ok, false)
   }
@@ -64,22 +64,31 @@ test('full path: create -> worker COMPILE -> cancel; decision refused unless awa
   const created = await call('POST', { body: body() })
   const id = created.json.job.id
   await runOnce({ store, blobs, executors: [compileExecutor], resolveSourceAsset: async () => golden.sourceAsset, workerId: 'w1' })
-  const got = await call('GET', { query: { id } })
+  const got = await call('GET', { query: { taskType: 'job_get', id } })
   assert.equal(got.json.job.stage, 'RENDER')
   assert.equal(got.json.job.manifest.hash, golden.expected.manifestHash)
   assert.equal(got.json.job.manifest.gate.decision, 'PASS')
-  const early = await call('POST', { body: { action: 'decision', jobId: id, manifestHash: golden.expected.manifestHash } })
+  const early = await call('POST', { body: { taskType: 'job_decision', jobId: id, manifestHash: golden.expected.manifestHash } })
   assert.equal(early.status, 409); assert.equal(early.json.error.code, 'NOT_AWAITING_DECISION')
-  assert.equal((await call('POST', { body: { action: 'decision', jobId: id, manifestHash: 'nothex' } })).status, 400)
-  const cancelled = await call('POST', { body: { action: 'cancel', jobId: id } })
+  assert.equal((await call('POST', { body: { taskType: 'job_decision', jobId: id, manifestHash: 'nothex' } })).status, 400)
+  const cancelled = await call('POST', { body: { taskType: 'job_cancel', jobId: id } })
   assert.equal(cancelled.status, 200); assert.equal(cancelled.json.job.status, 'CANCELLED')
-  assert.equal((await call('POST', { body: { action: 'cancel', jobId: 'job_missing' } })).status, 404)
+  assert.equal((await call('POST', { body: { taskType: 'job_cancel', jobId: 'job_missing' } })).status, 404)
 })
 
 test('DB not configured => 503 with a clear code (no crash)', async () => {
-  const handler = createJobsHandler({ getStore: () => Promise.reject(Object.assign(new Error('x'), { name: 'JobError', code: 'JOBS_DB_NOT_CONFIGURED' })), blobs: createMemoryBlobStore() })
+  const handler = createJobsHttp({ getStore: () => Promise.reject(Object.assign(new Error('x'), { name: 'JobError', code: 'JOBS_DB_NOT_CONFIGURED' })), blobs: createMemoryBlobStore() })
   let status = 0
   const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json() { return this }, end() { return this } }
-  await handler({ method: 'GET', headers: { 'x-sync-key': KEY }, query: { id: 'j' } } as any, res)
+  await handler({ method: 'GET', headers: { 'x-sync-key': KEY }, query: { taskType: 'job_get', id: 'j' } } as any, res)
   assert.equal(status, 500) // a plain Error (not JobError) must not leak details
+})
+
+test('adapter: missing/unknown taskType 400, wrong method 405, job_get needs GET', async () => {
+  const { call } = await setup()
+  assert.equal((await call('POST', { body: {} })).status, 400)
+  assert.equal((await call('POST', { body: { taskType: 'job_nope' } })).status, 400)
+  assert.equal((await call('GET', { query: { taskType: 'job_create' } })).status, 405)
+  assert.equal((await call('POST', { body: { taskType: 'job_get', id: 'x' } })).status, 405)
+  assert.equal((await call('POST', { body: 'not an object' as any })).status, 400)
 })
