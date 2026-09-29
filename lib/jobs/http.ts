@@ -109,7 +109,7 @@ export function createJobsHttp(deps: JobsDeps) {
         for (const v of rows) {
           if (typeof v.renderRef !== 'string' || !v.renderRef.startsWith('renders/')) continue
           const signed = await deps.blobs.presign?.(v.renderRef)
-          const sheet = typeof v.contactSheetRef === 'string' && v.contactSheetRef.startsWith('renders/') ? await deps.blobs.presign?.(v.contactSheetRef) : null
+          const sheet = typeof v.posterRef === 'string' && v.posterRef.startsWith('renders/') ? await deps.blobs.presign?.(v.posterRef) : null
           if (!signed) continue
           previews.push({ variantId: v.variantId, label: v.label, durationSec: v.duration ?? null, qc: v.gate?.decision ?? null, recommended: v.variantId === recommended, approved: !!job.approvedManifestHash && v.manifestHash === job.approvedManifestHash, url: signed.url, validUntil: signed.validUntil, posterUrl: sheet?.url ?? null })
         }
