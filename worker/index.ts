@@ -17,7 +17,8 @@ import { decisionExecutor, finalExecutor, packageExecutor } from './stages/finis
 
 const workerId = process.env.WORKER_ID || `${hostname()}-${process.pid}`
 const pollMs = Number(process.env.WORKER_POLL_MS || 2000)
-const openAi = process.env.OPENAI_API_KEY && process.env.WORKER_AI_PLANNER !== 'off'
+// Model-assisted planning is a paid external call, so it is explicit opt-in even if a provider key exists.
+const openAi = process.env.WORKER_AI_PLANNER === 'on' && process.env.OPENAI_API_KEY
   ? { apiKey: process.env.OPENAI_API_KEY, model: process.env.OPENAI_PLAN_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini' }
   : null
 const executors = [analyzeExecutor, createPlanExecutor({ openAi }), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor]
