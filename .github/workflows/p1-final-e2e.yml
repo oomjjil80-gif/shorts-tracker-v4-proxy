@@ -1,0 +1,85 @@
+name: P1 final production E2E
+
+on:
+  push:
+    branches: ['diag/p1-final-e2e']
+    paths: ['.github/workflows/p1-final-e2e.yml']
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Finalize and verify golden P1 job
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://shorts-tracker-v4-proxy.vercel.app'
+          KEY='tracker-p1-golden-e2e-20260929-a1b2c3d4'
+          JOB='job_1b4e7001-6c0f-4b5b-8932-045dcdae950e'
+          MANIFEST='08e603db6490967269f6ba53a9d35a9421b1b38deb1236f2bb873cf55dc68a92'
+
+          echo '--- fresh preview ---'
+          PREVIEW=$(curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_preview&id=$JOB")
+          echo "$PREVIEW" | jq '{status,stage,previews:[.previews[]|{variantId,label,durationSec,qc,recommended,approved}]}'
+          URL=$(echo "$PREVIEW" | jq -r '.previews[] | select(.variantId=="v1") | .url')
+          test -n "$URL" -a "$URL" != null
+          EXPECTED=$(basename "${URL%%\?*}" .mp4)
+          test "$EXPECTED" = '954e1428c825b2b741cc5c15e4ae4159cbb310e577c0bd47f3220ce1e357574e'
+
+          echo '--- download exact v1 render ---'
+          curl -fsSL -D /tmp/headers.txt -o /tmp/v1.mp4 "$URL"
+          sed -n '1,20p' /tmp/headers.txt
+          BYTES=$(stat -c%s /tmp/v1.mp4)
+          test "$BYTES" -gt 100000
+          ACTUAL=$(sha256sum /tmp/v1.mp4 | awk '{print $1}')
+          echo "render_sha256=$ACTUAL bytes=$BYTES"
+          test "$ACTUAL" = "$EXPECTED"
+
+          echo '--- ffprobe exact media ---'
+          if ! command -v ffprobe >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg >/dev/null
+          fi
+          ffprobe -v error -show_entries stream=codec_type,codec_name,width,height,pix_fmt,sample_rate,channels -show_entries format=duration -of json /tmp/v1.mp4 | tee /tmp/probe.json
+          node <<'NODE'
+          const p=require('/tmp/probe.json');
+          const v=p.streams.find(x=>x.codec_type==='video'); const a=p.streams.find(x=>x.codec_type==='audio');
+          if(!v||v.codec_name!=='h264'||v.width!==1080||v.height!==1920||v.pix_fmt!=='yuv420p') throw new Error('video format mismatch');
+          if(!a||a.codec_name!=='aac'||Number(a.sample_rate)!==44100||a.channels!==2) throw new Error('audio format mismatch');
+          const d=Number(p.format.duration); if(!(d>33.3&&d<33.8)) throw new Error('duration mismatch '+d);
+          NODE
+
+          echo '--- approve recommended v1 ---'
+          DEC=$(curl -fsS -X POST "$BASE/api/story" -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data "{\"taskType\":\"job_decision\",\"jobId\":\"$JOB\",\"manifestHash\":\"$MANIFEST\"}")
+          echo "$DEC" | jq '{ok,job:{status:.job.status,stage:.job.stage,approvedManifestHash:.job.approvedManifestHash}}'
+
+          echo '--- poll FINAL + PACKAGE ---'
+          FINAL=''
+          for i in $(seq 1 120); do
+            FINAL=$(curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_get&id=$JOB")
+            STATUS=$(echo "$FINAL" | jq -r '.job.status')
+            STAGE=$(echo "$FINAL" | jq -r '.job.stage')
+            echo "poll=$i status=$STATUS stage=$STAGE"
+            if [ "$STATUS" = COMPLETE ] || [ "$STATUS" = FAILED ]; then break; fi
+            sleep 3
+          done
+          echo "$FINAL" | jq . > /tmp/final.json
+          jq '{ok,job:{status:.job.status,stage:.job.stage,approvedManifestHash:.job.approvedManifestHash,final:.job.final,error:.job.error,runs:[.job.runs[]|select(.stage=="FINAL" or .stage=="PACKAGE")]}}' /tmp/final.json
+          test "$(jq -r '.job.status' /tmp/final.json)" = COMPLETE
+          test "$(jq -r '.job.approvedManifestHash' /tmp/final.json)" = "$MANIFEST"
+          test "$(jq -r '.job.final.renderHash' /tmp/final.json)" = "$EXPECTED"
+          PKG=$(jq -r '.job.final.packageRef' /tmp/final.json)
+          test -n "$PKG" -a "$PKG" != null
+          test "$(jq '[.job.runs[]|select(.stage=="FINAL" and .status=="SUCCEEDED")]|length' /tmp/final.json)" -ge 1
+          test "$(jq '[.job.runs[]|select(.stage=="PACKAGE" and .status=="SUCCEEDED")]|length' /tmp/final.json)" -ge 1
+
+          echo '--- final preview uses same approved render ---'
+          P2=$(curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_preview&id=$JOB")
+          echo "$P2" | jq '{status,stage,previews:[.previews[]|{variantId,qc,recommended,approved}]}'
+          U2=$(echo "$P2" | jq -r '.previews[] | select(.variantId=="v1") | .url')
+          E2=$(basename "${U2%%\?*}" .mp4)
+          test "$E2" = "$EXPECTED"
+          curl -fsSL -o /tmp/final-v1.mp4 "$U2"
+          A2=$(sha256sum /tmp/final-v1.mp4 | awk '{print $1}')
+          test "$A2" = "$EXPECTED"
+          echo "P1_FINAL_E2E_PASS renderHash=$EXPECTED packageRef=$PKG"
