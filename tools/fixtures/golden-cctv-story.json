@@ -1,0 +1,31 @@
+{
+  "_note": "Golden Source regression fixture (NOT used by production code). src_8209365874293_9772de17cf634ad9bd28513e85125918, 31s, 576x1024. Encodes Astra's independent QC judgment of the 33.5s Production render in SOURCE time. Astra's times were measured on that render, which began with a 2.5s hook-first preview followed by the full 0-31s source (33.5 = 2.5 + 31), so source = output - 2.5 (±0.1s). Keep (output) 2.6-6.3 / 7.5-12.7 / 14.7-22.4 => source 0.1-3.8 / 5.0-10.2 / 12.2-19.9 (16.6s). This is the story a correct semantic analysis must describe; it is not a planner input in production.",
+  "sourceAssetId": "src_8209365874293_9772de17cf634ad9bd28513e85125918",
+  "duration": 31,
+  "width": 576,
+  "height": 1024,
+  "story": {
+    "storyType": "single_event",
+    "confidence": 0.85,
+    "causalStart": 0.1,
+    "setupRanges": [{ "start": 0.1, "end": 3.8 }],
+    "escalationRanges": [{ "start": 5.0, "end": 10.2 }],
+    "payoffRange": { "start": 12.2, "end": 19.9 },
+    "recommendedEnd": 19.9,
+    "excludeRanges": [
+      { "start": 3.8, "end": 5.0, "reason": "repeat" },
+      { "start": 10.2, "end": 12.2, "reason": "repeat" },
+      { "start": 19.9, "end": 31, "reason": "product_demo" }
+    ],
+    "hookStrategy": "chronological",
+    "previewRange": null,
+    "hookConfidence": 0.2,
+    "hookReason": "short single-event causal clip; a preview of the ending confuses",
+    "minimalCaptions": [
+      { "kind": "hook", "start": 0.5, "end": 2.5, "text": "CCTV에 찍힌 이상한 행동", "basis": "grainy home security camera view of a man waving his arms" },
+      { "kind": "payoff", "start": 16.0, "end": 18.5, "text": "결국 아이도 따라 기어간다", "basis": "the child crawls after the man across the floor" }
+    ],
+    "publishabilityWarnings": ["burned-in Chinese product text appears after the story ends"]
+  },
+  "astra": { "keepSource": [[0.1, 3.8], [5.0, 10.2], [12.2, 19.9]], "recommendedSeconds": 16.6, "productTailStartsAtSource": 19.9, "oldRender": { "previewSeconds": 2.5, "thenSource": [0, 31] } }
+}

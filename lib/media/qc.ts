@@ -1,6 +1,6 @@
 // AUTO_QC for a rendered Shorts MP4. Every check measures the actual output file.
 // A check that cannot run is UNKNOWN (=> BLOCK); nothing here ever defaults to PASS.
-import { open, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { runCheck, runGate, type CheckResult, type GateResult } from '../qc/gate.js'
 import { sha256 } from '../jobs/blobs.js'
@@ -72,6 +72,8 @@ export type RenderQcResult = { gate: GateResult; metrics: Record<string, unknown
 
 export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
   const T = QC_THRESHOLDS
+  // overlay checks write scratch .ass files here; the caller's per-variant dir may not exist yet
+  await mkdir(i.workDir, { recursive: true })
   const metrics: Record<string, unknown> = {}
   const plan = (() => { try { return extractRenderPlan(i.payload) } catch { return null } })()
   const total = plan?.total ?? Number(i.payload?.totalDuration)

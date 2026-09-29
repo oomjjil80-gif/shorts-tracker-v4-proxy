@@ -8,6 +8,8 @@ import { QC_THRESHOLDS, runRenderQc } from '../../lib/media/qc.js'
 import { foregroundRect, measureOuterCanvasFill, regionSignature, type SourceFraming } from '../../lib/media/framing.js'
 import { extractJpeg, signatureDistance } from '../../lib/media/ffmpeg.js'
 import { extractRenderPlan } from '../../lib/media/render.js'
+import { evaluateContentGate } from '../../lib/media/contentGate.js'
+import type { SemanticResult, StoryAnalysis } from '../../lib/media/story.js'
 import { StageError, type StageExecutor } from '../types.js'
 
 async function framedTimelineCheck(renderPath: string, sourceFile: string, payload: any, framing: SourceFraming): Promise<CheckResult> {
@@ -50,6 +52,15 @@ export const autoQcExecutor: StageExecutor = {
     const analysis = analysisRun?.outputRef ? await blobs.getJson<SourceAnalysis>(analysisRun.outputRef) : null
     if (!analysis) throw new StageError('ANALYSIS_MISSING', 'AUTO_QC needs the source analysis (expected freeze/silence ranges)')
 
+    // Semantic story from PLAN (if any). Its status is carried verbatim: only 'ok' can yield content PASS.
+    const planRun = await previous('PLAN')
+    const sem = (planRun?.result as any)?.semantic
+    const story = sem?.storyRef ? await blobs.getJson<StoryAnalysis>(sem.storyRef) : null
+    const semantic: SemanticResult = sem
+      ? { status: sem.status, reason: sem.reason ?? null, story: sem.status === 'ok' ? story : null }
+      : { status: 'unavailable', reason: planRun ? 'PLAN recorded no semantic analysis' : 'job has no PLAN stage (client-supplied plan)', story: null }
+    if (semantic.status === 'ok' && !semantic.story) { semantic.status = 'failed'; semantic.reason = 'story blob missing' }
+
     const asset = await resolveSourceAsset(job.sourceAssetId)
     const file = await resolveSourceFile(asset)
     const work = await mkdtemp(join(tmpdir(), 'tracker-qc-'))
@@ -61,7 +72,7 @@ export const autoQcExecutor: StageExecutor = {
         const bytes = await blobs.getBytes(v.renderRef)
         // a missing/altered artifact is a FAIL of the whole variant, never a skipped check
         const dir = join(work, v.variantId)
-        let gate, contactSheetRef: string | null = null, posterRef: string | null = null
+        let gate, contentGate: any = null, contactSheetRef: string | null = null, posterRef: string | null = null
         if (!manifest || !bytes) {
           gate = { decision: 'BLOCK', reasons: ['UNKNOWN: artifact.available'], counts: { pass: 0, fail: 0, unknown: 1, requiredPass: 0, requiredTotal: 1 }, checks: [{ id: 'artifact.available', required: true, status: 'UNKNOWN', evidence: { manifest: !!manifest, render: !!bytes } }] }
         } else {
@@ -90,6 +101,10 @@ export const autoQcExecutor: StageExecutor = {
           }
           gate = evaluateGate(checks)
 
+          // Content (editorial) gate — separate from the technical gate above; recorded, never merged into it.
+          try { contentGate = evaluateContentGate({ payload: manifest.payload, analysis, semantic, framing: v.sourceFraming ?? null }) }
+          catch (e: any) { contentGate = evaluateGate([{ id: 'content.evaluated', required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } }]) }
+
           try {
             const posterPath = join(work, `${v.variantId}-poster.jpg`)
             await extractJpeg(renderPath, Math.min(1, (v.duration ?? 2) / 2), posterPath, 'scale=540:-2')
@@ -97,13 +112,19 @@ export const autoQcExecutor: StageExecutor = {
           } catch { /* optional */ }
           try { const sheet = await readFile(sheetPath); contactSheetRef = (await blobs.putBytes(`renders/${sha256(sheet)}.jpg`, sheet, 'image/jpeg')).path } catch { /* optional */ }
         }
+        if (!contentGate) contentGate = evaluateGate([{ id: 'content.evaluated', required: true, status: 'UNKNOWN', evidence: { reason: 'render artifact unavailable' } }])
         await putAddressed(blobs, `qc/render/${v.renderHash}`, gate)
-        results.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, renderRef: v.renderRef, renderHash: v.renderHash, duration: v.duration, contactSheetRef, posterRef, gate })
+        await putAddressed(blobs, `qc/content/${v.renderHash}`, contentGate)
+        // "Upload as-is" requires BOTH gates. Technical PASS alone is not publishable.
+        const publishable = gate.decision === 'PASS' && contentGate.decision === 'PASS'
+        results.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, renderRef: v.renderRef, renderHash: v.renderHash, duration: v.duration, contactSheetRef, posterRef, gate, contentGate, publishable })
       }
       const passing = results.filter((r) => r.gate.decision === 'PASS')
+      const publishable = results.filter((r) => r.publishable)
+      const lead = publishable[0] ?? passing[0]
       return {
-        outputRef: (passing[0] ?? results[0]).renderRef, outputHash: (passing[0] ?? results[0]).renderHash,
-        result: { variants: results, recommendedVariantId: passing[0]?.variantId ?? null, passing: passing.length },
+        outputRef: (lead ?? results[0]).renderRef, outputHash: (lead ?? results[0]).renderHash,
+        result: { variants: results, recommendedVariantId: lead?.variantId ?? null, passing: passing.length, publishable: publishable.length, semantic: { status: semantic.status, reason: semantic.reason } },
         wait: passing.length ? undefined : 'QC_BLOCKED'
       }
     } finally { await rm(work, { recursive: true, force: true }); await file.cleanup() }

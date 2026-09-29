@@ -84,6 +84,12 @@ test('P1 pipeline: source -> ANALYZE -> PLAN -> COMPILE -> RENDER -> AUTO_QC -> 
   assert.ok(gate.counts.requiredTotal >= 12 && gate.counts.requiredPass === gate.counts.requiredTotal)
   for (const id of ['decode.full', 'timeline.segment_order_and_trim', 'duration.matches_manifest', 'video.format', 'audio.present_and_alive', 'visual.no_black']) assert.equal(gate.checks.find((c: any) => c.id === id)?.status, 'PASS', id)
 
+  // content gate is recorded separately; without a semantic model it is BLOCK (UNKNOWN) and the video is NOT publishable
+  const v0 = qc.variants[0]
+  assert.equal(v0.contentGate.decision, 'BLOCK'); assert.equal(v0.publishable, false)
+  assert.ok(v0.contentGate.checks.some((c: any) => c.id === 'content.payoff_present' && c.status === 'UNKNOWN'))
+  assert.equal(qc.semantic.status, 'unavailable'); assert.equal(qc.publishable, 0)
+
   // the stored MP4 is a real 1080x1920 H.264/AAC file that fully decodes
   const bytes = blobs.binaries.get(rv[0].renderRef)!
   const f = join(dir, 'check.mp4'); (await import('node:fs')).writeFileSync(f, bytes)
@@ -151,4 +157,32 @@ test('job_create without a plan starts at ANALYZE; job_get exposes a phone-sized
   const pick = g.json.job.variants[0]
   const d = await call('POST', { body: { taskType: 'job_decision', jobId: j0.id, manifestHash: pick.manifestHash } })
   assert.equal(d.status, 200); assert.equal(d.json.job.stage, 'FINAL')
+})
+
+test('with a semantic story model: chronological story edit, captions grounded, technical AND content gate PASS => publishable; PACKAGE records it', async () => {
+  const story = {
+    storyType: 'single_event', confidence: 0.9, causalStart: 0, setupRanges: [{ start: 0, end: 3 }], escalationRanges: [{ start: 3, end: 6 }],
+    payoffRange: { start: 9, end: 11.5 }, recommendedEnd: 11.8, excludeRanges: [{ start: 6, end: 9, reason: 'repeat' }],
+    hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.1, hookReason: '',
+    minimalCaptions: [{ kind: 'payoff', start: 9.5, end: 11, text: '마지막 장면', basis: 'colour bars change' }], publishabilityWarnings: []
+  }
+  const fetchImpl = (async () => ({ ok: true, status: 200, json: async () => ({ model: 'gpt-test', output_text: JSON.stringify(story) }) })) as unknown as typeof fetch
+  const { store, drive } = await setup([analyzeExecutor, createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl } }), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor])
+  const { job } = await store.createJob({ workspaceId: 'ws', profile: 'source_shorts', sourceAssetId: asset.sourceAssetId, idempotencyKey: 'idem-p1-sem1', budgetUsd: 5 })
+  const trail = await drive(job.id)
+  assert.deepEqual(trail, ['ANALYZE:completed', 'PLAN:completed', 'COMPILE:completed', 'RENDER:completed', 'AUTO_QC:completed', 'DECISION:waiting'])
+  const analyzeRun = (await store.getLatestSucceeded(job.id, 'ANALYZE'))!
+  assert.ok((analyzeRun.result as any).keyframeSheetRef, 'timestamped keyframe sheet produced for the model')
+  const plan = (await store.getLatestSucceeded(job.id, 'PLAN'))!.result as any
+  assert.equal(plan.semantic.status, 'ok'); assert.equal(plan.provider, 'openai')
+  const qc = (await store.getLatestSucceeded(job.id, 'AUTO_QC'))!.result as any
+  const v = qc.variants.find((x: any) => x.variantId === qc.recommendedVariantId)
+  assert.equal(v.gate.decision, 'PASS', JSON.stringify(v.gate.reasons))
+  assert.equal(v.contentGate.decision, 'PASS', JSON.stringify(v.contentGate.reasons))
+  assert.equal(v.publishable, true)
+  assert.ok(Math.abs(v.duration - 8.8) < 0.15, `story edit length ${v.duration}`)
+  await store.recordDecision({ jobId: job.id, workspaceId: 'ws', manifestHash: v.manifestHash })
+  assert.deepEqual(await drive(job.id), ['FINAL:completed', 'PACKAGE:completed'])
+  const pkgRun = (await store.getLatestSucceeded(job.id, 'PACKAGE'))!
+  assert.equal((pkgRun.result as any).publishable, true)
 })

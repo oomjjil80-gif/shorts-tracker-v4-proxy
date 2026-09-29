@@ -53,6 +53,8 @@ function view(job: Job, runs: StageRun[]) {
   const variants = (rq.length ? rq : rr.length ? rr : cv).map((v) => ({
     id: v.variantId, label: v.label, manifestHash: v.manifestHash, durationSec: v.duration ?? v.totalDuration ?? null,
     rendered: rr.some((x) => x.variantId === v.variantId), qc: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.gate?.decision ?? null) : null,
+    contentQc: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.contentGate?.decision ?? null) : null,
+    publishable: rq.length ? rq.find((x) => x.variantId === v.variantId)?.publishable === true : false,
     recommended: v.variantId === recommended, approved: !!job.approvedManifestHash && v.manifestHash === job.approvedManifestHash
   }))
   const lastFail = [...runs].reverse().find((r) => r.status === 'FAILED')
@@ -63,9 +65,9 @@ function view(job: Job, runs: StageRun[]) {
     id: job.id, profile: job.profile, sourceAssetId: job.sourceAssetId, status: job.status, stage: job.stage, waitReason: job.waitReason,
     budgetUsd: job.budgetUsd, spentUsd: job.spentUsd, planRev: job.planRev, approvedManifestHash: job.approvedManifestHash,
     cancelRequested: job.cancelRequested, createdAt: job.createdAt, updatedAt: job.updatedAt,
-    stages, variants, planner: plan ? { provider: (plan.result as any)?.provider ?? null, fallback: (plan.result as any)?.fallback ?? null } : null,
+    stages, variants, planner: plan ? { provider: (plan.result as any)?.provider ?? null, semantic: (plan.result as any)?.semantic?.status ?? null, fallback: (plan.result as any)?.fallback ?? null } : null,
     manifest: compile ? { hash: compile.outputHash, ref: compile.outputRef, gate: (compile.result as any)?.gate ?? null } : null,
-    final: pkg ? { packageRef: (pkg.result as any)?.packageRef ?? null, renderHash: (pkg.result as any)?.renderHash ?? null, durationSec: (pkg.result as any)?.durationSec ?? null } : null,
+    final: pkg ? { packageRef: (pkg.result as any)?.packageRef ?? null, renderHash: (pkg.result as any)?.renderHash ?? null, durationSec: (pkg.result as any)?.durationSec ?? null, publishable: (pkg.result as any)?.publishable === true } : null,
     error: job.status === 'FAILED' ? (lastFail?.error as any)?.message ?? 'failed' : null,
     runs: runs.map((r) => ({ stage: r.stage, kind: r.kind, attempt: r.attempt, status: r.status, error: r.error, finishedAt: r.finishedAt }))
   }
@@ -111,7 +113,7 @@ export function createJobsHttp(deps: JobsDeps) {
           const signed = await deps.blobs.presign?.(v.renderRef)
           const sheet = typeof v.posterRef === 'string' && v.posterRef.startsWith('renders/') ? await deps.blobs.presign?.(v.posterRef) : null
           if (!signed) continue
-          previews.push({ variantId: v.variantId, label: v.label, durationSec: v.duration ?? null, qc: v.gate?.decision ?? null, recommended: v.variantId === recommended, approved: !!job.approvedManifestHash && v.manifestHash === job.approvedManifestHash, url: signed.url, validUntil: signed.validUntil, posterUrl: sheet?.url ?? null })
+          previews.push({ variantId: v.variantId, label: v.label, durationSec: v.duration ?? null, qc: v.gate?.decision ?? null, contentQc: v.contentGate?.decision ?? null, publishable: v.publishable === true, recommended: v.variantId === recommended, approved: !!job.approvedManifestHash && v.manifestHash === job.approvedManifestHash, url: signed.url, validUntil: signed.validUntil, posterUrl: sheet?.url ?? null })
         }
         return res.status(200).json({ ok: true, jobId: job.id, status: job.status, stage: job.stage, previews })
       }

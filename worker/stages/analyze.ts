@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { analyzeSourceFile } from '../../lib/media/analyze.js'
 import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
 import { canonicalize } from '../../lib/tracker-core/renderManifest.js'
+import { keyframeSheet } from '../../lib/media/ffmpeg.js'
+import { FONTS_DIR } from '../../lib/media/ass.js'
 import { StageError, type StageExecutor } from '../types.js'
 
 // ANALYZE: measure the registered source (scenes, per-second activity/audio, dead ranges, highlight windows).
@@ -27,10 +29,17 @@ export const analyzeExecutor: StageExecutor = {
       if (!analysis.usable.length) throw new StageError('SOURCE_NOT_USABLE', 'no usable (non-black) range in the source')
       let contactSheetRef: string | null = null
       try { const bytes = await readFile(sheetPath); contactSheetRef = (await blobs.putBytes(`analysis/contact/${sha256(bytes)}.jpg`, bytes, 'image/jpeg')).path } catch { /* optional artifact */ }
+      // Timestamped keyframe sheet for the semantic story review in PLAN (a story cannot be judged from numbers alone).
+      let keyframeSheetRef: string | null = null
+      try {
+        const kPath = join(work, 'keyframes.jpg')
+        await keyframeSheet(file.path, kPath, { duration: analysis.media.duration, fontFile: join(FONTS_DIR, 'NotoSansKR_700Bold.ttf') })
+        const bytes = await readFile(kPath); keyframeSheetRef = (await blobs.putBytes(`analysis/keyframes/${sha256(bytes)}.jpg`, bytes, 'image/jpeg')).path
+      } catch { /* optional: PLAN then records semantic status 'failed' (no keyframes) */ }
       const stored = await putAddressed(blobs, 'analysis', analysis)
       return {
         outputRef: stored.path, outputHash: sha256(canonicalize(analysis)),
-        result: { analysisRef: stored.path, contactSheetRef, summary: { duration: analysis.media.duration, scenes: analysis.scenes.length, highlights: analysis.highlights.length, usableSeconds: analysis.usable.reduce((s, r) => s + r.end - r.start, 0), hasAudio: analysis.media.hasAudio } },
+        result: { analysisRef: stored.path, contactSheetRef, keyframeSheetRef, summary: { duration: analysis.media.duration, scenes: analysis.scenes.length, highlights: analysis.highlights.length, usableSeconds: analysis.usable.reduce((s, r) => s + r.end - r.start, 0), hasAudio: analysis.media.hasAudio } },
         provider: 'ffmpeg', model: `${analysis.analyzer.name}@${analysis.analyzer.version}`
       }
     } finally { await rm(work, { recursive: true, force: true }); await file.cleanup() }

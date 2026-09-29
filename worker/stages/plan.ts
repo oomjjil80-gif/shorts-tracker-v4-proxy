@@ -1,18 +1,20 @@
 import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
 import type { SourceAnalysis } from '../../lib/media/analyze.js'
-import { aiPlanVariants, AI_PLANNER_PROMPT_VERSION } from '../../lib/media/aiPlanner.js'
-import { planVariants, toJobPlan, validateVariant, type VariantSpec } from '../../lib/media/plan.js'
+import { aiAnalyzeStory, AI_PLANNER_PROMPT_VERSION } from '../../lib/media/aiPlanner.js'
+import { planVariants, toJobPlan, validateVariant } from '../../lib/media/plan.js'
+import type { SemanticResult } from '../../lib/media/story.js'
 import { StageError, type StageExecutor } from '../types.js'
 
 export type PlanExecutorOptions = { openAi?: { apiKey: string; model: string; fetchImpl?: typeof fetch } | null }
 
-// PLAN: SourceAnalysis -> 1..3 JobPlans. Deterministic planner always runs; a model may refine it when configured.
-// A model failure never blocks the job: it falls back to the deterministic plan and the reason is recorded.
+// PLAN: SourceAnalysis (+ semantic story analysis when a vision model is configured) -> 1..3 JobPlans.
+// The semantic result is stored and recorded as-is (ok / unavailable / failed / invalid / low_confidence); the planner
+// only uses it when ok. A missing/failed model never blocks the job, but it also never becomes a content PASS later.
 export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExecutor {
   return {
     stage: 'PLAN',
     estimateUsd: () => (options.openAi ? 0.05 : 0),
-    inputHash: (job) => sha256(`plan|${job.id}|${job.sourceAssetId}|${options.openAi?.model ?? 'heuristic'}`),
+    inputHash: (job) => sha256(`plan|${job.id}|${job.sourceAssetId}|${options.openAi?.model ?? 'heuristic'}|${AI_PLANNER_PROMPT_VERSION}`),
     async run({ job, blobs, previous }) {
       const prev = await previous('ANALYZE')
       if (!prev?.outputRef) throw new StageError('ANALYSIS_MISSING', 'PLAN requires a completed ANALYZE stage')
@@ -20,16 +22,21 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
       if (!analysis || analysis.schema !== 'source-analysis/1') throw new StageError('ANALYSIS_INVALID', 'analysis blob missing or wrong schema')
       if (analysis.sourceAssetId !== job.sourceAssetId) throw new StageError('ANALYSIS_MISMATCH', 'analysis belongs to a different source')
 
-      let variants: VariantSpec[] = planVariants(analysis)
-      let provider = 'heuristic', model = 'deterministic@1', fallback: { reason: string } | null = null, usage: unknown = null, costUsd = 0
+      let semantic: SemanticResult = { status: 'unavailable', reason: 'no semantic model configured', story: null }
+      let provider = 'heuristic', model = 'deterministic@2', usage: unknown = null, warnings: string[] = []
       if (options.openAi) {
-        try {
-          const sheetRef = (prev.result as any)?.contactSheetRef as string | undefined
-          const sheet = sheetRef ? await blobs.getBytes(sheetRef) : null
-          const ai = await aiPlanVariants(analysis, variants, { ...options.openAi, contactSheetJpeg: sheet })
-          variants = ai.variants; provider = 'openai'; model = ai.model; usage = ai.usage
-        } catch (e: any) { fallback = { reason: String(e?.message || e).slice(0, 300) } }
+        const sheetRef = (prev.result as any)?.keyframeSheetRef as string | undefined
+        const sheet = sheetRef ? await blobs.getBytes(sheetRef) : null
+        const r = await aiAnalyzeStory(analysis, { ...options.openAi, keyframeJpeg: sheet })
+        semantic = { status: r.status, reason: r.reason, story: r.story }
+        usage = r.usage; warnings = r.warnings
+        if (r.status === 'ok') { provider = 'openai'; model = r.model }
       }
+      const storyRef = semantic.story ? (await putAddressed(blobs, 'stories', semantic.story)).path : null
+
+      let variants
+      try { variants = planVariants(analysis, semantic) }
+      catch (e: any) { throw new StageError('PLAN_EMPTY', String(e?.message || e)) }
       const bad = variants.flatMap((v) => validateVariant(v, analysis).map((m) => `${v.id}: ${m}`))
       if (bad.length) throw new StageError('PLAN_INVALID', bad.join('; '))
       if (!variants.length) throw new StageError('PLAN_EMPTY', 'planner produced no variants')
@@ -37,12 +44,17 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
       const stored = []
       for (const v of variants) {
         const s = await putAddressed(blobs, 'plans', toJobPlan(job.sourceAssetId, v))
-        stored.push({ variantId: v.id, label: v.label, rationale: v.rationale, planRef: s.path, seconds: v.beats.reduce((t, b) => t + (b.trimEnd - b.trimStart), 0) })
+        stored.push({ variantId: v.id, label: v.label, kind: v.kind ?? null, rationale: v.rationale, planRef: s.path, seconds: v.beats.reduce((t, b) => t + (b.trimEnd - b.trimStart), 0) })
       }
       return {
         outputRef: stored[0].planRef, outputHash: sha256(stored.map((s) => s.planRef).join('|')), planRef: stored[0].planRef,
-        result: { variants: stored, provider, model, promptVersion: options.openAi ? AI_PLANNER_PROMPT_VERSION : null, fallback },
-        provider, model, usage, costUsd
+        result: {
+          variants: stored, provider, model, promptVersion: options.openAi ? AI_PLANNER_PROMPT_VERSION : null,
+          semantic: { status: semantic.status, reason: semantic.reason, storyRef, warnings },
+          // kept for older readers: why the model was not used
+          fallback: semantic.status === 'ok' ? null : { reason: `${semantic.status}: ${semantic.reason ?? ''}`.slice(0, 300) }
+        },
+        provider, model, usage, costUsd: 0
       }
     }
   }
