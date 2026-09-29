@@ -17,3 +17,4 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run typecheck
+      # verifies semantic prompt v6 and P1 opening publishability guards
