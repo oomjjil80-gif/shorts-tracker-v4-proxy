@@ -28,6 +28,7 @@
     "typecheck": "tsc --noEmit -p .",
     "worker": "tsx worker/index.ts",
     "db:migrate": "tsx tools/migrate.ts",
-    "sync-core": "node tools/sync-tracker-core.mjs"
+    "sync-core": "node tools/sync-tracker-core.mjs",
+    "start": "npm run worker"
   }
 }
