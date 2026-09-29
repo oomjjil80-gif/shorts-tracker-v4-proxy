@@ -80,10 +80,10 @@ export const autoQcExecutor: StageExecutor = {
             checks.push(await framedTimelineCheck(renderPath, file.path, manifest.payload, sourceFraming))
           }
 
-          // Temporal blackdetect cannot see letterboxing because the picture itself is not a black *frame*.
-          // Re-run the framing detector on the final MP4: a publishable Short must use the full 9:16 canvas.
+          // This is deliberately stricter about *black* padding than source detection is about semantic picture bands.
+          // A dark blurred background is valid full-canvas fill; persistent near-black letterbox bands are not.
           try {
-            const outputFraming = await detectSourceFraming(renderPath)
+            const outputFraming = await detectSourceFraming(renderPath, { lumaThreshold: 12, activeFraction: 0.05 })
             checks.push({ id: 'visual.frame_utilization', required: true, status: outputFraming.mode === 'full' ? 'PASS' : 'FAIL', evidence: outputFraming })
           } catch (e: any) {
             checks.push({ id: 'visual.frame_utilization', required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } })
