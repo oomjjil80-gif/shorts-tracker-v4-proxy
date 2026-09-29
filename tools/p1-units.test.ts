@@ -119,7 +119,7 @@ test('PLAN stage: model failure keeps the deterministic plan and records semanti
   assert.equal(none.result.semantic.status, 'unavailable'); assert.equal(none.result.semantic.storyRef, null)
   const working = createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okStory) }) } })
   const r2: any = await working.run({ job, blobs, previous, signal: new AbortController().signal } as any)
-  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion, r2.result.semantic.status], ['openai', 'gpt-x', null, 'source-story-analysis/5', 'ok'])
+  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion, r2.result.semantic.status], ['openai', 'gpt-x', null, 'source-story-analysis/6', 'ok'])
   const story: any = await blobs.getJson(r2.result.semantic.storyRef)
   assert.equal(story.schema, 'story-analysis/1')
   const stored: any = await blobs.getJson(r2.planRef)
