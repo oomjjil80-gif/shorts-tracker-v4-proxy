@@ -5,7 +5,7 @@ import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
 import { evaluateGate, type CheckResult } from '../../lib/qc/gate.js'
 import type { SourceAnalysis } from '../../lib/media/analyze.js'
 import { QC_THRESHOLDS, runRenderQc } from '../../lib/media/qc.js'
-import { detectSourceFraming, foregroundRect, regionSignature, type SourceFraming } from '../../lib/media/framing.js'
+import { foregroundRect, measureOuterCanvasFill, regionSignature, type SourceFraming } from '../../lib/media/framing.js'
 import { extractJpeg, signatureDistance } from '../../lib/media/ffmpeg.js'
 import { extractRenderPlan } from '../../lib/media/render.js'
 import { StageError, type StageExecutor } from '../types.js'
@@ -80,11 +80,11 @@ export const autoQcExecutor: StageExecutor = {
             checks.push(await framedTimelineCheck(renderPath, file.path, manifest.payload, sourceFraming))
           }
 
-          // This is deliberately stricter about *black* padding than source detection is about semantic picture bands.
-          // A dark blurred background is valid full-canvas fill; persistent near-black letterbox bands are not.
+          // Output QC is NOT the source detector: it only asks whether the outer canvas still shows persistent pure-black
+          // padding. A dark blurred background carries picture energy and passes; true letterbox/pillarbox bars fail.
           try {
-            const outputFraming = await detectSourceFraming(renderPath, { lumaThreshold: 12, activeFraction: 0.05 })
-            checks.push({ id: 'visual.frame_utilization', required: true, status: outputFraming.mode === 'full' ? 'PASS' : 'FAIL', evidence: outputFraming })
+            const fill = await measureOuterCanvasFill(renderPath)
+            checks.push({ id: 'visual.frame_utilization', required: true, status: fill.filled ? 'PASS' : 'FAIL', evidence: fill })
           } catch (e: any) {
             checks.push({ id: 'visual.frame_utilization', required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } })
           }
