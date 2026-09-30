@@ -68,7 +68,7 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
         result: {
           variants: stored, provider, model, promptVersion: options.openAi ? AI_PLANNER_PROMPT_VERSION : null,
           semantic: { status: semantic.status, reason: semantic.reason, storyRef, storySummary, warnings },
-          reference: referencePlan ? { profileVersion: referenceProfile!.profileVersion, applied: referencePlan.applied, unknown: referencePlan.unknown, notes: referencePlan.notes } : null,
+          reference: referencePlan ? { profileVersion: referenceProfile!.profileVersion, applied: referencePlan.applied, unknown: referencePlan.unknown, notes: referencePlan.notes, changes: referencePlan.changes } : null,
           // kept for older readers: why the model was not used
           fallback: semantic.status === 'ok' ? null : { reason: `${semantic.status}: ${semantic.reason ?? ''}`.slice(0, 300) }
         },
