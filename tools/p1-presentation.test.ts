@@ -26,8 +26,8 @@ const cue = (kind: string, start: number, end: number, text: string) => ({ kind,
 // a generous, realistic model answer: MORE cues than the budget allows
 const richCues = [
   cue('hook', 2.2, 3.4, '뭐 하는 거지?'),
-  cue('context', 3.0, 3.7, '먼저 움직인다'),
-  cue('context', 3.8, 5, '조용히 다가온다'), cue('context', 6, 7.5, '멈칫하는 사람'), cue('context', 8.5, 10, '옆을 힐끔 본다'), cue('context', 11, 12.3, '다른 사람도 온다'), cue('context', 13, 14, '모두 모였다'),
+  cue('context', 2.3, 3.2, '먼저 움직인다'),
+  cue('context', 3.8, 5, '조용히 다가온다'), cue('context', 6, 7.5, '멈칫하는 사람'), cue('context', 8.5, 10, '옆을 힐끔 본다'), cue('context', 11, 12.3, '다른 사람도 온다'), cue('context', 13, 14, '모두 모였다'), cue('context', 14.6, 15.5, '다시 움직인다'),
   cue('effect', 7, 7.6, '슥'), cue('effect', 9, 9.6, '휙'), cue('effect', 12, 12.6, '쓱'),
   cue('context', 15.2, 16.0, '끝까지 함께 간다'),
   cue('payoff', 17.2, 18.2, '결국 같이 걷는다')
