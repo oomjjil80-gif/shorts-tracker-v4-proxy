@@ -16,7 +16,11 @@ const base = {
   payoffRange: { start: 15, end: 19 }, recommendedEnd: 19.5,
   excludeRanges: [{ start: 0, end: 1, reason: 'foreign_text' }, { start: 20, end: 30, reason: 'product_demo' }],
   hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.1, hookReason: '',
-  minimalCaptions: [{ kind: 'hook', start: 1, end: 2.5, text: '왜 따라가는 걸까?', basis: 'person is visibly following' }], publishabilityWarnings: []
+  minimalCaptions: [
+    { kind: 'hook', start: 1, end: 2.5, text: '왜 따라가는 걸까?', basis: 'person is visibly following' },
+    { kind: 'context', start: 6.5, end: 8, text: '계속 뒤를 따라간다', basis: 'person visibly continues following' },
+    { kind: 'payoff', start: 16, end: 17.5, text: '결국 같이 움직인다', basis: 'second subject visibly joins' }
+  ], publishabilityWarnings: []
 }
 
 test('one invalid semantic answer is repaired once using the same evidence', async () => {
