@@ -102,9 +102,9 @@ export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProf
   const median=(v:number[])=>{const a=[...v].sort((x,y)=>x-y),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2}
   const aggregateIds=new Set(['story.opening','retention.peak','editing.cadence'])
   const constraints:ReferenceFeature[]=[]
-  for(const f of raw.filter(x=>!aggregateIds.has(x.id.slice(x.id.lastIndexOf(':')+1))))constraints.push(f)
+  for(const f of raw.filter(x=>!aggregateIds.has(x.id.slice(x.id.indexOf(':')+1))))constraints.push(f)
   for(const featureId of aggregateIds){
-    const xs=raw.filter(x=>x.id.endsWith(':'+featureId)||x.id===featureId);if(!xs.length)continue
+    const xs=raw.filter(x=>x.id.slice(x.id.indexOf(':')+1)===featureId||x.id===featureId);if(!xs.length)continue
     const failed=xs.filter(x=>String((x.value as any)?.status||'measured')!=='measured')
     if(failed.length){constraints.push({id:`aggregate:${featureId}`,axis:xs[0].axis,value:{status:'unknown',reason:'one or more applicable reference measurements are unknown',failed:failed.map(x=>x.id)},evidence:xs.flatMap(x=>x.evidence),appliesTo:[...new Set(xs.flatMap(x=>x.appliesTo))] as ReferenceUse[]});continue}
     let value:any=null
