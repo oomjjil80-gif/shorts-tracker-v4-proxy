@@ -47,3 +47,21 @@ test('low confidence is not retried into a false PASS', async () => {
   assert.equal(calls, 1)
   assert.equal(r.status, 'low_confidence')
 })
+
+test('caption budget never prunes the structurally required opening hook', async () => {
+  const manyCues = {
+    ...base,
+    minimalCaptions: [
+      { kind: 'context', start: 3, end: 4, text: '처음엔 지켜본다', basis: 'subject visibly watches' },
+      { kind: 'context', start: 6, end: 7, text: '곧 따라 움직인다', basis: 'subject visibly follows' },
+      { kind: 'context', start: 10, end: 11, text: '아이도 눈치챈다', basis: 'child visibly watches' },
+      { kind: 'payoff', start: 16, end: 17.5, text: '결국 같이 움직인다', basis: 'second subject visibly joins' }
+    ]
+  }
+  const fetchImpl = (async () => ({ ok: true, status: 200, json: async () => ({ model: 'gpt-test', output_text: JSON.stringify(manyCues) }) })) as unknown as typeof fetch
+  const r = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: Buffer.from('jpg'), fetchImpl })
+  assert.equal(r.status, 'ok')
+  assert.equal(r.story!.minimalCaptions.filter((c) => c.kind !== 'effect').length, 4)
+  assert.equal(r.story!.minimalCaptions[0].kind, 'hook')
+  assert.equal(r.story!.minimalCaptions[0].text, '왜 따라가는 걸까?')
+})
