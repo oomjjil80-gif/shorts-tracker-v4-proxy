@@ -14,20 +14,20 @@ export type Cue = { kind: CueKind; start: number; end: number; text: string; bas
 
 export const PRESENTATION_LIMITS = {
   hook: 1,
-  contexts: 3,
+  contexts: 5,
   payoffs: 1,
   effects: 2,
-  totalMessages: 6,          // hook + payoff + contexts + effects
-  eventsMax: 4,              // context + payoff (timed explanation captions)
+  totalMessages: 9,          // hook + payoff + contexts + effects
+  eventsMax: 6,              // context + payoff (timed explanation captions)
   hookMaxOutputStart: 1.2,   // the headline must be tied to the first ~second of the clean edit
-  maxDynamicGapSec: 5.5,     // longest allowed stretch without a NEW timed message/effect (output time)
+  maxDynamicGapSec: 3.2,     // upload-ready mobile rhythm: longest stretch without a NEW timed information/effect cue
   explanationMinTotalSec: 10, // edits this long need at least one context/payoff explanation, not only a hook/effects
   minCueSec: 0.6,            // a clipped cue shorter than this is not readable
   minEffectSec: 0.4,
   maxHookChars: 20, maxCaptionChars: 20, maxEffectChars: 8, maxHeadlineChars: 24
 } as const
 
-export const minDynamicFor = (totalSec: number) => (totalSec >= 12 ? 2 : 1)
+export const minDynamicFor = (totalSec: number) => totalSec >= 20 ? 6 : totalSec >= 12 ? 4 : totalSec >= 7 ? 2 : 1
 
 export type RhythmReport = { ok: boolean; dynamicCueCount: number; minDynamic: number; cueStarts: number[]; maxGapSeconds: number; worstGap: { from: number; to: number } | null; allowedMaxGap: number }
 const r2 = (n: number) => Math.round(n * 100) / 100
