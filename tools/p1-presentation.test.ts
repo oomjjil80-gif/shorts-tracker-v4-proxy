@@ -167,10 +167,43 @@ test('preview-first edit: headline pinned to the first frame; payoff caption sit
   assert.ok(payoff && payoff.outStart >= 2, 'payoff caption is not stuck on the 2s preview clip')
 })
 
-test('a rhythm gap of > 5.5s is reported, not silently accepted', () => {
+test('a rhythm gap of > 3.2s is reported, not silently accepted', () => {
   const a = analysis()
   const s = sem(a, { minimalCaptions: [cue('hook', 2.2, 3.4, '뭐 하는 거지?'), cue('payoff', 15, 16.8, '결국 같이 걷는다')] })
   const [v1] = planVariants(a, s)
   assert.equal(v1.presentation!.rhythm.ok, false)
   assert.equal(status(gate(a, s, payloadFor(a, v1)), 'content.presentation_rhythm'), 'FAIL')
+})
+
+
+test('director density: a 20s+ edit cannot pass with only three dynamic information points', () => {
+  const a = analysis(30)
+  const sparse = sem(a, { recommendedEnd: 24.5, payoffRange: { start: 21, end: 24 }, escalationRanges: [{ start: 6, end: 21 }], minimalCaptions: [
+    cue('hook', 2.2, 3.2, '무슨 일이 생길까?'),
+    cue('context', 5, 6.2, '한 사람이 움직인다'),
+    cue('context', 12, 13.2, '다른 사람도 본다'),
+    cue('payoff', 21, 22.4, '결국 모두 따라간다')
+  ] })
+  const [v1] = planVariants(a, sparse)
+  assert.ok(v1.beats.reduce((t,b)=>t+b.trimEnd-b.trimStart,0) >= 20)
+  assert.equal(v1.presentation!.rhythm.ok, false)
+  assert.ok(v1.presentation!.rhythm.minDynamic >= 6)
+  assert.equal(status(gate(a, sparse, payloadFor(a, v1)), 'content.presentation_rhythm'), 'FAIL')
+})
+
+test('director density: a 20s+ edit with grounded cues distributed about every 3s can pass rhythm', () => {
+  const a = analysis(30)
+  const dense = sem(a, { recommendedEnd: 24.5, payoffRange: { start: 21, end: 24 }, escalationRanges: [{ start: 6, end: 21 }], minimalCaptions: [
+    cue('hook', 2.2, 3.2, '무슨 일이 생길까?'),
+    cue('context', 3.5, 4.5, '먼저 움직인다'),
+    cue('context', 6.5, 7.5, '옆에서도 본다'),
+    cue('effect', 9.5, 10.1, '슥'),
+    cue('context', 12.5, 13.5, '한 명 더 합류'),
+    cue('context', 15.5, 16.5, '줄이 길어진다'),
+    cue('effect', 18.5, 19.1, '멈칫'),
+    cue('payoff', 21, 22.4, '결국 모두 따라간다')
+  ] })
+  const [v1] = planVariants(a, dense)
+  assert.equal(v1.presentation!.rhythm.ok, true, JSON.stringify(v1.presentation))
+  assert.ok(v1.presentation!.rhythm.dynamicCueCount >= 6)
 })
