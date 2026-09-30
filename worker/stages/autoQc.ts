@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
 import { evaluateGate, type CheckResult } from '../../lib/qc/gate.js'
-import type { SourceAnalysis } from '../../lib/media/analyze.js'
+import { analyzeSourceFile, type SourceAnalysis } from '../../lib/media/analyze.js'
 import { QC_THRESHOLDS, runRenderQc } from '../../lib/media/qc.js'
 import { foregroundRect, measureOuterCanvasFill, regionSignature, type SourceFraming } from '../../lib/media/framing.js'
 import { extractJpeg, signatureDistance, probe, sceneScores, detectSilence } from '../../lib/media/ffmpeg.js'
@@ -144,6 +144,18 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
             const scores=await sceneScores(renderPath),duration=Number(outputInfo.duration||v.duration||0),cuts:number[]=[]
             for(const s of scores)if(s.score>0.3&&s.t>0.2&&s.t<duration-0.2&&(!cuts.length||s.t-cuts[cuts.length-1]>=0.5))cuts.push(s.t)
             const meanSceneSeconds=duration>0?duration/(cuts.length+1):null
+            const firstSceneBoundary=cuts.length?cuts[0]:null
+            try{
+              const measured=await analyzeSourceFile(renderPath,{sourceAssetId:`render:${v.renderHash}`,sha256:sha256(bytes)})
+              for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':retention.peak')||x.id==='retention.peak')){
+                const target=x.value as any,targetPeak=target?.firstPeak
+                if(targetPeak&&Number.isFinite(Number(targetPeak.start))&&Number.isFinite(Number(targetPeak.end))&&measured.highlights.length){
+                  const targetCenter=(Number(targetPeak.start)+Number(targetPeak.end))/2,actualPeak=measured.highlights[0],actualCenter=(actualPeak.start+actualPeak.end)/2
+                  const targetNorm=targetCenter/Math.max(0.001,Number((x.evidence?.[0] as any)?.end||duration)),actualNorm=actualCenter/Math.max(0.001,duration),tolerance=0.2
+                  measurements[x.id]={measured:true,pass:Math.abs(targetNorm-actualNorm)<=tolerance,target:{firstPeakNormalized:Number(targetNorm.toFixed(3))},actual:{firstPeakNormalized:Number(actualNorm.toFixed(3)),firstPeak:actualPeak},tolerance:{normalizedTimeline:tolerance},method:'ffmpeg-signals-output-retention-peak',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),duration}}
+                }
+              }
+            }catch{/* absence remains UNKNOWN */}
             const firstSceneBoundary=cuts.length?cuts[0]:null
             for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':story.opening')||x.id==='story.opening')){
               const target=Number((x.value as any)?.openingSeconds)
