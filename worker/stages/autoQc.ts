@@ -158,9 +158,9 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               const measured=await analyzeSourceFile(renderPath,{sourceAssetId:`render:${v.renderHash}`,sha256:sha256(bytes)})
               for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':retention.peak')||x.id==='retention.peak')){
                 const target=x.value as any,targetPeak=target?.firstPeak
-                if(targetPeak&&Number.isFinite(Number(targetPeak.start))&&Number.isFinite(Number(targetPeak.end))&&measured.highlights.length){
+                if(targetPeak&&Number.isFinite(Number(target?.duration))&&Number(target.duration)>0&&Number.isFinite(Number(targetPeak.start))&&Number.isFinite(Number(targetPeak.end))&&measured.highlights.length){
                   const targetCenter=(Number(targetPeak.start)+Number(targetPeak.end))/2,actualPeak=measured.highlights[0],actualCenter=(actualPeak.start+actualPeak.end)/2
-                  const targetNorm=targetCenter/Math.max(0.001,Number((x.evidence?.[0] as any)?.end||duration)),actualNorm=actualCenter/Math.max(0.001,duration),tolerance=0.2
+                  const targetDuration=Number(target?.duration),targetNorm=targetCenter/Math.max(0.001,targetDuration),actualNorm=actualCenter/Math.max(0.001,duration),tolerance=0.2
                   measurements[x.id]={measured:true,pass:Math.abs(targetNorm-actualNorm)<=tolerance,target:{firstPeakNormalized:Number(targetNorm.toFixed(3))},actual:{firstPeakNormalized:Number(actualNorm.toFixed(3)),firstPeak:actualPeak},tolerance:{normalizedTimeline:tolerance},method:'ffmpeg-signals-output-retention-peak',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),duration}}
                 }
               }
@@ -183,10 +183,10 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
           }catch{/* measurement absence remains UNKNOWN, never PASS */}
           for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':narration.structure')||x.id==='narration.structure')){
             const target=x.value as any,ranges=Array.isArray(target?.measuredRanges)?target.measuredRanges:[]
-            if(ranges.length&&outputInfo.hasAudio){
+            if(ranges.length&&Number(target?.duration)>0&&outputInfo.hasAudio){
               try{
                 const silent=await detectSilence(renderPath),duration=Math.max(.001,Number(outputInfo.duration||1)),silentTotal=silent.reduce((n,z)=>n+Math.max(0,z.end-z.start),0),actualRatio=Math.max(0,1-silentTotal/duration)
-                const targetDuration=Math.max(.001,Number((x.evidence?.[0] as any)?.end||duration)),targetActive=ranges.reduce((n:number,z:any)=>n+Math.max(0,Number(z.end)-Number(z.start)),0),targetRatio=Math.min(1,targetActive/targetDuration),tolerance=.25
+                const targetDuration=Math.max(.001,Number(target?.duration||0)),targetActive=ranges.reduce((n:number,z:any)=>n+Math.max(0,Number(z.end)-Number(z.start)),0),targetRatio=Math.min(1,targetActive/targetDuration),tolerance=.25
                 measurements[x.id]={measured:true,pass:Math.abs(targetRatio-actualRatio)<=tolerance,target:{speechActivityRatio:Number(targetRatio.toFixed(3))},actual:{speechActivityRatio:Number(actualRatio.toFixed(3))},tolerance:{ratio:tolerance},method:'ffmpeg-silencedetect-output-speech-activity',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),duration,silentRanges:silent}}
               }catch{/* remains UNKNOWN */}
             }

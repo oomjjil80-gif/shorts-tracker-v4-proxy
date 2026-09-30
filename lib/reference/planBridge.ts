@@ -34,16 +34,18 @@ export function applyReferencePlanConstraints(variants:VariantSpec[], constraint
    if(changed){for(const c of cadence)applied.push(c.id);notes.push(`reference cadence aggregate median=${target.toFixed(2)}s applied once across ${cadenceValues.length} measured reference(s)`)}else for(const c of cadence)unknown.push(c.id)
   }else for(const c of cadence)unknown.push(c.id)
  }
- for(const c of plan.filter(c=>baseId(c)!=='editing.cadence')){
-  const id=baseId(c),v=c.value as any
-  if(id==='story.opening'){
-   const opening=Number(v?.openingSeconds)
-   if(opening>=0.8){
-    let changed=false
-    for(const variant of variants){const before=variant.beats.map(x=>({...x}));const next=splitOpening(before,opening);if(next.length<=12&&JSON.stringify(next)!==JSON.stringify(before)){variant.beats=next;changed=true;changes.push({constraintId:c.id,variantId:variant.id,beforeBeats:before.length,afterBeats:next.length,beforeFirstSeconds:r2(len(before[0])),afterFirstSeconds:r2(len(next[0]))})}}
-    if(changed){applied.push(c.id);notes.push(`reference opening window=${opening.toFixed(2)}s applied as a boundary inside the existing first causal beat`)}else unknown.push(c.id)
-   }else unknown.push(c.id)
-  }else if(id==='retention.peak'){unknown.push(c.id);notes.push('reference retention peak retained for QC only until PLAN performs an independently verifiable selection change')
+ const openings=plan.filter(c=>baseId(c)==='story.opening'),openingValues=openings.map(c=>Number((c.value as any)?.openingSeconds)).filter(x=>x>=0.8).sort((a,b)=>a-b)
+ if(openings.length){
+  if(openingValues.length){
+   const mid=Math.floor(openingValues.length/2),opening=openingValues.length%2?openingValues[mid]:(openingValues[mid-1]+openingValues[mid])/2
+   let changed=false
+   for(const variant of variants){const before=variant.beats.map(x=>({...x}));const next=splitOpening(before,opening);if(next.length<=12&&JSON.stringify(next)!==JSON.stringify(before)){variant.beats=next;changed=true;changes.push({constraintId:'aggregate:story.opening',variantId:variant.id,beforeBeats:before.length,afterBeats:next.length,beforeFirstSeconds:r2(len(before[0])),afterFirstSeconds:r2(len(next[0]))})}}
+   if(changed){for(const x of openings)applied.push(x.id);notes.push(`reference opening aggregate median=${opening.toFixed(2)}s applied once across ${openingValues.length} measured reference(s)`)}else for(const x of openings)unknown.push(x.id)
+  }else for(const x of openings)unknown.push(x.id)
+ }
+ for(const c of plan.filter(c=>baseId(c)!=='editing.cadence'&&baseId(c)!=='story.opening')){
+  const id=baseId(c)
+  if(id==='retention.peak'){unknown.push(c.id);notes.push('reference retention peak retained for QC only until PLAN performs an independently verifiable selection change')
   }else if(id==='sound.structure'||id==='narration.structure'){unknown.push(c.id);notes.push(`${c.id} retained for downstream measurement; PLAN does not claim application without a real audio/narration edit`)
   }else unknown.push(c.id)
  }
