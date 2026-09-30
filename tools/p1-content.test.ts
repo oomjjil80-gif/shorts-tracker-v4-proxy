@@ -24,12 +24,14 @@ function analysis(o: { duration?: number; visual?: (t: number) => number; audioD
 
 const presentation = [
   { kind: 'hook', start: 2.2, end: 3.4, text: '왜 저러는 걸까?', basis: 'adult visibly starts an unusual action' },
+  { kind: 'context', start: 3.5, end: 4.5, text: '먼저 몸을 낮춘다', basis: 'adult visibly lowers toward the floor' },
   { kind: 'context', start: 5.0, end: 6.5, text: '갑자기 움직이기 시작', basis: 'adult visibly moves across the floor' },
   { kind: 'context', start: 7.5, end: 8.5, text: '옆에서도 지켜본다', basis: 'another person visibly watches' },
   { kind: 'effect', start: 9.0, end: 9.8, text: '슥', basis: 'adult shifts forward' },
   { kind: 'context', start: 10.0, end: 11.5, text: '아이도 보고 있다', basis: 'child visibly watches the adult' },
   { kind: 'context', start: 12.5, end: 13.5, text: '점점 가까워진다', basis: 'people visibly converge' },
-  { kind: 'payoff', start: 15.0, end: 16.8, text: '결국 따라간다', basis: 'child visibly follows the adult' }
+  { kind: 'payoff', start: 15.0, end: 16.8, text: '결국 따라간다', basis: 'child visibly follows the adult' },
+  { kind: 'effect', start: 17.3, end: 18.0, text: '쓱', basis: 'child visibly keeps moving forward' }
 ]
 
 const baseStory = {
