@@ -34,7 +34,7 @@ const richCues = [
 const story = (over: any = {}) => ({
   storyType: 'single_event', confidence: 0.9, causalStart: 2, setupRanges: [{ start: 2, end: 6 }], escalationRanges: [{ start: 6, end: 14 }],
   payoffRange: { start: 16.8, end: 18.3 }, recommendedEnd: 18.5,
-  excludeRanges: [{ start: 0, end: 2, reason: 'foreign_text' }, { start: 25, end: 30, reason: 'product_demo' }] as any[],
+  excludeRanges: [{ start: 0, end: 2, reason: 'foreign_text' }] as any[],
   hookStrategy: 'chronological', previewRange: null as any, hookConfidence: 0.2, hookReason: '', minimalCaptions: richCues as any[], publishabilityWarnings: [] as string[], ...over
 })
 function sem(a: SourceAnalysis, over: any = {}): SemanticResult {
@@ -179,7 +179,7 @@ test('a rhythm gap of > 3.2s is reported, not silently accepted', () => {
 
 test('director density: a 20s+ edit cannot pass with only three dynamic information points', () => {
   const a = analysis(30)
-  const sparse = sem(a, { recommendedEnd: 24.5, payoffRange: { start: 21, end: 24 }, escalationRanges: [{ start: 6, end: 21 }], excludeRanges: [{ start: 0, end: 2, reason: 'foreign_text' }, { start: 25, end: 30, reason: 'product_demo' }], minimalCaptions: [
+  const sparse = sem(a, { recommendedEnd: 24.5, payoffRange: { start: 21, end: 24 }, escalationRanges: [{ start: 6, end: 21 }], excludeRanges: [{ start: 0, end: 2, reason: 'foreign_text' }], minimalCaptions: [
     cue('hook', 2.2, 3.2, '무슨 일이 생길까?'),
     cue('context', 5, 6.2, '한 사람이 움직인다'),
     cue('context', 12, 13.2, '다른 사람도 본다'),
@@ -194,7 +194,7 @@ test('director density: a 20s+ edit cannot pass with only three dynamic informat
 
 test('director density: a 20s+ edit with grounded cues distributed about every 3s can pass rhythm', () => {
   const a = analysis(30)
-  const dense = sem(a, { recommendedEnd: 24.5, payoffRange: { start: 21, end: 24 }, escalationRanges: [{ start: 6, end: 21 }], excludeRanges: [{ start: 0, end: 2, reason: 'foreign_text' }, { start: 25, end: 30, reason: 'product_demo' }], minimalCaptions: [
+  const dense = sem(a, { recommendedEnd: 24.5, payoffRange: { start: 21, end: 24 }, escalationRanges: [{ start: 6, end: 21 }], excludeRanges: [{ start: 0, end: 2, reason: 'foreign_text' }], minimalCaptions: [
     cue('hook', 2.2, 3.2, '무슨 일이 생길까?'),
     cue('context', 3.5, 4.5, '먼저 움직인다'),
     cue('context', 6.5, 7.5, '옆에서도 본다'),
