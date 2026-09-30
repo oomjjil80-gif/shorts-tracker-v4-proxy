@@ -97,7 +97,7 @@ export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProf
   const ids=analyses.map(x=>x.referenceAssetId)
   if(new Set(ids).size!==ids.length) throw new Error('duplicate reference analysis')
   const ordered=[...analyses].sort((a,b)=>a.referenceAssetId.localeCompare(b.referenceAssetId))
-  const applicable=(f:ReferenceFeature)=>String((f.value as any)?.status||'measured')==='measured'
+  const applicable=(f:ReferenceFeature)=>String((f.value as any)?.status||'measured')!=='not_applicable'
   const raw=ordered.flatMap(x=>x.features.filter(applicable).map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))
   const median=(v:number[])=>{const a=[...v].sort((x,y)=>x-y),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2}
   const aggregateIds=new Set(['story.opening','retention.peak','editing.cadence'])
