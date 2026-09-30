@@ -105,6 +105,8 @@ export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProf
   for(const f of raw.filter(x=>!aggregateIds.has(x.id.slice(x.id.lastIndexOf(':')+1))))constraints.push(f)
   for(const featureId of aggregateIds){
     const xs=raw.filter(x=>x.id.endsWith(':'+featureId)||x.id===featureId);if(!xs.length)continue
+    const failed=xs.filter(x=>String((x.value as any)?.status||'measured')!=='measured')
+    if(failed.length){constraints.push({id:`aggregate:${featureId}`,axis:xs[0].axis,value:{status:'unknown',reason:'one or more applicable reference measurements are unknown',failed:failed.map(x=>x.id)},evidence:xs.flatMap(x=>x.evidence),appliesTo:[...new Set(xs.flatMap(x=>x.appliesTo))] as ReferenceUse[]});continue}
     let value:any=null
     if(featureId==='editing.cadence'){const v=xs.map(x=>Number((x.value as any)?.meanSceneSeconds)).filter(Number.isFinite);if(v.length)value={meanSceneSeconds:Number(median(v).toFixed(3)),status:'measured',aggregation:'median'}}
     if(featureId==='story.opening'){const v=xs.map(x=>Number((x.value as any)?.openingSeconds)).filter(x=>Number.isFinite(x)&&x>0);if(v.length)value={openingSeconds:Number(median(v).toFixed(3)),status:'measured',aggregation:'median'}}
@@ -129,7 +131,7 @@ export function validateReferenceProfile(p: ReferenceProfile | null | undefined)
     if(!f?.evidence?.length) errors.push(`evidence:${f?.id||'?'}`)
   }
   // A profile may mix video and still references. Axes that no supplied reference can measure are absent by design;
-  // UNKNOWN analysis features must never become impossible QC constraints.
+  // Intrinsically not-applicable features are omitted; UNKNOWN applicable measurements remain constraints and therefore BLOCK conformance.
   return errors
 }
 export function conformanceReport(profile: ReferenceProfile, checks: ConformanceCheck[]): ConformanceReport {
