@@ -98,7 +98,19 @@ export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProf
   if(new Set(ids).size!==ids.length) throw new Error('duplicate reference analysis')
   const ordered=[...analyses].sort((a,b)=>a.referenceAssetId.localeCompare(b.referenceAssetId))
   const applicable=(f:ReferenceFeature)=>String((f.value as any)?.status||'measured')==='measured'
-  const constraints=ordered.flatMap(x=>x.features.filter(applicable).map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))
+  const raw=ordered.flatMap(x=>x.features.filter(applicable).map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))
+  const median=(v:number[])=>{const a=[...v].sort((x,y)=>x-y),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2}
+  const aggregateIds=new Set(['story.opening','retention.peak','editing.cadence'])
+  const constraints:ReferenceFeature[]=[]
+  for(const f of raw.filter(x=>!aggregateIds.has(x.id.slice(x.id.lastIndexOf(':')+1))))constraints.push(f)
+  for(const featureId of aggregateIds){
+    const xs=raw.filter(x=>x.id.endsWith(':'+featureId)||x.id===featureId);if(!xs.length)continue
+    let value:any=null
+    if(featureId==='editing.cadence'){const v=xs.map(x=>Number((x.value as any)?.meanSceneSeconds)).filter(Number.isFinite);if(v.length)value={meanSceneSeconds:Number(median(v).toFixed(3)),status:'measured',aggregation:'median'}}
+    if(featureId==='story.opening'){const v=xs.map(x=>Number((x.value as any)?.openingSeconds)).filter(x=>Number.isFinite(x)&&x>0);if(v.length)value={openingSeconds:Number(median(v).toFixed(3)),status:'measured',aggregation:'median'}}
+    if(featureId==='retention.peak'){const v=xs.map(x=>{const z:any=x.value,p=z?.firstPeak,d=Number(z?.duration);return p&&d>0?((Number(p.start)+Number(p.end))/2)/d:NaN}).filter(Number.isFinite);if(v.length)value={firstPeakNormalized:Number(median(v).toFixed(4)),status:'measured',aggregation:'median'}}
+    if(value)constraints.push({id:`aggregate:${featureId}`,axis:xs[0].axis,value,evidence:xs.flatMap(x=>x.evidence),appliesTo:[...new Set(xs.flatMap(x=>x.appliesTo))] as ReferenceUse[]})
+  }
   return {schema:'reference-profile/1',profileVersion:1,referenceAssetIds:ordered.map(x=>x.referenceAssetId),sourceAnalysisHashes:ordered.map(stableHash),constraints}
 }
 export function validateReferenceProfile(p: ReferenceProfile | null | undefined) {
