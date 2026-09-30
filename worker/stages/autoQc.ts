@@ -6,7 +6,7 @@ import { evaluateGate, type CheckResult } from '../../lib/qc/gate.js'
 import type { SourceAnalysis } from '../../lib/media/analyze.js'
 import { QC_THRESHOLDS, runRenderQc } from '../../lib/media/qc.js'
 import { foregroundRect, measureOuterCanvasFill, regionSignature, type SourceFraming } from '../../lib/media/framing.js'
-import { extractJpeg, signatureDistance, probe } from '../../lib/media/ffmpeg.js'
+import { extractJpeg, signatureDistance, probe, sceneScores, detectSilence } from '../../lib/media/ffmpeg.js'
 import { extractRenderPlan } from '../../lib/media/render.js'
 import { evaluateContentGate } from '../../lib/media/contentGate.js'
 import type { SemanticResult, StoryAnalysis } from '../../lib/media/story.js'
@@ -121,7 +121,7 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
         // "Upload as-is" requires BOTH gates. Technical PASS alone is not publishable.
         const jobReferenceProfile = resolveReferenceProfile ? await resolveReferenceProfile(job, blobs) : referenceProfile
         const measurements: Record<string, unknown> = {}
-        if (jobReferenceProfile && outputInfo?.width && outputInfo?.height && bytes) {
+        if (jobReferenceProfile && outputInfo?.width && outputInfo?.height && bytes && manifest) {
           const actual = outputInfo.width === outputInfo.height ? 'square' : outputInfo.height > outputInfo.width ? 'portrait' : 'landscape'
           for (const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':composition.frame') || x.id==='composition.frame')) {
             const target=(x.value as any)?.orientation
@@ -129,6 +129,33 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               measured:true, pass:target===actual, target, actual,
               method:'ffmpeg-probe-output-orientation',
               provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),width:outputInfo.width,height:outputInfo.height}
+            }
+          }
+          const renderPath=join(work,`${v.variantId}.mp4`)
+          try{
+            const scores=await sceneScores(renderPath),duration=Number(outputInfo.duration||v.duration||0),cuts:number[]=[]
+            for(const s of scores)if(s.score>0.3&&s.t>0.2&&s.t<duration-0.2&&(!cuts.length||s.t-cuts[cuts.length-1]>=0.5))cuts.push(s.t)
+            const meanSceneSeconds=duration>0?duration/(cuts.length+1):null
+            for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':editing.cadence')||x.id==='editing.cadence')){
+              const target=Number((x.value as any)?.meanSceneSeconds)
+              if(target>0&&meanSceneSeconds){
+                const tolerance=Math.max(0.75,target*0.5),delta=Math.abs(meanSceneSeconds-target)
+                measurements[x.id]={measured:true,pass:delta<=tolerance,target:{meanSceneSeconds:target},actual:{meanSceneSeconds:Number(meanSceneSeconds.toFixed(3)),sceneCuts:cuts.length},tolerance:{seconds:tolerance},method:'ffmpeg-scene-score-output-cadence',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),duration,sceneCuts:cuts.map(x=>Number(x.toFixed(3)))}}
+              }
+            }
+          }catch{/* measurement absence remains UNKNOWN, never PASS */}
+          for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':sound.structure')||x.id==='sound.structure')){
+            const target=x.value as any
+            if(typeof target?.hasAudio==='boolean'){
+              const actualHasAudio=!!outputInfo.hasAudio
+              let silentRanges:Array<{start:number;end:number}>=[]
+              try{if(actualHasAudio)silentRanges=await detectSilence(renderPath)}catch{/* stays empty; audio presence remains independently probed */}
+              const targetSilent=Array.isArray(target.silentRanges)?target.silentRanges:[]
+              const targetSilentRatio=targetSilent.reduce((n:number,z:any)=>n+Math.max(0,Number(z.end)-Number(z.start)),0)/Math.max(0.001,Number((x.evidence?.[0] as any)?.end||outputInfo.duration||1))
+              const actualSilentRatio=silentRanges.reduce((n,z)=>n+Math.max(0,z.end-z.start),0)/Math.max(0.001,Number(outputInfo.duration||1))
+              const audioMatch=target.hasAudio===actualHasAudio
+              const silenceMatch=!target.hasAudio||Math.abs(targetSilentRatio-actualSilentRatio)<=0.25
+              measurements[x.id]={measured:true,pass:audioMatch&&silenceMatch,target:{hasAudio:target.hasAudio,silentRatio:Number(targetSilentRatio.toFixed(3))},actual:{hasAudio:actualHasAudio,silentRatio:Number(actualSilentRatio.toFixed(3))},tolerance:{silentRatio:0.25},method:'ffmpeg-probe+silencedetect-output-sound',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),duration:outputInfo.duration,silentRanges}}
             }
           }
         }
