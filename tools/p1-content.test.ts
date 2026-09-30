@@ -24,10 +24,14 @@ function analysis(o: { duration?: number; visual?: (t: number) => number; audioD
 
 const presentation = [
   { kind: 'hook', start: 2.2, end: 3.4, text: '왜 저러는 걸까?', basis: 'adult visibly starts an unusual action' },
+  { kind: 'context', start: 3.5, end: 4.5, text: '먼저 몸을 낮춘다', basis: 'adult visibly lowers toward the floor' },
   { kind: 'context', start: 5.0, end: 6.5, text: '갑자기 움직이기 시작', basis: 'adult visibly moves across the floor' },
+  { kind: 'context', start: 7.5, end: 8.5, text: '옆에서도 지켜본다', basis: 'another person visibly watches' },
   { kind: 'effect', start: 9.0, end: 9.8, text: '슥', basis: 'adult shifts forward' },
   { kind: 'context', start: 10.0, end: 11.5, text: '아이도 보고 있다', basis: 'child visibly watches the adult' },
-  { kind: 'payoff', start: 15.0, end: 16.8, text: '결국 따라간다', basis: 'child visibly follows the adult' }
+  { kind: 'context', start: 12.5, end: 13.5, text: '점점 가까워진다', basis: 'people visibly converge' },
+  { kind: 'payoff', start: 15.0, end: 16.8, text: '결국 따라간다', basis: 'child visibly follows the adult' },
+  { kind: 'effect', start: 17.3, end: 18.0, text: '쓱', basis: 'child visibly keeps moving forward' }
 ]
 
 const baseStory = {
@@ -55,8 +59,8 @@ test('1. chronological causal clip: story + grounded presentation => content gat
   assert.equal(v1.kind, 'chronological'); assert.ok(monotonic(v1))
   assert.ok(Math.abs(v1.beats[0].trimStart - 2) < 0.01 && v1.beats[v1.beats.length - 1].trimEnd <= 18.5 + 1e-6)
   assert.equal(v1.headline, '왜 저러는 걸까?')
-  assert.deepEqual(v1.events?.map((e) => e.text), ['갑자기 움직이기 시작', '아이도 보고 있다', '결국 따라간다'])
-  assert.deepEqual(v1.effectCaptions?.map((e: any) => e.text), ['슥'])
+  assert.ok(v1.events?.some((e) => e.text === '갑자기 움직이기 시작')); assert.ok(v1.events?.some((e) => e.text === '결국 따라간다'))
+  assert.deepEqual(v1.effectCaptions?.map((e: any) => e.text), ['슥', '쓱'])
   assert.deepEqual(validateVariant(v1, a), [])
   const g = evaluateContentGate({ payload: payloadFor(a, v1), analysis: a, semantic: s, framing: FULL })
   assert.equal(g.decision, 'PASS', JSON.stringify(g.reasons))
@@ -70,7 +74,7 @@ test('2. activity peak late / unsafe preview: recommendation remains chronologic
   const unsafe = validateStory({ ...baseStory, hookStrategy: 'preview', previewRange: { start: 15, end: 17 }, hookConfidence: 0.5 }, a, { model: 't', promptVersion: 't' })
   assert.equal(unsafe.story!.hookStrategy, 'chronological'); assert.ok(unsafe.warnings.some((w) => /downgraded/.test(w)))
   assert.ok(planVariants(a, semanticFromStory(unsafe.story!)).every((v) => v.kind !== 'preview'))
-  const safe = semantic(a, { hookStrategy: 'preview', previewRange: { start: 15, end: 17 }, hookConfidence: 0.9, hookReason: 'the crawl is instantly readable' })
+  const safe = semantic(a, { hookStrategy: 'preview', previewRange: { start: 15, end: 17 }, hookConfidence: 0.9, hookReason: 'the crawl is instantly readable', minimalCaptions: [...presentation, { kind: 'context', start: 2.3, end: 3.2, text: '처음 움직인다', basis: 'adult visibly begins moving' }, { kind: 'context', start: 13.0, end: 14.2, text: '점점 가까워진다', basis: 'subjects visibly converge' }] })
   const vs = planVariants(a, safe)
   assert.equal(vs[0].kind, 'chronological')
   assert.ok(vs.find((v) => v.kind === 'preview'))

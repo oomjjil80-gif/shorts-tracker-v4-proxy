@@ -85,10 +85,13 @@ const okStory = {
   hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.2, hookReason: 'short causal event',
   openingHook: { start: 1, end: 2.8, text: '왜 저러는 걸까?', basis: 'person visibly follows the device' },
   minimalCaptions: [
+    { kind: 'context', start: 3.5, end: 4.8, text: '먼저 몸을 낮춘다', basis: 'person visibly lowers toward the floor' },
     { kind: 'context', start: 6.5, end: 8, text: '갑자기 기어가기 시작', basis: 'person visibly crawls' },
     { kind: 'effect', start: 9, end: 9.8, text: '슥', basis: 'person shifts forward' },
     { kind: 'context', start: 10.5, end: 12, text: '아이도 보고 있다', basis: 'child visibly watches' },
-    { kind: 'payoff', start: 15, end: 17, text: '결국 따라간다', basis: 'child crawls after the person' }
+    { kind: 'context', start: 12.8, end: 13.8, text: '점점 가까워진다', basis: 'subjects visibly converge' },
+    { kind: 'payoff', start: 15, end: 17, text: '결국 따라간다', basis: 'child crawls after the person' },
+    { kind: 'effect', start: 18, end: 18.7, text: '쓱', basis: 'child visibly keeps crawling' }
   ], publishabilityWarnings: []
 }
 const fakeFetch = (body: any, status = 200) => (async () => ({ ok: status < 400, status, json: async () => body })) as unknown as typeof fetch
@@ -131,8 +134,8 @@ test('PLAN stage: model failure keeps deterministic plan; success stores story +
   const stored: any = await blobs.getJson(r2.planRef)
   assert.ok(stored.variantPlan.beats.every((b: any) => b.trimEnd <= 19.5 + 1e-6))
   assert.equal(stored.variantPlan.headline, '왜 저러는 걸까?')
-  assert.deepEqual(stored.variantPlan.events.map((e: any) => e.text), ['갑자기 기어가기 시작', '아이도 보고 있다', '결국 따라간다'])
-  assert.deepEqual(stored.variantPlan.effectCaptions.map((e: any) => e.text), ['슥'])
+  assert.deepEqual(stored.variantPlan.events.map((e: any) => e.text), ['먼저 몸을 낮춘다', '갑자기 기어가기 시작', '아이도 보고 있다', '점점 가까워진다', '결국 따라간다'])
+  assert.deepEqual(stored.variantPlan.effectCaptions.map((e: any) => e.text), ['슥', '쓱'])
   assert.equal(stored.variantPlan.plansTimeDomain, 'source'); assert.equal(stored.variantPlan.timeDomain, 'source')
   await assert.rejects(() => createPlanExecutor().run({ job, blobs, previous: async () => null, signal: new AbortController().signal } as any), /ANALYZE/)
 })

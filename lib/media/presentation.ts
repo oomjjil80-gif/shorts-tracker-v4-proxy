@@ -14,20 +14,20 @@ export type Cue = { kind: CueKind; start: number; end: number; text: string; bas
 
 export const PRESENTATION_LIMITS = {
   hook: 1,
-  contexts: 3,
+  contexts: 5,
   payoffs: 1,
   effects: 2,
-  totalMessages: 6,          // hook + payoff + contexts + effects
-  eventsMax: 4,              // context + payoff (timed explanation captions)
+  totalMessages: 9,          // hook + payoff + contexts + effects
+  eventsMax: 6,              // context + payoff (timed explanation captions)
   hookMaxOutputStart: 1.2,   // the headline must be tied to the first ~second of the clean edit
-  maxDynamicGapSec: 5.5,     // longest allowed stretch without a NEW timed message/effect (output time)
+  maxDynamicGapSec: 3.2,     // upload-ready mobile rhythm: longest stretch without a NEW timed information/effect cue
   explanationMinTotalSec: 10, // edits this long need at least one context/payoff explanation, not only a hook/effects
   minCueSec: 0.6,            // a clipped cue shorter than this is not readable
   minEffectSec: 0.4,
   maxHookChars: 20, maxCaptionChars: 20, maxEffectChars: 8, maxHeadlineChars: 24
 } as const
 
-export const minDynamicFor = (totalSec: number) => (totalSec >= 12 ? 2 : 1)
+export const minDynamicFor = (totalSec: number) => totalSec >= 20 ? 6 : totalSec >= 12 ? 4 : totalSec >= 7 ? 2 : 1
 
 export type RhythmReport = { ok: boolean; dynamicCueCount: number; minDynamic: number; cueStarts: number[]; maxGapSeconds: number; worstGap: { from: number; to: number } | null; allowedMaxGap: number }
 const r2 = (n: number) => Math.round(n * 100) / 100
@@ -137,7 +137,25 @@ export function planPresentation(beats: EditBeat[], cues: Cue[], opts: { pinHook
   const usable = hookReason ? placedAll.filter((c) => c.kind !== 'hook') : placedAll
   const { kept, dropped: cut } = selectCues(usable, total)
   for (const d of cut) dropped.push({ kind: d.cue.kind, text: d.cue.text, reason: d.reason })
-  const rhythm = rhythmReport(kept.filter((c) => c.kind !== 'hook').map((c) => c.outStart), total)
+  // A timed cue communicates for its visible interval, not only at its start. Rhythm gaps are therefore
+  // measured from the end of the previous readable cue to the start of the next one. This keeps the 3.2s
+  // unattended-screen rule strict without falsely treating a 1–2s caption itself as dead time.
+  const dynamic = kept.filter((c) => c.kind !== 'hook').sort((a, b) => a.outStart - b.outStart)
+  const starts = dynamic.map((c) => c.outStart)
+  const minDynamic = minDynamicFor(total)
+  let cursor = 0, maxGapSeconds = 0, worstGap: { from: number; to: number } | null = null
+  for (const c of dynamic) {
+    const gap = Math.max(0, c.outStart - cursor)
+    if (gap > maxGapSeconds) { maxGapSeconds = gap; worstGap = { from: r2(cursor), to: r2(c.outStart) } }
+    cursor = Math.max(cursor, c.outStart + Math.max(PRESENTATION_LIMITS.minCueSec, c.srcEnd - c.srcStart))
+  }
+  const tailGap = Math.max(0, total - cursor)
+  if (tailGap > maxGapSeconds) { maxGapSeconds = tailGap; worstGap = { from: r2(cursor), to: r2(total) } }
+  const rhythm: RhythmReport = {
+    ok: dynamic.length >= minDynamic && maxGapSeconds <= PRESENTATION_LIMITS.maxDynamicGapSec + 1e-6,
+    dynamicCueCount: dynamic.length, minDynamic, cueStarts: starts.map(r2), maxGapSeconds: r2(maxGapSeconds), worstGap,
+    allowedMaxGap: PRESENTATION_LIMITS.maxDynamicGapSec
+  }
   return {
     placed: kept,
     report: {

@@ -6,7 +6,7 @@ import { EXCLUDE_REASONS, OFFSTORY_REASONS, PACING_REASONS, STORY_LIMITS, STORY_
 import { planPresentation, PRESENTATION_LIMITS } from './presentation.js'
 import { storyBeats, totalSeconds } from './plan.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/10'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/11-director'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
 const captionBody = {
@@ -32,7 +32,7 @@ export const STORY_JSON_SCHEMA = {
     // Structurally required: the provider cannot satisfy the schema without a Korean opening hook object.
     openingHook: captionBody,
     minimalCaptions: {
-      type: 'array', minItems: 1, maxItems: 5,
+      type: 'array', minItems: 3, maxItems: 8,
       items: { type: 'object', additionalProperties: false, required: ['kind', 'start', 'end', 'text', 'basis'], properties: { kind: { type: 'string', enum: ['context', 'payoff', 'effect'] }, start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, basis: { type: 'string' } } }
     },
     publishabilityWarnings: { type: 'array', items: { type: 'string' } }
@@ -60,12 +60,12 @@ export function storyPrompt(a: SourceAnalysis): string {
     '  REPEAT RULE: a second person/animal copying, reacting, following, interrupting or joining is NOT repeat when that new participant changes the humor/meaning; keep it as escalation/payoff.',
     '- hookStrategy: chronological by default. preview ONLY if a <=3s escalation/payoff preview is independently understandable and returning to the start will not confuse.',
     `- openingHook is REQUIRED and structurally separate from the other captions. It must start at/just after causalStart, within the first ~1 second of the clean edit, contain short Korean text (<=${STORY_LIMITS.maxCaptionChars} chars), and be grounded in what is visibly happening. It becomes the persistent top headline. Never leave it blank.`,
-    `- minimalCaptions contains 1–5 ADDITIONAL grounded cues only; do NOT put another hook in this array. At most ${PRESENTATION_LIMITS.totalMessages} screen messages are ever shown (hook 1, payoff ${PRESENTATION_LIMITS.payoffs}, context ${PRESENTATION_LIMITS.contexts}, effect ${PRESENTATION_LIMITS.effects}); the hook always has priority. Cues must lie INSIDE the selected story (after causalStart, before recommendedEnd) and NEVER on excluded footage. Any stretch of the final edit longer than ${PRESENTATION_LIMITS.maxDynamicGapSec}s without a new timed cue is rejected.`,
-    `  * Add 1–3 kind="context" cues (<=${STORY_LIMITS.maxCaptionChars} chars), spaced across meaningful story changes. They are short explanatory captions, not transcript subtitles.`,
+    `- minimalCaptions contains 3–8 ADDITIONAL grounded cues only; do NOT put another hook in this array. At most ${PRESENTATION_LIMITS.totalMessages} screen messages are ever shown (hook 1, payoff ${PRESENTATION_LIMITS.payoffs}, context ${PRESENTATION_LIMITS.contexts}, effect ${PRESENTATION_LIMITS.effects}); the hook always has priority. Cues must lie INSIDE the selected story (after causalStart, before recommendedEnd) and NEVER on excluded footage. Any stretch of the final edit longer than ${PRESENTATION_LIMITS.maxDynamicGapSec}s without a new timed cue is rejected.`,
+    `  * Add 2–5 kind="context" cues (<=${STORY_LIMITS.maxCaptionChars} chars), spaced across meaningful story changes. They are short explanatory captions, not transcript subtitles.`,
     `  * Add optional kind="payoff" over the actual payoff (<=${STORY_LIMITS.maxCaptionChars} chars) when it sharpens the punchline.`,
     `  * Add 0–2 kind="effect" cues (<=${STORY_LIMITS.maxEffectChars} chars), only when a literal visible motion/reaction supports it. Korean onomatopoeia/mimetic examples: "슥", "휙", "멈칫", "힐끔", "쓱". Never sprinkle effects randomly.`,
     '  * Every cue needs a visual basis explaining what on screen justifies the words. Avoid long sentences.',
-    '  * Aim for a new timed context/effect/payoff cue roughly every 3–5 seconds of active story so the mobile screen does not feel unattended, while allowing a purposeful quiet beat.',
+    '  * Aim for a new timed context/effect/payoff cue roughly every 2–3 seconds of active story so the mobile screen does not feel unattended, while allowing a purposeful quiet beat only when the source itself has a strong visible action/reaction. A persistent headline does NOT count as new information. Think like a mobile Shorts director: each stretch must earn attention through a new story fact, reaction, grounded effect, or meaningful visual emphasis.',
     '- publishabilityWarnings: remaining issues such as tiny persistent timestamps/watermarks. Put tiny metadata here instead of excluding the story.',
     '- storyType + confidence: be honest; use unclear and low confidence if you cannot tell.',
     'Measured signals (per second: [t, visualChange, audioDb]):', JSON.stringify(signals)

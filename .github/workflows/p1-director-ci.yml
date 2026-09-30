@@ -1,0 +1,21 @@
+name: P1 Director CI
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'lib/media/**'
+      - 'tools/p1-presentation.test.ts'
+      - '.github/workflows/p1-director-ci.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck

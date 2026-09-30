@@ -18,9 +18,12 @@ const base = {
   hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.1, hookReason: '',
   openingHook: { start: 1, end: 2.5, text: '왜 따라가는 걸까?', basis: 'person is visibly following' },
   minimalCaptions: [
+    { kind: 'context', start: 3.0, end: 4.7, text: '먼저 움직이기 시작', basis: 'person visibly starts moving' },
     { kind: 'context', start: 6.5, end: 8, text: '계속 뒤를 따라간다', basis: 'person visibly continues following' },
     { kind: 'context', start: 10.5, end: 12, text: '둘이 같이 걷는다', basis: 'second subject visibly walks alongside' },
-    { kind: 'payoff', start: 16, end: 17.5, text: '결국 같이 움직인다', basis: 'second subject visibly joins' }
+    { kind: 'context', start: 13.0, end: 14.5, text: '거리가 더 가까워진다', basis: 'subjects visibly converge' },
+    { kind: 'payoff', start: 16, end: 17.5, text: '결국 같이 움직인다', basis: 'second subject visibly joins' },
+    { kind: 'effect', start: 18.2, end: 18.9, text: '쓱', basis: 'subjects visibly keep moving' }
   ], publishabilityWarnings: []
 }
 
