@@ -137,7 +137,25 @@ export function planPresentation(beats: EditBeat[], cues: Cue[], opts: { pinHook
   const usable = hookReason ? placedAll.filter((c) => c.kind !== 'hook') : placedAll
   const { kept, dropped: cut } = selectCues(usable, total)
   for (const d of cut) dropped.push({ kind: d.cue.kind, text: d.cue.text, reason: d.reason })
-  const rhythm = rhythmReport(kept.filter((c) => c.kind !== 'hook').map((c) => c.outStart), total)
+  // A timed cue communicates for its visible interval, not only at its start. Rhythm gaps are therefore
+  // measured from the end of the previous readable cue to the start of the next one. This keeps the 3.2s
+  // unattended-screen rule strict without falsely treating a 1–2s caption itself as dead time.
+  const dynamic = kept.filter((c) => c.kind !== 'hook').sort((a, b) => a.outStart - b.outStart)
+  const starts = dynamic.map((c) => c.outStart)
+  const minDynamic = minDynamicFor(total)
+  let cursor = 0, maxGapSeconds = 0, worstGap: { from: number; to: number } | null = null
+  for (const c of dynamic) {
+    const gap = Math.max(0, c.outStart - cursor)
+    if (gap > maxGapSeconds) { maxGapSeconds = gap; worstGap = { from: r2(cursor), to: r2(c.outStart) } }
+    cursor = Math.max(cursor, c.outStart + Math.max(PRESENTATION_LIMITS.minCueSec, c.srcEnd - c.srcStart))
+  }
+  const tailGap = Math.max(0, total - cursor)
+  if (tailGap > maxGapSeconds) { maxGapSeconds = tailGap; worstGap = { from: r2(cursor), to: r2(total) } }
+  const rhythm: RhythmReport = {
+    ok: dynamic.length >= minDynamic && maxGapSeconds <= PRESENTATION_LIMITS.maxDynamicGapSec + 1e-6,
+    dynamicCueCount: dynamic.length, minDynamic, cueStarts: starts.map(r2), maxGapSeconds: r2(maxGapSeconds), worstGap,
+    allowedMaxGap: PRESENTATION_LIMITS.maxDynamicGapSec
+  }
   return {
     placed: kept,
     report: {
