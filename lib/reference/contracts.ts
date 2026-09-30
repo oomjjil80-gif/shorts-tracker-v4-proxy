@@ -94,7 +94,8 @@ export function validateReferenceAnalysis(a: ReferenceAnalysis, asset?: Referenc
 }
 export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProfile {
   if (!analyses.length) throw new Error('at least one reference analysis required')
-  return {schema:'reference-profile/1',profileVersion:1,referenceAssetIds:analyses.map(x=>x.referenceAssetId),sourceAnalysisHashes:analyses.map(stableHash),constraints:analyses.flatMap(x=>x.features.map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))}
+  const ordered=[...analyses].sort((a,b)=>a.referenceAssetId.localeCompare(b.referenceAssetId))
+  return {schema:'reference-profile/1',profileVersion:1,referenceAssetIds:ordered.map(x=>x.referenceAssetId),sourceAnalysisHashes:ordered.map(stableHash),constraints:ordered.flatMap(x=>x.features.map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))}
 }
 export function validateReferenceProfile(p: ReferenceProfile | null | undefined) {
   const errors:string[]=[]
