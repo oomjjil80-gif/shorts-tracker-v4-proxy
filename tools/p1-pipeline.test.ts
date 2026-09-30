@@ -158,7 +158,8 @@ test('with a semantic story model: grounded trend presentation + technical/conte
     hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.1, hookReason: '',
     minimalCaptions: [
       { kind: 'hook', start: 0, end: 1.8, text: '무슨 일이 생길까?', basis: 'the visible setup begins' },
-      { kind: 'context', start: 3.0, end: 4.2, text: '장면이 바뀌기 시작', basis: 'visible colour and motion change' },
+      { kind: 'context', start: 2.0, end: 2.8, text: '움직임이 시작된다', basis: 'visible motion begins' },
+      { kind: 'context', start: 4.5, end: 5.5, text: '장면이 바뀌기 시작', basis: 'visible colour and motion change' },
       { kind: 'payoff', start: 9.5, end: 11, text: '마지막 장면', basis: 'colour bars change' }
     ], publishabilityWarnings: []
   }
