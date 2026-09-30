@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { analysisCacheKey, conformanceReport, referenceAssetId, stableHash, toReferenceProfile, validateReferenceAnalysis, validateReferenceAsset, validateReferenceProfile, type ReferenceAnalysis, type ReferenceAsset } from '../lib/reference/contracts.js'
 
 const sha='a'.repeat(64)
-const asset=(kind:'video'|'image'|'screenshot'):ReferenceAsset=>({schema:'reference-asset/1',referenceAssetId:referenceAssetId(sha,'1'.repeat(32)),kind,sha256:sha,bytes:123,contentType:kind==='video'?'video/mp4':'image/jpeg',blobPath:'references/'+sha,createdAt:'2026-09-30T00:00:00Z',...(kind==='video'?{duration:10,width:1080,height:1920}:{width:1080,height:1920})})
+const asset=(kind:'video'|'image'|'screenshot'):ReferenceAsset=>({schema:'reference-asset/1',referenceAssetId:referenceAssetId(sha),kind,sha256:sha,bytes:123,contentType:kind==='video'?'video/mp4':'image/jpeg',blobPath:'references/'+sha,createdAt:'2026-09-30T00:00:00Z',...(kind==='video'?{duration:10,width:1080,height:1920}:{width:1080,height:1920})})
 const analysis=(a:ReferenceAsset):ReferenceAnalysis=>({schema:'reference-analysis/1',analyzerVersion:'reference-analyzer/1',referenceAssetId:a.referenceAssetId,referenceSha256:a.sha256,features:[
  {id:'story.hook',axis:'story',value:{strategy:'cold_open'},evidence:a.kind==='video'?[{kind:'time',start:0,end:1}]:[{kind:'region',x:0,y:0,width:1,height:.3}],appliesTo:['PLAN']},
  {id:'composition.subject',axis:'composition',value:{scale:'large'},evidence:a.kind==='video'?[{kind:'time',start:1,end:2}]:[{kind:'region',x:.1,y:.1,width:.8,height:.8}],appliesTo:['RENDER','QC']}
