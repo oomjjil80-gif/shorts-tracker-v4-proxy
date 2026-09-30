@@ -24,7 +24,7 @@ const openAi = process.env.WORKER_AI_PLANNER === 'on' && process.env.OPENAI_API_
   : null
 async function jobReferenceProfile(job:any, blobs:any): Promise<ReferenceProfile|null> {
   const path=String(job.referenceProfileRef||'').trim(); if(!path) return null
-  const p=await blobs.getJson<ReferenceProfile>(path)
+  const p=await blobs.getJson(path) as ReferenceProfile | null
   if(!p||p.schema!=='reference-profile/1'||p.profileVersion!==1) throw new Error('job reference profile is invalid or missing')
   return p
 }
