@@ -6,7 +6,9 @@ import { createJobStore, type JobStore } from './store.js'
 import { createVercelJobBlobStore, putAddressed, type JobBlobStore } from './blobs.js'
 import { PIPELINES } from './pipeline.js'
 import { JobError, type Job, type StageRun } from './types.js'
-import { validateReferenceProfile, stableHash, type ReferenceProfile } from '../reference/contracts.js'
+import { validateReferenceProfile, stableHash } from '../reference/contracts.js'
+import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
+import { buildReferenceProductionBrief } from '../reference/profile.js'
 
 // HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
 // (Hobby plan allows 12 functions). CORS is applied by the router. Domain logic stays in store/gate/pipeline.
@@ -152,13 +154,20 @@ export function createJobsHttp(deps: JobsDeps) {
           const stored = await putAddressed(deps.blobs, 'plans', plan)
           planRef = stored.path; planHash = stored.sha256
         }
-        if (body.referenceProfile !== undefined) {
-          const rp = body.referenceProfile as ReferenceProfile
-          const errors = validateReferenceProfile(rp)
-          need(errors.length === 0, `referenceProfile is invalid: ${errors.join(',')}`)
-          const stored = await putAddressed(deps.blobs, 'reference-profiles', rp)
-          referenceProfileRef = stored.path
-          referenceProfileHash = stableHash(rp)
+        need(body.referenceProfile === undefined, 'referenceProfile is server-owned; send referenceAssetIds instead')
+        if (body.referenceAssetIds !== undefined) {
+          need(Array.isArray(body.referenceAssetIds) && body.referenceAssetIds.length > 0 && body.referenceAssetIds.length <= 4, 'referenceAssetIds must contain 1..4 references')
+          const ids=[...new Set(body.referenceAssetIds.map((x:unknown)=>matching(x,/^ref_[a-f0-9]{64}$/,'referenceAssetId is invalid')))]
+          need(ids.length===body.referenceAssetIds.length,'referenceAssetIds must be unique')
+          const analyses=[]
+          for(const id of ids) analyses.push((await analyzeRegisteredReference(id)).analysis)
+          const bundle=buildReferenceProductionBrief({profile,sourceAssetId,analyses})
+          const errors=validateReferenceProfile(bundle.profile)
+          need(errors.length===0,`server referenceProfile is invalid: ${errors.join(',')}`)
+          const stored=await putAddressed(deps.blobs,'reference-profiles',bundle.profile)
+          referenceProfileRef=stored.path
+          referenceProfileHash=bundle.profileHash
+          await putAddressed(deps.blobs,'production-briefs',bundle.brief)
         }
         const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, referenceProfileRef, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}|${referenceProfileHash}` })
         return res.status(created ? 201 : 200).json({ ok: true, created, job: view(job, await store.listStageRuns(job.id)) })
