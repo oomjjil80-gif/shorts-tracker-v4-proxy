@@ -14,12 +14,12 @@ const clamp=(n:number)=>Math.max(0,Math.min(1,n))
 export async function detectCaptionRegions(file:string,asset:ReferenceAsset,opts:{fetchImpl?:typeof fetch;apiKey?:string;model?:string;timeoutMs?:number}={}):Promise<ReferenceSignals['captionRegions']>{
  const apiKey=opts.apiKey??process.env.OPENAI_API_KEY,model=opts.model??process.env.OPENAI_PLAN_MODEL??'gpt-5-mini';if(!apiKey)return []
  const fetchImpl=opts.fetchImpl??fetch,duration=Number(asset.duration||0)
- let attempted=0,succeeded=0
+ let sampled=0,attempted=0,succeeded=0
  const times=asset.kind==='video'&&duration>0?[duration*.2,duration*.5,duration*.8]:[0],regions:NonNullable<ReferenceSignals['captionRegions']>=[]
  for(let i=0;i<times.length;i++){
   const jpg=`/tmp/reference-caption-${randomUUID()}.jpg`
   try{
-   await extractJpeg(file,times[i],jpg,'scale=720:-2');if(!existsSync(jpg))continue
+   await extractJpeg(file,times[i],jpg,'scale=720:-2');if(!existsSync(jpg))continue;sampled++
    const b=await import('node:fs/promises').then(x=>x.readFile(jpg)),schema={type:'object',additionalProperties:false,required:['regions'],properties:{regions:{type:'array',maxItems:8,items:{type:'object',additionalProperties:false,required:['x','y','width','height'],properties:{x:{type:'number'},y:{type:'number'},width:{type:'number'},height:{type:'number'}}}}}}
    attempted++
    const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),opts.timeoutMs??15000)
@@ -31,7 +31,8 @@ export async function detectCaptionRegions(file:string,asset:ReferenceAsset,opts
    for(const r of Array.isArray(p.regions)?p.regions:[]){const z={x:clamp(Number(r.x)),y:clamp(Number(r.y)),width:clamp(Number(r.width)),height:clamp(Number(r.height))};if(z.width>.01&&z.height>.01&&z.x+z.width<=1.01&&z.y+z.height<=1.01)regions.push(z)}
   }catch{/* provider/frame failure is no measurement, never PASS */}finally{await unlink(jpg).catch(()=>{})}
  }
- if(attempted>0&&succeeded===0)throw new Error('caption vision unavailable for all sampled frames')
+ if(sampled===0)throw new Error('caption frame extraction unavailable for all sampled frames')
+ if(attempted===0||succeeded===0)throw new Error('caption vision unavailable for all sampled frames')
  return regions
 }
 type Deps=typeof defaults
@@ -67,7 +68,8 @@ export async function analyzeRegisteredReference(referenceAssetId:string,deps:De
   }
   const analysis=analyzeReferenceDeterministic(asset,signals)
   const errors=validateReferenceAnalysis(analysis,asset);if(errors.length)throw new Error('invalid measured reference analysis: '+errors.join(','))
-  await deps.put(analysisCacheKey(asset),JSON.stringify(analysis),{access:'private',addRandomSuffix:false,allowOverwrite:false,contentType:'application/json'})
+  try{await deps.put(analysisCacheKey(asset),JSON.stringify(analysis),{access:'private',addRandomSuffix:false,allowOverwrite:false,contentType:'application/json'})}
+  catch(e){const raced=await cached(asset,deps);if(raced)return {analysis:raced,analysisHash:stableHash(raced),cached:true};throw e}
   return {analysis,analysisHash:stableHash(analysis),cached:false}
  }finally{await unlink(tmp).catch(()=>{})}
 }
