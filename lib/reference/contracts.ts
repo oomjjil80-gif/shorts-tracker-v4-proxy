@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 
 export const REFERENCE_SCHEMA_VERSION = 1 as const
 export const REFERENCE_ANALYZER_VERSION = 'reference-analyzer/1' as const
@@ -44,10 +44,10 @@ export type ConformanceReport = {
 }
 
 const SHA = /^[a-f0-9]{64}$/
-const REF_ID = /^ref_[a-f0-9]{16}_[a-f0-9]{16}$/
-export function referenceAssetId(sha256: string, nonce = randomUUID().replaceAll('-','')) {
+const REF_ID = /^ref_[a-f0-9]{64}$/
+export function referenceAssetId(sha256: string) {
   if (!SHA.test(sha256)) throw new Error('invalid reference sha256')
-  return `ref_${sha256.slice(0,16)}_${nonce.slice(0,16)}`
+  return `ref_${sha256}`
 }
 export function stableHash(value: unknown) {
   return createHash('sha256').update(canonicalJson(value)).digest('hex')
@@ -94,7 +94,7 @@ export function validateReferenceAnalysis(a: ReferenceAnalysis, asset?: Referenc
 }
 export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProfile {
   if (!analyses.length) throw new Error('at least one reference analysis required')
-  return {schema:'reference-profile/1',profileVersion:1,referenceAssetIds:analyses.map(x=>x.referenceAssetId),sourceAnalysisHashes:analyses.map(stableHash),constraints:analyses.flatMap(x=>x.features)}
+  return {schema:'reference-profile/1',profileVersion:1,referenceAssetIds:analyses.map(x=>x.referenceAssetId),sourceAnalysisHashes:analyses.map(stableHash),constraints:analyses.flatMap(x=>x.features.map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))}
 }
 export function validateReferenceProfile(p: ReferenceProfile) {
   const errors:string[]=[]
