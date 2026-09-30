@@ -42,10 +42,10 @@ async function framedTimelineCheck(renderPath: string, sourceFile: string, paylo
 // AUTO_QC: measures every rendered file (not the plan): format, full decode, duration, black/freeze, first/last frame,
 // audio, segment order/trim (frame matching against the source), overlay count/visibility/safe-area and frame utilization.
 // The job advances to DECISION only if at least one variant passes EVERY required check; otherwise QC_BLOCKED.
-export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null = null): StageExecutor { return {
+export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null = null, resolveReferenceProfile?: (job:any, blobs:any)=>Promise<ReferenceProfile|null>): StageExecutor { return {
   stage: 'AUTO_QC',
   estimateUsd: () => 0,
-  inputHash: (job) => sha256(`auto-qc|${job.id}|${job.planRev}`),
+  inputHash: (job) => sha256(`auto-qc|${job.id}|${job.planRev}|${job.referenceProfileRef ?? 'no-reference'}`),
   async run({ job, blobs, previous, resolveSourceAsset, resolveSourceFile, signal }) {
     const render = await previous('RENDER')
     const rendered = ((render?.result as any)?.variants || []) as any[]
@@ -118,7 +118,8 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
         await putAddressed(blobs, `qc/render/${v.renderHash}`, gate)
         await putAddressed(blobs, `qc/content/${v.renderHash}`, contentGate)
         // "Upload as-is" requires BOTH gates. Technical PASS alone is not publishable.
-        const referenceGate = referenceProfile ? evaluateReferenceConformance(referenceProfile, { planReference: (planRun?.result as any)?.reference ?? null, renderEvidence: { 'composition.frame': { width: 1080, height: 1920, orientation: 'portrait' } } }) : null
+        const jobReferenceProfile = resolveReferenceProfile ? await resolveReferenceProfile(job, blobs) : referenceProfile
+        const referenceGate = jobReferenceProfile ? evaluateReferenceConformance(jobReferenceProfile, { planReference: (planRun?.result as any)?.reference ?? null, renderEvidence: { 'composition.frame': { width: 1080, height: 1920, orientation: 'portrait' } } }) : null
         const publishable = gate.decision === 'PASS' && contentGate.decision === 'PASS' && (!referenceGate || referenceGate.decision === 'PASS')
         results.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, renderRef: v.renderRef, renderHash: v.renderHash, duration: v.duration, contactSheetRef, posterRef, gate, contentGate, referenceGate, publishable })
       }
