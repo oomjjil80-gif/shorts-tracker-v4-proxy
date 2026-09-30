@@ -3,6 +3,7 @@
 // It can only come from a vision/semantic model. ffmpeg signals cannot know any of this, so without a validated
 // StoryAnalysis every semantic content check is UNKNOWN (never PASS).
 import type { SourceAnalysis } from './analyze.js'
+import { PRESENTATION_LIMITS } from './presentation.js'
 
 export const STORY_SCHEMA = 'story-analysis/1'
 export const STORY_TYPES = ['single_event', 'multi_event', 'compilation', 'unclear'] as const
@@ -10,15 +11,15 @@ export const EXCLUDE_REASONS = ['intro_confusion', 'repeat', 'dead_air', 'produc
 // Reasons that make footage "not the story" (contamination) vs. merely slow/repeated.
 export const OFFSTORY_REASONS: ReadonlyArray<ExcludeReason> = ['intro_confusion', 'product_demo', 'foreign_text', 'post_payoff', 'unrelated']
 export const PACING_REASONS: ReadonlyArray<ExcludeReason> = ['repeat', 'dead_air']
+// Raw-cue caps only bound what a model may return; WHICH cues are shown (budget, priority, spacing) is decided in
+// presentation.ts (selectCues), after the edit is known. Nothing here may drop the opening hook.
 export const STORY_LIMITS = {
   minConfidence: 0.6,
   previewMinConfidence: 0.75,
   maxPreviewSeconds: 3,
-  maxCaptions: 6,
-  maxNarrativeCaptions: 4,
-  maxEffectCaptions: 2,
-  maxCaptionChars: 20,
-  maxEffectChars: 8,
+  maxRawCues: 12,
+  maxCaptionChars: PRESENTATION_LIMITS.maxCaptionChars,
+  maxEffectChars: PRESENTATION_LIMITS.maxEffectChars,
   maxTailAfterPayoff: 1.5
 }
 
@@ -127,17 +128,15 @@ export function validateStory(raw: any, a: SourceAnalysis, meta: { model: string
     captions.push({ kind: c.kind, start: r.start, end: r.end, text, basis })
   }
 
-  if (captions.filter((c) => c.kind !== 'effect').length > STORY_LIMITS.maxNarrativeCaptions) {
-    warnings.push(`only ${STORY_LIMITS.maxNarrativeCaptions} narrative captions kept`)
-    let kept = 0
-    for (let i = captions.length - 1; i >= 0; i--) if (captions[i].kind !== 'effect' && ++kept > STORY_LIMITS.maxNarrativeCaptions) captions.splice(i, 1)
-  }
-  if (captions.filter((c) => c.kind === 'effect').length > STORY_LIMITS.maxEffectCaptions) {
-    warnings.push(`only ${STORY_LIMITS.maxEffectCaptions} effect captions kept`)
-    let kept = 0
-    for (let i = captions.length - 1; i >= 0; i--) if (captions[i].kind === 'effect' && ++kept > STORY_LIMITS.maxEffectCaptions) captions.splice(i, 1)
-  }
-  if (captions.length > STORY_LIMITS.maxCaptions) captions.length = STORY_LIMITS.maxCaptions
+  // Exactly one hook is kept (the earliest); the rest of the cues are bounded by a generous raw cap in chronological
+  // priority order. The real budget is applied per edit in presentation.ts, never here.
+  const hooks = captions.filter((c) => c.kind === 'hook')
+  if (hooks.length > 1) warnings.push(`only the first of ${hooks.length} hook cues kept`)
+  const rest = captions.filter((c) => c.kind !== 'hook')
+  const ordered = [...(hooks[0] ? [hooks[0]] : []), ...rest.sort((x, y) => x.start - y.start)]
+  if (ordered.length > STORY_LIMITS.maxRawCues) { warnings.push(`only ${STORY_LIMITS.maxRawCues} cues kept`); ordered.length = STORY_LIMITS.maxRawCues }
+  captions.length = 0
+  captions.push(...ordered)
 
   if (errors.length || !payoff) return { story: null, errors: errors.length ? errors : ['payoffRange missing'], warnings }
   return {

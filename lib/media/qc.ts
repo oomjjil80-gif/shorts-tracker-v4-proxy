@@ -63,6 +63,20 @@ function bbox(mask: Buffer, w: number, h: number): { x0: number; y0: number; x1:
   return pixels ? { x0, y0, x1, y1, pixels } : null
 }
 
+// Isolates event k of a built ASS (same header/styles, only its own Dialogue line) and measures it on flat gray.
+// Event order == Dialogue order (buildAss adds them together), so the index is the identity, not the text.
+const MIN_TEXT_BOX_PX = 36
+async function overlayFor(built: { ass: string; events: OverlayEvent[] }, k: number, total: number, workDir: string) {
+  const ev = built.events[k]
+  const t = Math.min(total - 0.05, (ev.start + ev.end) / 2)
+  const lines = built.ass.split('\n')
+  const dlg = lines.filter((l) => l.startsWith('Dialogue:'))
+  const head = lines.filter((l) => !l.startsWith('Dialogue:'))
+  const ass = [...head.slice(0, head.findIndex((l) => l.startsWith('Format: Layer')) + 1), dlg[k] ?? ''].join('\n')
+  const mask = await overlayMask(ass, workDir, t, `${k}`)
+  return { mask, box: bbox(mask, CANVAS.w, CANVAS.h), t }
+}
+
 export type RenderQcInput = {
   renderPath: string; expectedRenderHash: string; payload: any; sourceFile: string; analysis: SourceAnalysis
   render: { overlayEvents: OverlayEvent[]; assSha256: string | null }
@@ -178,37 +192,44 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       const rows: unknown[] = []
       let allOk = true
       for (const [k, ev] of built.events.slice(0, 12).entries()) {
-        const mid = Math.min(total - 0.05, (ev.start + ev.end) / 2)
-        // isolate this one event: same script, only this Dialogue line
-        const lines = built.ass.split('\n')
-        const head = lines.filter((l) => !l.startsWith('Dialogue:'))
-        const dlg = lines.filter((l) => l.startsWith('Dialogue:'))
-        const mine = dlg.find((l) => l.includes(ev.text.replace(/\s+/g, ' ').split(' ')[0]) && l.includes(`,${ev.kind === 'headline' ? 'Head' : ev.kind === 'subtitle' ? 'Sub' : 'Fx'},`)) || dlg[k]
-        const ass = [...head.slice(0, head.findIndex((l) => l.startsWith('Format: Layer')) + 1), mine ?? ''].join('\n')
-        const mask = await overlayMask(ass, i.workDir, mid, `${k}`)
-        const box = bbox(mask, CANVAS.w, CANVAS.h)
+        const { box } = await overlayFor(built, k, total, i.workDir)
         const okBox = !!box && box.x0 >= CANVAS.w * SAFE.left && box.x1 <= CANVAS.w * (1 - SAFE.right) && box.y0 >= CANVAS.h * SAFE.top && box.y1 <= CANVAS.h * SAFE.bottom
-        if (!okBox) allOk = false
-        rows.push({ kind: ev.kind, text: ev.text.slice(0, 20), box, ok: okBox })
+        // text that fits the safe area but is tiny is unreadable on a phone: a single line must be at least this tall
+        const tall = !!box && box.y1 - box.y0 >= MIN_TEXT_BOX_PX
+        if (!okBox || !tall) allOk = false
+        rows.push({ kind: ev.kind, text: ev.text.slice(0, 20), box, ok: okBox, tallEnough: tall })
       }
       return ok(allOk, rows)
     }, { timeoutMs: 240_000 }),
+    // Two messages on screen at the same moment must not overlap (headline vs effect, effect vs subtitle, ...).
+    () => runCheck('overlay.no_collision', true, async () => {
+      const built = assFromPayload({ ...i.payload, totalDuration: total })
+      const evs = built.events.slice(0, 12)
+      const boxes = await Promise.all(evs.map((_, k) => overlayFor(built, k, total, i.workDir).then((r) => r.box)))
+      const hits: unknown[] = []
+      for (let x = 0; x < evs.length; x++) for (let y = x + 1; y < evs.length; y++) {
+        if (Math.min(evs[x].end, evs[y].end) - Math.max(evs[x].start, evs[y].start) <= 0.05) continue
+        const p = boxes[x], q = boxes[y]
+        if (p && q && p.x0 < q.x1 && q.x0 < p.x1 && p.y0 < q.y1 && q.y0 < p.y1) hits.push({ a: `${evs[x].kind}:${evs[x].text.slice(0, 10)}`, b: `${evs[y].kind}:${evs[y].text.slice(0, 10)}` })
+      }
+      return ok(hits.length === 0, { events: evs.length, collisions: hits })
+    }, { timeoutMs: 240_000 }),
+    // Every overlay (the headline included) must actually be drawn in the rendered file: the pixels that the isolated
+    // overlay paints as bright text fill have to be bright in the output frame too.
     () => runCheck('overlay.visible_in_output', true, async () => {
       if (!plan) throw new Error('manifest not renderable')
       const built = assFromPayload({ ...i.payload, totalDuration: total })
-      const texts = built.events.filter((e) => e.kind !== 'headline').slice(0, 6)
-      if (!texts.length) return pass({ overlays: 0 })
+      if (!built.events.length) return pass({ overlays: 0 })
       const rows: unknown[] = []
-      for (const ev of texts) {
-        const t = Math.min(total - 0.05, (ev.start + ev.end) / 2)
-        const cut = plan.cuts.find((c) => t >= c.start && t < c.start + c.duration) ?? plan.cuts[plan.cuts.length - 1]
-        const outG = await grayFrame(i.renderPath, t, 270, 480)
-        const srcG = await grayFrame(i.sourceFile, cut.trimStart + (t - cut.start), 270, 480, 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920')
-        let delta = 0
-        for (let p = 0; p < outG.length; p++) delta += Math.abs(outG[p] - srcG[p])
-        rows.push({ text: ev.text.slice(0, 16), t: Number(t.toFixed(2)), meanDelta: Number((delta / outG.length).toFixed(2)) })
+      for (const [k, ev] of built.events.slice(0, 8).entries()) {
+        const { mask, t } = await overlayFor(built, k, total, i.workDir)
+        const out = await grayFrame(i.renderPath, t, CANVAS.w, CANVAS.h)
+        let fill = 0, lit = 0
+        for (let p = 0; p < mask.length; p++) if (mask[p] >= 200) { fill++; if (out[p] >= 150) lit++ }
+        if (!fill) throw new Error(`overlay "${ev.text}" has no measurable text fill`)
+        rows.push({ kind: ev.kind, text: ev.text.slice(0, 16), t: Number(t.toFixed(2)), fillPixels: fill, litFraction: Number((lit / fill).toFixed(2)) })
       }
-      return ok((rows as Array<{ meanDelta: number }>).every((r) => r.meanDelta >= 0.4), rows)
+      return ok((rows as Array<{ litFraction: number }>).every((r) => r.litFraction >= 0.7), rows)
     }, { timeoutMs: 240_000 })
   ]
   const gate = await runGate(checks)

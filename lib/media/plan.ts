@@ -14,11 +14,14 @@ import type { SourceAnalysis } from './analyze.js'
 import type { Interval } from './ffmpeg.js'
 import { subtractIntervals } from './analyze.js'
 import { overlap, type Range, type SemanticResult, type StoryAnalysis } from './story.js'
+import { planPresentation, PRESENTATION_LIMITS, type PresentationReport } from './presentation.js'
 
 export type Beat = { label: string; trimStart: number; trimEnd: number }
 export type VariantSpec = {
   id: string; label: string; rationale: string; beats: Beat[]
   kind?: 'chronological' | 'preview' | 'tight'
+  // What the presentation layer kept/dropped for THIS edit (recorded in the PLAN result; never part of job-plan/1)
+  presentation?: PresentationReport
   headline?: string; events?: Array<{ start: number; end: number; text: string }>
   effectCaptions?: Array<Record<string, unknown>>; callouts?: Array<Record<string, unknown>>
 }
@@ -30,9 +33,8 @@ export const PLAN_LIMITS = {
   minBeatSeconds: 0.8,
   maxBeats: 12,
   idleTrimSeconds: 8,
-  hookCaptionWindow: 3,
-  maxEvents: 4,
-  maxEffects: 2
+  maxEvents: PRESENTATION_LIMITS.eventsMax,
+  maxEffects: PRESENTATION_LIMITS.effects
 }
 const r2 = (n: number) => Math.round(n * 100) / 100
 const len = (b: { trimStart: number; trimEnd: number }) => b.trimEnd - b.trimStart
@@ -129,34 +131,30 @@ export function sourceToOutput(beats: Beat[], t: number): number | null {
   return null
 }
 
-function cueSurvives(beats: Beat[], c: { start: number; end: number }): boolean {
-  return beats.some((b) => c.start >= b.trimStart - 0.01 && c.end <= b.trimEnd + 0.01)
-}
+// Effect placement is decided at render time (it needs the real framing); PLAN only says WHERE in time.
+const EFFECT_SLOTS = [{ xPct: 38, yPct: 46 }, { xPct: 62, yPct: 40 }]
 
-// Turns grounded semantic cues into the modern presentation layer:
+// Turns grounded semantic cues into the presentation layer of ONE edit:
 // hook => persistent top headline; context/payoff => timed explanation captions; effect => short pop text.
-export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<VariantSpec, 'headline' | 'events' | 'effectCaptions'> {
-  const hook = story.minimalCaptions.find((c) => c.kind === 'hook' && cueSurvives(beats, c) && (sourceToOutput(beats, c.start) ?? 99) <= PLAN_LIMITS.hookCaptionWindow)
-  const events = story.minimalCaptions
-    .filter((c) => (c.kind === 'context' || c.kind === 'payoff') && cueSurvives(beats, c))
-    .slice(0, PLAN_LIMITS.maxEvents)
-    .map((c) => ({ start: c.start, end: c.end, text: c.text }))
-  const effectCaptions = story.minimalCaptions
-    .filter((c) => c.kind === 'effect' && cueSurvives(beats, c))
-    .slice(0, PLAN_LIMITS.maxEffects)
-    .map((c, idx) => ({
-      start: c.start, end: c.end, text: c.text,
-      xPct: idx % 2 === 0 ? 38 : 62,
-      yPct: idx % 2 === 0 ? 55 : 48,
-      fontSizePct: 8.8,
-      animation: 'pop'
-    }))
+// Cues are placed on the edit (clipped to the beat that contains them), then selected by priority under the screen
+// budget (hook first, never dropped), so nothing is lost by list order or by an arbitrary trim.
+export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<VariantSpec, 'headline' | 'events' | 'effectCaptions' | 'presentation'> {
+  const { placed, report } = planPresentation(beats, story.minimalCaptions, { pinHook: (beats as any)[0]?.label === 'preview' })
+  const hook = placed.find((c) => c.kind === 'hook')
+  const events = placed.filter((c) => c.kind === 'context' || c.kind === 'payoff').map((c) => ({ start: c.srcStart, end: c.srcEnd, text: c.text }))
+  const effectCaptions = placed.filter((c) => c.kind === 'effect').map((c, idx) => ({
+    start: c.srcStart, end: c.srcEnd, text: c.text, ...EFFECT_SLOTS[idx % EFFECT_SLOTS.length], fontSizePct: 8.8, animation: 'pop'
+  }))
   return {
     ...(hook ? { headline: hook.text } : {}),
     ...(events.length ? { events } : {}),
-    ...(effectCaptions.length ? { effectCaptions } : {})
+    ...(effectCaptions.length ? { effectCaptions } : {}),
+    presentation: report
   }
 }
+
+// A variant is only worth offering if its presentation is complete: headline present, explanation for 10s+, rhythm ok.
+export const presentationComplete = (v: Pick<VariantSpec, 'presentation'>) => !!v.presentation && v.presentation.hookKept && v.presentation.explanationPresent && v.presentation.rhythm.ok
 
 export function storyMaxSeconds(story: StoryAnalysis | null): number {
   return story?.storyType === 'single_event' ? PLAN_LIMITS.singleEventMaxSeconds : PLAN_LIMITS.maxOutputSeconds
@@ -196,8 +194,14 @@ export function planVariants(a: SourceAnalysis, semantic: SemanticResult | null 
   const tight = rangesToBeats(core, 'core')
   if (tight.length && totalSeconds(tight) >= PLAN_LIMITS.minOutputSeconds) variants.push({ id: 'v3', label: '핵심만 짧게', kind: 'tight', rationale: 'setup, escalation and payoff only with grounded presentation cues', beats: tight, ...presentationFor(tight, story) })
 
+  // The recommended edit is always kept (its report says what is missing). Alternatives are only offered when their own
+  // presentation is complete: a preview-first or tight cut that loses the headline or leaves the screen unattended
+  // is not a real alternative.
   const accepted: VariantSpec[] = []
-  for (const v of variants) if (accepted.every((x) => variantDistance(x.beats, v.beats) >= 0.15)) accepted.push(v)
+  for (const [i, v] of variants.entries()) {
+    if (i > 0 && !presentationComplete(v)) continue
+    if (accepted.every((x) => variantDistance(x.beats, v.beats) >= 0.15)) accepted.push(v)
+  }
   return accepted.slice(0, 3).map((v, i) => ({ ...v, id: `v${i + 1}` }))
 }
 

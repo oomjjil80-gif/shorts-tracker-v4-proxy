@@ -19,6 +19,7 @@ const base = {
   openingHook: { start: 1, end: 2.5, text: '왜 따라가는 걸까?', basis: 'person is visibly following' },
   minimalCaptions: [
     { kind: 'context', start: 6.5, end: 8, text: '계속 뒤를 따라간다', basis: 'person visibly continues following' },
+    { kind: 'context', start: 10.5, end: 12, text: '둘이 같이 걷는다', basis: 'second subject visibly walks alongside' },
     { kind: 'payoff', start: 16, end: 17.5, text: '결국 같이 움직인다', basis: 'second subject visibly joins' }
   ], publishabilityWarnings: []
 }
