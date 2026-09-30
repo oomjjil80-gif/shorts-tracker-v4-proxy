@@ -1,8 +1,14 @@
 import { conformanceReport, type ConformanceCheck, type ReferenceProfile } from './contracts.js'
 
-export type ReferenceMeasurement={measured:true;pass:boolean;target:unknown;actual:unknown;tolerance?:unknown;method:string}
+export type ReferenceMeasurement={
+ measured:true;pass:boolean;target:unknown;actual:unknown;tolerance?:unknown;method:string
+ provenance:{source:'server-render-bytes';renderHash:string;bytesHash:string;[key:string]:unknown}
+}
+const SHA=/^[a-f0-9]{64}$/
 function isMeasurement(v:unknown):v is ReferenceMeasurement{
- const x=v as any;return !!x&&x.measured===true&&typeof x.pass==='boolean'&&'target' in x&&'actual' in x&&typeof x.method==='string'&&x.method.length>0
+ const x=v as any,p=x?.provenance
+ return !!x&&x.measured===true&&typeof x.pass==='boolean'&&'target' in x&&'actual' in x&&
+  typeof x.method==='string'&&x.method.length>0&&p?.source==='server-render-bytes'&&SHA.test(String(p.renderHash||''))&&SHA.test(String(p.bytesHash||''))
 }
 export function evaluateReferenceConformance(profile:ReferenceProfile,input:{planReference?:{applied?:string[];unknown?:string[]}|null;measurements?:Record<string,unknown>;renderEvidence?:Record<string,unknown>}){
  const applied=new Set(input.planReference?.applied||[]),unknown=new Set(input.planReference?.unknown||[])
@@ -10,7 +16,7 @@ export function evaluateReferenceConformance(profile:ReferenceProfile,input:{pla
  const checks:ConformanceCheck[]=profile.constraints.map(f=>{
   const m=measurements[f.id]
   if(isMeasurement(m)) return {featureId:f.id,axis:f.axis,appliesTo:f.appliesTo,status:m.pass?'PASS':'FAIL',evidence:m}
-  const reason=unknown.has(f.id)?'constraint could not be measured/applied':applied.has(f.id)?'constraint was consumed by PLAN but output conformance was not independently measured':'no independent target-vs-output measurement'
+  const reason=unknown.has(f.id)?'constraint could not be measured/applied':applied.has(f.id)?'constraint was consumed by PLAN but output conformance was not independently measured':'no trusted server output measurement'
   return {featureId:f.id,axis:f.axis,appliesTo:f.appliesTo,status:'UNKNOWN',evidence:{reason}}
  })
  return conformanceReport(profile,checks)

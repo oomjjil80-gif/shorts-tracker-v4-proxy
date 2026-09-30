@@ -6,7 +6,7 @@ import { evaluateGate, type CheckResult } from '../../lib/qc/gate.js'
 import type { SourceAnalysis } from '../../lib/media/analyze.js'
 import { QC_THRESHOLDS, runRenderQc } from '../../lib/media/qc.js'
 import { foregroundRect, measureOuterCanvasFill, regionSignature, type SourceFraming } from '../../lib/media/framing.js'
-import { extractJpeg, signatureDistance } from '../../lib/media/ffmpeg.js'
+import { extractJpeg, signatureDistance, probe } from '../../lib/media/ffmpeg.js'
 import { extractRenderPlan } from '../../lib/media/render.js'
 import { evaluateContentGate } from '../../lib/media/contentGate.js'
 import type { SemanticResult, StoryAnalysis } from '../../lib/media/story.js'
@@ -74,12 +74,13 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
         const bytes = await blobs.getBytes(v.renderRef)
         // a missing/altered artifact is a FAIL of the whole variant, never a skipped check
         const dir = join(work, v.variantId)
-        let gate, contentGate: any = null, contactSheetRef: string | null = null, posterRef: string | null = null
+        let gate, contentGate: any = null, contactSheetRef: string | null = null, posterRef: string | null = null, outputInfo: any = null
         if (!manifest || !bytes) {
           gate = { decision: 'BLOCK', reasons: ['UNKNOWN: artifact.available'], counts: { pass: 0, fail: 0, unknown: 1, requiredPass: 0, requiredTotal: 1 }, checks: [{ id: 'artifact.available', required: true, status: 'UNKNOWN', evidence: { manifest: !!manifest, render: !!bytes } }] }
         } else {
           const renderPath = join(work, `${v.variantId}.mp4`)
           await writeFile(renderPath, bytes)
+          outputInfo = await probe(renderPath)
           const sheetPath = join(work, `${v.variantId}.jpg`)
           const qc = await runRenderQc({ renderPath, expectedRenderHash: v.renderHash, payload: manifest.payload, sourceFile: file.path, analysis, render: { overlayEvents: v.overlayEvents || [], assSha256: v.assSha256 ?? null }, workDir: dir, contactSheetOut: sheetPath })
 
@@ -119,11 +120,19 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
         await putAddressed(blobs, `qc/content/${v.renderHash}`, contentGate)
         // "Upload as-is" requires BOTH gates. Technical PASS alone is not publishable.
         const jobReferenceProfile = resolveReferenceProfile ? await resolveReferenceProfile(job, blobs) : referenceProfile
-        const referenceGate = jobReferenceProfile ? evaluateReferenceConformance(jobReferenceProfile, { planReference: (planRun?.result as any)?.reference ?? null, measurements: Object.fromEntries(jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':composition.frame') || x.id==='composition.frame').map((x:any)=>{
-          const target=(x.value as any)?.orientation
-          const actual='portrait'
-          return [x.id,{measured:true,pass:target===actual,target,actual,method:'render-output-orientation'}]
-        })) }) : null
+        const measurements: Record<string, unknown> = {}
+        if (jobReferenceProfile && outputInfo?.width && outputInfo?.height && bytes) {
+          const actual = outputInfo.width === outputInfo.height ? 'square' : outputInfo.height > outputInfo.width ? 'portrait' : 'landscape'
+          for (const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':composition.frame') || x.id==='composition.frame')) {
+            const target=(x.value as any)?.orientation
+            if (typeof target === 'string') measurements[x.id]={
+              measured:true, pass:target===actual, target, actual,
+              method:'ffmpeg-probe-output-orientation',
+              provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),width:outputInfo.width,height:outputInfo.height}
+            }
+          }
+        }
+        const referenceGate = jobReferenceProfile ? evaluateReferenceConformance(jobReferenceProfile, { planReference: (planRun?.result as any)?.reference ?? null, measurements }) : null
         const publishable = gate.decision === 'PASS' && contentGate.decision === 'PASS' && (!referenceGate || referenceGate.decision === 'PASS')
         results.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, renderRef: v.renderRef, renderHash: v.renderHash, duration: v.duration, contactSheetRef, posterRef, gate, contentGate, referenceGate, publishable })
       }
