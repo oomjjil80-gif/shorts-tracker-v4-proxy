@@ -100,7 +100,7 @@ export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProf
   const applicable=(f:ReferenceFeature)=>String((f.value as any)?.status||'measured')!=='not_applicable'
   const raw=ordered.flatMap(x=>x.features.filter(applicable).map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))
   const median=(v:number[])=>{const a=[...v].sort((x,y)=>x-y),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2}
-  const rawFeatureId=(id:string)=>id.startsWith('ref_')&&id.length>69&&id[68]===':'?id.slice(69):id
+  const rawFeatureId=(id:string)=>id.startsWith('ref_')&&id.length>68&&id[68]===':'?id.slice(69):id
   const aggregateIds=new Set(['story.opening','retention.peak','editing.cadence'])
   const constraints:ReferenceFeature[]=[]
   for(const f of raw.filter(x=>!aggregateIds.has(rawFeatureId(x.id))))constraints.push(f)
