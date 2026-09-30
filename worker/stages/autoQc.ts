@@ -144,6 +144,14 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
             const scores=await sceneScores(renderPath),duration=Number(outputInfo.duration||v.duration||0),cuts:number[]=[]
             for(const s of scores)if(s.score>0.3&&s.t>0.2&&s.t<duration-0.2&&(!cuts.length||s.t-cuts[cuts.length-1]>=0.5))cuts.push(s.t)
             const meanSceneSeconds=duration>0?duration/(cuts.length+1):null
+            const firstSceneBoundary=cuts.length?cuts[0]:null
+            for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':story.opening')||x.id==='story.opening')){
+              const target=Number((x.value as any)?.openingSeconds)
+              if(target>0&&firstSceneBoundary!==null){
+                const tolerance=Math.max(0.5,target*0.35),delta=Math.abs(firstSceneBoundary-target)
+                measurements[x.id]={measured:true,pass:delta<=tolerance,target:{openingSeconds:target},actual:{firstSceneBoundary:Number(firstSceneBoundary.toFixed(3))},tolerance:{seconds:Number(tolerance.toFixed(3))},method:'ffmpeg-scene-score-output-opening-boundary',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),duration,sceneCuts:cuts.map(x=>Number(x.toFixed(3)))}}
+              }
+            }
             for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':editing.cadence')||x.id==='editing.cadence')){
               const target=Number((x.value as any)?.meanSceneSeconds)
               if(target>0&&meanSceneSeconds){
