@@ -16,6 +16,7 @@ export type Job = {
   workspaceId: string
   profile: string
   sourceAssetId: string
+  referenceProfileRef: string | null
   status: JobStatus
   stage: JobStage
   waitReason: WaitReason | null
