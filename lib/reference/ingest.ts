@@ -18,6 +18,9 @@ export async function ingestReferenceBytes(input:{bytes:Buffer;contentType:strin
  try{measured=await probe(tmp)}finally{await unlink(tmp).catch(()=>{})}
  if(!measured.hasVideo||!measured.width||!measured.height) throw new Error('reference bytes are not a decodable visual asset')
  if(input.kind==='video'&&!(Number(measured.duration)>0)) throw new Error('reference video duration could not be measured')
+ const measuredKind:ReferenceKind=Number(measured.duration)>0?'video':(input.kind==='screenshot'?'screenshot':'image')
+ if(input.kind==='video'&&measuredKind!=='video') throw new Error('declared video kind does not match decoded bytes')
+ if(input.kind!=='video'&&measuredKind==='video') throw new Error('declared still kind does not match decoded bytes')
  const sha256=createHash('sha256').update(input.bytes).digest('hex')
  const id=referenceAssetId(sha256)
  const blobPath=pathFor(sha256)
