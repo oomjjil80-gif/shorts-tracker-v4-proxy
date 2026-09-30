@@ -5,6 +5,7 @@ import { evaluateGate, type CheckResult, type GateResult } from '../qc/gate.js'
 import type { SourceAnalysis } from './analyze.js'
 import { foregroundRect, type SourceFraming } from './framing.js'
 import { deadAirRuns, PLAN_LIMITS, storyMaxSeconds } from './plan.js'
+import { PRESENTATION_LIMITS, rhythmReport } from './presentation.js'
 import { OFFSTORY_REASONS, overlap, PACING_REASONS, STORY_LIMITS, type Range, type SemanticResult } from './story.js'
 
 export const CONTENT_LIMITS = {
@@ -14,8 +15,8 @@ export const CONTENT_LIMITS = {
   minPayoffCoverage: 0.8,
   maxDeadRunSec: 2.5,
   minForegroundArea: 0.3,
-  maxTextItems: 1 + STORY_LIMITS.maxNarrativeCaptions - 1 + STORY_LIMITS.maxEffectCaptions,
-  maxDynamicGapSec: 5.5
+  maxTextItems: PRESENTATION_LIMITS.totalMessages,
+  maxDynamicGapSec: PRESENTATION_LIMITS.maxDynamicGapSec
 }
 
 export type ContentGateInput = {
@@ -150,14 +151,18 @@ export function evaluateContentGate(i: ContentGateInput): GateResult {
 
   // 9. presentation rhythm: headline is persistent, but timed explanation/effect changes must keep the mobile screen alive.
   {
-    const starts = dynamicCueStarts(i.payload, total)
-    const points = [0, ...starts, total].sort((a, b) => a - b)
-    const gaps = points.slice(1).map((p, k) => r2(p - points[k]))
-    const maxGap = gaps.length ? Math.max(...gaps) : total
-    const minDynamic = total >= 12 ? 2 : 1
-    checks.push(verdict('content.presentation_rhythm', starts.length >= minDynamic && maxGap <= CONTENT_LIMITS.maxDynamicGapSec, {
-      dynamicCueCount: starts.length, minDynamic, cueStarts: starts.map(r2), maxGapSeconds: r2(maxGap), allowedMaxGap: CONTENT_LIMITS.maxDynamicGapSec
-    }))
+    const r = rhythmReport(dynamicCueStarts(i.payload, total), total)
+    checks.push(verdict('content.presentation_rhythm', r.ok, { dynamicCueCount: r.dynamicCueCount, minDynamic: r.minDynamic, cueStarts: r.cueStarts, maxGapSeconds: r.maxGapSeconds, allowedMaxGap: r.allowedMaxGap, worstGap: r.worstGap }))
+  }
+
+  // 9b. a hook alone is not an explanation: an edit of 10s+ needs at least one timed context/payoff caption, and a
+  // headline that is present in the manifest must span the edit from its first frame (it is what the viewer reads first).
+  {
+    const subs = (i.payload?.subtitleEvents || []).filter((e: any) => String(e?.text || '').trim())
+    const need = total >= PRESENTATION_LIMITS.explanationMinTotalSec
+    checks.push(verdict('content.explanation_present', !need || subs.length >= 1, { totalSeconds: r2(total), timedExplanationCaptions: subs.length, requiredFrom: PRESENTATION_LIMITS.explanationMinTotalSec }))
+    const hl = String(i.payload?.editorialPlan?.headline || '').trim()
+    checks.push(verdict('content.headline_present', !!hl && /[가-힣]/.test(hl), { headline: hl }))
   }
 
   // 10. length suits the story type.

@@ -2,9 +2,11 @@
 // One bounded repair call is allowed only when the first structured response is invalid. Low confidence is never
 // repaired into confidence. Any unresolved failure => semantic status != ok => content checks UNKNOWN/BLOCK.
 import type { SourceAnalysis } from './analyze.js'
-import { EXCLUDE_REASONS, STORY_LIMITS, STORY_TYPES, overlap, semanticFromStory, validateStory, type SemanticResult } from './story.js'
+import { EXCLUDE_REASONS, OFFSTORY_REASONS, PACING_REASONS, STORY_LIMITS, STORY_TYPES, overlap, semanticFromStory, validateStory, type SemanticResult } from './story.js'
+import { planPresentation, PRESENTATION_LIMITS } from './presentation.js'
+import { storyBeats, totalSeconds } from './plan.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/9'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/10'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
 const captionBody = {
@@ -58,7 +60,7 @@ export function storyPrompt(a: SourceAnalysis): string {
     '  REPEAT RULE: a second person/animal copying, reacting, following, interrupting or joining is NOT repeat when that new participant changes the humor/meaning; keep it as escalation/payoff.',
     '- hookStrategy: chronological by default. preview ONLY if a <=3s escalation/payoff preview is independently understandable and returning to the start will not confuse.',
     `- openingHook is REQUIRED and structurally separate from the other captions. It must start at/just after causalStart, within the first ~1 second of the clean edit, contain short Korean text (<=${STORY_LIMITS.maxCaptionChars} chars), and be grounded in what is visibly happening. It becomes the persistent top headline. Never leave it blank.`,
-    `- minimalCaptions contains 1–5 ADDITIONAL grounded cues only; do NOT put another hook in this array. For an edit >=10s, normally return enough cues that there are about 3–6 total screen messages including openingHook.`,
+    `- minimalCaptions contains 1–5 ADDITIONAL grounded cues only; do NOT put another hook in this array. At most ${PRESENTATION_LIMITS.totalMessages} screen messages are ever shown (hook 1, payoff ${PRESENTATION_LIMITS.payoffs}, context ${PRESENTATION_LIMITS.contexts}, effect ${PRESENTATION_LIMITS.effects}); the hook always has priority. Cues must lie INSIDE the selected story (after causalStart, before recommendedEnd) and NEVER on excluded footage. Any stretch of the final edit longer than ${PRESENTATION_LIMITS.maxDynamicGapSec}s without a new timed cue is rejected.`,
     `  * Add 1–3 kind="context" cues (<=${STORY_LIMITS.maxCaptionChars} chars), spaced across meaningful story changes. They are short explanatory captions, not transcript subtitles.`,
     `  * Add optional kind="payoff" over the actual payoff (<=${STORY_LIMITS.maxCaptionChars} chars) when it sharpens the punchline.`,
     `  * Add 0–2 kind="effect" cues (<=${STORY_LIMITS.maxEffectChars} chars), only when a literal visible motion/reaction supports it. Korean onomatopoeia/mimetic examples: "슥", "휙", "멈칫", "힐끔", "쓱". Never sprinkle effects randomly.`,
@@ -116,6 +118,24 @@ function assessStory(providerRaw: any, a: SourceAnalysis, model: string): Assess
   for (const c of v.story.minimalCaptions) {
     if (c.start < v.story.causalStart - 0.05 || c.end > v.story.recommendedEnd + 0.3) errors.push(`${c.kind} cue ${c.start}-${c.end} lies outside the selected story edit`)
     if (c.kind !== 'effect' && !/[가-힣]/.test(c.text)) errors.push(`${c.kind} cue must contain Korean text`)
+    // a cue placed on footage that the same answer excludes can never be shown
+    const dead = v.story.excludeRanges.find((x) => (OFFSTORY_REASONS.includes(x.reason) || PACING_REASONS.includes(x.reason)) && overlap(x, c) > 0.5 * (c.end - c.start))
+    if (dead && !(c.start >= v.story.payoffRange.start && dead.reason === 'post_payoff')) errors.push(`${c.kind} cue ${c.start}-${c.end} "${c.text}" sits on excluded footage (${dead.reason} ${dead.start}-${dead.end})`)
+  }
+
+  // Presentation viability of the edit the planner WILL build from this story. If the headline would not survive, the
+  // screen would be unattended for too long, or a 10s+ edit has no explanation, the model must fix it now (repair call)
+  // instead of the job ending in a QC block.
+  if (!errors.length) {
+    const beats = storyBeats(a, v.story)
+    const total = totalSeconds(beats)
+    const { report } = planPresentation(beats, v.story.minimalCaptions)
+    if (!report.hookKept) errors.push(`the opening hook would not appear in the final edit: ${report.hookReason}`)
+    if (!report.explanationPresent) errors.push(`the ${total}s edit needs at least one context/payoff caption, not only the hook/effects`)
+    if (!report.rhythm.ok) {
+      const g = report.rhythm.worstGap
+      errors.push(`the ${total}s edit leaves ${report.rhythm.maxGapSeconds}s${g ? ` (edit time ${g.from}-${g.to}s)` : ''} with no new timed caption/effect (allowed ${PRESENTATION_LIMITS.maxDynamicGapSec}s, min ${report.rhythm.minDynamic} timed cue(s)); add grounded context/effect cues at story changes inside the selected story, not on excluded footage`)
+    }
   }
   return { story: errors.length ? null : v.story, errors, warnings: v.warnings }
 }

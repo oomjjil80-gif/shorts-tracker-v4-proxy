@@ -57,7 +57,7 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
       const stored = []
       for (const v of variants) {
         const s = await putAddressed(blobs, 'plans', toJobPlan(job.sourceAssetId, v))
-        stored.push({ variantId: v.id, label: v.label, kind: v.kind ?? null, rationale: v.rationale, planRef: s.path, seconds: v.beats.reduce((t, b) => t + (b.trimEnd - b.trimStart), 0) })
+        stored.push({ variantId: v.id, label: v.label, kind: v.kind ?? null, rationale: v.rationale, planRef: s.path, seconds: v.beats.reduce((t, b) => t + (b.trimEnd - b.trimStart), 0), presentation: v.presentation ?? null })
       }
       return {
         outputRef: stored[0].planRef, outputHash: sha256(stored.map((s) => s.planRef).join('|')), planRef: stored[0].planRef,

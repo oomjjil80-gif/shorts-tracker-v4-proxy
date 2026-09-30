@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { assTime, assColor, buildAss, fitFontSize, sanitizeText, SAFE } from '../lib/media/ass.js'
 import { chronologicalBeats, planVariants, validateVariant, variantDistance, toJobPlan, PLAN_LIMITS } from '../lib/media/plan.js'
 import { computeHighlights, subtractIntervals, type SourceAnalysis } from '../lib/media/analyze.js'
-import { aiAnalyzeStory } from '../lib/media/aiPlanner.js'
+import { aiAnalyzeStory, AI_PLANNER_PROMPT_VERSION } from '../lib/media/aiPlanner.js'
 import { createPlanExecutor } from '../worker/stages/plan.js'
 import { createMemoryBlobStore } from '../lib/jobs/blobs.js'
 
@@ -125,7 +125,7 @@ test('PLAN stage: model failure keeps deterministic plan; success stores story +
   assert.equal(none.result.semantic.status, 'unavailable'); assert.equal(none.result.semantic.storyRef, null)
   const working = createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okStory) }) } })
   const r2: any = await working.run({ job, blobs, previous, signal: new AbortController().signal } as any)
-  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion, r2.result.semantic.status], ['openai', 'gpt-x', null, 'source-story-analysis/9', 'ok'])
+  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion, r2.result.semantic.status], ['openai', 'gpt-x', null, AI_PLANNER_PROMPT_VERSION, 'ok'])
   const story: any = await blobs.getJson(r2.result.semantic.storyRef)
   assert.equal(story.schema, 'story-analysis/1')
   const stored: any = await blobs.getJson(r2.planRef)
