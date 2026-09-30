@@ -31,7 +31,7 @@ export function applyReferencePlanConstraints(variants:VariantSpec[], constraint
    const mid=Math.floor(cadenceValues.length/2),target=cadenceValues.length%2?cadenceValues[mid]:(cadenceValues[mid-1]+cadenceValues[mid])/2
    let changed=false
    for(const variant of variants){const before=variant.beats.map(x=>({...x}));const next=splitForCadence(before,target);if(next.length<=12&&JSON.stringify(next)!==JSON.stringify(before)){variant.beats=next;changed=true;changes.push({constraintId:'aggregate:editing.cadence',variantId:variant.id,beforeBeats:before.length,afterBeats:next.length,beforeFirstSeconds:r2(len(before[0])),afterFirstSeconds:r2(len(next[0]))})}}
-   if(changed){for(const c of cadence)applied.push(c.id);notes.push(`reference cadence aggregate median=${target.toFixed(2)}s applied once across ${cadenceValues.length} measured reference(s)`)}else for(const c of cadence)unknown.push(c.id)
+   if(changed){for(const c of cadence)unknown.push(c.id);notes.push(`reference cadence target=${target.toFixed(2)}s created timeline subdivisions only; not claimed applied until render-byte scene measurement verifies a real visual cut`)}else for(const c of cadence)unknown.push(c.id)
   }else for(const c of cadence)unknown.push(c.id)
  }
  const openings=plan.filter(c=>baseId(c)==='story.opening'),openingValues=openings.map(c=>Number((c.value as any)?.openingSeconds)).filter(x=>x>=0.8).sort((a,b)=>a-b)
@@ -40,7 +40,7 @@ export function applyReferencePlanConstraints(variants:VariantSpec[], constraint
    const mid=Math.floor(openingValues.length/2),opening=openingValues.length%2?openingValues[mid]:(openingValues[mid-1]+openingValues[mid])/2
    let changed=false
    for(const variant of variants){const before=variant.beats.map(x=>({...x}));const next=splitOpening(before,opening);if(next.length<=12&&JSON.stringify(next)!==JSON.stringify(before)){variant.beats=next;changed=true;changes.push({constraintId:'aggregate:story.opening',variantId:variant.id,beforeBeats:before.length,afterBeats:next.length,beforeFirstSeconds:r2(len(before[0])),afterFirstSeconds:r2(len(next[0]))})}}
-   if(changed){for(const x of openings)applied.push(x.id);notes.push(`reference opening aggregate median=${opening.toFixed(2)}s applied once across ${openingValues.length} measured reference(s)`)}else for(const x of openings)unknown.push(x.id)
+   if(changed){for(const x of openings)unknown.push(x.id);notes.push(`reference opening target=${opening.toFixed(2)}s created a timeline subdivision only; not claimed applied until render-byte scene measurement verifies a real opening boundary`)}else for(const x of openings)unknown.push(x.id)
   }else for(const x of openings)unknown.push(x.id)
  }
  for(const c of plan.filter(c=>baseId(c)!=='editing.cadence'&&baseId(c)!=='story.opening')){
