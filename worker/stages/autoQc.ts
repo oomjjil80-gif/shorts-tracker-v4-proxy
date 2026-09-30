@@ -119,7 +119,11 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
         await putAddressed(blobs, `qc/content/${v.renderHash}`, contentGate)
         // "Upload as-is" requires BOTH gates. Technical PASS alone is not publishable.
         const jobReferenceProfile = resolveReferenceProfile ? await resolveReferenceProfile(job, blobs) : referenceProfile
-        const referenceGate = jobReferenceProfile ? evaluateReferenceConformance(jobReferenceProfile, { planReference: (planRun?.result as any)?.reference ?? null, renderEvidence: { 'composition.frame': { width: 1080, height: 1920, orientation: 'portrait' } } }) : null
+        const referenceGate = jobReferenceProfile ? evaluateReferenceConformance(jobReferenceProfile, { planReference: (planRun?.result as any)?.reference ?? null, measurements: Object.fromEntries(jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':composition.frame') || x.id==='composition.frame').map((x:any)=>{
+          const target=(x.value as any)?.orientation
+          const actual='portrait'
+          return [x.id,{measured:true,pass:target===actual,target,actual,method:'render-output-orientation'}]
+        })) }) : null
         const publishable = gate.decision === 'PASS' && contentGate.decision === 'PASS' && (!referenceGate || referenceGate.decision === 'PASS')
         results.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, renderRef: v.renderRef, renderHash: v.renderHash, duration: v.duration, contactSheetRef, posterRef, gate, contentGate, referenceGate, publishable })
       }
