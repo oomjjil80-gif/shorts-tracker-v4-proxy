@@ -129,8 +129,17 @@ export function validateStory(raw: any, a: SourceAnalysis, meta: { model: string
 
   if (captions.filter((c) => c.kind !== 'effect').length > STORY_LIMITS.maxNarrativeCaptions) {
     warnings.push(`only ${STORY_LIMITS.maxNarrativeCaptions} narrative captions kept`)
-    let kept = 0
-    for (let i = captions.length - 1; i >= 0; i--) if (captions[i].kind !== 'effect' && ++kept > STORY_LIMITS.maxNarrativeCaptions) captions.splice(i, 1)
+    // The opening hook is semantically required by the presentation layer. Never prune it merely because
+    // the model supplied many later context/payoff cues.
+    const hookIndex = captions.findIndex((c) => c.kind === 'hook')
+    const keep = new Set<number>()
+    if (hookIndex >= 0) keep.add(hookIndex)
+    for (let i = 0; i < captions.length && keep.size < STORY_LIMITS.maxNarrativeCaptions; i++) {
+      if (captions[i].kind !== 'effect' && i !== hookIndex) keep.add(i)
+    }
+    for (let i = captions.length - 1; i >= 0; i--) {
+      if (captions[i].kind !== 'effect' && !keep.has(i)) captions.splice(i, 1)
+    }
   }
   if (captions.filter((c) => c.kind === 'effect').length > STORY_LIMITS.maxEffectCaptions) {
     warnings.push(`only ${STORY_LIMITS.maxEffectCaptions} effect captions kept`)
