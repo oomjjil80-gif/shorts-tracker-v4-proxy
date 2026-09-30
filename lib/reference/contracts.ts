@@ -16,7 +16,7 @@ export type ReferenceAsset = {
   createdAt: string
 }
 
-export const REFERENCE_AXES = ['story','retention','editing','composition','caption','sound','narration'] as const
+export const REFERENCE_AXES = ['story','retention','editing','visualStyle','composition','caption','sound','narration'] as const
 export type ReferenceAxis = typeof REFERENCE_AXES[number]
 export type ReferenceFeature = {
   id: string; axis: ReferenceAxis; value: unknown; evidence: ReferenceEvidence[]
