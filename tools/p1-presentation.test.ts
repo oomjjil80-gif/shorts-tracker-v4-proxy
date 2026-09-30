@@ -26,9 +26,10 @@ const cue = (kind: string, start: number, end: number, text: string) => ({ kind,
 // a generous, realistic model answer: MORE cues than the budget allows
 const richCues = [
   cue('hook', 2.2, 3.4, '뭐 하는 거지?'),
+  cue('context', 3.0, 3.7, '먼저 움직인다'),
   cue('context', 3.8, 5, '조용히 다가온다'), cue('context', 6, 7.5, '멈칫하는 사람'), cue('context', 8.5, 10, '옆을 힐끔 본다'), cue('context', 11, 12.3, '다른 사람도 온다'), cue('context', 13, 14, '모두 모였다'),
   cue('effect', 7, 7.6, '슥'), cue('effect', 9, 9.6, '휙'), cue('effect', 12, 12.6, '쓱'),
-  cue('context', 16.8, 17.7, '끝까지 함께 간다'),
+  cue('context', 15.2, 16.0, '끝까지 함께 간다'),
   cue('payoff', 17.2, 18.2, '결국 같이 걷는다')
 ]
 const story = (over: any = {}) => ({
@@ -159,7 +160,7 @@ test('9+10 + integration: PLAN → JobPlan → RenderManifest → renderer input
 
 test('preview-first edit: headline pinned to the first frame; payoff caption sits on the story occurrence, not the preview clip', () => {
   const a = analysis()
-  const s = sem(a, { hookStrategy: 'preview', previewRange: { start: 15, end: 17 }, hookConfidence: 0.9, hookReason: 'payoff is instantly readable' })
+  const s = sem(a, { hookStrategy: 'preview', previewRange: { start: 15, end: 17 }, hookConfidence: 0.9, hookReason: 'payoff is instantly readable', minimalCaptions: [...richCues, cue('effect', 18.0, 18.3, '쓱')] })
   const pv = planVariants(a, s).find((v) => v.kind === 'preview')
   assert.ok(pv, 'preview variant offered')
   const { report } = planPresentation(pv!.beats, s.story!.minimalCaptions, { pinHook: true })
@@ -183,7 +184,8 @@ test('director density: a 20s+ edit cannot pass with only three dynamic informat
     cue('hook', 2.2, 3.2, '무슨 일이 생길까?'),
     cue('context', 5, 6.2, '한 사람이 움직인다'),
     cue('context', 12, 13.2, '다른 사람도 본다'),
-    cue('payoff', 21, 22.4, '결국 모두 따라간다')
+    cue('payoff', 21, 22.4, '결국 모두 따라간다'),
+    cue('context', 23.2, 24.0, '끝까지 함께 간다')
   ] })
   const [v1] = planVariants(a, sparse)
   assert.ok(v1.beats.reduce((t,b)=>t+b.trimEnd-b.trimStart,0) >= 20)
