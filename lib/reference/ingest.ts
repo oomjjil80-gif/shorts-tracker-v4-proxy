@@ -13,6 +13,8 @@ export async function ingestReferenceBytes(input:{bytes:Buffer;contentType:strin
  const sha256=createHash('sha256').update(input.bytes).digest('hex')
  const id=referenceAssetId(sha256)
  const blobPath=pathFor(sha256)
+ const existing=await deps.get(recordFor(id),{access:'private',useCache:false})
+ if(existing&&existing.statusCode===200&&existing.stream){const prior=await new Response(existing.stream).json() as ReferenceAsset;const e=validateReferenceAsset(prior);if(e.length||prior.referenceAssetId!==id||prior.sha256!==sha256)throw new Error('reference registry identity conflict');return prior}
  await deps.put(blobPath,input.bytes,{access:'private',addRandomSuffix:false,allowOverwrite:true,contentType:input.contentType})
  const asset:ReferenceAsset={schema:'reference-asset/1',referenceAssetId:id,kind:input.kind,sha256,bytes:input.bytes.length,contentType:input.contentType,blobPath,width:input.width,height:input.height,duration:input.duration,originalUrl:input.originalUrl??null,createdAt:new Date().toISOString()}
  const errors=validateReferenceAsset(asset); if(errors.length) throw new Error('invalid reference asset: '+errors.join(','))
