@@ -139,6 +139,16 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               measurements[x.id]={measured:true,pass:actualOrientation===target.orientation&&delta<=tolerance,target:{orientation:target.orientation,aspectRatio:targetRatio},actual:{orientation:actualOrientation,aspectRatio:actualRatio},tolerance:{aspectRatio:tolerance},method:'ffmpeg-probe-output-geometric-style',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),width:outputInfo.width,height:outputInfo.height}}
             }
           }
+          for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':caption.layout')||x.id==='caption.layout')){
+            const target=(x.value as any)?.coverage
+            const ev=(v.overlayEvents||[]).filter((e:any)=>e.kind==='subtitle'||e.kind==='headline'||e.kind==='effect'||e.kind==='callout')
+            if(target&&ev.length&&Number(outputInfo.duration)>0){
+              const subtitle=ev.filter((e:any)=>e.kind==='subtitle'),active=subtitle.reduce((n:number,e:any)=>n+Math.max(0,Number(e.end)-Number(e.start)),0),ratio=Math.min(1,active/Number(outputInfo.duration))
+              const targetCenterY=Number(target.y)+Number(target.height)/2,actualCenterY=subtitle.length?0.78:0.085,tolerance=0.18
+              const actual={hasRenderedText:true,subtitleTimelineRatio:Number(ratio.toFixed(3)),centerY:actualCenterY}
+              measurements[x.id]={measured:true,pass:Math.abs(targetCenterY-actualCenterY)<=tolerance,target:{centerY:Number(targetCenterY.toFixed(3))},actual,tolerance:{normalizedY:tolerance},method:'libass-rendered-overlay-events+final-render-bytes',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),overlayEvents:ev.length}}
+            }
+          }
           const renderPath=join(work,`${v.variantId}.mp4`)
           try{
             const scores=await sceneScores(renderPath),duration=Number(outputInfo.duration||v.duration||0),cuts:number[]=[]
