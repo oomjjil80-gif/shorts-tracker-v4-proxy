@@ -12,6 +12,7 @@ export function analyzeReferenceDeterministic(asset:ReferenceAsset,s:ReferenceSi
   f('story.opening','story',{openingSeconds:D?Math.min(3,D):null},asset.kind==='video'?t({start:0,end:Math.min(D,3)}):whole(asset),['PLAN']),
   f('retention.peak','retention',{highlightCount:hi.length,firstPeak:first||null},asset.kind==='video'?t(first):whole(asset),['PLAN','QC']),
   f('editing.cadence','editing',{sceneCount:scenes.length,meanSceneSeconds:scenes.length?Number((scenes.reduce((n,x)=>n+x.end-x.start,0)/scenes.length).toFixed(3)):null},asset.kind==='video'?(scenes.slice(0,4).flatMap(t)):whole(asset),['PLAN','RENDER','QC']),
+  f('visual.style','visualStyle',{aspectRatio:dims.width&&dims.height?Number((Number(dims.width)/Number(dims.height)).toFixed(4)):null,orientation:dims.orientation},whole(asset),['RENDER','QC']),
   f('composition.frame','composition',dims,whole(asset),['RENDER','QC']),
   f('caption.layout','caption',{regions:captions.length,hasMeasuredRegion:captions.length>0},captions.length?captions.map(x=>({kind:'region' as const,...x})):whole(asset),['RENDER','QC']),
   f('sound.structure','sound',{hasAudio:!!s.hasAudio,silentRanges:s.silentRanges||[]},asset.kind==='video'?((s.silentRanges||[]).slice(0,4).flatMap(t).length?(s.silentRanges||[]).slice(0,4).flatMap(t):whole(asset)):whole(asset),['PLAN','RENDER','QC']),
