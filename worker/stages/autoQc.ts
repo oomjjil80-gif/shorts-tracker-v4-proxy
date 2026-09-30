@@ -123,6 +123,7 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
         const jobReferenceProfile = resolveReferenceProfile ? await resolveReferenceProfile(job, blobs) : referenceProfile
         const measurements: Record<string, unknown> = {}
         if (jobReferenceProfile && outputInfo?.width && outputInfo?.height && bytes && manifest) {
+          const renderPath=join(work,`${v.variantId}.mp4`)
           const actual = outputInfo.width === outputInfo.height ? 'square' : outputInfo.height > outputInfo.width ? 'portrait' : 'landscape'
           for (const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':composition.frame') || x.id==='composition.frame')) {
             const target=(x.value as any)?.orientation
@@ -155,7 +156,6 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               }catch{/* output caption vision failure remains UNKNOWN */}
             }
           }
-          const renderPath=join(work,`${v.variantId}.mp4`)
           try{
             const scores=await sceneScores(renderPath),duration=Number(outputInfo.duration||v.duration||0),cuts:number[]=[]
             for(const s of scores)if(s.score>0.3&&s.t>0.2&&s.t<duration-0.2&&(!cuts.length||s.t-cuts[cuts.length-1]>=0.5))cuts.push(s.t)
