@@ -4,12 +4,16 @@
 import type { SourceAnalysis } from './analyze.js'
 import { EXCLUDE_REASONS, STORY_LIMITS, STORY_TYPES, overlap, semanticFromStory, validateStory, type SemanticResult } from './story.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/8'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/9'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
+const captionBody = {
+  type: 'object', additionalProperties: false, required: ['start', 'end', 'text', 'basis'],
+  properties: { start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, basis: { type: 'string' } }
+}
 export const STORY_JSON_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['storyType', 'confidence', 'causalStart', 'setupRanges', 'escalationRanges', 'payoffRange', 'recommendedEnd', 'excludeRanges', 'hookStrategy', 'previewRange', 'hookConfidence', 'hookReason', 'minimalCaptions', 'publishabilityWarnings'],
+  required: ['storyType', 'confidence', 'causalStart', 'setupRanges', 'escalationRanges', 'payoffRange', 'recommendedEnd', 'excludeRanges', 'hookStrategy', 'previewRange', 'hookConfidence', 'hookReason', 'openingHook', 'minimalCaptions', 'publishabilityWarnings'],
   properties: {
     storyType: { type: 'string', enum: [...STORY_TYPES] },
     confidence: { type: 'number' },
@@ -23,7 +27,12 @@ export const STORY_JSON_SCHEMA = {
     previewRange: { anyOf: [range, { type: 'null' }] },
     hookConfidence: { type: 'number' },
     hookReason: { type: 'string' },
-    minimalCaptions: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['kind', 'start', 'end', 'text', 'basis'], properties: { kind: { type: 'string', enum: ['hook', 'context', 'payoff', 'effect'] }, start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, basis: { type: 'string' } } } },
+    // Structurally required: the provider cannot satisfy the schema without a Korean opening hook object.
+    openingHook: captionBody,
+    minimalCaptions: {
+      type: 'array', minItems: 1, maxItems: 5,
+      items: { type: 'object', additionalProperties: false, required: ['kind', 'start', 'end', 'text', 'basis'], properties: { kind: { type: 'string', enum: ['context', 'payoff', 'effect'] }, start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, basis: { type: 'string' } } }
+    },
     publishabilityWarnings: { type: 'array', items: { type: 'string' } }
   }
 }
@@ -48,12 +57,12 @@ export function storyPrompt(a: SourceAnalysis): string {
     '- excludeRanges: intro_confusion, repeat, dead_air, product_demo, foreign_text (PROMINENT viewer-facing spans only), post_payoff, unrelated.',
     '  REPEAT RULE: a second person/animal copying, reacting, following, interrupting or joining is NOT repeat when that new participant changes the humor/meaning; keep it as escalation/payoff.',
     '- hookStrategy: chronological by default. preview ONLY if a <=3s escalation/payoff preview is independently understandable and returning to the start will not confuse.',
-    `- minimalCaptions is the presentation layer. Return 3–6 short, visually GROUNDED Korean cues when the edit is >=10s; shorter edits may use 2–4. Never invent facts or fake dialogue.`,
-    `  * Exactly one kind="hook" near causalStart (<=${STORY_LIMITS.maxCaptionChars} chars). It becomes the top headline and must explain/question the visible setup immediately.`,
+    `- openingHook is REQUIRED and structurally separate from the other captions. It must start at/just after causalStart, within the first ~1 second of the clean edit, contain short Korean text (<=${STORY_LIMITS.maxCaptionChars} chars), and be grounded in what is visibly happening. It becomes the persistent top headline. Never leave it blank.`,
+    `- minimalCaptions contains 1–5 ADDITIONAL grounded cues only; do NOT put another hook in this array. For an edit >=10s, normally return enough cues that there are about 3–6 total screen messages including openingHook.`,
     `  * Add 1–3 kind="context" cues (<=${STORY_LIMITS.maxCaptionChars} chars), spaced across meaningful story changes. They are short explanatory captions, not transcript subtitles.`,
     `  * Add optional kind="payoff" over the actual payoff (<=${STORY_LIMITS.maxCaptionChars} chars) when it sharpens the punchline.`,
-    `  * Add 0–2 kind="effect" cues (<=${STORY_LIMITS.maxEffectChars} chars), only when a literal visible motion/reaction supports it. Use Korean onomatopoeia/mimetic words such as "슥", "휙", "멈칫", "힐끔", "쓱" only when they accurately match the visible action. Never sprinkle effects randomly.`,
-    '  * Every cue needs a visual basis explaining what on screen justifies the words. Avoid long sentences. Do not repeat the hook as context.',
+    `  * Add 0–2 kind="effect" cues (<=${STORY_LIMITS.maxEffectChars} chars), only when a literal visible motion/reaction supports it. Korean onomatopoeia/mimetic examples: "슥", "휙", "멈칫", "힐끔", "쓱". Never sprinkle effects randomly.`,
+    '  * Every cue needs a visual basis explaining what on screen justifies the words. Avoid long sentences.',
     '  * Aim for a new timed context/effect/payoff cue roughly every 3–5 seconds of active story so the mobile screen does not feel unattended, while allowing a purposeful quiet beat.',
     '- publishabilityWarnings: remaining issues such as tiny persistent timestamps/watermarks. Put tiny metadata here instead of excluding the story.',
     '- storyType + confidence: be honest; use unclear and low confidence if you cannot tell.',
@@ -66,10 +75,25 @@ export type StoryModelResult = SemanticResult & { model: string; usage: unknown;
 
 type Assessed = { story: any | null; errors: string[]; warnings: string[] }
 
-function assessStory(parsed: any, a: SourceAnalysis, model: string): Assessed {
+// Model JSON has a required dedicated openingHook. The internal StoryAnalysis keeps a single normalized cue array so
+// the rest of PLAN / RenderManifest / QC remains provider-neutral and unchanged.
+function normalizeProviderStory(raw: any): any {
+  if (!raw || typeof raw !== 'object') return raw
+  const h = raw.openingHook
+  const rest = Array.isArray(raw.minimalCaptions) ? raw.minimalCaptions : []
+  return {
+    ...raw,
+    minimalCaptions: [
+      ...(h ? [{ kind: 'hook', start: h.start, end: h.end, text: h.text, basis: h.basis }] : []),
+      ...rest
+    ]
+  }
+}
+
+function assessStory(providerRaw: any, a: SourceAnalysis, model: string): Assessed {
+  const parsed = normalizeProviderStory(providerRaw)
   const v = validateStory(parsed, a, { model, promptVersion: AI_PLANNER_PROMPT_VERSION })
   if (!v.story) return { story: null, errors: v.errors, warnings: v.warnings }
-  // A valid but uncertain story must remain low-confidence; do not spend a repair call trying to coerce it into PASS.
   if (v.story.storyType === 'unclear' || v.story.confidence < STORY_LIMITS.minConfidence) return { story: v.story, errors: [], warnings: v.warnings }
 
   const errors: string[] = []
@@ -146,7 +170,7 @@ export async function aiAnalyzeStory(a: SourceAnalysis, deps: StoryModelDeps): P
         'CORRECTION REQUIRED: your previous structured answer was not publishable/valid.',
         `Validation errors: ${assessed.errors.join('; ').slice(0, 1200)}`,
         previousForRepair ? `Previous JSON: ${JSON.stringify(previousForRepair).slice(0, 7000)}` : 'Previous response was not valid JSON.',
-        'Return the COMPLETE corrected JSON object. Re-check image timestamps. Every range/cue needs end > start. Keep prominent opening foreign title footage out, tiny CCTV metadata only as a warning, exactly one grounded Korean hook near causalStart, short context cues across meaningful beats, and only grounded effect words.'
+        'Return the COMPLETE corrected JSON object. Re-check image timestamps. openingHook is mandatory and must be valid Korean text within 1 second of causalStart. Every range/cue needs end > start. Keep prominent opening foreign title footage out, tiny CCTV metadata only as a warning, and keep additional context/payoff/effect cues grounded in visible actions.'
       ].join('\n')
       const second = await call(repairPrompt)
       if (second.error || !second.text) return out('invalid', `${assessed.errors.join('; ')}; repair failed: ${second.error || 'no text'}`.slice(0, 500), assessed.warnings)

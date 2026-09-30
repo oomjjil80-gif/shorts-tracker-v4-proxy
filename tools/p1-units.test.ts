@@ -83,8 +83,8 @@ const okStory = {
   storyType: 'single_event', confidence: 0.9, causalStart: 1, setupRanges: [{ start: 1, end: 6 }], escalationRanges: [{ start: 6, end: 14 }],
   payoffRange: { start: 14, end: 19 }, recommendedEnd: 19.5, excludeRanges: [{ start: 22, end: 30, reason: 'product_demo' }],
   hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.2, hookReason: 'short causal event',
+  openingHook: { start: 1, end: 2.8, text: '왜 저러는 걸까?', basis: 'person visibly follows the device' },
   minimalCaptions: [
-    { kind: 'hook', start: 1, end: 2.8, text: '왜 저러는 걸까?', basis: 'person visibly follows the device' },
     { kind: 'context', start: 6.5, end: 8, text: '갑자기 기어가기 시작', basis: 'person visibly crawls' },
     { kind: 'effect', start: 9, end: 9.8, text: '슥', basis: 'person shifts forward' },
     { kind: 'context', start: 10.5, end: 12, text: '아이도 보고 있다', basis: 'child visibly watches' },
@@ -94,10 +94,12 @@ const okStory = {
 const fakeFetch = (body: any, status = 200) => (async () => ({ ok: status < 400, status, json: async () => body })) as unknown as typeof fetch
 const JPEG = Buffer.from('fake-jpeg')
 
-test('semantic story model: valid output => ok; provider/parse/validation failures => failed/invalid; no keyframes => failed', async () => {
+test('semantic story model: required provider hook normalizes to StoryAnalysis; failures never fake PASS', async () => {
   const a = analysis()
   const good = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okStory), usage: { total_tokens: 5 } }) })
   assert.equal(good.status, 'ok'); assert.equal(good.model, 'gpt-x'); assert.equal(good.story!.payoffRange.end, 19)
+  assert.equal(good.story!.minimalCaptions.filter((c) => c.kind === 'hook').length, 1)
+  assert.equal(good.story!.minimalCaptions[0].text, '왜 저러는 걸까?')
   assert.equal((await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ output_text: 'not json' }) })).status, 'invalid')
   const down = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ error: { message: 'quota' } }, 429) })
   assert.equal(down.status, 'failed'); assert.match(down.reason!, /provider 429/)
@@ -123,7 +125,7 @@ test('PLAN stage: model failure keeps deterministic plan; success stores story +
   assert.equal(none.result.semantic.status, 'unavailable'); assert.equal(none.result.semantic.storyRef, null)
   const working = createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okStory) }) } })
   const r2: any = await working.run({ job, blobs, previous, signal: new AbortController().signal } as any)
-  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion, r2.result.semantic.status], ['openai', 'gpt-x', null, 'source-story-analysis/8', 'ok'])
+  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion, r2.result.semantic.status], ['openai', 'gpt-x', null, 'source-story-analysis/9', 'ok'])
   const story: any = await blobs.getJson(r2.result.semantic.storyRef)
   assert.equal(story.schema, 'story-analysis/1')
   const stored: any = await blobs.getJson(r2.planRef)
