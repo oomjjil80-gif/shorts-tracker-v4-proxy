@@ -5,6 +5,7 @@ import { getReferenceAsset } from './ingest.js'
 import { analyzeReferenceDeterministic, type ReferenceSignals } from './analyzer.js'
 import { analysisCacheKey, stableHash, validateReferenceAnalysis, type ReferenceAnalysis, type ReferenceAsset } from './contracts.js'
 import { analyzeSourceFile } from '../media/analyze.js'
+import { probe } from '../media/ffmpeg.js'
 
 const defaults={get,put}
 type Deps=typeof defaults
@@ -25,11 +26,18 @@ async function cached(asset:ReferenceAsset,deps:Deps):Promise<ReferenceAnalysis|
 export async function analyzeRegisteredReference(referenceAssetId:string,deps:Deps=defaults):Promise<{analysis:ReferenceAnalysis;analysisHash:string;cached:boolean}>{
  const asset=await getReferenceAsset(referenceAssetId,deps)
  const prior=await cached(asset,deps);if(prior)return {analysis:prior,analysisHash:stableHash(prior),cached:true}
- if(asset.kind!=='video')throw new Error('server measurement for image/screenshot is not implemented yet')
- const bytes=await readAll(asset,deps),tmp=`/tmp/reference-${randomUUID()}.mp4`;await writeFile(tmp,bytes)
+ const bytes=await readAll(asset,deps),tmp=`/tmp/reference-${randomUUID()}`;await writeFile(tmp,bytes)
  try{
-  const s=await analyzeSourceFile(tmp,{sourceAssetId:asset.referenceAssetId,sha256:asset.sha256})
-  const signals:ReferenceSignals={duration:s.media.duration,width:s.media.width,height:s.media.height,hasAudio:s.media.hasAudio,sceneRanges:s.scenes,highlights:s.highlights,silentRanges:s.ranges.silent}
+  let signals:ReferenceSignals
+  if(asset.kind==='video'){
+   const s=await analyzeSourceFile(tmp,{sourceAssetId:asset.referenceAssetId,sha256:asset.sha256})
+   signals={duration:s.media.duration,width:s.media.width,height:s.media.height,hasAudio:s.media.hasAudio,sceneRanges:s.scenes,highlights:s.highlights,silentRanges:s.ranges.silent}
+  }else{
+   const m=await probe(tmp)
+   if(!m.hasVideo||!m.width||!m.height)throw new Error('still reference could not be decoded')
+   if(m.width!==asset.width||m.height!==asset.height)throw new Error('reference registry dimensions do not match bytes')
+   signals={width:m.width,height:m.height,hasAudio:false}
+  }
   const analysis=analyzeReferenceDeterministic(asset,signals)
   const errors=validateReferenceAnalysis(analysis,asset);if(errors.length)throw new Error('invalid measured reference analysis: '+errors.join(','))
   await deps.put(analysisCacheKey(asset),JSON.stringify(analysis),{access:'private',addRandomSuffix:false,allowOverwrite:false,contentType:'application/json'})
