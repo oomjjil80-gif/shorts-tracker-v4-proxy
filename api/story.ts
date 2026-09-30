@@ -5,6 +5,8 @@ import { get, issueSignedToken, presignUrl } from '@vercel/blob'
 import { collectSource } from '../lib/sourceCollector.js'
 import { getSourceAsset, listSourceAssets } from '../lib/sourceAssetRegistry.js'
 import { extractSourceFrame, extractSourceFrames, extractSourceContactSheet, parseSecondsList } from '../lib/sourceFrames.js'
+import { ingestReferenceBytes } from '../lib/reference/ingest.js'
+import { analyzeRegisteredReference } from '../lib/reference/serverPipeline.js'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -155,6 +157,20 @@ export default async function handler(req: Request, res: Response) {
   const sourceRequest = req.method === 'GET' ? req.query : req.body
   // Production Jobs: routing only. The HTTP adapter and all domain logic live in lib/jobs/*
   // (kept out of api/ so it does not count as a separate Vercel Serverless Function).
+  if (req.method === 'POST' && sourceRequest?.taskType === 'reference_ingest') {
+    res.setHeader('Cache-Control','private, no-store')
+    try {
+      const kind=String(sourceRequest.kind||'')
+      if(!['video','image','screenshot'].includes(kind)) return res.status(400).json({ok:false,error:{code:'INVALID_REFERENCE_KIND',message:'kind must be video, image, or screenshot'}})
+      const b64=String(sourceRequest.dataBase64||'')
+      if(!b64||b64.length>28_000_000) return res.status(413).json({ok:false,error:{code:'REFERENCE_TOO_LARGE',message:'reference upload is limited to 20MB on this endpoint'}})
+      const bytes=Buffer.from(b64,'base64')
+      if(!bytes.length) return res.status(400).json({ok:false,error:{code:'EMPTY_REFERENCE',message:'reference bytes are required'}})
+      const asset=await ingestReferenceBytes({bytes,contentType:String(sourceRequest.contentType||'application/octet-stream'),kind:kind as any,originalUrl:null})
+      const measured=await analyzeRegisteredReference(asset.referenceAssetId)
+      return res.status(201).json({ok:true,referenceAsset:asset,analysisHash:measured.analysisHash,cached:measured.cached})
+    } catch(e:any) { return res.status(422).json({ok:false,error:{code:'REFERENCE_INGEST_FAILED',message:e?.message||String(e)}}) }
+  }
   if (['GET', 'POST'].includes(req.method || '') && typeof sourceRequest?.taskType === 'string' && sourceRequest.taskType.startsWith('job_')) {
     const { defaultJobsHttp } = await import('../lib/jobs/http.js')
     return defaultJobsHttp(req, res)
