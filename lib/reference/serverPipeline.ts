@@ -9,7 +9,6 @@ import { probe, keyframeSheet, extractJpeg } from '../media/ffmpeg.js'
 import { existsSync } from 'node:fs'
 
 const defaults={get,put}
-const CAPTION_VISION_VERSION='reference-caption-vision/1'
 const clamp=(n:number)=>Math.max(0,Math.min(1,n))
 async function detectCaptionRegions(file:string,asset:ReferenceAsset):Promise<ReferenceSignals['captionRegions']>{
  const apiKey=process.env.OPENAI_API_KEY,model=process.env.OPENAI_PLAN_MODEL||'gpt-5-mini';if(!apiKey)return []
