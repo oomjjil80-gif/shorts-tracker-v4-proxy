@@ -11,6 +11,8 @@ import { extractRenderPlan } from '../../lib/media/render.js'
 import { evaluateContentGate } from '../../lib/media/contentGate.js'
 import type { SemanticResult, StoryAnalysis } from '../../lib/media/story.js'
 import { StageError, type StageExecutor } from '../types.js'
+import { evaluateReferenceConformance } from '../../lib/reference/qc.js'
+import type { ReferenceProfile } from '../../lib/reference/contracts.js'
 
 async function framedTimelineCheck(renderPath: string, sourceFile: string, payload: any, framing: SourceFraming): Promise<CheckResult> {
   const id = 'timeline.segment_order_and_trim'
@@ -35,12 +37,14 @@ async function framedTimelineCheck(renderPath: string, sourceFile: string, paylo
   } catch (e: any) {
     return { id, required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } }
   }
-}
+}}
+
+export const autoQcExecutor: StageExecutor = createAutoQcExecutor(null)
 
 // AUTO_QC: measures every rendered file (not the plan): format, full decode, duration, black/freeze, first/last frame,
 // audio, segment order/trim (frame matching against the source), overlay count/visibility/safe-area and frame utilization.
 // The job advances to DECISION only if at least one variant passes EVERY required check; otherwise QC_BLOCKED.
-export const autoQcExecutor: StageExecutor = {
+export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null = null): StageExecutor { return {
   stage: 'AUTO_QC',
   estimateUsd: () => 0,
   inputHash: (job) => sha256(`auto-qc|${job.id}|${job.planRev}`),
@@ -117,7 +121,8 @@ export const autoQcExecutor: StageExecutor = {
         await putAddressed(blobs, `qc/content/${v.renderHash}`, contentGate)
         // "Upload as-is" requires BOTH gates. Technical PASS alone is not publishable.
         const publishable = gate.decision === 'PASS' && contentGate.decision === 'PASS'
-        results.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, renderRef: v.renderRef, renderHash: v.renderHash, duration: v.duration, contactSheetRef, posterRef, gate, contentGate, publishable })
+        const referenceGate = referenceProfile ? evaluateReferenceConformance(referenceProfile, { planReference: (planRun?.result as any)?.reference ?? null, renderEvidence: { 'composition.frame': { width: 1080, height: 1920, orientation: 'portrait' } } }) : null
+        results.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, renderRef: v.renderRef, renderHash: v.renderHash, duration: v.duration, contactSheetRef, posterRef, gate, contentGate, referenceGate, publishable })
       }
       const passing = results.filter((r) => r.gate.decision === 'PASS')
       const publishable = results.filter((r) => r.publishable)
