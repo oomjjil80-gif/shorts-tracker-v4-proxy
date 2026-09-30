@@ -12,7 +12,8 @@ import { evaluateContentGate } from '../../lib/media/contentGate.js'
 import type { SemanticResult, StoryAnalysis } from '../../lib/media/story.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { evaluateReferenceConformance } from '../../lib/reference/qc.js'
-import type { ReferenceProfile } from '../../lib/reference/contracts.js'
+import type { ReferenceProfile, ReferenceAsset } from '../../lib/reference/contracts.js'
+import { detectCaptionRegions } from '../../lib/reference/serverPipeline.js'
 
 async function framedTimelineCheck(renderPath: string, sourceFile: string, payload: any, framing: SourceFraming): Promise<CheckResult> {
   const id = 'timeline.segment_order_and_trim'
@@ -141,12 +142,17 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
           }
           for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':caption.layout')||x.id==='caption.layout')){
             const target=(x.value as any)?.coverage
-            const ev=(v.overlayEvents||[]).filter((e:any)=>e.kind==='subtitle'||e.kind==='headline'||e.kind==='effect'||e.kind==='callout')
-            if(target&&ev.length&&Number(outputInfo.duration)>0){
-              const subtitle=ev.filter((e:any)=>e.kind==='subtitle'),active=subtitle.reduce((n:number,e:any)=>n+Math.max(0,Number(e.end)-Number(e.start)),0),ratio=Math.min(1,active/Number(outputInfo.duration))
-              const targetCenterY=Number(target.y)+Number(target.height)/2,actualCenterY=subtitle.length?0.78:0.085,tolerance=0.18
-              const actual={hasRenderedText:true,subtitleTimelineRatio:Number(ratio.toFixed(3)),centerY:actualCenterY}
-              measurements[x.id]={measured:true,pass:Math.abs(targetCenterY-actualCenterY)<=tolerance,target:{centerY:Number(targetCenterY.toFixed(3))},actual,tolerance:{normalizedY:tolerance},method:'libass-rendered-overlay-events+final-render-bytes',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),overlayEvents:ev.length}}
+            if(target&&Number(outputInfo.duration)>0){
+              try{
+                const renderAsset:any={schema:'reference-asset/1',referenceAssetId:'ref_'+sha256(bytes),kind:'video',sha256:sha256(bytes),bytes:bytes.length,contentType:'video/mp4',blobPath:'render-only',width:outputInfo.width,height:outputInfo.height,duration:Number(outputInfo.duration),createdAt:new Date(0).toISOString()}
+                const actualRegions=await detectCaptionRegions(renderPath,renderAsset)
+                if(actualRegions?.length){
+                  const avg=(k:'x'|'y'|'width'|'height')=>actualRegions.reduce((n,r)=>n+Number(r[k]),0)/actualRegions.length
+                  const actualCoverage={x:avg('x'),y:avg('y'),width:avg('width'),height:avg('height')}
+                  const targetCenterY=Number(target.y)+Number(target.height)/2,actualCenterY=actualCoverage.y+actualCoverage.height/2,tolerance=0.18
+                  measurements[x.id]={measured:true,pass:Math.abs(targetCenterY-actualCenterY)<=tolerance,target:{centerY:Number(targetCenterY.toFixed(3))},actual:{centerY:Number(actualCenterY.toFixed(3)),coverage:actualCoverage},tolerance:{normalizedY:tolerance},method:'reference-caption-vision-output-frame-regions',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),regions:actualRegions.length}}
+                }
+              }catch{/* output caption vision failure remains UNKNOWN */}
             }
           }
           const renderPath=join(work,`${v.variantId}.mp4`)
