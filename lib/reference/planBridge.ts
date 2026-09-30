@@ -29,19 +29,21 @@ export function applyReferencePlanConstraints(variants:VariantSpec[], constraint
   if(baseId==='editing.cadence'){
    const target=Number(v?.meanSceneSeconds)
    if(target>=0.8){
-    for(const variant of variants){const before=variant.beats.map(x=>({...x}));const next=splitForCadence(before,target);if(next.length<=12){variant.beats=next;changes.push({constraintId:c.id,variantId:variant.id,beforeBeats:before.length,afterBeats:next.length,beforeFirstSeconds:r2(len(before[0])),afterFirstSeconds:r2(len(next[0]))})}}
-    applied.push(c.id);notes.push(`reference cadence target=${target.toFixed(2)}s applied by splitting existing causal/source beats only`)
+    let changed=false
+    for(const variant of variants){const before=variant.beats.map(x=>({...x}));const next=splitForCadence(before,target);if(next.length<=12&&JSON.stringify(next)!==JSON.stringify(before)){variant.beats=next;changed=true;changes.push({constraintId:c.id,variantId:variant.id,beforeBeats:before.length,afterBeats:next.length,beforeFirstSeconds:r2(len(before[0])),afterFirstSeconds:r2(len(next[0]))})}}
+    if(changed){applied.push(c.id);notes.push(`reference cadence target=${target.toFixed(2)}s applied by splitting existing causal/source beats only`)}else unknown.push(c.id)
    }else unknown.push(c.id)
   }else if(baseId==='story.opening'){
    const opening=Number(v?.openingSeconds)
    if(opening>=0.8){
-    for(const variant of variants){const before=variant.beats.map(x=>({...x}));const next=splitOpening(before,opening);if(next.length<=12){variant.beats=next;changes.push({constraintId:c.id,variantId:variant.id,beforeBeats:before.length,afterBeats:next.length,beforeFirstSeconds:r2(len(before[0])),afterFirstSeconds:r2(len(next[0]))})}}
-    applied.push(c.id);notes.push(`reference opening window=${opening.toFixed(2)}s applied as a boundary inside the existing first causal beat`)
+    let changed=false
+    for(const variant of variants){const before=variant.beats.map(x=>({...x}));const next=splitOpening(before,opening);if(next.length<=12&&JSON.stringify(next)!==JSON.stringify(before)){variant.beats=next;changed=true;changes.push({constraintId:c.id,variantId:variant.id,beforeBeats:before.length,afterBeats:next.length,beforeFirstSeconds:r2(len(before[0])),afterFirstSeconds:r2(len(next[0]))})}}
+    if(changed){applied.push(c.id);notes.push(`reference opening window=${opening.toFixed(2)}s applied as a boundary inside the existing first causal beat`)}else unknown.push(c.id)
    }else unknown.push(c.id)
   }else if(baseId==='retention.peak'){
-   if(v?.firstPeak){applied.push(c.id);notes.push('reference retention peak recorded for variant selection/QC; no unsupported source-time transplant')}else unknown.push(c.id)
+   unknown.push(c.id);notes.push('reference retention peak retained for QC only until PLAN performs an independently verifiable selection change')
   }else if(baseId==='sound.structure'||baseId==='narration.structure'){
-   if(v?.status==='measured'){applied.push(c.id);notes.push(`${c.id} recorded as measured production constraint; PLAN does not fabricate audio/narration edits`)}else unknown.push(c.id)
+   unknown.push(c.id);notes.push(`${c.id} retained for downstream measurement; PLAN does not claim application without a real audio/narration edit`)
   }else unknown.push(c.id)
  }
  if(variants[0])variants[0].rationale+=applied.length?`; reference-conditioned: ${applied.join(', ')}`:''
