@@ -74,7 +74,7 @@ test('2. activity peak late / unsafe preview: recommendation remains chronologic
   const unsafe = validateStory({ ...baseStory, hookStrategy: 'preview', previewRange: { start: 15, end: 17 }, hookConfidence: 0.5 }, a, { model: 't', promptVersion: 't' })
   assert.equal(unsafe.story!.hookStrategy, 'chronological'); assert.ok(unsafe.warnings.some((w) => /downgraded/.test(w)))
   assert.ok(planVariants(a, semanticFromStory(unsafe.story!)).every((v) => v.kind !== 'preview'))
-  const safe = semantic(a, { hookStrategy: 'preview', previewRange: { start: 15, end: 17 }, hookConfidence: 0.9, hookReason: 'the crawl is instantly readable', minimalCaptions: [...presentation, { kind: 'context', start: 4.0, end: 4.8, text: '처음 움직인다', basis: 'adult visibly begins moving' }] })
+  const safe = semantic(a, { hookStrategy: 'preview', previewRange: { start: 15, end: 17 }, hookConfidence: 0.9, hookReason: 'the crawl is instantly readable', minimalCaptions: [...presentation, { kind: 'context', start: 2.3, end: 3.2, text: '처음 움직인다', basis: 'adult visibly begins moving' }, { kind: 'context', start: 13.0, end: 14.2, text: '점점 가까워진다', basis: 'subjects visibly converge' }] })
   const vs = planVariants(a, safe)
   assert.equal(vs[0].kind, 'chronological')
   assert.ok(vs.find((v) => v.kind === 'preview'))
