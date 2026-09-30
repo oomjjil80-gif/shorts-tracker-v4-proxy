@@ -94,6 +94,8 @@ export function validateReferenceAnalysis(a: ReferenceAnalysis, asset?: Referenc
 }
 export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProfile {
   if (!analyses.length) throw new Error('at least one reference analysis required')
+  const ids=analyses.map(x=>x.referenceAssetId)
+  if(new Set(ids).size!==ids.length) throw new Error('duplicate reference analysis')
   const ordered=[...analyses].sort((a,b)=>a.referenceAssetId.localeCompare(b.referenceAssetId))
   return {schema:'reference-profile/1',profileVersion:1,referenceAssetIds:ordered.map(x=>x.referenceAssetId),sourceAnalysisHashes:ordered.map(stableHash),constraints:ordered.flatMap(x=>x.features.map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))}
 }
@@ -102,6 +104,7 @@ export function validateReferenceProfile(p: ReferenceProfile | null | undefined)
   if (!p || typeof p !== 'object') return ['profile']
   if (p.schema!=='reference-profile/1'||p.profileVersion!==1) errors.push('version')
   if (!p.referenceAssetIds?.length || p.referenceAssetIds.length!==p.sourceAnalysisHashes?.length) errors.push('sources')
+  if (p.referenceAssetIds?.length && new Set(p.referenceAssetIds).size!==p.referenceAssetIds.length) errors.push('duplicateSources')
   if (!Array.isArray(p.constraints) || !p.constraints.length) errors.push('constraints')
   const axes=new Set<ReferenceAxis>()
   const ids=new Set<string>()
