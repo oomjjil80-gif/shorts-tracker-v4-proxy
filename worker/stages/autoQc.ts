@@ -37,9 +37,7 @@ async function framedTimelineCheck(renderPath: string, sourceFile: string, paylo
   } catch (e: any) {
     return { id, required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } }
   }
-}}
-
-export const autoQcExecutor: StageExecutor = createAutoQcExecutor(null)
+}
 
 // AUTO_QC: measures every rendered file (not the plan): format, full decode, duration, black/freeze, first/last frame,
 // audio, segment order/trim (frame matching against the source), overlay count/visibility/safe-area and frame utilization.
@@ -135,3 +133,6 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
     } finally { await rm(work, { recursive: true, force: true }); await file.cleanup() }
   }
 }
+
+
+export const autoQcExecutor: StageExecutor = createAutoQcExecutor(null)
