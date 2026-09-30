@@ -16,8 +16,8 @@ const base = {
   payoffRange: { start: 15, end: 19 }, recommendedEnd: 19.5,
   excludeRanges: [{ start: 0, end: 1, reason: 'foreign_text' }, { start: 20, end: 30, reason: 'product_demo' }],
   hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.1, hookReason: '',
+  openingHook: { start: 1, end: 2.5, text: '왜 따라가는 걸까?', basis: 'person is visibly following' },
   minimalCaptions: [
-    { kind: 'hook', start: 1, end: 2.5, text: '왜 따라가는 걸까?', basis: 'person is visibly following' },
     { kind: 'context', start: 6.5, end: 8, text: '계속 뒤를 따라간다', basis: 'person visibly continues following' },
     { kind: 'payoff', start: 16, end: 17.5, text: '결국 같이 움직인다', basis: 'second subject visibly joins' }
   ], publishabilityWarnings: []
@@ -25,7 +25,7 @@ const base = {
 
 test('one invalid semantic answer is repaired once using the same evidence', async () => {
   let calls = 0
-  const invalid = { ...base, payoffRange: { start: 15, end: 15 }, minimalCaptions: [{ kind: 'hook', start: 1, end: 1, text: '왜 따라가는 걸까?', basis: 'person is visibly following' }] }
+  const invalid = { ...base, payoffRange: { start: 15, end: 15 }, openingHook: { start: 1, end: 1, text: '왜 따라가는 걸까?', basis: 'person is visibly following' } }
   const fetchImpl = (async (_url: any, init: any) => {
     calls++
     const body = JSON.parse(String(init.body))
@@ -36,6 +36,7 @@ test('one invalid semantic answer is repaired once using the same evidence', asy
   assert.equal(calls, 2)
   assert.equal(r.status, 'ok')
   assert.equal(r.story!.causalStart, 1)
+  assert.equal(r.story!.minimalCaptions[0].kind, 'hook')
   assert.equal((r.usage as any).attempts.length, 2)
 })
 
