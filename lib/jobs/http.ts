@@ -160,7 +160,7 @@ export function createJobsHttp(deps: JobsDeps) {
           const ids=[...new Set(body.referenceAssetIds.map((x:unknown)=>matching(x,/^ref_[a-f0-9]{64}$/,'referenceAssetId is invalid')))]
           need(ids.length===body.referenceAssetIds.length,'referenceAssetIds must be unique')
           const analyses=[]
-          for(const id of ids) analyses.push((await analyzeRegisteredReference(id)).analysis)
+          for(const id of ids as string[]) analyses.push((await analyzeRegisteredReference(id)).analysis)
           const bundle=buildReferenceProductionBrief({profile,sourceAssetId,analyses})
           const errors=validateReferenceProfile(bundle.profile)
           need(errors.length===0,`server referenceProfile is invalid: ${errors.join(',')}`)
