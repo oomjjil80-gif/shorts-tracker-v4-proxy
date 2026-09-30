@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS production_jobs (
   workspace_id           text NOT NULL,
   profile                text NOT NULL,
   source_asset_id        text NOT NULL,
+  reference_profile_ref  text,
   status                 text NOT NULL CHECK (status IN ('QUEUED','RUNNING','WAITING_USER','COMPLETE','FAILED','CANCELLED')),
   stage                  text NOT NULL CHECK (stage IN ('ANALYZE','PLAN','ASSET','COMPILE','RENDER','AUTO_QC','DECISION','FINAL','PACKAGE')),
   wait_reason            text CHECK (wait_reason IS NULL OR wait_reason IN ('DECISION','BUDGET','QC_BLOCKED','PROVIDER_DOWN')),
