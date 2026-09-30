@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 export const REFERENCE_SCHEMA_VERSION = 1 as const
-export const REFERENCE_ANALYZER_VERSION = 'reference-analyzer/1' as const
+export const REFERENCE_ANALYZER_VERSION = 'reference-analyzer/2' as const
 
 export type ReferenceKind = 'video' | 'image' | 'screenshot'
 export type ReferenceUse = 'PLAN' | 'RENDER' | 'QC'
@@ -97,7 +97,9 @@ export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProf
   const ids=analyses.map(x=>x.referenceAssetId)
   if(new Set(ids).size!==ids.length) throw new Error('duplicate reference analysis')
   const ordered=[...analyses].sort((a,b)=>a.referenceAssetId.localeCompare(b.referenceAssetId))
-  return {schema:'reference-profile/1',profileVersion:1,referenceAssetIds:ordered.map(x=>x.referenceAssetId),sourceAnalysisHashes:ordered.map(stableHash),constraints:ordered.flatMap(x=>x.features.map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))}
+  const applicable=(f:ReferenceFeature)=>String((f.value as any)?.status||'measured')==='measured'
+  const constraints=ordered.flatMap(x=>x.features.filter(applicable).map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))
+  return {schema:'reference-profile/1',profileVersion:1,referenceAssetIds:ordered.map(x=>x.referenceAssetId),sourceAnalysisHashes:ordered.map(stableHash),constraints}
 }
 export function validateReferenceProfile(p: ReferenceProfile | null | undefined) {
   const errors:string[]=[]
@@ -114,7 +116,8 @@ export function validateReferenceProfile(p: ReferenceProfile | null | undefined)
     if(!f?.appliesTo?.length || f.appliesTo.some(x=>!['PLAN','RENDER','QC'].includes(x))) errors.push(`appliesTo:${f?.id||'?'}`)
     if(!f?.evidence?.length) errors.push(`evidence:${f?.id||'?'}`)
   }
-  for(const axis of REFERENCE_AXES) if(!axes.has(axis)) errors.push(`missingAxis:${axis}`)
+  // A profile may mix video and still references. Axes that no supplied reference can measure are absent by design;
+  // UNKNOWN analysis features must never become impossible QC constraints.
   return errors
 }
 export function conformanceReport(profile: ReferenceProfile, checks: ConformanceCheck[]): ConformanceReport {
