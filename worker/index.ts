@@ -12,7 +12,7 @@ import { analyzeExecutor } from './stages/analyze.js'
 import { createPlanExecutor } from './stages/plan.js'
 import { compileExecutor } from './stages/compile.js'
 import { renderExecutor } from './stages/render.js'
-import { autoQcExecutor } from './stages/autoQc.js'
+import { createAutoQcExecutor } from './stages/autoQc.js'
 import { decisionExecutor, finalExecutor, packageExecutor } from './stages/finish.js'
 import { get } from '@vercel/blob'
 import type { ReferenceProfile } from '../lib/reference/contracts.js'
@@ -36,7 +36,7 @@ async function main() {
   const db = await createPgDbFromEnv()
   const store = createJobStore(db)
   const referenceProfile = await configuredReferenceProfile()
-  const executors = [analyzeExecutor, createPlanExecutor({ openAi, referenceProfile }), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor]
+  const executors = [analyzeExecutor, createPlanExecutor({ openAi, referenceProfile }), compileExecutor, renderExecutor, createAutoQcExecutor(referenceProfile), decisionExecutor, finalExecutor, packageExecutor]
   const blobs = createVercelJobBlobStore()
   let stopping = false
   for (const sig of ['SIGTERM', 'SIGINT'] as const) process.on(sig, () => { stopping = true })
