@@ -23,6 +23,7 @@ export type JobsDeps = {
   getStore: () => Promise<JobStore>
   blobs: JobBlobStore
   sourceExists?: (sourceAssetId: string) => Promise<boolean>
+  analyzeReference?: typeof analyzeRegisteredReference
 }
 
 function workspaceOf(req: Request): string {
@@ -160,7 +161,8 @@ export function createJobsHttp(deps: JobsDeps) {
           const ids=[...new Set(body.referenceAssetIds.map((x:unknown)=>matching(x,/^ref_[a-f0-9]{64}$/,'referenceAssetId is invalid')))]
           need(ids.length===body.referenceAssetIds.length,'referenceAssetIds must be unique')
           const analyses=[]
-          for(const id of ids as string[]) analyses.push((await analyzeRegisteredReference(id)).analysis)
+          const analyzeReference=deps.analyzeReference ?? analyzeRegisteredReference
+          for(const id of ids as string[]) analyses.push((await analyzeReference(id)).analysis)
           const bundle=buildReferenceProductionBrief({profile,sourceAssetId,analyses})
           const errors=validateReferenceProfile(bundle.profile)
           need(errors.length===0,`server referenceProfile is invalid: ${errors.join(',')}`)
