@@ -144,7 +144,6 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
             const scores=await sceneScores(renderPath),duration=Number(outputInfo.duration||v.duration||0),cuts:number[]=[]
             for(const s of scores)if(s.score>0.3&&s.t>0.2&&s.t<duration-0.2&&(!cuts.length||s.t-cuts[cuts.length-1]>=0.5))cuts.push(s.t)
             const meanSceneSeconds=duration>0?duration/(cuts.length+1):null
-            const firstSceneBoundary=cuts.length?cuts[0]:null
             try{
               const measured=await analyzeSourceFile(renderPath,{sourceAssetId:`render:${v.renderHash}`,sha256:sha256(bytes)})
               for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':retention.peak')||x.id==='retention.peak')){
