@@ -14,20 +14,24 @@ const clamp=(n:number)=>Math.max(0,Math.min(1,n))
 export async function detectCaptionRegions(file:string,asset:ReferenceAsset,opts:{fetchImpl?:typeof fetch;apiKey?:string;model?:string;timeoutMs?:number}={}):Promise<ReferenceSignals['captionRegions']>{
  const apiKey=opts.apiKey??process.env.OPENAI_API_KEY,model=opts.model??process.env.OPENAI_PLAN_MODEL??'gpt-5-mini';if(!apiKey)return []
  const fetchImpl=opts.fetchImpl??fetch,duration=Number(asset.duration||0)
+ let attempted=0,succeeded=0
  const times=asset.kind==='video'&&duration>0?[duration*.2,duration*.5,duration*.8]:[0],regions:NonNullable<ReferenceSignals['captionRegions']>=[]
  for(let i=0;i<times.length;i++){
   const jpg=`/tmp/reference-caption-${randomUUID()}.jpg`
   try{
    await extractJpeg(file,times[i],jpg,'scale=720:-2');if(!existsSync(jpg))continue
    const b=await import('node:fs/promises').then(x=>x.readFile(jpg)),schema={type:'object',additionalProperties:false,required:['regions'],properties:{regions:{type:'array',maxItems:8,items:{type:'object',additionalProperties:false,required:['x','y','width','height'],properties:{x:{type:'number'},y:{type:'number'},width:{type:'number'},height:{type:'number'}}}}}}
+   attempted++
    const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),opts.timeoutMs??15000)
    let res:Response
    try{res=await fetchImpl('https://api.openai.com/v1/responses',{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/json',Authorization:`Bearer ${apiKey}`},body:JSON.stringify({model,input:[{role:'user',content:[{type:'input_text',text:`Caption detector ${REFERENCE_CAPTION_VISION_VERSION}. Detect only viewer-facing caption/subtitle/title text regions in this single video frame or still image. Ignore timestamps, watermarks, logos and tiny technical metadata. Return normalized 0..1 boxes relative to THIS FRAME only. Do not invent regions.`},{type:'input_image',image_url:`data:image/jpeg;base64,${b.toString('base64')}`}]}],text:{format:{type:'json_schema',name:'caption_regions',strict:true,schema}}})})}finally{clearTimeout(timer)}
    if(!res.ok)continue
+   succeeded++
    const d:any=await res.json(),raw=d?.output_text??d?.output?.flatMap((o:any)=>o?.content||[]).find((z:any)=>typeof z?.text==='string')?.text,p=JSON.parse(raw||'{}')
    for(const r of Array.isArray(p.regions)?p.regions:[]){const z={x:clamp(Number(r.x)),y:clamp(Number(r.y)),width:clamp(Number(r.width)),height:clamp(Number(r.height))};if(z.width>.01&&z.height>.01&&z.x+z.width<=1.01&&z.y+z.height<=1.01)regions.push(z)}
   }catch{/* provider/frame failure is no measurement, never PASS */}finally{await unlink(jpg).catch(()=>{})}
  }
+ if(attempted>0&&succeeded===0)throw new Error('caption vision unavailable for all sampled frames')
  return regions
 }
 type Deps=typeof defaults
