@@ -96,11 +96,21 @@ export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProf
   if (!analyses.length) throw new Error('at least one reference analysis required')
   return {schema:'reference-profile/1',profileVersion:1,referenceAssetIds:analyses.map(x=>x.referenceAssetId),sourceAnalysisHashes:analyses.map(stableHash),constraints:analyses.flatMap(x=>x.features.map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))}
 }
-export function validateReferenceProfile(p: ReferenceProfile) {
+export function validateReferenceProfile(p: ReferenceProfile | null | undefined) {
   const errors:string[]=[]
+  if (!p || typeof p !== 'object') return ['profile']
   if (p.schema!=='reference-profile/1'||p.profileVersion!==1) errors.push('version')
   if (!p.referenceAssetIds?.length || p.referenceAssetIds.length!==p.sourceAnalysisHashes?.length) errors.push('sources')
-  if (p.constraints?.some(f=>!f.appliesTo?.length)) errors.push('unusedConstraint')
+  if (!Array.isArray(p.constraints) || !p.constraints.length) errors.push('constraints')
+  const axes=new Set<ReferenceAxis>()
+  const ids=new Set<string>()
+  for(const f of p.constraints||[]) {
+    if(!f?.id || ids.has(f.id)) errors.push('constraintId'); else ids.add(f.id)
+    if(!REFERENCE_AXES.includes(f?.axis as ReferenceAxis)) errors.push(`axis:${f?.id||'?'}`); else axes.add(f.axis)
+    if(!f?.appliesTo?.length || f.appliesTo.some(x=>!['PLAN','RENDER','QC'].includes(x))) errors.push(`appliesTo:${f?.id||'?'}`)
+    if(!f?.evidence?.length) errors.push(`evidence:${f?.id||'?'}`)
+  }
+  for(const axis of REFERENCE_AXES) if(!axes.has(axis)) errors.push(`missingAxis:${axis}`)
   return errors
 }
 export function conformanceReport(profile: ReferenceProfile, checks: ConformanceCheck[]): ConformanceReport {
@@ -108,5 +118,5 @@ export function conformanceReport(profile: ReferenceProfile, checks: Conformance
   const seen = new Set(checks.map(x=>x.featureId))
   const missing=[...expected].filter(x=>!seen.has(x))
   const normalized=[...checks,...missing.map(featureId=>({featureId,axis:profile.constraints.find(x=>x.id===featureId)!.axis,appliesTo:profile.constraints.find(x=>x.id===featureId)!.appliesTo,status:'UNKNOWN' as const,evidence:{reason:'not evaluated'}}))]
-  return {schema:'reference-conformance/1',profileHash:stableHash(profile),checks:normalized,decision:normalized.every(x=>x.status==='PASS')?'PASS':'BLOCK'}
+  return {schema:'reference-conformance/1',profileHash:stableHash(profile),checks:normalized,decision:normalized.length>0&&normalized.every(x=>x.status==='PASS')?'PASS':'BLOCK'}
 }
