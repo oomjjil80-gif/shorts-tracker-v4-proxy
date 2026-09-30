@@ -41,7 +41,7 @@ export function applyReferencePlanConstraints(variants:VariantSpec[], constraint
   }else if(baseId==='retention.peak'){
    if(v?.firstPeak){applied.push(c.id);notes.push('reference retention peak recorded for variant selection/QC; no unsupported source-time transplant')}else unknown.push(c.id)
   }else if(baseId==='sound.structure'||baseId==='narration.structure'){
-   applied.push(c.id);notes.push(`${c.id} recorded as production constraint; PLAN does not fabricate audio/narration edits`)
+   if(v?.status==='measured'){applied.push(c.id);notes.push(`${c.id} recorded as measured production constraint; PLAN does not fabricate audio/narration edits`)}else unknown.push(c.id)
   }else unknown.push(c.id)
  }
  if(variants[0])variants[0].rationale+=applied.length?`; reference-conditioned: ${applied.join(', ')}`:''
