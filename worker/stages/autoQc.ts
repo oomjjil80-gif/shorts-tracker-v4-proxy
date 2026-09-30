@@ -132,7 +132,6 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
       }
     } finally { await rm(work, { recursive: true, force: true }); await file.cleanup() }
   }
-}
-
+}}
 
 export const autoQcExecutor: StageExecutor = createAutoQcExecutor(null)
