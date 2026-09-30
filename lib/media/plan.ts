@@ -8,7 +8,8 @@
 //    excluded range (intro confusion, repeats, dead air, product demo, foreign text, post-payoff, unrelated).
 //  - Without a story: one chronological cut of the usable footage (dead air trimmed, static cameras kept). The planner
 //    does not pretend to know where the payoff is; the content gate will say UNKNOWN.
-//  - Text is never invented here: captions only come from validated, visually grounded story captions (max 2).
+//  - Presentation text is never invented here: headline, context/payoff captions and effect words come only from
+//    validated, visually-grounded semantic cues.
 import type { SourceAnalysis } from './analyze.js'
 import type { Interval } from './ffmpeg.js'
 import { subtractIntervals } from './analyze.js'
@@ -22,7 +23,17 @@ export type VariantSpec = {
   effectCaptions?: Array<Record<string, unknown>>; callouts?: Array<Record<string, unknown>>
 }
 
-export const PLAN_LIMITS = { maxOutputSeconds: 45, singleEventMaxSeconds: 30, minOutputSeconds: 6, minBeatSeconds: 0.8, maxBeats: 12, idleTrimSeconds: 8, hookCaptionWindow: 3, maxEvents: 2 }
+export const PLAN_LIMITS = {
+  maxOutputSeconds: 45,
+  singleEventMaxSeconds: 30,
+  minOutputSeconds: 6,
+  minBeatSeconds: 0.8,
+  maxBeats: 12,
+  idleTrimSeconds: 8,
+  hookCaptionWindow: 3,
+  maxEvents: 4,
+  maxEffects: 2
+}
 const r2 = (n: number) => Math.round(n * 100) / 100
 const len = (b: { trimStart: number; trimEnd: number }) => b.trimEnd - b.trimStart
 export const totalSeconds = (beats: Beat[]) => r2(beats.reduce((s, b) => s + len(b), 0))
@@ -64,7 +75,6 @@ function rangesToBeats(ranges: Interval[], labelPrefix = 'beat'): Beat[] {
 // Chronological beats of the usable footage with dead air trimmed (no story knowledge).
 export function chronologicalBeats(a: SourceAnalysis): Beat[] {
   const ranges = subtractIntervals(a.usable, deadAirRuns(a))
-  // cut only where meaning changes: contiguous pieces stay one beat unless very long
   const beats: Beat[] = []
   for (const r of ranges) {
     const cutAt = a.scenes.map((s) => s.start).filter((t) => t > r.start + PLAN_LIMITS.idleTrimSeconds && t < r.end - 1)
@@ -87,7 +97,6 @@ function capLength(beats: Beat[], a: SourceAnalysis, max: number, protectedRange
     const worst = cand.sort((x, y) => score(x.b) / Math.max(0.5, len(x.b)) - score(y.b) / Math.max(0.5, len(y.b)))[0].i
     out = out.filter((_, i) => i !== worst)
   }
-  // still too long: trim from the START of the earliest beat (never the payoff at the end)
   while (totalSeconds(out) > max + 0.01 && out.length) {
     const excess = totalSeconds(out) - max
     const first = out[0]
@@ -120,18 +129,33 @@ export function sourceToOutput(beats: Beat[], t: number): number | null {
   return null
 }
 
-// Grounded story captions that survive the edit: fully inside a kept beat; hook captions must land in the opening.
-export function captionsFor(beats: Beat[], story: StoryAnalysis): Array<{ start: number; end: number; text: string }> {
-  const out: Array<{ start: number; end: number; text: string }> = []
-  for (const c of story.minimalCaptions) {
-    const inside = beats.some((b) => c.start >= b.trimStart - 0.01 && c.end <= b.trimEnd + 0.01)
-    if (!inside) continue
-    const at = sourceToOutput(beats, c.start)
-    if (at === null) continue
-    if (c.kind === 'hook' && at > PLAN_LIMITS.hookCaptionWindow) continue
-    out.push({ start: c.start, end: c.end, text: c.text })
+function cueSurvives(beats: Beat[], c: { start: number; end: number }): boolean {
+  return beats.some((b) => c.start >= b.trimStart - 0.01 && c.end <= b.trimEnd + 0.01)
+}
+
+// Turns grounded semantic cues into the modern presentation layer:
+// hook => persistent top headline; context/payoff => timed explanation captions; effect => short pop text.
+export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<VariantSpec, 'headline' | 'events' | 'effectCaptions'> {
+  const hook = story.minimalCaptions.find((c) => c.kind === 'hook' && cueSurvives(beats, c) && (sourceToOutput(beats, c.start) ?? 99) <= PLAN_LIMITS.hookCaptionWindow)
+  const events = story.minimalCaptions
+    .filter((c) => (c.kind === 'context' || c.kind === 'payoff') && cueSurvives(beats, c))
+    .slice(0, PLAN_LIMITS.maxEvents)
+    .map((c) => ({ start: c.start, end: c.end, text: c.text }))
+  const effectCaptions = story.minimalCaptions
+    .filter((c) => c.kind === 'effect' && cueSurvives(beats, c))
+    .slice(0, PLAN_LIMITS.maxEffects)
+    .map((c, idx) => ({
+      start: c.start, end: c.end, text: c.text,
+      xPct: idx % 2 === 0 ? 38 : 62,
+      yPct: idx % 2 === 0 ? 55 : 48,
+      fontSizePct: 8.8,
+      animation: 'pop'
+    }))
+  return {
+    ...(hook ? { headline: hook.text } : {}),
+    ...(events.length ? { events } : {}),
+    ...(effectCaptions.length ? { effectCaptions } : {})
   }
-  return out.slice(0, PLAN_LIMITS.maxEvents)
 }
 
 export function storyMaxSeconds(story: StoryAnalysis | null): number {
@@ -139,11 +163,9 @@ export function storyMaxSeconds(story: StoryAnalysis | null): number {
 }
 
 // The causal story, in source order: [causalStart, recommendedEnd] ∩ usable − excludes − dead air.
-// Dead air inside the story ranges is kept (calm moments can be needed to understand the action).
 export function storyBeats(a: SourceAnalysis, story: StoryAnalysis): Beat[] {
   const window = subtractIntervals(a.usable, [{ start: 0, end: story.causalStart }, { start: story.recommendedEnd, end: a.media.duration + 1 }])
   const payoff = story.payoffRange
-  // exclusions never eat the payoff itself
   const excl = story.excludeRanges.flatMap((x) => subtractIntervals([x], [payoff]))
   const storyRanges = [...story.setupRanges, ...story.escalationRanges, payoff]
   const dead = deadAirRuns(a).flatMap((d) => subtractIntervals([d], storyRanges))
@@ -162,20 +184,17 @@ export function planVariants(a: SourceAnalysis, semantic: SemanticResult | null 
   const base = storyBeats(a, story)
   if (!base.length) throw new Error('story analysis left no usable footage')
   const variants: VariantSpec[] = []
-  const withText = (beats: Beat[]) => { const ev = captionsFor(beats, story); return ev.length ? { events: ev } : {} }
-  variants.push({ id: 'v1', label: '추천 · 원인→결말', kind: 'chronological', rationale: 'causal order from the first understandable moment to the payoff; off-story footage removed', beats: base, ...withText(base) })
+  variants.push({ id: 'v1', label: '추천 · 원인→결말', kind: 'chronological', rationale: 'causal story + grounded Korean presentation layer; off-story footage removed', beats: base, ...presentationFor(base, story) })
 
-  // preview hook: only when the story says it is safe (validated: <=3s, from escalation/payoff, confident)
   if (story.hookStrategy === 'preview' && story.previewRange) {
     const p = story.previewRange
     const beats = capLength([{ label: 'preview', trimStart: p.start, trimEnd: p.end }, ...base.map((b) => ({ ...b }))], a, storyMaxSeconds(story), [story.payoffRange, p])
-    if (beats[0]?.label === 'preview') variants.push({ id: 'v2', label: '결말 살짝 먼저', kind: 'preview', rationale: `preview hook: ${story.hookReason}`.slice(0, 200), beats, ...withText(beats) })
+    if (beats[0]?.label === 'preview') variants.push({ id: 'v2', label: '결말 살짝 먼저', kind: 'preview', rationale: `preview hook: ${story.hookReason}`.slice(0, 200), beats, ...presentationFor(beats, story) })
   }
 
-  // tight cut: only setup / escalation / payoff
   const core = subtractIntervals(base.map(asRange).flatMap((r) => [...story.setupRanges, ...story.escalationRanges, story.payoffRange].map((s) => ({ start: Math.max(r.start, s.start), end: Math.min(r.end, s.end) })).filter((x) => x.end > x.start)), [])
   const tight = rangesToBeats(core, 'core')
-  if (tight.length && totalSeconds(tight) >= PLAN_LIMITS.minOutputSeconds) variants.push({ id: 'v3', label: '핵심만 짧게', kind: 'tight', rationale: 'setup, escalation and payoff only', beats: tight, ...withText(tight) })
+  if (tight.length && totalSeconds(tight) >= PLAN_LIMITS.minOutputSeconds) variants.push({ id: 'v3', label: '핵심만 짧게', kind: 'tight', rationale: 'setup, escalation and payoff only with grounded presentation cues', beats: tight, ...presentationFor(tight, story) })
 
   const accepted: VariantSpec[] = []
   for (const v of variants) if (accepted.every((x) => variantDistance(x.beats, v.beats) >= 0.15)) accepted.push(v)
@@ -196,13 +215,15 @@ export function validateVariant(v: VariantSpec, a: SourceAnalysis): string[] {
     }
   })
   if (totalSeconds(v.beats) > PLAN_LIMITS.maxOutputSeconds + 0.01) errors.push(`output ${totalSeconds(v.beats)}s exceeds ${PLAN_LIMITS.maxOutputSeconds}s`)
-  if ((v.events || []).length > PLAN_LIMITS.maxEvents) errors.push(`more than ${PLAN_LIMITS.maxEvents} captions`)
+  if ((v.events || []).length > PLAN_LIMITS.maxEvents) errors.push(`more than ${PLAN_LIMITS.maxEvents} explanation captions`)
+  if ((v.effectCaptions || []).length > PLAN_LIMITS.maxEffects) errors.push(`more than ${PLAN_LIMITS.maxEffects} effect captions`)
   for (const e of v.events || []) if (!e?.text || [...String(e.text)].length > 20 || !(e.end > e.start)) errors.push('invalid event')
+  for (const e of v.effectCaptions || []) if (!e?.text || [...String(e.text)].length > 8 || !(Number(e.end) > Number(e.start))) errors.push('invalid effect caption')
   if (v.headline && [...String(v.headline)].length > 24) errors.push('headline too long')
   return errors
 }
 
-// job-plan/1 body for a variant (source-time text events are declared as such; the compiler converts them).
+// job-plan/1 body for a variant (source-time presentation cues are converted by the compiler).
 export function toJobPlan(sourceAssetId: string, v: VariantSpec) {
   return {
     schema: 'job-plan/1' as const, profile: 'source_shorts' as const, sourceAssetId,

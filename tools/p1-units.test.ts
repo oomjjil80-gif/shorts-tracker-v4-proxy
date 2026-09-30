@@ -64,7 +64,7 @@ test('plan: without a validated story there is exactly one chronological cut —
   assert.equal(variantDistance(same, same), 0)
 })
 
-test('plan validation rejects out-of-range, too-short, black-covering, over-long and over-captioned plans', () => {
+test('plan validation rejects out-of-range, too-short, black-covering, over-long and invalid presentation plans', () => {
   const a = analysis({ ranges: { black: [{ start: 5, end: 8 }], freeze: [], silent: [] } })
   const ok = { id: 'v1', label: 'x', rationale: '', beats: [{ label: 'a', trimStart: 0, trimEnd: 4 }] }
   assert.deepEqual(validateVariant(ok, a), [])
@@ -73,6 +73,7 @@ test('plan validation rejects out-of-range, too-short, black-covering, over-long
   assert.ok(validateVariant({ ...ok, beats: [{ label: 'a', trimStart: 4, trimEnd: 9 }] }, a).some((e) => /black/.test(e)))
   assert.ok(validateVariant({ ...ok, headline: 'x'.repeat(41) }, a).some((e) => /headline/.test(e)))
   assert.ok(validateVariant({ ...ok, events: [{ start: 2, end: 1, text: 'a' }] }, a).length > 0)
+  assert.ok(validateVariant({ ...ok, effectCaptions: [{ start: 1, end: 2, text: '가'.repeat(9) }] }, a).some((e) => /effect/.test(e)))
   assert.deepEqual(subtractIntervals([{ start: 0, end: 10 }], [{ start: 2, end: 4 }]), [{ start: 0, end: 2 }, { start: 4, end: 10 }])
   const jp = toJobPlan('src_unit_00001', { ...ok, headline: 'H', events: [{ start: 1, end: 2, text: 't' }] })
   assert.deepEqual([jp.schema, jp.profile, jp.variantPlan.plansTimeDomain, jp.variantPlan.headline], ['job-plan/1', 'source_shorts', 'source', 'H'])
@@ -84,13 +85,16 @@ const okStory = {
   hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.2, hookReason: 'short causal event',
   minimalCaptions: [
     { kind: 'hook', start: 1, end: 2.8, text: '왜 저러는 걸까?', basis: 'person visibly follows the device' },
-    { kind: 'payoff', start: 15, end: 17, text: '결국 따라간다', basis: 'child crawls after the man' }
+    { kind: 'context', start: 6.5, end: 8, text: '갑자기 기어가기 시작', basis: 'person visibly crawls' },
+    { kind: 'effect', start: 9, end: 9.8, text: '슥', basis: 'person shifts forward' },
+    { kind: 'context', start: 10.5, end: 12, text: '아이도 보고 있다', basis: 'child visibly watches' },
+    { kind: 'payoff', start: 15, end: 17, text: '결국 따라간다', basis: 'child crawls after the person' }
   ], publishabilityWarnings: []
 }
 const fakeFetch = (body: any, status = 200) => (async () => ({ ok: status < 400, status, json: async () => body })) as unknown as typeof fetch
 const JPEG = Buffer.from('fake-jpeg')
 
-test('semantic story model: valid output => ok; provider/parse/validation failures => failed/invalid (never ok); no keyframes => failed', async () => {
+test('semantic story model: valid output => ok; provider/parse/validation failures => failed/invalid; no keyframes => failed', async () => {
   const a = analysis()
   const good = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okStory), usage: { total_tokens: 5 } }) })
   assert.equal(good.status, 'ok'); assert.equal(good.model, 'gpt-x'); assert.equal(good.story!.payoffRange.end, 19)
@@ -104,7 +108,7 @@ test('semantic story model: valid output => ok; provider/parse/validation failur
   assert.equal((await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: null, fetchImpl: fakeFetch({}) })).status, 'failed')
 })
 
-test('PLAN stage: model failure keeps the deterministic plan and records semantic status; success stores the story and plans from it', async () => {
+test('PLAN stage: model failure keeps deterministic plan; success stores story + presentation plan', async () => {
   const blobs = createMemoryBlobStore()
   const a = analysis({ visual: (t) => (t >= 22 && t < 25 ? 0.9 : 0.05) }); a.highlights = computeHighlights(a.timeline)
   const ref = (await blobs.putJson('analysis/x.json', a)).path
@@ -119,11 +123,14 @@ test('PLAN stage: model failure keeps the deterministic plan and records semanti
   assert.equal(none.result.semantic.status, 'unavailable'); assert.equal(none.result.semantic.storyRef, null)
   const working = createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okStory) }) } })
   const r2: any = await working.run({ job, blobs, previous, signal: new AbortController().signal } as any)
-  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion, r2.result.semantic.status], ['openai', 'gpt-x', null, 'source-story-analysis/7', 'ok'])
+  assert.deepEqual([r2.result.provider, r2.result.model, r2.result.fallback, r2.result.promptVersion, r2.result.semantic.status], ['openai', 'gpt-x', null, 'source-story-analysis/8', 'ok'])
   const story: any = await blobs.getJson(r2.result.semantic.storyRef)
   assert.equal(story.schema, 'story-analysis/1')
   const stored: any = await blobs.getJson(r2.planRef)
-  assert.ok(stored.variantPlan.beats.every((b: any) => b.trimEnd <= 19.5 + 1e-6), 'plan ends at the payoff, not at the file end')
-  assert.deepEqual(stored.variantPlan.events.map((e: any) => e.text), ['왜 저러는 걸까?', '결국 따라간다']); assert.equal(stored.variantPlan.plansTimeDomain, 'source')
+  assert.ok(stored.variantPlan.beats.every((b: any) => b.trimEnd <= 19.5 + 1e-6))
+  assert.equal(stored.variantPlan.headline, '왜 저러는 걸까?')
+  assert.deepEqual(stored.variantPlan.events.map((e: any) => e.text), ['갑자기 기어가기 시작', '아이도 보고 있다', '결국 따라간다'])
+  assert.deepEqual(stored.variantPlan.effectCaptions.map((e: any) => e.text), ['슥'])
+  assert.equal(stored.variantPlan.plansTimeDomain, 'source'); assert.equal(stored.variantPlan.timeDomain, 'source')
   await assert.rejects(() => createPlanExecutor().run({ job, blobs, previous: async () => null, signal: new AbortController().signal } as any), /ANALYZE/)
 })

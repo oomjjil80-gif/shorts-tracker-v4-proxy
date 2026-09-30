@@ -1,17 +1,25 @@
 // CONTENT publishable gate: "is this an edit a person can upload as-is?" — separate from the technical AUTO_QC gate.
-// It judges the EDIT (the manifest's cuts in source time + its text) against the source measurements and the
-// validated semantic story. Semantic questions (opening, payoff, tail, repeats, off-story footage, invented text)
-// can only be answered with a validated story; without one they are UNKNOWN, which blocks (never PASS).
+// It judges story coherence AND the mobile presentation layer. Semantic questions can only PASS with a validated
+// story; without one they are UNKNOWN/BLOCK. Presentation cues must be grounded in that story, not invented by QC.
 import { evaluateGate, type CheckResult, type GateResult } from '../qc/gate.js'
 import type { SourceAnalysis } from './analyze.js'
 import { foregroundRect, type SourceFraming } from './framing.js'
 import { deadAirRuns, PLAN_LIMITS, storyMaxSeconds } from './plan.js'
 import { OFFSTORY_REASONS, overlap, PACING_REASONS, STORY_LIMITS, type Range, type SemanticResult } from './story.js'
 
-export const CONTENT_LIMITS = { openingToleranceSec: 1.5, maxExcludedOverlapSec: 0.3, maxTailSec: STORY_LIMITS.maxTailAfterPayoff + 0.5, minPayoffCoverage: 0.8, maxDeadRunSec: 2.5, minForegroundArea: 0.3, maxTextItems: 3 }
+export const CONTENT_LIMITS = {
+  openingToleranceSec: 1.5,
+  maxExcludedOverlapSec: 0.3,
+  maxTailSec: STORY_LIMITS.maxTailAfterPayoff + 0.5,
+  minPayoffCoverage: 0.8,
+  maxDeadRunSec: 2.5,
+  minForegroundArea: 0.3,
+  maxTextItems: 1 + STORY_LIMITS.maxNarrativeCaptions - 1 + STORY_LIMITS.maxEffectCaptions,
+  maxDynamicGapSec: 5.5
+}
 
 export type ContentGateInput = {
-  payload: any // RenderManifest payload
+  payload: any
   analysis: SourceAnalysis
   semantic: SemanticResult | null
   framing: SourceFraming | null | undefined
@@ -42,6 +50,11 @@ function textItems(payload: any): Array<{ kind: string; text: string }> {
   return out
 }
 
+function dynamicCueStarts(payload: any, total: number): number[] {
+  const rows = [...(payload?.subtitleEvents || []), ...(payload?.sourceEffectCaptions || []), ...(payload?.sourceCallouts || [])]
+  return rows.map((e: any) => Number(e?.start)).filter((x: number) => Number.isFinite(x) && x >= 0 && x <= total).sort((a: number, b: number) => a - b)
+}
+
 const sumOverlap = (segs: Range[], ranges: Range[]) => segs.reduce((s, g) => s + ranges.reduce((t, r) => t + overlap(g, r), 0), 0)
 const r2 = (n: number) => Math.round(n * 100) / 100
 
@@ -54,11 +67,9 @@ export function evaluateContentGate(i: ContentGateInput): GateResult {
   const verdict = (id: string, ok: boolean, evidence: unknown): CheckResult => ({ id, required: true, status: ok ? 'PASS' : 'FAIL', evidence })
   const checks: CheckResult[] = []
 
-  if (!segs.length) {
-    return evaluateGate([{ id: 'content.edit_readable', required: true, status: 'UNKNOWN', evidence: { reason: 'manifest has no source segments' } }])
-  }
+  if (!segs.length) return evaluateGate([{ id: 'content.edit_readable', required: true, status: 'UNKNOWN', evidence: { reason: 'manifest has no source segments' } }])
 
-  // 1. opening understandable: starts at the causal start, or is a validated preview hook
+  // 1. opening understandable: starts at the causal start, or is a validated preview hook.
   if (!semantic) checks.push(unknown('content.opening_understandable'))
   else {
     const first = segs[0]
@@ -69,15 +80,14 @@ export function evaluateContentGate(i: ContentGateInput): GateResult {
     checks.push(verdict('content.opening_understandable', (isPreview || startsAtCause) && !firstOffstory.length, { firstSegment: first, causalStart: semantic.causalStart, validatedPreview: isPreview, firstOffstory }))
   }
 
-  // 2. chronology: source order, except one validated preview beat at the very start
+  // 2. chronology.
   {
     const body = semantic?.previewRange && semantic.hookStrategy === 'preview' && segs.length > 1 && segs[0].start >= semantic.previewRange.start - 0.05 && segs[0].end <= semantic.previewRange.end + 0.05 ? segs.slice(1) : segs
     const backwards = body.slice(1).map((g, k) => ({ at: k + 2, from: body[k].end, to: g.start })).filter((x) => x.to < x.from - 0.05)
-    // a non-monotonic edit without a validated preview is not coherent; a monotonic one is coherent by construction
     checks.push(verdict('content.chronology_coherent', backwards.length === 0, { backwardsJumps: backwards, previewAccepted: body !== segs }))
   }
 
-  // 3. repeats / dead moments: semantic repeats + measured dead air
+  // 3. repeats / dead moments.
   {
     const dead = deadAirRuns(i.analysis).filter((d) => d.end - d.start >= 0.5)
     const storyRanges = semantic ? [...semantic.setupRanges, ...semantic.escalationRanges, semantic.payoffRange] : []
@@ -91,7 +101,7 @@ export function evaluateContentGate(i: ContentGateInput): GateResult {
     }
   }
 
-  // 4. payoff present (and the edit does not end before it)
+  // 4. payoff present.
   if (!semantic) checks.push(unknown('content.payoff_present'))
   else {
     const p = semantic.payoffRange
@@ -100,14 +110,14 @@ export function evaluateContentGate(i: ContentGateInput): GateResult {
     checks.push(verdict('content.payoff_present', cov >= CONTENT_LIMITS.minPayoffCoverage && lastEnd >= p.end - 0.3, { payoff: p, coverage: r2(cov), lastSourceSecond: lastEnd }))
   }
 
-  // 5. nothing trailing after the payoff
+  // 5. no tail after payoff.
   if (!semantic) checks.push(unknown('content.no_post_payoff_tail'))
   else {
     const tail = r2(segs.reduce((s, g) => s + Math.max(0, g.end - Math.max(g.start, semantic.payoffRange.end)), 0))
     checks.push(verdict('content.no_post_payoff_tail', tail <= CONTENT_LIMITS.maxTailSec, { secondsAfterPayoff: tail, max: CONTENT_LIMITS.maxTailSec }))
   }
 
-  // 6. off-story contamination: product demo, foreign text, unrelated, intro confusion, post-payoff
+  // 6. no off-story contamination.
   if (!semantic) checks.push(unknown('content.no_offstory_contamination'))
   else {
     const offstory = semantic.excludeRanges.filter((x) => OFFSTORY_REASONS.includes(x.reason))
@@ -115,29 +125,42 @@ export function evaluateContentGate(i: ContentGateInput): GateResult {
     checks.push(verdict('content.no_offstory_contamination', rows.every((x) => x.secondsInOutput <= CONTENT_LIMITS.maxExcludedOverlapSec), { contamination: rows }))
   }
 
-  // 7. mobile readability of the real picture (deterministic from the render framing)
+  // 7. mobile readability of the real picture.
   if (!i.framing) checks.push({ id: 'content.mobile_foreground', required: true, status: 'UNKNOWN', evidence: { reason: 'render framing not recorded' } })
   else {
     const area = i.framing.mode === 'embedded' && i.framing.crop ? (() => { const r = foregroundRect(i.framing!.crop!); return (r.width * r.height) / (1080 * 1920) })() : 1
     checks.push(verdict('content.mobile_foreground', area >= CONTENT_LIMITS.minForegroundArea, { foregroundAreaFraction: r2(area), min: CONTENT_LIMITS.minForegroundArea, framing: i.framing.mode }))
   }
 
-  // 8. captions: minimal and grounded (every text must be a validated, visually grounded story caption)
+  // 8. all text is minimal and semantically grounded. A Korean top headline is mandatory for P1 source shorts.
   {
     const texts = textItems(i.payload)
-    const tooMany = texts.length > CONTENT_LIMITS.maxTextItems || texts.filter((t) => t.kind !== 'headline').length > PLAN_LIMITS.maxEvents
-    const tooLong = texts.filter((t) => [...t.text].length > (t.kind === 'headline' ? 24 : STORY_LIMITS.maxCaptionChars))
-    if (!texts.length) checks.push(verdict('content.captions_minimal_grounded', true, { texts: 0 }))
-    else if (tooMany || tooLong.length) checks.push(verdict('content.captions_minimal_grounded', false, { count: texts.length, tooLong }))
-    else if (!semantic) checks.push(unknown('content.captions_minimal_grounded', { note: 'captions present but their grounding cannot be verified' }))
+    const headline = String(i.payload?.editorialPlan?.headline || '').trim()
+    const tooMany = texts.length > CONTENT_LIMITS.maxTextItems || (i.payload?.subtitleEvents || []).length > PLAN_LIMITS.maxEvents || (i.payload?.sourceEffectCaptions || []).length > PLAN_LIMITS.maxEffects
+    const tooLong = texts.filter((t) => [...t.text].length > (t.kind === 'headline' ? 24 : t.kind === 'effect' ? STORY_LIMITS.maxEffectChars : STORY_LIMITS.maxCaptionChars))
+    if (!headline || !/[가-힣]/.test(headline)) checks.push(verdict('content.presentation_grounded', false, { reason: 'missing Korean top headline', headline }))
+    else if (tooMany || tooLong.length) checks.push(verdict('content.presentation_grounded', false, { count: texts.length, tooLong }))
+    else if (!semantic) checks.push(unknown('content.presentation_grounded', { note: 'presentation text exists but grounding cannot be verified' }))
     else {
       const grounded = new Set(semantic.minimalCaptions.map((c) => c.text))
       const invented = texts.filter((t) => !grounded.has(t.text))
-      checks.push(verdict('content.captions_minimal_grounded', invented.length === 0, { texts: texts.length, ungrounded: invented }))
+      checks.push(verdict('content.presentation_grounded', invented.length === 0, { texts: texts.length, ungrounded: invented }))
     }
   }
 
-  // 9. length suits a Short of this story type
+  // 9. presentation rhythm: headline is persistent, but timed explanation/effect changes must keep the mobile screen alive.
+  {
+    const starts = dynamicCueStarts(i.payload, total)
+    const points = [0, ...starts, total].sort((a, b) => a - b)
+    const gaps = points.slice(1).map((p, k) => r2(p - points[k]))
+    const maxGap = gaps.length ? Math.max(...gaps) : total
+    const minDynamic = total >= 12 ? 2 : 1
+    checks.push(verdict('content.presentation_rhythm', starts.length >= minDynamic && maxGap <= CONTENT_LIMITS.maxDynamicGapSec, {
+      dynamicCueCount: starts.length, minDynamic, cueStarts: starts.map(r2), maxGapSeconds: r2(maxGap), allowedMaxGap: CONTENT_LIMITS.maxDynamicGapSec
+    }))
+  }
+
+  // 10. length suits the story type.
   {
     const max = storyMaxSeconds(semantic)
     checks.push(verdict('content.length_fit', total >= PLAN_LIMITS.minOutputSeconds && total <= max + 0.01, { seconds: r2(total), min: PLAN_LIMITS.minOutputSeconds, max }))

@@ -59,24 +59,20 @@ test('P1 pipeline: source -> ANALYZE -> PLAN -> COMPILE -> RENDER -> AUTO_QC -> 
   const runs = await store.listStageRuns(job.id)
   for (const stage of ['ANALYZE', 'PLAN', 'COMPILE', 'RENDER', 'AUTO_QC', 'DECISION']) assert.ok(runs.some((r) => r.stage === stage && r.status === 'SUCCEEDED'), `${stage} SUCCEEDED`)
 
-  // ANALYZE produced a machine-readable analysis bound to the registered source
   const analysis: any = await blobs.getJson((await store.getLatestSucceeded(job.id, 'ANALYZE'))!.outputRef!)
   assert.equal(analysis.schema, 'source-analysis/1'); assert.equal(analysis.sha256, srcSha)
   assert.ok(analysis.timeline.length >= 12 && analysis.scenes.length >= 3)
 
-  // PLAN -> immutable, distinct variants; job continues from the recommended plan
   const plan = (await store.getLatestSucceeded(job.id, 'PLAN'))!
   const planned = (plan.result as any).variants
   assert.ok(planned.length >= 1 && planned.length <= 3)
   assert.equal(at.planRef, planned[0].planRef); assert.equal(at.planRev, 1)
 
-  // RENDER: real MP4s in blob storage, one per passing variant (rendered once, final quality)
   const render = (await store.getLatestSucceeded(job.id, 'RENDER'))!
   const rv = (render.result as any).variants
   assert.equal(rv.length, planned.length)
   assert.equal([...blobs.binaries.keys()].filter((k) => k.startsWith('renders/') && k.endsWith('.mp4')).length, new Set(rv.map((v: any) => v.renderHash)).size)
 
-  // AUTO_QC: every required check PASS for the rendered file (measured on the real bytes)
   const qc = (await store.getLatestSucceeded(job.id, 'AUTO_QC'))!.result as any
   assert.equal(qc.recommendedVariantId, 'v1')
   const gate = qc.variants[0].gate
@@ -84,13 +80,11 @@ test('P1 pipeline: source -> ANALYZE -> PLAN -> COMPILE -> RENDER -> AUTO_QC -> 
   assert.ok(gate.counts.requiredTotal >= 12 && gate.counts.requiredPass === gate.counts.requiredTotal)
   for (const id of ['decode.full', 'timeline.segment_order_and_trim', 'duration.matches_manifest', 'video.format', 'audio.present_and_alive', 'visual.no_black']) assert.equal(gate.checks.find((c: any) => c.id === id)?.status, 'PASS', id)
 
-  // content gate is recorded separately; without a semantic model it is BLOCK (UNKNOWN) and the video is NOT publishable
   const v0 = qc.variants[0]
   assert.equal(v0.contentGate.decision, 'BLOCK'); assert.equal(v0.publishable, false)
   assert.ok(v0.contentGate.checks.some((c: any) => c.id === 'content.payoff_present' && c.status === 'UNKNOWN'))
   assert.equal(qc.semantic.status, 'unavailable'); assert.equal(qc.publishable, 0)
 
-  // the stored MP4 is a real 1080x1920 H.264/AAC file that fully decodes
   const bytes = blobs.binaries.get(rv[0].renderRef)!
   const f = join(dir, 'check.mp4'); (await import('node:fs')).writeFileSync(f, bytes)
   const info = await probe(f)
@@ -122,10 +116,9 @@ test('DECISION -> FINAL -> PACKAGE: the chosen render is promoted as the same bl
 })
 
 test('QC block: a corrupted render is never promoted (AUTO_QC blocks; decision without override is refused)', async () => {
-  const { store, blobs, drive } = await setup()
+  const { store, blobs } = await setup()
   const { job } = await store.createJob({ workspaceId: 'ws', profile: 'source_shorts', sourceAssetId: asset.sourceAssetId, idempotencyKey: 'idem-p1-0003', budgetUsd: 5 })
-  // run up to RENDER, then corrupt every rendered file before AUTO_QC sees it
-  for (let n = 0; n < 4; n++) await runOnce({ ...(await (async () => ({}))()), store, blobs, executors: [analyzeExecutor, createPlanExecutor(), compileExecutor, renderExecutor], workerId: 'w1', resolveSourceAsset: async () => asset, resolveSourceFile: async () => ({ path: srcPath, cleanup: async () => {} }) } as any)
+  for (let n = 0; n < 4; n++) await runOnce({ store, blobs, executors: [analyzeExecutor, createPlanExecutor(), compileExecutor, renderExecutor], workerId: 'w1', resolveSourceAsset: async () => asset, resolveSourceFile: async () => ({ path: srcPath, cleanup: async () => {} }) } as any)
   for (const [k, v] of blobs.binaries) if (k.endsWith('.mp4')) blobs.binaries.set(k, v.subarray(0, Math.floor(v.length / 2)))
   const out = await runOnce({ store, blobs, executors: [autoQcExecutor], workerId: 'w1', resolveSourceAsset: async () => asset, resolveSourceFile: async () => ({ path: srcPath, cleanup: async () => {} }) })
   assert.equal(out.ran && out.outcome, 'waiting')
@@ -144,7 +137,6 @@ test('job_create without a plan starts at ANALYZE; job_get exposes a phone-sized
   const call = async (method: string, o: any) => { let status = 0, json: any; await http({ method, headers: { 'x-sync-key': KEY }, query: o.query || {}, body: o.body } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } } as any); return { status, json } }
   const c = await call('POST', { body: { taskType: 'job_create', profile: 'source_shorts', sourceAssetId: asset.sourceAssetId, idempotencyKey: 'idem-http-p1-1' } })
   assert.equal(c.status, 201); assert.equal(c.json.job.stage, 'ANALYZE')
-  // the API workspace is sha256(key): drive the same job through the worker
   const j0 = (await store.getJob(c.json.job.id))!
   await drive(j0.id)
   const g = await call('GET', { query: { taskType: 'job_get', id: j0.id } })
@@ -159,13 +151,14 @@ test('job_create without a plan starts at ANALYZE; job_get exposes a phone-sized
   assert.equal(d.status, 200); assert.equal(d.json.job.stage, 'FINAL')
 })
 
-test('with a semantic story model: chronological story edit, captions grounded, technical AND content gate PASS => publishable; PACKAGE records it', async () => {
+test('with a semantic story model: grounded trend presentation + technical/content QC PASS => publishable; PACKAGE records it', async () => {
   const story = {
     storyType: 'single_event', confidence: 0.9, causalStart: 0, setupRanges: [{ start: 0, end: 3 }], escalationRanges: [{ start: 3, end: 6 }],
     payoffRange: { start: 9, end: 11.5 }, recommendedEnd: 11.8, excludeRanges: [{ start: 6, end: 9, reason: 'repeat' }],
     hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.1, hookReason: '',
     minimalCaptions: [
       { kind: 'hook', start: 0, end: 1.8, text: '무슨 일이 생길까?', basis: 'the visible setup begins' },
+      { kind: 'context', start: 3.0, end: 4.2, text: '장면이 바뀌기 시작', basis: 'visible colour and motion change' },
       { kind: 'payoff', start: 9.5, end: 11, text: '마지막 장면', basis: 'colour bars change' }
     ], publishabilityWarnings: []
   }
