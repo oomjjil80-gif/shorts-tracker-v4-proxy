@@ -10,6 +10,7 @@ import { probe } from '../media/ffmpeg.js'
 const defaults={get,put}
 type Deps=typeof defaults
 const MAX=200*1024*1024
+const invertRanges=(silent:Array<{start:number;end:number}>,duration:number)=>{const out:Array<{start:number;end:number}>=[];let t=0;for(const z of [...silent].sort((a,b)=>a.start-b.start)){if(z.start>t+0.1)out.push({start:Number(t.toFixed(3)),end:Number(z.start.toFixed(3))});t=Math.max(t,z.end)}if(duration>t+0.1)out.push({start:Number(t.toFixed(3)),end:Number(duration.toFixed(3))});return out}
 
 async function readAll(asset:ReferenceAsset,deps:Deps){
  const r=await deps.get(asset.blobPath,{access:'private',useCache:false});if(!r||r.statusCode!==200||!r.stream)throw new Error('reference blob not found')
@@ -31,7 +32,7 @@ export async function analyzeRegisteredReference(referenceAssetId:string,deps:De
   let signals:ReferenceSignals
   if(asset.kind==='video'){
    const s=await analyzeSourceFile(tmp,{sourceAssetId:asset.referenceAssetId,sha256:asset.sha256})
-   signals={duration:s.media.duration,width:s.media.width,height:s.media.height,hasAudio:s.media.hasAudio,sceneRanges:s.scenes,highlights:s.highlights,silentRanges:s.ranges.silent}
+   signals={duration:s.media.duration,width:s.media.width,height:s.media.height,hasAudio:s.media.hasAudio,sceneRanges:s.scenes,highlights:s.highlights,silentRanges:s.ranges.silent,narrationRanges:s.media.hasAudio?invertRanges(s.ranges.silent,s.media.duration):[]}
   }else{
    const m=await probe(tmp)
    if(!m.hasVideo||!m.width||!m.height)throw new Error('still reference could not be decoded')
