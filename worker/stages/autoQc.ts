@@ -131,6 +131,14 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),width:outputInfo.width,height:outputInfo.height}
             }
           }
+          for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':visual.style')||x.id==='visual.style')){
+            const target=x.value as any
+            if(typeof target?.aspectRatio==='number'&&typeof target?.orientation==='string'){
+              const actualRatio=Number((outputInfo.width/outputInfo.height).toFixed(4)),targetRatio=Number(target.aspectRatio),delta=Math.abs(actualRatio-targetRatio),tolerance=0.03
+              const actualOrientation=outputInfo.width===outputInfo.height?'square':outputInfo.height>outputInfo.width?'portrait':'landscape'
+              measurements[x.id]={measured:true,pass:actualOrientation===target.orientation&&delta<=tolerance,target:{orientation:target.orientation,aspectRatio:targetRatio},actual:{orientation:actualOrientation,aspectRatio:actualRatio},tolerance:{aspectRatio:tolerance},method:'ffmpeg-probe-output-geometric-style',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),width:outputInfo.width,height:outputInfo.height}}
+            }
+          }
           const renderPath=join(work,`${v.variantId}.mp4`)
           try{
             const scores=await sceneScores(renderPath),duration=Number(outputInfo.duration||v.duration||0),cuts:number[]=[]
