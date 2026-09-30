@@ -6,7 +6,7 @@ import { evaluateGate, type CheckResult } from '../../lib/qc/gate.js'
 import type { SourceAnalysis } from '../../lib/media/analyze.js'
 import { QC_THRESHOLDS, runRenderQc } from '../../lib/media/qc.js'
 import { foregroundRect, measureOuterCanvasFill, regionSignature, type SourceFraming } from '../../lib/media/framing.js'
-import { extractJpeg, signatureDistance, probe, sceneScores } from '../../lib/media/ffmpeg.js'
+import { extractJpeg, signatureDistance, probe, sceneScores, detectSilence } from '../../lib/media/ffmpeg.js'
 import { extractRenderPlan } from '../../lib/media/render.js'
 import { evaluateContentGate } from '../../lib/media/contentGate.js'
 import type { SemanticResult, StoryAnalysis } from '../../lib/media/story.js'
@@ -144,6 +144,20 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               }
             }
           }catch{/* measurement absence remains UNKNOWN, never PASS */}
+          for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':sound.structure')||x.id==='sound.structure')){
+            const target=x.value as any
+            if(typeof target?.hasAudio==='boolean'){
+              const actualHasAudio=!!outputInfo.hasAudio
+              let silentRanges:Array<{start:number;end:number}>=[]
+              try{if(actualHasAudio)silentRanges=await detectSilence(renderPath)}catch{/* stays empty; audio presence remains independently probed */}
+              const targetSilent=Array.isArray(target.silentRanges)?target.silentRanges:[]
+              const targetSilentRatio=targetSilent.reduce((n:number,z:any)=>n+Math.max(0,Number(z.end)-Number(z.start)),0)/Math.max(0.001,Number((x.evidence?.[0] as any)?.end||outputInfo.duration||1))
+              const actualSilentRatio=silentRanges.reduce((n,z)=>n+Math.max(0,z.end-z.start),0)/Math.max(0.001,Number(outputInfo.duration||1))
+              const audioMatch=target.hasAudio===actualHasAudio
+              const silenceMatch=!target.hasAudio||Math.abs(targetSilentRatio-actualSilentRatio)<=0.25
+              measurements[x.id]={measured:true,pass:audioMatch&&silenceMatch,target:{hasAudio:target.hasAudio,silentRatio:Number(targetSilentRatio.toFixed(3))},actual:{hasAudio:actualHasAudio,silentRatio:Number(actualSilentRatio.toFixed(3))},tolerance:{silentRatio:0.25},method:'ffmpeg-probe+silencedetect-output-sound',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),duration:outputInfo.duration,silentRanges}}
+            }
+          }
         }
         const referenceGate = jobReferenceProfile ? evaluateReferenceConformance(jobReferenceProfile, { planReference: (planRun?.result as any)?.reference ?? null, measurements }) : null
         const publishable = gate.decision === 'PASS' && contentGate.decision === 'PASS' && (!referenceGate || referenceGate.decision === 'PASS')
