@@ -69,6 +69,9 @@ type Assessed = { story: any | null; errors: string[]; warnings: string[] }
 function assessStory(parsed: any, a: SourceAnalysis, model: string): Assessed {
   const v = validateStory(parsed, a, { model, promptVersion: AI_PLANNER_PROMPT_VERSION })
   if (!v.story) return { story: null, errors: v.errors, warnings: v.warnings }
+  // A valid but uncertain story must remain low-confidence; do not spend a repair call trying to coerce it into PASS.
+  if (v.story.storyType === 'unclear' || v.story.confidence < STORY_LIMITS.minConfidence) return { story: v.story, errors: [], warnings: v.warnings }
+
   const errors: string[] = []
   const openingProbe = { start: v.story.causalStart, end: Math.min(a.media.duration, v.story.causalStart + 0.5) }
   const openingForeign = v.story.excludeRanges.filter((x) => (x.reason === 'foreign_text' || x.reason === 'intro_confusion') && overlap(x, openingProbe) > 0.03)
