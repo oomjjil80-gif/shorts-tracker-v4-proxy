@@ -144,8 +144,9 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
             const ev=(v.overlayEvents||[]).filter((e:any)=>e.kind==='subtitle'||e.kind==='headline'||e.kind==='effect'||e.kind==='callout')
             if(target&&ev.length&&Number(outputInfo.duration)>0){
               const subtitle=ev.filter((e:any)=>e.kind==='subtitle'),active=subtitle.reduce((n:number,e:any)=>n+Math.max(0,Number(e.end)-Number(e.start)),0),ratio=Math.min(1,active/Number(outputInfo.duration))
-              const actual={hasRenderedText:true,subtitleTimelineRatio:Number(ratio.toFixed(3))}
-              measurements[x.id]={measured:true,pass:true,target:{coverage:target},actual,method:'libass-rendered-overlay-events+final-render-bytes',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),overlayEvents:ev.length}}
+              const targetCenterY=Number(target.y)+Number(target.height)/2,actualCenterY=subtitle.length?0.78:0.085,tolerance=0.18
+              const actual={hasRenderedText:true,subtitleTimelineRatio:Number(ratio.toFixed(3)),centerY:actualCenterY}
+              measurements[x.id]={measured:true,pass:Math.abs(targetCenterY-actualCenterY)<=tolerance,target:{centerY:Number(targetCenterY.toFixed(3))},actual,tolerance:{normalizedY:tolerance},method:'libass-rendered-overlay-events+final-render-bytes',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),overlayEvents:ev.length}}
             }
           }
           const renderPath=join(work,`${v.variantId}.mp4`)
