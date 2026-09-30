@@ -7,7 +7,7 @@ import { StageError, type StageExecutor } from '../types.js'
 import { applyReferencePlanConstraints } from '../../lib/reference/planBridge.js'
 import type { ReferenceProfile } from '../../lib/reference/contracts.js'
 
-export type PlanExecutorOptions = { openAi?: { apiKey: string; model: string; fetchImpl?: typeof fetch } | null; referenceProfile?: ReferenceProfile | null }
+export type PlanExecutorOptions = { openAi?: { apiKey: string; model: string; fetchImpl?: typeof fetch } | null; referenceProfile?: ReferenceProfile | null; resolveReferenceProfile?: (job:any, blobs:any)=>Promise<ReferenceProfile|null> }
 
 // PLAN: SourceAnalysis (+ semantic story analysis when a vision model is configured) -> 1..3 JobPlans.
 // The semantic result is stored and recorded as-is (ok / unavailable / failed / invalid / low_confidence); the planner
@@ -16,7 +16,7 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
   return {
     stage: 'PLAN',
     estimateUsd: () => (options.openAi ? 0.05 : 0),
-    inputHash: (job) => sha256(`plan|${job.id}|${job.sourceAssetId}|${options.openAi?.model ?? 'heuristic'}|${AI_PLANNER_PROMPT_VERSION}`),
+    inputHash: (job) => sha256(`plan|${job.id}|${job.sourceAssetId}|${job.referenceProfileRef ?? 'no-reference'}|${options.openAi?.model ?? 'heuristic'}|${AI_PLANNER_PROMPT_VERSION}`),
     async run({ job, blobs, previous }) {
       const prev = await previous('ANALYZE')
       if (!prev?.outputRef) throw new StageError('ANALYSIS_MISSING', 'PLAN requires a completed ANALYZE stage')
@@ -52,7 +52,8 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
       let variants
       try { variants = planVariants(analysis, semantic) }
       catch (e: any) { throw new StageError('PLAN_EMPTY', String(e?.message || e)) }
-      const referencePlan = options.referenceProfile ? applyReferencePlanConstraints(variants, options.referenceProfile.constraints) : null
+      const referenceProfile = options.resolveReferenceProfile ? await options.resolveReferenceProfile(job, blobs) : (options.referenceProfile ?? null)
+      const referencePlan = referenceProfile ? applyReferencePlanConstraints(variants, referenceProfile.constraints) : null
       const bad = variants.flatMap((v) => validateVariant(v, analysis).map((m) => `${v.id}: ${m}`))
       if (bad.length) throw new StageError('PLAN_INVALID', bad.join('; '))
       if (!variants.length) throw new StageError('PLAN_EMPTY', 'planner produced no variants')
@@ -67,7 +68,7 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
         result: {
           variants: stored, provider, model, promptVersion: options.openAi ? AI_PLANNER_PROMPT_VERSION : null,
           semantic: { status: semantic.status, reason: semantic.reason, storyRef, storySummary, warnings },
-          reference: referencePlan ? { profileVersion: options.referenceProfile!.profileVersion, applied: referencePlan.applied, unknown: referencePlan.unknown, notes: referencePlan.notes } : null,
+          reference: referencePlan ? { profileVersion: referenceProfile!.profileVersion, applied: referencePlan.applied, unknown: referencePlan.unknown, notes: referencePlan.notes } : null,
           // kept for older readers: why the model was not used
           fallback: semantic.status === 'ok' ? null : { reason: `${semantic.status}: ${semantic.reason ?? ''}`.slice(0, 300) }
         },

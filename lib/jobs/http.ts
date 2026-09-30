@@ -6,6 +6,7 @@ import { createJobStore, type JobStore } from './store.js'
 import { createVercelJobBlobStore, putAddressed, type JobBlobStore } from './blobs.js'
 import { PIPELINES } from './pipeline.js'
 import { JobError, type Job, type StageRun } from './types.js'
+import { validateReferenceProfile, stableHash, type ReferenceProfile } from '../reference/contracts.js'
 
 // HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
 // (Hobby plan allows 12 functions). CORS is applied by the router. Domain logic stays in store/gate/pipeline.
@@ -140,6 +141,8 @@ export function createJobsHttp(deps: JobsDeps) {
 
         let planRef: string | null = null
         let planHash = ''
+        let referenceProfileRef: string | null = null
+        let referenceProfileHash = ''
         if (body.plan !== undefined) {
           const plan = body.plan
           need(plan && typeof plan === 'object' && plan.schema === 'job-plan/1', 'plan.schema must be job-plan/1')
@@ -149,7 +152,15 @@ export function createJobsHttp(deps: JobsDeps) {
           const stored = await putAddressed(deps.blobs, 'plans', plan)
           planRef = stored.path; planHash = stored.sha256
         }
-        const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}` })
+        if (body.referenceProfile !== undefined) {
+          const rp = body.referenceProfile as ReferenceProfile
+          const errors = validateReferenceProfile(rp)
+          need(errors.length === 0, `referenceProfile is invalid: ${errors.join(',')}`)
+          const stored = await putAddressed(deps.blobs, 'reference-profiles', rp)
+          referenceProfileRef = stored.path
+          referenceProfileHash = stableHash(rp)
+        }
+        const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, referenceProfileRef, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}|${referenceProfileHash}` })
         return res.status(created ? 201 : 200).json({ ok: true, created, job: view(job, await store.listStageRuns(job.id)) })
       }
 

@@ -14,7 +14,7 @@ const date = (v: unknown) => (v ? new Date(v as string) : null)
 
 function mapJob(r: any): Job {
   return {
-    id: r.id, workspaceId: r.workspace_id, profile: r.profile, sourceAssetId: r.source_asset_id, status: r.status, stage: r.stage,
+    id: r.id, workspaceId: r.workspace_id, profile: r.profile, sourceAssetId: r.source_asset_id, referenceProfileRef: r.reference_profile_ref ?? null, status: r.status, stage: r.stage,
     waitReason: r.wait_reason ?? null, idempotencyKey: r.idempotency_key, requestHash: r.request_hash,
     leaseOwner: r.lease_owner ?? null, leaseUntil: date(r.lease_until), heartbeatAt: date(r.heartbeat_at), runAfter: date(r.run_after),
     budgetUsd: num(r.budget_usd), spentUsd: num(r.spent_usd), planRev: Number(r.plan_rev), planRef: r.plan_ref ?? null,
@@ -69,7 +69,7 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
   return {
     async createJob(input: {
       workspaceId: string; profile: string; sourceAssetId: string; idempotencyKey: string
-      budgetUsd?: number; planRef?: string | null; requestFingerprint?: string
+      budgetUsd?: number; planRef?: string | null; referenceProfileRef?: string | null; requestFingerprint?: string
     }): Promise<{ job: Job; created: boolean }> {
       const now = clock()
       const hasPlan = !!input.planRef
@@ -77,10 +77,10 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       const requestHash = createHash('sha256').update(input.requestFingerprint ?? `${input.profile}|${input.sourceAssetId}`).digest('hex')
       const id = `job_${randomUUID()}`
       const ins = await db.query(
-        `INSERT INTO production_jobs (id, workspace_id, profile, source_asset_id, status, stage, idempotency_key, request_hash, budget_usd, plan_rev, plan_ref, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,'QUEUED',$5,$6,$7,$8,$9,$10,$11,$11)
+        `INSERT INTO production_jobs (id, workspace_id, profile, source_asset_id, reference_profile_ref, status, stage, idempotency_key, request_hash, budget_usd, plan_rev, plan_ref, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,'QUEUED',$6,$7,$8,$9,$10,$11,$12,$12)
          ON CONFLICT (workspace_id, idempotency_key) DO NOTHING RETURNING *`,
-        [id, input.workspaceId, input.profile, input.sourceAssetId, stage, input.idempotencyKey, requestHash, input.budgetUsd ?? 0, hasPlan ? 1 : 0, input.planRef ?? null, iso(now)]
+        [id, input.workspaceId, input.profile, input.sourceAssetId, input.referenceProfileRef ?? null, stage, input.idempotencyKey, requestHash, input.budgetUsd ?? 0, hasPlan ? 1 : 0, input.planRef ?? null, iso(now)]
       )
       if (ins.rows[0]) return { job: mapJob(ins.rows[0]), created: true }
       const ex = await db.query('SELECT * FROM production_jobs WHERE workspace_id = $1 AND idempotency_key = $2', [input.workspaceId, input.idempotencyKey])

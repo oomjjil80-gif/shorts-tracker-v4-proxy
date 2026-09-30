@@ -14,7 +14,6 @@ import { compileExecutor } from './stages/compile.js'
 import { renderExecutor } from './stages/render.js'
 import { createAutoQcExecutor } from './stages/autoQc.js'
 import { decisionExecutor, finalExecutor, packageExecutor } from './stages/finish.js'
-import { get } from '@vercel/blob'
 import type { ReferenceProfile } from '../lib/reference/contracts.js'
 
 const workerId = process.env.WORKER_ID || `${hostname()}-${process.pid}`
@@ -23,11 +22,10 @@ const pollMs = Number(process.env.WORKER_POLL_MS || 2000)
 const openAi = process.env.WORKER_AI_PLANNER === 'on' && process.env.OPENAI_API_KEY
   ? { apiKey: process.env.OPENAI_API_KEY, model: process.env.OPENAI_PLAN_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini' }
   : null
-async function configuredReferenceProfile(): Promise<ReferenceProfile | null> {
-  const path=String(process.env.WORKER_REFERENCE_PROFILE_PATH||'').trim(); if(!path) return null
-  const r:any=await get(path,{access:'private',useCache:false}); if(!r||r.statusCode!==200||!r.stream) throw new Error('configured reference profile not found')
-  const p=JSON.parse(await new Response(r.stream).text()) as ReferenceProfile
-  if(p.schema!=='reference-profile/1'||p.profileVersion!==1) throw new Error('configured reference profile is invalid')
+async function jobReferenceProfile(job:any, blobs:any): Promise<ReferenceProfile|null> {
+  const path=String(job.referenceProfileRef||'').trim(); if(!path) return null
+  const p=await blobs.getJson(path) as ReferenceProfile | null
+  if(!p||p.schema!=='reference-profile/1'||p.profileVersion!==1) throw new Error('job reference profile is invalid or missing')
   return p
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -35,8 +33,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 async function main() {
   const db = await createPgDbFromEnv()
   const store = createJobStore(db)
-  const referenceProfile = await configuredReferenceProfile()
-  const executors = [analyzeExecutor, createPlanExecutor({ openAi, referenceProfile }), compileExecutor, renderExecutor, createAutoQcExecutor(referenceProfile), decisionExecutor, finalExecutor, packageExecutor]
+  const executors = [analyzeExecutor, createPlanExecutor({ openAi, resolveReferenceProfile: jobReferenceProfile }), compileExecutor, renderExecutor, createAutoQcExecutor(null, jobReferenceProfile), decisionExecutor, finalExecutor, packageExecutor]
   const blobs = createVercelJobBlobStore()
   let stopping = false
   for (const sig of ['SIGTERM', 'SIGINT'] as const) process.on(sig, () => { stopping = true })
