@@ -158,9 +158,10 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               const measured=await analyzeSourceFile(renderPath,{sourceAssetId:`render:${v.renderHash}`,sha256:sha256(bytes)})
               for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':retention.peak')||x.id==='retention.peak')){
                 const target=x.value as any,targetPeak=target?.firstPeak
-                if(targetPeak&&Number.isFinite(Number(target?.duration))&&Number(target.duration)>0&&Number.isFinite(Number(targetPeak.start))&&Number.isFinite(Number(targetPeak.end))&&measured.highlights.length){
-                  const targetCenter=(Number(targetPeak.start)+Number(targetPeak.end))/2,actualPeak=measured.highlights[0],actualCenter=(actualPeak.start+actualPeak.end)/2
-                  const targetDuration=Number(target?.duration),targetNorm=targetCenter/Math.max(0.001,targetDuration),actualNorm=actualCenter/Math.max(0.001,duration),tolerance=0.2
+                const aggregateNorm=Number(target?.firstPeakNormalized)
+                if(((targetPeak&&Number.isFinite(Number(target?.duration))&&Number(target.duration)>0&&Number.isFinite(Number(targetPeak.start))&&Number.isFinite(Number(targetPeak.end)))||Number.isFinite(aggregateNorm))&&measured.highlights.length){
+                  const targetCenter=targetPeak?(Number(targetPeak.start)+Number(targetPeak.end))/2:0,actualPeak=measured.highlights[0],actualCenter=(actualPeak.start+actualPeak.end)/2
+                  const targetDuration=Number(target?.duration),targetNorm=Number.isFinite(aggregateNorm)?aggregateNorm:targetCenter/Math.max(0.001,targetDuration),actualNorm=actualCenter/Math.max(0.001,duration),tolerance=0.2
                   measurements[x.id]={measured:true,pass:Math.abs(targetNorm-actualNorm)<=tolerance,target:{firstPeakNormalized:Number(targetNorm.toFixed(3))},actual:{firstPeakNormalized:Number(actualNorm.toFixed(3)),firstPeak:actualPeak},tolerance:{normalizedTimeline:tolerance},method:'ffmpeg-signals-output-retention-peak',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),duration}}
                 }
               }
