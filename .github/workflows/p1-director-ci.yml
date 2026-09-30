@@ -1,7 +1,11 @@
 name: P1 Director CI
 on:
-  push:
-    branches: [fix/p1-director-density-gate]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'lib/media/**'
+      - 'tools/p1-presentation.test.ts'
+      - '.github/workflows/p1-director-ci.yml'
   workflow_dispatch:
 jobs:
   test:
