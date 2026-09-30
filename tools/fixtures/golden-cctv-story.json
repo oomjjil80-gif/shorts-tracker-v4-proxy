@@ -23,9 +23,11 @@
     "hookReason": "short single-event causal clip; a preview of the ending confuses",
     "minimalCaptions": [
       { "kind": "hook", "start": 0.5, "end": 2.5, "text": "왜 바닥을 기어갈까?", "basis": "security camera view shows an adult lowering toward the floor" },
+      { "kind": "context", "start": 3.0, "end": 3.7, "text": "바닥으로 몸을 낮춘다", "basis": "the adult visibly lowers fully toward the floor" },
       { "kind": "context", "start": 5.3, "end": 7.0, "text": "갑자기 기어가기 시작", "basis": "the adult is visibly crawling across the floor" },
       { "kind": "effect", "start": 8.0, "end": 8.8, "text": "슥", "basis": "the adult shifts forward across the floor" },
       { "kind": "context", "start": 12.4, "end": 14.2, "text": "그걸 본 아이가", "basis": "the child watches the adult and starts reacting" },
+      { "kind": "context", "start": 18.5, "end": 19.4, "text": "끝까지 따라온다", "basis": "the child visibly continues following near the end of the story" },
       { "kind": "payoff", "start": 16.0, "end": 18.5, "text": "결국 아이도 따라간다", "basis": "the child crawls after the adult across the floor" }
     ],
     "publishabilityWarnings": ["tiny persistent CCTV metadata may remain", "burned-in Chinese product text appears after the story ends"]
