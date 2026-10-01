@@ -1,70 +1,29 @@
-name: P1.5 production 3-reference E2E
+name: P1.5 reference QC diagnostic
 
 on:
   push:
     branches: [p15-final-prod-e2e]
     paths: ['.github/workflows/p15-production-3ref-e2e.yml']
 
-# final production proof after deployed semantic confidence fix 71d915
-
 jobs:
-  e2e:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
-      - name: Exercise real Production reference pipeline
+      - name: Read existing Production Reference QC evidence only
         shell: bash
         run: |
           set -euo pipefail
           BASE='https://shorts-tracker-v4-proxy.vercel.app'
           KEY='p15-final-prod-e2e-after-confidence-fix-71d915'
-          SRC='src_8209365874293_9772de17cf634ad9bd28513e85125918'
-
-          curl -fsS "$BASE/api/story?taskType=source_download&sourceAssetId=$SRC" -o /tmp/r0.mp4
-          curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$SRC&second=2" -o /tmp/r1.jpg
-          curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$SRC&second=12" -o /tmp/r2.jpg
-
-          ingest(){
-            local f="$1" kind="$2"
-            B64=$(base64 -w0 "$f")
-            node -e 'const fs=require("fs");fs.writeFileSync("/tmp/body.json",JSON.stringify({taskType:"reference_ingest",kind:process.argv[1],contentType:"image/jpeg",dataBase64:process.env.B64}))' "$kind"
-            curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/body.json "$BASE/api/story"
-          }
-          export B64
-          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/b1.json",JSON.stringify({taskType:"reference_ingest",kind:"video",contentType:"video/mp4",dataBase64:fs.readFileSync("/tmp/r0.mp4").toString("base64")}))'
-          R1=$(curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b1.json "$BASE/api/story")
-          B64=$(base64 -w0 /tmp/r1.jpg); R2=$(node -e 'const fs=require("fs");fs.writeFileSync("/tmp/b2.json",JSON.stringify({taskType:"reference_ingest",kind:"screenshot",contentType:"image/jpeg",dataBase64:process.env.B64}))' && curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b2.json "$BASE/api/story")
-          B64=$(base64 -w0 /tmp/r2.jpg); R3=$(node -e 'const fs=require("fs");fs.writeFileSync("/tmp/b3.json",JSON.stringify({taskType:"reference_ingest",kind:"image",contentType:"image/jpeg",dataBase64:process.env.B64}))' && curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b3.json "$BASE/api/story")
-          echo "$R1" > /tmp/r1.json; echo "$R2" > /tmp/r2.json; echo "$R3" > /tmp/r3.json
-          IDS=$(node -e 'const fs=require("fs"); const a=["/tmp/r1.json","/tmp/r2.json","/tmp/r3.json"].map(p=>JSON.parse(fs.readFileSync(p))); for(const x of a) if(!x.ok||!x.referenceAsset?.referenceAssetId||!x.analysisHash) throw Error("bad ingest"); console.log(JSON.stringify(a.map(x=>x.referenceAsset.referenceAssetId)))')
-          echo "REFERENCE_INGEST_3_OK"
-
-          export SRC IDS
-          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/job.json",JSON.stringify({taskType:"job_create",profile:"source_shorts",sourceAssetId:process.env.SRC,idempotencyKey:"p15-prod-e2e-20261001-final-video-proof",budgetUsd:5,referenceAssetIds:JSON.parse(process.env.IDS)}))'
-          JOB=$(curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/job.json "$BASE/api/story")
-          echo "$JOB" > /tmp/jobresp.json
-          JID=$(node -e 'const d=require("/tmp/jobresp.json");if(!d.ok||!d.job?.id)throw Error("job create failed");process.stdout.write(d.job.id)')
-          echo "JOB_CREATED=$JID"
-
-          for i in $(seq 1 60); do
-            curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_get&id=$JID" > /tmp/state.json
-            ST=$(node -e 'const d=require("/tmp/state.json");process.stdout.write(d.job.status)')
-            SG=$(node -e 'const d=require("/tmp/state.json");process.stdout.write(d.job.stage)')
-            echo "poll $i $ST $SG"
-            if [ "$ST" = "WAITING_USER" ]; then
-              MH=$(node -e 'const d=require("/tmp/state.json");const v=d.job.variants.find(x=>x.publishable&&x.manifestHash);if(v)process.stdout.write(v.manifestHash)')
-              if [ -z "$MH" ]; then echo 'WAITING_USER_WITHOUT_PUBLISHABLE_VARIANT'; cat /tmp/state.json; exit 1; fi
-              if [ -n "$MH" ]; then
-                printf '{"taskType":"job_decision","jobId":"%s","manifestHash":"%s"}' "$JID" "$MH" >/tmp/decision.json
-                curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/decision.json "$BASE/api/story" >/tmp/decisionresp.json
-              fi
-            fi
-            if [ "$ST" = "COMPLETE" ]; then
-              node -e 'const d=require("/tmp/state.json").job; const v=d.variants.find(x=>x.approved)||d.variants.find(x=>x.publishable); if(!v)throw Error("no publishable/approved variant"); if(v.qc!=="PASS")throw Error("Technical QC not PASS: "+v.qc); if(v.contentQc!=="PASS")throw Error("Content QC not PASS: "+v.contentQc); if(v.referenceQc!=="PASS")throw Error("Reference Conformance not PASS: "+v.referenceQc); if(!v.publishable)throw Error("variant not publishable"); if(!d.final?.publishable||!d.final?.packageRef||!d.final?.renderHash)throw Error("FINAL/PACKAGE evidence incomplete"); const done=(d.runs||[]).filter(x=>x.status==="SUCCEEDED").map(x=>x.stage); for(const s of ["FINAL","PACKAGE"])if(!done.includes(s))throw Error(s+" not SUCCEEDED"); console.log("P15_3REF_PRODUCTION_E2E_PASS",d.id,d.final.renderHash,"TECH",v.qc,"CONTENT",v.contentQc,"REFERENCE",v.referenceQc,"PACKAGE",d.final.packageRef)'
-              exit 0
-            fi
-            if [ "$ST" = "FAILED" ] || [ "$ST" = "CANCELLED" ]; then cat /tmp/state.json; exit 1; fi
-            sleep 10
-          done
-          cat /tmp/state.json
-          exit 1
+          JID='job_29e80b39-ce99-4c5c-916e-16149a444f2f'
+          curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_get&id=$JID" >/tmp/state.json
+          node - <<'NODE'
+          const d=require('/tmp/state.json').job
+          const v=d.variants[0]
+          console.log(JSON.stringify({
+            job:d.id,technical:v.qc,content:v.contentQc,reference:v.referenceQc,
+            referenceReasons:v.referenceQcReasons,referenceChecks:v.referenceQcChecks,
+            publishable:v.publishable
+          },null,2))
+          if(!Array.isArray(v.referenceQcChecks)||!v.referenceQcChecks.length) throw Error('reference evidence still unavailable')
+          NODE
