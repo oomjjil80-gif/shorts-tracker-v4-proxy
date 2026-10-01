@@ -1,0 +1,12 @@
+name: P1.5 QC evidence 2
+on:
+  push:
+    branches: [p15-qc-evidence-2]
+    paths: ['.github/workflows/p15-qc-evidence-2.yml']
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -fsS -H 'X-Sync-Key: p15-final-prod-e2e-v2-0aa2154' 'https://shorts-tracker-v4-proxy.vercel.app/api/story?taskType=job_get&id=job_12f52575-79f2-456a-95f2-65f9816ae49a' > state.json
+          node -e 'const d=require("./state.json").job; console.log(JSON.stringify(d.variants,null,2))'
