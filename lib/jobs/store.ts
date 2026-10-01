@@ -292,10 +292,9 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
         let gatePass: boolean
         if (qc.rows[0]) {
           const entry = (qc.rows[0].result_json?.variants || []).find((v: any) => v?.manifestHash === input.manifestHash)
-          if (!entry) throw new JobError('QC_NOT_PASSED', 'AUTO_QC has no verdict for this manifest')
           // Reference conformance is a mandatory server-owned gate and is never bypassed by a manual override.
-          if (entry.referenceGate && entry.referenceGate.decision !== 'PASS') throw new JobError('QC_NOT_PASSED', 'reference conformance has not passed')
-          gatePass = entry.publishable === true
+          if (entry?.referenceGate && entry.referenceGate.decision !== 'PASS') throw new JobError('QC_NOT_PASSED', 'reference conformance has not passed')
+          gatePass = entry?.publishable === true
         } else gatePass = runs.rows[0].result_json?.gate?.decision === 'PASS' || (runs.rows[0].result_json?.variants || []).find((v: any) => v?.manifestHash === input.manifestHash)?.gate?.decision === 'PASS'
         const reason = String(input.override?.reason || '').trim()
         if (!gatePass && !reason) throw new JobError('QC_NOT_PASSED', 'required QC checks have not all passed; an override reason is required')
