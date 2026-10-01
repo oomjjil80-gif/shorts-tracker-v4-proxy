@@ -1,4 +1,4 @@
-name: P1.5 rendered-scene diagnostic
+name: P1.5 production 3-reference final E2E
 
 on:
   push:
@@ -6,19 +6,79 @@ on:
     paths: ['.github/workflows/p15-production-3ref-e2e.yml']
 
 jobs:
-  diagnose:
+  e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - name: Measure existing Production render scene boundaries only
+      - name: Exercise final Production pipeline
         shell: bash
         run: |
           set -euo pipefail
           BASE='https://shorts-tracker-v4-proxy.vercel.app'
           KEY='p15-final-prod-e2e-after-confidence-fix-71d915'
-          JID='job_29e80b39-ce99-4c5c-916e-16149a444f2f'
-          curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_preview&id=$JID" >/tmp/preview.json
-          URL=$(node -e 'const d=require("/tmp/preview.json");const p=d.previews[0];if(!p?.url)throw Error("no preview");process.stdout.write(p.url)')
-          curl -fsSL "$URL" -o /tmp/render.mp4
-          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null
-          ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/render.mp4
-          ffmpeg -hide_banner -i /tmp/render.mp4 -vf "select='gt(scene,0.3)',showinfo" -an -f null - 2>&1 | grep 'pts_time:' || true
+          SRC='src_8209365874293_9772de17cf634ad9bd28513e85125918'
+
+          curl -fsS "$BASE/api/story?taskType=source_download&sourceAssetId=$SRC" -o /tmp/r0.mp4
+          curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$SRC&second=2" -o /tmp/r1.jpg
+          curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$SRC&second=12" -o /tmp/r2.jpg
+
+          node - <<'NODE'
+          const fs=require('fs')
+          const rows=[
+            ['/tmp/r0.mp4','video','video/mp4','/tmp/b1.json'],
+            ['/tmp/r1.jpg','screenshot','image/jpeg','/tmp/b2.json'],
+            ['/tmp/r2.jpg','image','image/jpeg','/tmp/b3.json']
+          ]
+          for(const [file,kind,contentType,out] of rows) fs.writeFileSync(out,JSON.stringify({taskType:'reference_ingest',kind,contentType,dataBase64:fs.readFileSync(file).toString('base64')}))
+          NODE
+          curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b1.json "$BASE/api/story" >/tmp/r1.json
+          curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b2.json "$BASE/api/story" >/tmp/r2.json
+          curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b3.json "$BASE/api/story" >/tmp/r3.json
+          IDS=$(node - <<'NODE'
+          const fs=require('fs'),a=['/tmp/r1.json','/tmp/r2.json','/tmp/r3.json'].map(p=>JSON.parse(fs.readFileSync(p)))
+          for(const x of a) if(!x.ok||!x.referenceAsset?.referenceAssetId||!x.analysisHash) throw Error('bad ingest')
+          const ids=a.map(x=>x.referenceAsset.referenceAssetId)
+          if(new Set(ids).size!==3) throw Error('references are not distinct')
+          process.stdout.write(JSON.stringify(ids))
+          NODE
+          )
+          echo "REFERENCE_INGEST_3_OK $IDS"
+
+          export SRC IDS
+          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/job.json",JSON.stringify({taskType:"job_create",profile:"source_shorts",sourceAssetId:process.env.SRC,idempotencyKey:"p15-prod-e2e-20261002-closure-v3",budgetUsd:5,referenceAssetIds:JSON.parse(process.env.IDS)}))'
+          curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/job.json "$BASE/api/story" >/tmp/jobresp.json
+          JID=$(node -e 'const d=require("/tmp/jobresp.json");if(!d.ok||!d.job?.id)throw Error("job create failed");process.stdout.write(d.job.id)')
+          echo "JOB_CREATED=$JID"
+
+          for i in $(seq 1 90); do
+            curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_get&id=$JID" >/tmp/state.json
+            ST=$(node -e 'const d=require("/tmp/state.json");process.stdout.write(d.job.status)')
+            SG=$(node -e 'const d=require("/tmp/state.json");process.stdout.write(d.job.stage)')
+            echo "poll $i $ST $SG"
+            if [ "$ST" = "WAITING_USER" ]; then
+              MH=$(node -e 'const d=require("/tmp/state.json");const v=d.job.variants.find(x=>x.publishable&&x.manifestHash);if(v)process.stdout.write(v.manifestHash)')
+              if [ -z "$MH" ]; then echo 'WAITING_USER_WITHOUT_PUBLISHABLE_VARIANT'; cat /tmp/state.json; exit 1; fi
+              printf '{"taskType":"job_decision","jobId":"%s","manifestHash":"%s"}' "$JID" "$MH" >/tmp/decision.json
+              curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/decision.json "$BASE/api/story" >/tmp/decisionresp.json
+            fi
+            if [ "$ST" = "COMPLETE" ]; then
+              node - <<'NODE'
+              const d=require('/tmp/state.json').job
+              const v=d.variants.find(x=>x.approved)||d.variants.find(x=>x.publishable)
+              if(!v)throw Error('no publishable/approved variant')
+              if(v.qc!=='PASS')throw Error('Technical QC not PASS: '+v.qc)
+              if(v.contentQc!=='PASS')throw Error('Content QC not PASS: '+v.contentQc)
+              if(v.referenceQc!=='PASS')throw Error('Reference Conformance not PASS: '+v.referenceQc+' '+JSON.stringify(v.referenceQcReasons))
+              if(!v.publishable)throw Error('variant not publishable')
+              if(!d.final?.publishable||!d.final?.packageRef||!d.final?.renderHash)throw Error('FINAL/PACKAGE evidence incomplete')
+              const done=(d.runs||[]).filter(x=>x.status==='SUCCEEDED').map(x=>x.stage)
+              for(const s of ['FINAL','PACKAGE'])if(!done.includes(s))throw Error(s+' not SUCCEEDED')
+              console.log('P15_3REF_PRODUCTION_E2E_PASS',d.id,d.final.renderHash,'TECH',v.qc,'CONTENT',v.contentQc,'REFERENCE',v.referenceQc,'PACKAGE',d.final.packageRef)
+              NODE
+              exit 0
+            fi
+            if [ "$ST" = "FAILED" ] || [ "$ST" = "CANCELLED" ]; then cat /tmp/state.json; exit 1; fi
+            sleep 10
+          done
+          cat /tmp/state.json
+          exit 1
