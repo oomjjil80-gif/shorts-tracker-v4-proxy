@@ -58,6 +58,7 @@ function view(job: Job, runs: StageRun[]) {
     id: v.variantId, label: v.label, manifestHash: v.manifestHash, durationSec: v.duration ?? v.totalDuration ?? null,
     rendered: rr.some((x) => x.variantId === v.variantId), qc: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.gate?.decision ?? null) : null,
     qcReasons: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.gate?.reasons ?? []) : [],
+    qcChecks: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.gate?.checks ?? []) : [],
     contentQc: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.contentGate?.decision ?? null) : null,
     contentQcReasons: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.contentGate?.reasons ?? []) : [],
     referenceQc: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.referenceGate?.decision ?? null) : null,
