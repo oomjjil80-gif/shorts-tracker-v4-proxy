@@ -105,6 +105,7 @@ export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProf
   const constraints:ReferenceFeature[]=[]
   for(const f of raw.filter(x=>!aggregateIds.has(rawFeatureId(x.id))))constraints.push(f)
   for(const rawId of aggregateIds){
+    if(['p','ret','edit'].includes(rawId)&&raw.some(x=>['story.opening','retention.peak','editing.cadence'].includes(rawFeatureId(x.id))))continue
     const featureId=rawId==='p'?'story.opening':rawId==='ret'?'retention.peak':rawId==='edit'?'editing.cadence':rawId
     const aliases=featureId==='story.opening'?['story.opening','p']:featureId==='retention.peak'?['retention.peak','ret']:featureId==='editing.cadence'?['editing.cadence','edit']:[featureId];const xs=raw.filter(x=>aliases.includes(rawFeatureId(x.id))||aliases.includes(x.id));if(!xs.length)continue
     const failed=xs.filter(x=>String((x.value as any)?.status||'measured')!=='measured')
