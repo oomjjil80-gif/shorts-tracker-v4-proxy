@@ -60,6 +60,8 @@ function view(job: Job, runs: StageRun[]) {
     qcReasons: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.gate?.reasons ?? []) : [],
     contentQc: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.contentGate?.decision ?? null) : null,
     contentQcReasons: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.contentGate?.reasons ?? []) : [],
+    referenceQc: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.referenceGate?.decision ?? null) : null,
+    referenceQcReasons: rq.length ? (rq.find((x) => x.variantId === v.variantId)?.referenceGate?.reasons ?? []) : [],
     publishable: rq.length ? rq.find((x) => x.variantId === v.variantId)?.publishable === true : false,
     recommended: v.variantId === recommended, approved: !!job.approvedManifestHash && v.manifestHash === job.approvedManifestHash
   }))
@@ -119,7 +121,7 @@ export function createJobsHttp(deps: JobsDeps) {
           const signed = await deps.blobs.presign?.(v.renderRef)
           const sheet = typeof v.posterRef === 'string' && v.posterRef.startsWith('renders/') ? await deps.blobs.presign?.(v.posterRef) : null
           if (!signed) continue
-          previews.push({ variantId: v.variantId, label: v.label, durationSec: v.duration ?? null, qc: v.gate?.decision ?? null, qcReasons: v.gate?.reasons ?? [], contentQc: v.contentGate?.decision ?? null, contentQcReasons: v.contentGate?.reasons ?? [], publishable: v.publishable === true, recommended: v.variantId === recommended, approved: !!job.approvedManifestHash && v.manifestHash === job.approvedManifestHash, url: signed.url, validUntil: signed.validUntil, posterUrl: sheet?.url ?? null })
+          previews.push({ variantId: v.variantId, label: v.label, durationSec: v.duration ?? null, qc: v.gate?.decision ?? null, qcReasons: v.gate?.reasons ?? [], contentQc: v.contentGate?.decision ?? null, contentQcReasons: v.contentGate?.reasons ?? [], referenceQc: v.referenceGate?.decision ?? null, referenceQcReasons: v.referenceGate?.reasons ?? [], publishable: v.publishable === true, recommended: v.variantId === recommended, approved: !!job.approvedManifestHash && v.manifestHash === job.approvedManifestHash, url: signed.url, validUntil: signed.validUntil, posterUrl: sheet?.url ?? null })
         }
         return res.status(200).json({ ok: true, jobId: job.id, status: job.status, stage: job.stage, previews })
       }
