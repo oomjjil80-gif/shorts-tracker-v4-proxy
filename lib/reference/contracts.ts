@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 export const REFERENCE_SCHEMA_VERSION = 1 as const
-export const REFERENCE_ANALYZER_VERSION = 'reference-analyzer/2' as const
+export const REFERENCE_ANALYZER_VERSION = 'reference-analyzer/3' as const
 
 export type ReferenceKind = 'video' | 'image' | 'screenshot'
 export type ReferenceUse = 'PLAN' | 'RENDER' | 'QC'
