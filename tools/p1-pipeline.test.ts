@@ -100,7 +100,7 @@ test('DECISION -> FINAL -> PACKAGE: the chosen render is promoted as the same bl
   const qc = (await store.getLatestSucceeded(job.id, 'AUTO_QC'))!.result as any
   const chosen = qc.variants[qc.variants.length - 1]
   const rendersBefore = blobs.binaries.size
-  const decided = await store.recordDecision({ jobId: job.id, workspaceId: 'ws', manifestHash: chosen.manifestHash })
+  const decided = await store.recordDecision({ jobId: job.id, workspaceId: 'ws', manifestHash: chosen.manifestHash, override: { reason: 'test explicitly accepts content-blocked heuristic output' } })
   assert.deepEqual([decided.status, decided.stage, decided.approvedManifestHash], ['QUEUED', 'FINAL', chosen.manifestHash])
   const trail = await drive(job.id)
   assert.deepEqual(trail, ['FINAL:completed', 'PACKAGE:completed'])
@@ -147,7 +147,7 @@ test('job_create without a plan starts at ANALYZE; job_get exposes a phone-sized
   assert.equal(p.status, 200)
   assert.ok(p.json.previews.length >= 1 && p.json.previews.every((x: any) => x.url.includes('renders/')))
   const pick = g.json.job.variants[0]
-  const d = await call('POST', { body: { taskType: 'job_decision', jobId: j0.id, manifestHash: pick.manifestHash } })
+  const d = await call('POST', { body: { taskType: 'job_decision', jobId: j0.id, manifestHash: pick.manifestHash, override: { reason: 'test explicitly accepts content-blocked heuristic output' } } })
   assert.equal(d.status, 200); assert.equal(d.json.job.stage, 'FINAL')
 })
 

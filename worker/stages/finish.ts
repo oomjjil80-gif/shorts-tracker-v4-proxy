@@ -44,7 +44,8 @@ export const packageExecutor: StageExecutor = {
       durationSec: v.duration, variant: { id: v.variantId, label: v.label },
       qc: { decision: v.gate.decision, counts: v.gate.counts, checks: v.gate.checks.map((c: any) => ({ id: c.id, required: c.required, status: c.status })) },
       contentQc: v.contentGate ? { decision: v.contentGate.decision, reasons: v.contentGate.reasons, checks: v.contentGate.checks.map((c: any) => ({ id: c.id, required: c.required, status: c.status })) } : { decision: 'BLOCK', reasons: ['UNKNOWN: content gate not recorded'], checks: [] },
-      // true only if BOTH the technical and the content gate passed; an approved-but-not-publishable video stays flagged
+      referenceQc: v.referenceGate ? { decision: v.referenceGate.decision, checks: v.referenceGate.checks.map((c: any) => ({ featureId: c.featureId, axis: c.axis, status: c.status, evidence: c.evidence })) } : null,
+      // true only if every mandatory gate (technical, content, and Reference when present) passed; an approved-but-not-publishable video stays flagged
       publishable: v.publishable === true,
       override: (decision?.result as any)?.override ?? null,
       metadata: { title: null, description: null, tags: [], pinnedComment: null }
