@@ -6,7 +6,7 @@ import { EXCLUDE_REASONS, OFFSTORY_REASONS, PACING_REASONS, STORY_LIMITS, STORY_
 import { planPresentation, PRESENTATION_LIMITS } from './presentation.js'
 import { storyBeats, totalSeconds } from './plan.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/10'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/11'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
 const captionBody = {
@@ -47,7 +47,7 @@ export function storyPrompt(a: SourceAnalysis): string {
   }
   return [
     'You are the story editor and mobile presentation editor for vertical Korean YouTube Shorts cut from ONE source video. The image is a keyframe sheet; each tile is labeled with its SOURCE time in seconds.',
-    'Describe the story structure and a small set of GROUNDED on-screen Korean presentation cues. ALL times are SOURCE seconds within the video duration. Every range MUST have end > start.',
+    'Describe the story structure and a small set of GROUNDED on-screen Korean presentation cues. ALL times are SOURCE seconds within the video duration. Every range MUST have end > start by at least 0.5 seconds: a single moment (the payoff, a caption) is a short WINDOW, never start == end.',
     'PRIMARY STORY RULE: choose the strongest self-contained viewer story, not the uploader\'s full source-file purpose. Human/animal action, reaction, relationship, humor, surprise or emotion normally outranks a later product explanation/demo when that human/animal arc already has its own payoff.',
     'MANDATORY OPENING AUDIT: inspect the 0s tile and the first ~2 seconds before choosing causalStart. A Korean upload-ready Short must NOT begin on PROMINENT burned-in Chinese/English/Japanese/other foreign-language title cards, large captions, product labels, or other viewer-facing source text. Mark the actual span of that prominent opening text as foreign_text and/or intro_confusion, and place causalStart AFTER it disappears. Even a brief large foreign-language title flash at the first frame is not acceptable as the opening.',
     'FOREIGN-TEXT SCOPE: foreign_text means prominent viewer-facing text that competes with the Korean edit. Do NOT classify a tiny persistent CCTV timestamp/date, camera ID, channel watermark, corner logo, or other small technical metadata as foreign_text that removes footage. If such tiny metadata persists, mention it only in publishabilityWarnings.',
@@ -72,29 +72,82 @@ export function storyPrompt(a: SourceAnalysis): string {
   ].join('\n')
 }
 
-export type StoryModelDeps = { apiKey: string; model: string; fetchImpl?: typeof fetch; keyframeJpeg?: Buffer | null; timeoutMs?: number }
-export type StoryModelResult = SemanticResult & { model: string; usage: unknown; warnings: string[] }
+// timeoutMs: budget of the FIRST call. repairTimeoutMs: independent budget of the single repair call (a slow first call
+// must never eat into it). signal: stage abort (lease lost / cancel) propagates into whichever call is in flight.
+export type StoryModelDeps = { apiKey: string; model: string; fetchImpl?: typeof fetch; keyframeJpeg?: Buffer | null; timeoutMs?: number; repairTimeoutMs?: number; signal?: AbortSignal }
+export const STORY_TIMEOUTS = { firstMs: 90_000, repairMs: 60_000 }
+export type StoryModelResult = SemanticResult & { model: string; usage: unknown; warnings: string[]; calls?: number }
 
 type Assessed = { story: any | null; errors: string[]; warnings: string[] }
 
 // Model JSON has a required dedicated openingHook. The internal StoryAnalysis keeps a single normalized cue array so
 // the rest of PLAN / RenderManifest / QC remains provider-neutral and unchanged.
-function normalizeProviderStory(raw: any): any {
-  if (!raw || typeof raw !== 'object') return raw
-  const h = raw.openingHook
-  const rest = Array.isArray(raw.minimalCaptions) ? raw.minimalCaptions : []
+//
+// Deterministic normalization (no model call, no story-meaning change). The strict JSON schema cannot express
+// `end > start`, and the model often answers point-in-time cues as start == end. Only these cases are repaired here:
+//  - caption/hook display windows of ~zero length: the ANCHOR (start) is the model's; only our display window is sized.
+//  - zero-length setup/escalation/exclude ranges: they contain no footage, so dropping them changes nothing.
+//  - an unusable previewRange: the preview is optional; chronological is the documented default.
+//  - a point payoffRange: only when the model's OWN recommendedEnd ("end right after the payoff") bounds it.
+// Everything else (inverted ranges, out-of-source times, missing/ambiguous payoff) is NOT guessed: it goes to the
+// bounded repair call, or fails closed.
+export const NORMALIZE_LIMITS = { degenerate: 0.2, captionWindow: { hook: 1.2, context: 1.5, payoff: 1.5, effect: 0.6 } as Record<string, number>, maxDerivedPayoffSec: 4, minDerivedPayoffSec: 0.3 }
+const r2n = (n: number) => Math.round(n * 100) / 100
+const fin = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+const degenerate = (r: any) => !!r && fin(r.start) && fin(r.end) && r.end >= r.start && r.end - r.start <= NORMALIZE_LIMITS.degenerate
+
+export function normalizeProviderStory(raw: any, durationSec?: number): { story: any; notes: string[] } {
+  const notes: string[] = []
+  if (!raw || typeof raw !== 'object') return { story: raw, notes }
+  const D = fin(durationSec) ? durationSec : Infinity
+  const x: any = { ...raw }
+
+  // payoffRange first: caption normalization below depends on it.
+  const p = x.payoffRange
+  if (degenerate(p) && p.start >= 0 && p.start < D && fin(x.recommendedEnd)) {
+    const span = x.recommendedEnd - p.start
+    if (span >= NORMALIZE_LIMITS.minDerivedPayoffSec && span <= NORMALIZE_LIMITS.maxDerivedPayoffSec && x.recommendedEnd <= D + 0.05) {
+      x.payoffRange = { start: p.start, end: r2n(Math.min(D, x.recommendedEnd)) }
+      notes.push(`payoffRange ${p.start}..${p.end} was a point; end taken from the model's own recommendedEnd ${x.recommendedEnd}`)
+    }
+  }
+
+  const dropEmpty = (key: string) => {
+    if (!Array.isArray(x[key])) return
+    const kept = x[key].filter((r: any) => !degenerate(r))
+    if (kept.length !== x[key].length) notes.push(`${key}: dropped ${x[key].length - kept.length} zero-length range(s)`)
+    x[key] = kept
+  }
+  dropEmpty('setupRanges'); dropEmpty('escalationRanges'); dropEmpty('excludeRanges')
+
+  if (x.previewRange != null && (typeof x.previewRange !== 'object' || degenerate(x.previewRange))) {
+    notes.push('previewRange unusable; preview hook dropped, chronological edit kept')
+    x.previewRange = null
+    x.hookStrategy = 'chronological'
+  }
+
+  const widen = (c: any, kind: string): any => {
+    if (!c || !degenerate(c) || !(c.start >= 0) || !(c.start < D - 0.25)) return c
+    const end = r2n(Math.min(D, c.start + (NORMALIZE_LIMITS.captionWindow[kind] ?? 1)))
+    if (end - c.start <= NORMALIZE_LIMITS.degenerate) return c
+    notes.push(`${kind} cue "${String(c.text ?? '').slice(0, 12)}" window ${c.start}..${c.end} widened to ${c.start}..${end}`)
+    return { ...c, end }
+  }
+  if (x.openingHook) x.openingHook = widen(x.openingHook, 'hook')
+  if (Array.isArray(x.minimalCaptions)) x.minimalCaptions = x.minimalCaptions.map((c: any) => widen(c, String(c?.kind)))
+
+  const h = x.openingHook
+  const rest = Array.isArray(x.minimalCaptions) ? x.minimalCaptions : []
   return {
-    ...raw,
-    minimalCaptions: [
-      ...(h ? [{ kind: 'hook', start: h.start, end: h.end, text: h.text, basis: h.basis }] : []),
-      ...rest
-    ]
+    story: { ...x, minimalCaptions: [...(h ? [{ kind: 'hook', start: h.start, end: h.end, text: h.text, basis: h.basis }] : []), ...rest] },
+    notes
   }
 }
 
 function assessStory(providerRaw: any, a: SourceAnalysis, model: string): Assessed {
-  const parsed = normalizeProviderStory(providerRaw)
+  const { story: parsed, notes } = normalizeProviderStory(providerRaw, a.media.duration)
   const v = validateStory(parsed, a, { model, promptVersion: AI_PLANNER_PROMPT_VERSION })
+  v.warnings.unshift(...notes.map((n) => `normalized: ${n}`))
   if (!v.story) return { story: null, errors: v.errors, warnings: v.warnings }
   if (v.story.storyType === 'unclear' || v.story.confidence < STORY_LIMITS.minConfidence) return { story: v.story, errors: [], warnings: v.warnings }
 
@@ -141,65 +194,74 @@ function assessStory(providerRaw: any, a: SourceAnalysis, model: string): Assess
 }
 
 // Never throws. The first invalid structured answer may be repaired once using the same visual evidence + exact errors.
+// Paid calls: 1 when the first answer is usable (after deterministic normalization), 2 at most. A provider error
+// (HTTP error, 429, timeout) on the first call is final: no repair is attempted into a failing provider.
 export async function aiAnalyzeStory(a: SourceAnalysis, deps: StoryModelDeps): Promise<StoryModelResult> {
   const f = deps.fetchImpl ?? fetch
-  let model = deps.model, usage: unknown = null
+  let model = deps.model, usage: unknown = null, calls = 0
   const usages: unknown[] = []
-  const out = (status: SemanticResult['status'], reason: string, warnings: string[] = []): StoryModelResult => ({ status, reason, story: null, model, usage, warnings })
+  const out = (status: SemanticResult['status'], reason: string, warnings: string[] = []): StoryModelResult => ({ status, reason, story: null, model, usage, warnings, calls })
   if (!deps.keyframeJpeg) return out('failed', 'no keyframe sheet: a story cannot be judged from numbers alone')
-  const ctl = new AbortController()
-  const timer = setTimeout(() => ctl.abort(), deps.timeoutMs ?? 90_000)
 
-  const call = async (promptText: string): Promise<{ text?: string; error?: string }> => {
-    const content: any[] = [{ type: 'input_text', text: promptText }, { type: 'input_image', image_url: `data:image/jpeg;base64,${deps.keyframeJpeg!.toString('base64')}` }]
-    let res: Response
+  // One controller + timer PER call, cleaned up in finally. They are never shared.
+  const call = async (phase: 'first' | 'repair', promptText: string, timeoutMs: number): Promise<{ text?: string; error?: string }> => {
+    const ctl = new AbortController()
+    const started = Date.now()
+    const onStageAbort = () => ctl.abort()
+    if (deps.signal?.aborted) return { error: `provider call not started (${phase}): stage aborted` }
+    deps.signal?.addEventListener('abort', onStageAbort, { once: true })
+    const timer = setTimeout(() => ctl.abort(), timeoutMs)
+    calls++
     try {
-      res = await f('https://api.openai.com/v1/responses', {
-        method: 'POST', signal: ctl.signal,
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${deps.apiKey}` },
-        body: JSON.stringify({ model: deps.model, input: [{ role: 'user', content }], text: { format: { type: 'json_schema', name: 'story_analysis', strict: true, schema: STORY_JSON_SCHEMA } } })
-      })
-    } catch (e: any) { return { error: `provider unreachable: ${String(e?.message || e).slice(0, 200)}` } }
-    const data: any = await res.json().catch(() => null)
-    if (!res.ok) return { error: `provider ${res.status}: ${String(data?.error?.message || 'error').slice(0, 200)}` }
-    model = data?.model || deps.model
-    usages.push(data?.usage ?? null)
-    usage = usages.length === 1 ? usages[0] : { attempts: usages }
-    const text = data?.output_text ?? data?.output?.flatMap((o: any) => o?.content || []).find((c: any) => typeof c?.text === 'string')?.text
-    return typeof text === 'string' ? { text } : { error: 'provider returned no text' }
+      const content: any[] = [{ type: 'input_text', text: promptText }, { type: 'input_image', image_url: `data:image/jpeg;base64,${deps.keyframeJpeg!.toString('base64')}` }]
+      let res: Response
+      try {
+        res = await f('https://api.openai.com/v1/responses', {
+          method: 'POST', signal: ctl.signal,
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${deps.apiKey}` },
+          body: JSON.stringify({ model: deps.model, input: [{ role: 'user', content }], text: { format: { type: 'json_schema', name: 'story_analysis', strict: true, schema: STORY_JSON_SCHEMA } } })
+        })
+      } catch (e: any) { return { error: `provider unreachable (${phase} call, ${Date.now() - started}ms of ${timeoutMs}ms): ${String(e?.message || e).slice(0, 200)}` } }
+      let data: any = null
+      try { data = await res.json() } catch (e: any) { if (ctl.signal.aborted) return { error: `provider unreachable (${phase} call, ${Date.now() - started}ms of ${timeoutMs}ms): response body aborted` } }
+      if (!res.ok) return { error: `provider ${res.status} (${phase} call): ${String(data?.error?.message || 'error').slice(0, 200)}` }
+      model = data?.model || deps.model
+      usages.push(data?.usage ?? null)
+      usage = usages.length === 1 ? usages[0] : { attempts: usages }
+      const text = data?.output_text ?? data?.output?.flatMap((o: any) => o?.content || []).find((c: any) => typeof c?.text === 'string')?.text
+      return typeof text === 'string' ? { text } : { error: `provider returned no text (${phase} call)` }
+    } finally { clearTimeout(timer); deps.signal?.removeEventListener('abort', onStageAbort) }
   }
 
   const parse = (text: string): { parsed?: any; error?: string } => {
     try { return { parsed: JSON.parse(text) } } catch { return { error: 'provider returned invalid JSON' } }
   }
 
-  try {
-    const basePrompt = storyPrompt(a)
-    const first = await call(basePrompt)
-    if (first.error || !first.text) return out('failed', first.error || 'provider returned no text')
-    const firstParsed = parse(first.text)
-    let assessed: Assessed
-    let previousForRepair: any = null
-    if (firstParsed.error) assessed = { story: null, errors: [firstParsed.error], warnings: [] }
-    else { previousForRepair = firstParsed.parsed; assessed = assessStory(firstParsed.parsed, a, model) }
+  const basePrompt = storyPrompt(a)
+  const first = await call('first', basePrompt, deps.timeoutMs ?? STORY_TIMEOUTS.firstMs)
+  if (first.error || !first.text) return out('failed', first.error || 'provider returned no text')
+  const firstParsed = parse(first.text)
+  let assessed: Assessed
+  let previousForRepair: any = null
+  if (firstParsed.error) assessed = { story: null, errors: [firstParsed.error], warnings: [] }
+  else { previousForRepair = firstParsed.parsed; assessed = assessStory(firstParsed.parsed, a, model) }
 
-    if (!assessed.story) {
-      const repairPrompt = [
-        basePrompt,
-        '',
-        'CORRECTION REQUIRED: your previous structured answer was not publishable/valid.',
-        `Validation errors: ${assessed.errors.join('; ').slice(0, 1200)}`,
-        previousForRepair ? `Previous JSON: ${JSON.stringify(previousForRepair).slice(0, 7000)}` : 'Previous response was not valid JSON.',
-        'Return the COMPLETE corrected JSON object. Re-check image timestamps. openingHook is mandatory and must be valid Korean text within 1 second of causalStart. Every range/cue needs end > start. Keep prominent opening foreign title footage out, tiny CCTV metadata only as a warning, and keep additional context/payoff/effect cues grounded in visible actions.'
-      ].join('\n')
-      const second = await call(repairPrompt)
-      if (second.error || !second.text) return out('invalid', `${assessed.errors.join('; ')}; repair failed: ${second.error || 'no text'}`.slice(0, 500), assessed.warnings)
-      const secondParsed = parse(second.text)
-      if (secondParsed.error) return out('invalid', secondParsed.error, assessed.warnings)
-      assessed = assessStory(secondParsed.parsed, a, model)
-      if (!assessed.story) return out('invalid', assessed.errors.join('; ').slice(0, 500), assessed.warnings)
-    }
+  if (!assessed.story) {
+    const repairPrompt = [
+      basePrompt,
+      '',
+      'CORRECTION REQUIRED: your previous structured answer was not publishable/valid.',
+      `Validation errors: ${assessed.errors.join('; ').slice(0, 1200)}`,
+      previousForRepair ? `Previous JSON: ${JSON.stringify(previousForRepair).slice(0, 7000)}` : 'Previous response was not valid JSON.',
+      'Return the COMPLETE corrected JSON object. Keep every field of the previous answer that was not named in an error unchanged. Re-check image timestamps. openingHook is mandatory and must be valid Korean text within 1 second of causalStart. Every range/cue needs end > start with at least 0.5 seconds of duration (a moment is a window, never start == end). Keep prominent opening foreign title footage out, tiny CCTV metadata only as a warning, and keep additional context/payoff/effect cues grounded in visible actions.'
+    ].join('\n')
+    const second = await call('repair', repairPrompt, deps.repairTimeoutMs ?? STORY_TIMEOUTS.repairMs)
+    if (second.error || !second.text) return out('invalid', `${assessed.errors.join('; ')}; repair failed: ${second.error || 'no text'}`.slice(0, 700), assessed.warnings)
+    const secondParsed = parse(second.text)
+    if (secondParsed.error) return out('invalid', `${assessed.errors.join('; ')}; repair: ${secondParsed.error}`.slice(0, 700), assessed.warnings)
+    assessed = assessStory(secondParsed.parsed, a, model)
+    if (!assessed.story) return out('invalid', assessed.errors.join('; ').slice(0, 700), assessed.warnings)
+  }
 
-    return { ...semanticFromStory(assessed.story), model, usage, warnings: assessed.warnings }
-  } finally { clearTimeout(timer) }
+  return { ...semanticFromStory(assessed.story), model, usage, warnings: assessed.warnings, calls }
 }

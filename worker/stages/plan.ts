@@ -1,8 +1,9 @@
 import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
+import { canonicalize } from '../../lib/tracker-core/renderManifest.js'
 import type { SourceAnalysis } from '../../lib/media/analyze.js'
 import { aiAnalyzeStory, AI_PLANNER_PROMPT_VERSION } from '../../lib/media/aiPlanner.js'
 import { planVariants, toJobPlan, validateVariant } from '../../lib/media/plan.js'
-import type { SemanticResult } from '../../lib/media/story.js'
+import { semanticFromStory, type SemanticResult, type StoryAnalysis } from '../../lib/media/story.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { applyReferencePlanConstraints } from '../../lib/reference/planBridge.js'
 import type { ReferenceProfile } from '../../lib/reference/contracts.js'
@@ -17,7 +18,7 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
     stage: 'PLAN',
     estimateUsd: () => (options.openAi ? 0.05 : 0),
     inputHash: (job) => sha256(`plan|${job.id}|${job.sourceAssetId}|${job.referenceProfileRef ?? 'no-reference'}|${options.openAi?.model ?? 'heuristic'}|${AI_PLANNER_PROMPT_VERSION}`),
-    async run({ job, blobs, previous }) {
+    async run({ job, blobs, previous, signal }) {
       const prev = await previous('ANALYZE')
       if (!prev?.outputRef) throw new StageError('ANALYSIS_MISSING', 'PLAN requires a completed ANALYZE stage')
       const analysis = await blobs.getJson<SourceAnalysis>(prev.outputRef)
@@ -25,14 +26,31 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
       if (analysis.sourceAssetId !== job.sourceAssetId) throw new StageError('ANALYSIS_MISMATCH', 'analysis belongs to a different source')
 
       let semantic: SemanticResult = { status: 'unavailable', reason: 'no semantic model configured', story: null }
-      let provider = 'heuristic', model = 'deterministic@2', usage: unknown = null, warnings: string[] = []
+      let provider = 'heuristic', model = 'deterministic@2', usage: unknown = null, warnings: string[] = [], aiCalls = 0
       if (options.openAi) {
         const sheetRef = (prev.result as any)?.keyframeSheetRef as string | undefined
         const sheet = sheetRef ? await blobs.getBytes(sheetRef) : null
-        const r = await aiAnalyzeStory(analysis, { ...options.openAi, keyframeJpeg: sheet })
-        semantic = { status: r.status, reason: r.reason, story: r.story }
-        usage = r.usage; warnings = r.warnings
-        if (r.status === 'ok') { provider = 'openai'; model = r.model }
+        // A validated (status ok) story is reused for the same source analysis + keyframe sheet + prompt + model: a retried
+        // stage, another Job on the same source (e.g. several Reference jobs on one Golden Source) or a re-run never pays
+        // for, or re-rolls, the same semantic answer. Failed / invalid / low-confidence answers are never cached.
+        const cacheKey = sha256(`semantic|${AI_PLANNER_PROMPT_VERSION}|${options.openAi.model}|${sha256(canonicalize(analysis))}|${sheet ? sha256(sheet) : 'no-sheet'}`)
+        const cachePath = `semantic-cache/${cacheKey}.json`
+        const hit = sheet ? await blobs.getJson<{ story: StoryAnalysis; model: string }>(cachePath).catch(() => null) : null
+        const hitStory = hit?.story
+        const hitOk = !!hitStory && hitStory.schema === 'story-analysis/1' && hitStory.sourceAssetId === job.sourceAssetId && hitStory.promptVersion === AI_PLANNER_PROMPT_VERSION && semanticFromStory(hitStory).status === 'ok'
+        if (hitOk) {
+          semantic = semanticFromStory(hitStory!)
+          warnings = ['semantic answer reused from cache (0 model calls)']; aiCalls = 0
+          provider = 'openai'; model = hit!.model || options.openAi.model
+        } else {
+          const r = await aiAnalyzeStory(analysis, { ...options.openAi, keyframeJpeg: sheet, signal })
+          semantic = { status: r.status, reason: r.reason, story: r.story }
+          usage = r.usage; warnings = r.warnings; aiCalls = r.calls ?? 0
+          if (r.status === 'ok') {
+            provider = 'openai'; model = r.model
+            await blobs.putJson(cachePath, { story: r.story, model: r.model }).catch(() => { /* cache is an optimisation only */ })
+          }
+        }
       }
       const storyRef = semantic.story ? (await putAddressed(blobs, 'stories', semantic.story)).path : null
       const storySummary = semantic.story ? {
@@ -67,7 +85,7 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
         outputRef: stored[0].planRef, outputHash: sha256(stored.map((s) => s.planRef).join('|')), planRef: stored[0].planRef,
         result: {
           variants: stored, provider, model, promptVersion: options.openAi ? AI_PLANNER_PROMPT_VERSION : null,
-          semantic: { status: semantic.status, reason: semantic.reason, storyRef, storySummary, warnings },
+          semantic: { status: semantic.status, reason: semantic.reason, storyRef, storySummary, warnings, aiCalls },
           reference: referencePlan ? { profileVersion: referenceProfile!.profileVersion, applied: referencePlan.applied, unknown: referencePlan.unknown, notes: referencePlan.notes, changes: referencePlan.changes } : null,
           // kept for older readers: why the model was not used
           fallback: semantic.status === 'ok' ? null : { reason: `${semantic.status}: ${semantic.reason ?? ''}`.slice(0, 300) }
