@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { analysisCacheKey, conformanceReport, referenceAssetId, stableHash, toReferenceProfile, validateReferenceAnalysis, validateReferenceAsset, validateReferenceProfile, type ReferenceAnalysis, type ReferenceAsset } from '../lib/reference/contracts.js'
 
 const asset=(kind:'video'|'image'|'screenshot'):ReferenceAsset=>{const sha=({video:'a',image:'b',screenshot:'c'} as const)[kind].repeat(64);return {schema:'reference-asset/1',referenceAssetId:referenceAssetId(sha),kind,sha256:sha,bytes:123,contentType:kind==='video'?'video/mp4':'image/jpeg',blobPath:'references/'+sha,createdAt:'2026-09-30T00:00:00Z',...(kind==='video'?{duration:10,width:1080,height:1920}:{width:1080,height:1920})}}
-const analysis=(a:ReferenceAsset):ReferenceAnalysis=>({schema:'reference-analysis/1',analyzerVersion:'reference-analyzer/2',referenceAssetId:a.referenceAssetId,referenceSha256:a.sha256,features:[
+const analysis=(a:ReferenceAsset):ReferenceAnalysis=>({schema:'reference-analysis/1',analyzerVersion:'reference-analyzer/3',referenceAssetId:a.referenceAssetId,referenceSha256:a.sha256,features:[
  {id:'story.hook',axis:'story',value:{strategy:'cold_open'},evidence:a.kind==='video'?[{kind:'time',start:0,end:1}]:[{kind:'region',x:0,y:0,width:1,height:.3}],appliesTo:['PLAN']},
  {id:'retention.peak',axis:'retention',value:{at:.5},evidence:a.kind==='video'?[{kind:'time',start:4,end:6}]:[{kind:'region',x:0,y:0,width:1,height:1}],appliesTo:['PLAN','QC']},
  {id:'editing.cadence',axis:'editing',value:{mean:2},evidence:a.kind==='video'?[{kind:'time',start:0,end:2}]:[{kind:'region',x:0,y:0,width:1,height:1}],appliesTo:['PLAN','RENDER','QC']},
