@@ -1,4 +1,4 @@
-name: P1.5 reference QC diagnostic
+name: P1.5 rendered-scene diagnostic
 
 on:
   push:
@@ -9,21 +9,15 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - name: Read existing Production Reference QC evidence only
+      - name: Measure existing Production render scene boundaries only
         shell: bash
         run: |
           set -euo pipefail
           BASE='https://shorts-tracker-v4-proxy.vercel.app'
           KEY='p15-final-prod-e2e-after-confidence-fix-71d915'
           JID='job_29e80b39-ce99-4c5c-916e-16149a444f2f'
-          curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_get&id=$JID" >/tmp/state.json
-          node - <<'NODE'
-          const d=require('/tmp/state.json').job
-          const v=d.variants[0]
-          console.log(JSON.stringify({
-            job:d.id,technical:v.qc,content:v.contentQc,reference:v.referenceQc,
-            referenceReasons:v.referenceQcReasons,referenceChecks:v.referenceQcChecks,
-            publishable:v.publishable
-          },null,2))
-          if(!Array.isArray(v.referenceQcChecks)||!v.referenceQcChecks.length) throw Error('reference evidence still unavailable')
-          NODE
+          curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_preview&id=$JID" >/tmp/preview.json
+          URL=$(node -e 'const d=require("/tmp/preview.json");const p=d.previews[0];if(!p?.url)throw Error("no preview");process.stdout.write(p.url)')
+          curl -fsSL "$URL" -o /tmp/render.mp4
+          ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/render.mp4
+          ffmpeg -hide_banner -i /tmp/render.mp4 -vf "select='gt(scene,0.3)',showinfo" -an -f null - 2>&1 | grep 'pts_time:' || true
