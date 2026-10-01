@@ -22,30 +22,15 @@ jobs:
           curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$SRC&second=2" -o /tmp/r1.jpg
           curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$SRC&second=12" -o /tmp/r2.jpg
 
-          node - <<'NODE'
-          const fs=require('fs')
-          const rows=[
-            ['/tmp/r0.mp4','video','video/mp4','/tmp/b1.json'],
-            ['/tmp/r1.jpg','screenshot','image/jpeg','/tmp/b2.json'],
-            ['/tmp/r2.jpg','image','image/jpeg','/tmp/b3.json']
-          ]
-          for(const [file,kind,contentType,out] of rows) fs.writeFileSync(out,JSON.stringify({taskType:'reference_ingest',kind,contentType,dataBase64:fs.readFileSync(file).toString('base64')}))
-          NODE
+          node -e "const fs=require('fs'); for(const [file,kind,contentType,out] of [['/tmp/r0.mp4','video','video/mp4','/tmp/b1.json'],['/tmp/r1.jpg','screenshot','image/jpeg','/tmp/b2.json'],['/tmp/r2.jpg','image','image/jpeg','/tmp/b3.json']]) fs.writeFileSync(out,JSON.stringify({taskType:'reference_ingest',kind,contentType,dataBase64:fs.readFileSync(file).toString('base64')}))"
           curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b1.json "$BASE/api/story" >/tmp/r1.json
           curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b2.json "$BASE/api/story" >/tmp/r2.json
           curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b3.json "$BASE/api/story" >/tmp/r3.json
-          IDS=$(node - <<'NODE'
-          const fs=require('fs'),a=['/tmp/r1.json','/tmp/r2.json','/tmp/r3.json'].map(p=>JSON.parse(fs.readFileSync(p)))
-          for(const x of a) if(!x.ok||!x.referenceAsset?.referenceAssetId||!x.analysisHash) throw Error('bad ingest')
-          const ids=a.map(x=>x.referenceAsset.referenceAssetId)
-          if(new Set(ids).size!==3) throw Error('references are not distinct')
-          process.stdout.write(JSON.stringify(ids))
-          NODE
-          )
+          IDS=$(node -e "const fs=require('fs'),a=['/tmp/r1.json','/tmp/r2.json','/tmp/r3.json'].map(p=>JSON.parse(fs.readFileSync(p))); for(const x of a) if(!x.ok||!x.referenceAsset?.referenceAssetId||!x.analysisHash) throw Error('bad ingest'); const ids=a.map(x=>x.referenceAsset.referenceAssetId); if(new Set(ids).size!==3) throw Error('references are not distinct'); process.stdout.write(JSON.stringify(ids))")
           echo "REFERENCE_INGEST_3_OK $IDS"
 
           export SRC IDS
-          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/job.json",JSON.stringify({taskType:"job_create",profile:"source_shorts",sourceAssetId:process.env.SRC,idempotencyKey:"p15-prod-e2e-20261002-closure-v3",budgetUsd:5,referenceAssetIds:JSON.parse(process.env.IDS)}))'
+          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/job.json",JSON.stringify({taskType:"job_create",profile:"source_shorts",sourceAssetId:process.env.SRC,idempotencyKey:"p15-prod-e2e-20261002-b2f29c56-final",budgetUsd:5,referenceAssetIds:JSON.parse(process.env.IDS)}))'
           curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/job.json "$BASE/api/story" >/tmp/jobresp.json
           JID=$(node -e 'const d=require("/tmp/jobresp.json");if(!d.ok||!d.job?.id)throw Error("job create failed");process.stdout.write(d.job.id)')
           echo "JOB_CREATED=$JID"
@@ -62,19 +47,7 @@ jobs:
               curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/decision.json "$BASE/api/story" >/tmp/decisionresp.json
             fi
             if [ "$ST" = "COMPLETE" ]; then
-              node - <<'NODE'
-              const d=require('/tmp/state.json').job
-              const v=d.variants.find(x=>x.approved)||d.variants.find(x=>x.publishable)
-              if(!v)throw Error('no publishable/approved variant')
-              if(v.qc!=='PASS')throw Error('Technical QC not PASS: '+v.qc)
-              if(v.contentQc!=='PASS')throw Error('Content QC not PASS: '+v.contentQc)
-              if(v.referenceQc!=='PASS')throw Error('Reference Conformance not PASS: '+v.referenceQc+' '+JSON.stringify(v.referenceQcReasons))
-              if(!v.publishable)throw Error('variant not publishable')
-              if(!d.final?.publishable||!d.final?.packageRef||!d.final?.renderHash)throw Error('FINAL/PACKAGE evidence incomplete')
-              const done=(d.runs||[]).filter(x=>x.status==='SUCCEEDED').map(x=>x.stage)
-              for(const s of ['FINAL','PACKAGE'])if(!done.includes(s))throw Error(s+' not SUCCEEDED')
-              console.log('P15_3REF_PRODUCTION_E2E_PASS',d.id,d.final.renderHash,'TECH',v.qc,'CONTENT',v.contentQc,'REFERENCE',v.referenceQc,'PACKAGE',d.final.packageRef)
-              NODE
+              node -e "const d=require('/tmp/state.json').job; const v=d.variants.find(x=>x.approved)||d.variants.find(x=>x.publishable); if(!v)throw Error('no publishable/approved variant'); if(v.qc!=='PASS')throw Error('Technical QC not PASS: '+v.qc); if(v.contentQc!=='PASS')throw Error('Content QC not PASS: '+v.contentQc); if(v.referenceQc!=='PASS')throw Error('Reference Conformance not PASS: '+v.referenceQc+' '+JSON.stringify(v.referenceQcReasons)); if(!v.publishable)throw Error('variant not publishable'); if(!d.final?.publishable||!d.final?.packageRef||!d.final?.renderHash)throw Error('FINAL/PACKAGE evidence incomplete'); const done=(d.runs||[]).filter(x=>x.status==='SUCCEEDED').map(x=>x.stage); for(const q of ['FINAL','PACKAGE'])if(!done.includes(q))throw Error(q+' not SUCCEEDED'); console.log('P15_3REF_PRODUCTION_E2E_PASS',d.id,d.final.renderHash,'TECH',v.qc,'CONTENT',v.contentQc,'REFERENCE',v.referenceQc,'PACKAGE',d.final.packageRef)"
               exit 0
             fi
             if [ "$ST" = "FAILED" ] || [ "$ST" = "CANCELLED" ]; then cat /tmp/state.json; exit 1; fi
