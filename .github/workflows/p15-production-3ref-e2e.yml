@@ -1,0 +1,67 @@
+name: P1.5 production 3-reference E2E
+
+on:
+  push:
+    branches: [p15-final-prod-e2e]
+    paths: ['.github/workflows/p15-production-3ref-e2e.yml']
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Exercise real Production reference pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://shorts-tracker-v4-proxy.vercel.app'
+          KEY='p15-final-prod-e2e-20261001-abcdef0123456789'
+          SRC='src_8209365874293_9772de17cf634ad9bd28513e85125918'
+
+          curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$SRC&second=2" -o /tmp/r1.jpg
+          curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$SRC&second=12" -o /tmp/r2.jpg
+          curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$SRC&second=20" -o /tmp/r3.jpg
+
+          ingest(){
+            local f="$1" kind="$2"
+            B64=$(base64 -w0 "$f")
+            node -e 'const fs=require("fs");fs.writeFileSync("/tmp/body.json",JSON.stringify({taskType:"reference_ingest",kind:process.argv[1],contentType:"image/jpeg",dataBase64:process.env.B64}))' "$kind"
+            curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/body.json "$BASE/api/story"
+          }
+          export B64
+          B64=$(base64 -w0 /tmp/r1.jpg); R1=$(node -e 'const fs=require("fs");fs.writeFileSync("/tmp/b1.json",JSON.stringify({taskType:"reference_ingest",kind:"screenshot",contentType:"image/jpeg",dataBase64:process.env.B64}))' && curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b1.json "$BASE/api/story")
+          B64=$(base64 -w0 /tmp/r2.jpg); R2=$(node -e 'const fs=require("fs");fs.writeFileSync("/tmp/b2.json",JSON.stringify({taskType:"reference_ingest",kind:"image",contentType:"image/jpeg",dataBase64:process.env.B64}))' && curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b2.json "$BASE/api/story")
+          B64=$(base64 -w0 /tmp/r3.jpg); R3=$(node -e 'const fs=require("fs");fs.writeFileSync("/tmp/b3.json",JSON.stringify({taskType:"reference_ingest",kind:"screenshot",contentType:"image/jpeg",dataBase64:process.env.B64}))' && curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b3.json "$BASE/api/story")
+          echo "$R1" > /tmp/r1.json; echo "$R2" > /tmp/r2.json; echo "$R3" > /tmp/r3.json
+          IDS=$(node -e 'const fs=require("fs"); const a=["/tmp/r1.json","/tmp/r2.json","/tmp/r3.json"].map(p=>JSON.parse(fs.readFileSync(p))); for(const x of a) if(!x.ok||!x.referenceAsset?.referenceAssetId||!x.analysisHash) throw Error("bad ingest"); console.log(JSON.stringify(a.map(x=>x.referenceAsset.referenceAssetId)))')
+          echo "REFERENCE_INGEST_3_OK"
+
+          export SRC IDS
+          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/job.json",JSON.stringify({taskType:"job_create",profile:"source_shorts",sourceAssetId:process.env.SRC,idempotencyKey:"p15-prod-e2e-20261001-final",budgetUsd:5,referenceAssetIds:JSON.parse(process.env.IDS)}))'
+          JOB=$(curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/job.json "$BASE/api/story")
+          echo "$JOB" > /tmp/jobresp.json
+          JID=$(node -e 'const d=require("/tmp/jobresp.json");if(!d.ok||!d.job?.id)throw Error("job create failed");process.stdout.write(d.job.id)')
+          echo "JOB_CREATED=$JID"
+
+          for i in $(seq 1 60); do
+            curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_get&id=$JID" > /tmp/state.json
+            ST=$(node -e 'const d=require("/tmp/state.json");process.stdout.write(d.job.status)')
+            SG=$(node -e 'const d=require("/tmp/state.json");process.stdout.write(d.job.stage)')
+            echo "poll $i $ST $SG"
+            if [ "$ST" = "WAITING_USER" ]; then
+              MH=$(node -e 'const d=require("/tmp/state.json");const v=d.job.variants.find(x=>x.publishable&&x.manifestHash);if(v)process.stdout.write(v.manifestHash)')
+              if [ -z "$MH" ]; then echo 'WAITING_USER_WITHOUT_PUBLISHABLE_VARIANT'; cat /tmp/state.json; exit 1; fi
+              if [ -n "$MH" ]; then
+                printf '{"taskType":"job_decision","jobId":"%s","manifestHash":"%s"}' "$JID" "$MH" >/tmp/decision.json
+                curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/decision.json "$BASE/api/story" >/tmp/decisionresp.json
+              fi
+            fi
+            if [ "$ST" = "COMPLETE" ]; then
+              node -e 'const d=require("/tmp/state.json").job;if(!d.final?.publishable)throw Error("final not publishable");console.log("P15_3REF_PRODUCTION_E2E_PASS",d.id,d.final.renderHash)'
+              exit 0
+            fi
+            if [ "$ST" = "FAILED" ] || [ "$ST" = "CANCELLED" ]; then cat /tmp/state.json; exit 1; fi
+            sleep 10
+          done
+          cat /tmp/state.json
+          exit 1
