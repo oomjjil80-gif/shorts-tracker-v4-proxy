@@ -31,7 +31,8 @@ jobs:
             curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/body.json "$BASE/api/story"
           }
           export B64
-          B64=$(base64 -w0 /tmp/r0.mp4); R1=$(node -e 'const fs=require("fs");fs.writeFileSync("/tmp/b1.json",JSON.stringify({taskType:"reference_ingest",kind:"video",contentType:"video/mp4",dataBase64:process.env.B64}))' && curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b1.json "$BASE/api/story")
+          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/b1.json",JSON.stringify({taskType:"reference_ingest",kind:"video",contentType:"video/mp4",dataBase64:fs.readFileSync("/tmp/r0.mp4").toString("base64")}))'
+          R1=$(curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b1.json "$BASE/api/story")
           B64=$(base64 -w0 /tmp/r1.jpg); R2=$(node -e 'const fs=require("fs");fs.writeFileSync("/tmp/b2.json",JSON.stringify({taskType:"reference_ingest",kind:"screenshot",contentType:"image/jpeg",dataBase64:process.env.B64}))' && curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b2.json "$BASE/api/story")
           B64=$(base64 -w0 /tmp/r2.jpg); R3=$(node -e 'const fs=require("fs");fs.writeFileSync("/tmp/b3.json",JSON.stringify({taskType:"reference_ingest",kind:"image",contentType:"image/jpeg",dataBase64:process.env.B64}))' && curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @/tmp/b3.json "$BASE/api/story")
           echo "$R1" > /tmp/r1.json; echo "$R2" > /tmp/r2.json; echo "$R3" > /tmp/r3.json
