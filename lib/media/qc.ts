@@ -2,7 +2,7 @@
 // A check that cannot run is UNKNOWN (=> BLOCK); nothing here ever defaults to PASS.
 import { mkdir, open, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { runCheck, runGate, type CheckResult, type GateResult } from '../qc/gate.js'
+import { evaluateGate, runCheck, type CheckResult, type GateResult } from '../qc/gate.js'
 import { sha256 } from '../jobs/blobs.js'
 import { sourceRangeToOutputRanges } from '../tracker-core/renderManifest.js'
 import { assFromPayload, CANVAS, FONTS_DIR, SAFE, type OverlayEvent } from './ass.js'
@@ -232,7 +232,12 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       return ok((rows as Array<{ litFraction: number }>).every((r) => r.litFraction >= 0.7), rows)
     }, { timeoutMs: 240_000 })
   ]
-  const gate = await runGate(checks)
+  // Full decode is the heaviest integrity check. Run it alone first so it cannot be
+  // spuriously killed while competing with the many other ffmpeg QC processes.
+  // All remaining independent checks may still run in parallel.
+  const decodeIndex = 4
+  const decodeResult = await checks[decodeIndex]()
+  const gate = evaluateGate(await Promise.all(checks.map((check, index) => index === decodeIndex ? Promise.resolve(decodeResult) : check())))
   if (i.contactSheetOut) { try { await contactSheet(i.renderPath, i.contactSheetOut, { cols: 6, rows: 3, tileWidth: 160, duration: total }) } catch { /* optional artifact */ } }
   return { gate, metrics }
 }
