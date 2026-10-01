@@ -69,7 +69,7 @@ export function validateStory(raw: any, a: SourceAnalysis, meta: { model: string
   const range = (v: any, label: string): Range | null => {
     if (!v || !isNum(v.start) || !isNum(v.end)) { errors.push(`${label}: not a {start,end} range`); return null }
     if (v.start < -eps || v.end > D + eps) { errors.push(`${label}: ${v.start}..${v.end} outside source 0..${D}`); return null }
-    if (!(v.end - v.start > 0.2)) { errors.push(`${label}: empty or inverted range`); return null }
+    if (!(v.end - v.start > 0.2)) { errors.push(`${label}: empty or inverted range (${v.start}..${v.end}; need end - start > 0.2)`); return null }
     return { start: r2(Math.max(0, v.start)), end: r2(Math.min(D, v.end)) }
   }
   if (!raw || typeof raw !== 'object') return { story: null, errors: ['model output is not an object'], warnings }
