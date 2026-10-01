@@ -5,6 +5,8 @@ on:
     branches: [p15-final-prod-e2e]
     paths: ['.github/workflows/p15-production-3ref-e2e.yml']
 
+# final production proof after semantic confidence fix
+
 jobs:
   e2e:
     runs-on: ubuntu-latest
@@ -37,7 +39,7 @@ jobs:
           echo "REFERENCE_INGEST_3_OK"
 
           export SRC IDS
-          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/job.json",JSON.stringify({taskType:"job_create",profile:"source_shorts",sourceAssetId:process.env.SRC,idempotencyKey:"p15-prod-e2e-20261001-final",budgetUsd:5,referenceAssetIds:JSON.parse(process.env.IDS)}))'
+          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/job.json",JSON.stringify({taskType:"job_create",profile:"source_shorts",sourceAssetId:process.env.SRC,idempotencyKey:"p15-prod-e2e-20261001-after-confidence-fix",budgetUsd:5,referenceAssetIds:JSON.parse(process.env.IDS)}))'
           JOB=$(curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/job.json "$BASE/api/story")
           echo "$JOB" > /tmp/jobresp.json
           JID=$(node -e 'const d=require("/tmp/jobresp.json");if(!d.ok||!d.job?.id)throw Error("job create failed");process.stdout.write(d.job.id)')
