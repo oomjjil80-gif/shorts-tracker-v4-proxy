@@ -102,10 +102,13 @@ export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProf
   const median=(v:number[])=>{const a=[...v].sort((x,y)=>x-y),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2}
   const rawFeatureId=(id:string)=>{const m=/^ref_[a-f0-9]{64}:(.+)$/.exec(id);return m?m[1]:id}
   const aggregateIds=new Set(['story.opening','retention.peak','editing.cadence','p','ret','edit'])
+  const canonicalPresent=new Set(raw.map(x=>rawFeatureId(x.id)).filter(id=>['story.opening','retention.peak','editing.cadence'].includes(id)))
   const constraints:ReferenceFeature[]=[]
   for(const f of raw.filter(x=>!aggregateIds.has(rawFeatureId(x.id))))constraints.push(f)
   for(const rawId of aggregateIds){
-    if(['p','ret','edit'].includes(rawId)&&raw.some(x=>['story.opening','retention.peak','editing.cadence'].includes(rawFeatureId(x.id))))continue
+    if(rawId==='p'&&canonicalPresent.has('story.opening'))continue
+    if(rawId==='ret'&&canonicalPresent.has('retention.peak'))continue
+    if(rawId==='edit'&&canonicalPresent.has('editing.cadence'))continue
     const featureId=rawId==='p'?'story.opening':rawId==='ret'?'retention.peak':rawId==='edit'?'editing.cadence':rawId
     const aliases=featureId==='story.opening'?['story.opening','p']:featureId==='retention.peak'?['retention.peak','ret']:featureId==='editing.cadence'?['editing.cadence','edit']:[featureId];const xs=raw.filter(x=>aliases.includes(rawFeatureId(x.id))||aliases.includes(x.id));if(!xs.length)continue
     const failed=xs.filter(x=>String((x.value as any)?.status||'measured')!=='measured')
