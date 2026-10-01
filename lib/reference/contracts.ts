@@ -104,7 +104,7 @@ export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProf
   const aggregateIds=new Set(['story.opening','retention.peak','editing.cadence'])
   const canonicalPresent=new Set(raw.map(x=>rawFeatureId(x.id)).filter(id=>['story.opening','retention.peak','editing.cadence'].includes(id)))
   const constraints:ReferenceFeature[]=[]
-  for(const f of raw.filter(x=>!aggregateIds.has(rawFeatureId(x.id))))constraints.push(f)
+  for(const f of raw.filter(x=>!aggregateIds.has(rawFeatureId(x.id))&&!['p','ret','edit'].includes(rawFeatureId(x.id))))constraints.push(f)
   for(const rawId of aggregateIds){
     const featureId=rawId
     const aliases=featureId==='story.opening'?['story.opening','p']:featureId==='retention.peak'?['retention.peak','ret']:featureId==='editing.cadence'?['editing.cadence','edit']:[featureId];const xs=raw.filter(x=>aliases.includes(rawFeatureId(x.id))||aliases.includes(x.id));if(!xs.length)continue
