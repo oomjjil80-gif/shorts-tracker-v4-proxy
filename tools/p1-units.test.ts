@@ -105,7 +105,7 @@ test('semantic story model: required provider hook normalizes to StoryAnalysis; 
   assert.equal(down.status, 'failed'); assert.match(down.reason!, /provider 429/)
   const outside = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ output_text: JSON.stringify({ ...okStory, payoffRange: { start: 25, end: 99 } }) }) })
   assert.equal(outside.status, 'invalid'); assert.match(outside.reason!, /outside source/)
-  const low = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ output_text: JSON.stringify({ ...okStory, confidence: 0.3 }) }) })
+  const low = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ output_text: JSON.stringify({ ...okStory, storyType: 'unclear', confidence: 0.3 }) }) })
   assert.equal(low.status, 'low_confidence')
   assert.equal((await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: null, fetchImpl: fakeFetch({}) })).status, 'failed')
 })

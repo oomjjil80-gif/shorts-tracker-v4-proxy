@@ -208,8 +208,21 @@ test('11. fail-closed: semantic invalid/failed => heuristic plan is never conten
 })
 
 test('prompt version is bumped (cache + PLAN inputHash separate old and new prompt behaviour)', () => assert.equal(AI_PLANNER_PROMPT_VERSION, 'source-story-analysis/11'))
-test('semanticFromStory status is unchanged by normalization (only ok can lead to content PASS)', async () => {
-  const { r } = await run([{ body: { ...pointy, confidence: 0.3 } }])
+test('normalization does not turn explicit semantic uncertainty into PASS', async () => {
+  const { r } = await run([{ body: { ...pointy, storyType: 'unclear', confidence: 0.3 } }])
   assert.equal(r.status, 'low_confidence')
   void semanticFromStory
+})
+
+
+test('validated single_event remains semantic ok when provider confidence is advisory-low; unclear still fails closed', () => {
+  const validatedLow = validateStory({ ...good, confidence: 0.42, minimalCaptions: [{ kind: 'hook', ...good.openingHook }, ...good.minimalCaptions] }, a, { model: 't', promptVersion: AI_PLANNER_PROMPT_VERSION })
+  assert.ok(validatedLow.story, validatedLow.errors.join('; '))
+  const usable = semanticFromStory(validatedLow.story!)
+  assert.equal(usable.status, 'ok')
+  assert.match(usable.reason || '', /confidence=0\.42/)
+
+  const validatedUnclear = validateStory({ ...good, storyType: 'unclear', confidence: 0.42, minimalCaptions: [{ kind: 'hook', ...good.openingHook }, ...good.minimalCaptions] }, a, { model: 't', promptVersion: AI_PLANNER_PROMPT_VERSION })
+  assert.ok(validatedUnclear.story, validatedUnclear.errors.join('; '))
+  assert.equal(semanticFromStory(validatedUnclear.story!).status, 'low_confidence')
 })

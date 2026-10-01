@@ -124,7 +124,7 @@ test('6. static CCTV is not gutted; real dead gap outside story is trimmed', () 
 
 test('7. semantic UNKNOWN/BAD never becomes publishable; missing framing is UNKNOWN', () => {
   const a = analysis(); const v = planVariants(a)[0]
-  for (const sem of [null, { status: 'unavailable', reason: 'no key', story: null }, { status: 'failed', reason: 'provider 500', story: null }, { status: 'invalid', reason: 'bad', story: null }, semanticFromStory(validateStory({ ...baseStory, confidence: 0.3 }, a, { model: 't', promptVersion: 't' }).story!)] as any[]) {
+  for (const sem of [null, { status: 'unavailable', reason: 'no key', story: null }, { status: 'failed', reason: 'provider 500', story: null }, { status: 'invalid', reason: 'bad', story: null }, semanticFromStory(validateStory({ ...baseStory, storyType: 'unclear', confidence: 0.3 }, a, { model: 't', promptVersion: 't' }).story!)] as any[]) {
     const g = evaluateContentGate({ payload: payloadFor(a, v), analysis: a, semantic: sem, framing: FULL })
     assert.equal(g.decision, 'BLOCK', JSON.stringify(sem?.status))
     for (const id of ['content.opening_understandable', 'content.payoff_present', 'content.no_post_payoff_tail', 'content.no_offstory_contamination']) assert.equal(status(g, id), 'UNKNOWN', id)

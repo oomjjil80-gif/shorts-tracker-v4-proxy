@@ -41,9 +41,9 @@ test('one invalid semantic answer is repaired once using the same evidence', asy
   assert.equal((r.usage as any).attempts.length, 2)
 })
 
-test('low confidence is not retried into a false PASS', async () => {
+test('validated low numeric confidence is not retried; explicit unclear remains fail-closed', async () => {
   let calls = 0
-  const fetchImpl = (async () => { calls++; return { ok: true, status: 200, json: async () => ({ model: 'gpt-test', output_text: JSON.stringify({ ...base, confidence: 0.3 }) }) } }) as unknown as typeof fetch
+  const fetchImpl = (async () => { calls++; return { ok: true, status: 200, json: async () => ({ model: 'gpt-test', output_text: JSON.stringify({ ...base, storyType: 'unclear', confidence: 0.3 }) }) } }) as unknown as typeof fetch
   const r = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: Buffer.from('jpg'), fetchImpl })
   assert.equal(calls, 1)
   assert.equal(r.status, 'low_confidence')

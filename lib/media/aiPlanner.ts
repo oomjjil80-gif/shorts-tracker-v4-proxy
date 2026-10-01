@@ -149,7 +149,7 @@ function assessStory(providerRaw: any, a: SourceAnalysis, model: string): Assess
   const v = validateStory(parsed, a, { model, promptVersion: AI_PLANNER_PROMPT_VERSION })
   v.warnings.unshift(...notes.map((n) => `normalized: ${n}`))
   if (!v.story) return { story: null, errors: v.errors, warnings: v.warnings }
-  if (v.story.storyType === 'unclear' || v.story.confidence < STORY_LIMITS.minConfidence) return { story: v.story, errors: [], warnings: v.warnings }
+  if (v.story.storyType === 'unclear') return { story: v.story, errors: [], warnings: v.warnings }
 
   const errors: string[] = []
   const openingProbe = { start: v.story.causalStart, end: Math.min(a.media.duration, v.story.causalStart + 0.5) }
