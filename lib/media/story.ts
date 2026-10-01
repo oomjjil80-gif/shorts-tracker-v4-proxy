@@ -14,7 +14,8 @@ export const PACING_REASONS: ReadonlyArray<ExcludeReason> = ['repeat', 'dead_air
 // Raw-cue caps only bound what a model may return; WHICH cues are shown (budget, priority, spacing) is decided in
 // presentation.ts (selectCues), after the edit is known. Nothing here may drop the opening hook.
 export const STORY_LIMITS = {
-  minConfidence: 0.6,
+  // Confidence is advisory for a structurally validated, non-unclear story. Publishability is decided by
+  // evidence-backed Content QC; a model self-score alone must not discard otherwise validated semantics.
   previewMinConfidence: 0.75,
   maxPreviewSeconds: 3,
   maxRawCues: 12,
@@ -152,8 +153,10 @@ export function validateStory(raw: any, a: SourceAnalysis, meta: { model: string
   }
 }
 
-// Turns a validated story into the semantic result the planner/gate consume (low confidence is not trustworthy).
+// A structurally validated story remains usable even when the provider self-reports a low numeric confidence.
+// `unclear` is the explicit semantic uncertainty signal and still fails closed. The numeric score is retained as
+// evidence for observability, but Content QC—not an arbitrary self-score threshold—decides publishability.
 export function semanticFromStory(story: StoryAnalysis): SemanticResult {
-  if (story.storyType === 'unclear' || story.confidence < STORY_LIMITS.minConfidence) return { status: 'low_confidence', reason: `storyType=${story.storyType} confidence=${story.confidence}`, story }
-  return { status: 'ok', reason: null, story }
+  if (story.storyType === 'unclear') return { status: 'low_confidence', reason: `storyType=${story.storyType} confidence=${story.confidence}`, story }
+  return { status: 'ok', reason: story.confidence < 0.6 ? `validated ${story.storyType}; provider confidence=${story.confidence}` : null, story }
 }
