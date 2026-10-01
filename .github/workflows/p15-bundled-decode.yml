@@ -1,0 +1,20 @@
+name: P1.5 bundled decode
+on:
+  push:
+    branches: [p15-bundled-decode]
+    paths: ['.github/workflows/p15-bundled-decode.yml']
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: |
+          curl -fsS -H 'X-Sync-Key: p15-final-prod-e2e-v2-0aa2154' 'https://shorts-tracker-v4-proxy.vercel.app/api/story?taskType=job_preview&id=job_12f52575-79f2-456a-95f2-65f9816ae49a' > preview.json
+          URL=$(node -e 'const d=require("./preview.json");process.stdout.write(d.previews[0].url)')
+          curl -fsSL "$URL" -o render.mp4
+          node --input-type=module -e 'import ffmpeg from "ffmpeg-static"; import {spawnSync} from "node:child_process"; const r=spawnSync(ffmpeg,["-hide_banner","-nostdin","-v","error","-xerror","-i","render.mp4","-f","null","-"],{encoding:"utf8"}); console.log(JSON.stringify({status:r.status,signal:r.signal,stderr:r.stderr}));'
