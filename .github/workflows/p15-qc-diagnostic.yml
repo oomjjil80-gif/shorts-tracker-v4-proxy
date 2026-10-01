@@ -1,0 +1,13 @@
+name: P1.5 QC diagnostic
+on:
+  push:
+    branches: [p15-qc-diagnostic]
+    paths: ['.github/workflows/p15-qc-diagnostic.yml']
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print existing Production job QC state
+        run: |
+          curl -fsS -H 'X-Sync-Key: p15-final-prod-e2e-v2-0aa2154' 'https://shorts-tracker-v4-proxy.vercel.app/api/story?taskType=job_get&id=job_12f52575-79f2-456a-95f2-65f9816ae49a' > state.json
+          node -e 'const d=require("./state.json").job; console.log(JSON.stringify({status:d.status,stage:d.stage,planner:d.planner,variants:d.variants,final:d.final,error:d.error},null,2))'
