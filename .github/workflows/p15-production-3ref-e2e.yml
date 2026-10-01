@@ -37,7 +37,7 @@ jobs:
           echo "REFERENCE_INGEST_3_OK"
 
           export SRC IDS
-          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/job.json",JSON.stringify({taskType:"job_create",profile:"source_shorts",sourceAssetId:process.env.SRC,idempotencyKey:"p15-prod-e2e-20261001-v2",budgetUsd:5,referenceAssetIds:JSON.parse(process.env.IDS)}))'
+          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/job.json",JSON.stringify({taskType:"job_create",profile:"source_shorts",sourceAssetId:process.env.SRC,idempotencyKey:"p15-prod-e2e-20261001-v3",budgetUsd:5,referenceAssetIds:JSON.parse(process.env.IDS)}))'
           JOB=$(curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/job.json "$BASE/api/story")
           echo "$JOB" > /tmp/jobresp.json
           JID=$(node -e 'const d=require("/tmp/jobresp.json");if(!d.ok||!d.job?.id)throw Error("job create failed");process.stdout.write(d.job.id)')
@@ -49,7 +49,8 @@ jobs:
             SG=$(node -e 'const d=require("/tmp/state.json");process.stdout.write(d.job.stage)')
             echo "poll $i $ST $SG"
             if [ "$ST" = "WAITING_USER" ]; then
-              MH=$(node -e 'const d=require("/tmp/state.json");const v=d.job.variants.find(x=>x.publishable&&x.manifestHash)||d.job.variants.find(x=>x.manifestHash);if(v)process.stdout.write(v.manifestHash)')
+              MH=$(node -e 'const d=require("/tmp/state.json");const v=d.job.variants.find(x=>x.publishable&&x.manifestHash);if(v)process.stdout.write(v.manifestHash)')
+              if [ -z "$MH" ]; then echo 'WAITING_USER_WITHOUT_PUBLISHABLE_VARIANT'; cat /tmp/state.json; exit 1; fi
               if [ -n "$MH" ]; then
                 printf '{"taskType":"job_decision","jobId":"%s","manifestHash":"%s"}' "$JID" "$MH" >/tmp/decision.json
                 curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/decision.json "$BASE/api/story" >/tmp/decisionresp.json
