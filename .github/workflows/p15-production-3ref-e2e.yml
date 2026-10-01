@@ -5,7 +5,7 @@ on:
     branches: [p15-final-prod-e2e]
     paths: ['.github/workflows/p15-production-3ref-e2e.yml']
 
-# final production proof after semantic confidence fix
+# final production proof after deployed semantic confidence fix 71d915
 
 jobs:
   e2e:
@@ -17,7 +17,7 @@ jobs:
         run: |
           set -euo pipefail
           BASE='https://shorts-tracker-v4-proxy.vercel.app'
-          KEY='p15-final-prod-e2e-20261001-abcdef0123456789'
+          KEY='p15-final-prod-e2e-after-confidence-fix-71d915'
           SRC='src_8209365874293_9772de17cf634ad9bd28513e85125918'
 
           curl -fsS "$BASE/api/story?taskType=source_frame&sourceAssetId=$SRC&second=2" -o /tmp/r1.jpg
