@@ -36,7 +36,8 @@ jobs:
           IDS=$(node -e 'const fs=require("fs"); const a=["/tmp/r1.json","/tmp/r2.json","/tmp/r3.json"].map(p=>JSON.parse(fs.readFileSync(p))); for(const x of a) if(!x.ok||!x.referenceAsset?.referenceAssetId||!x.analysisHash) throw Error("bad ingest"); console.log(JSON.stringify(a.map(x=>x.referenceAsset.referenceAssetId)))')
           echo "REFERENCE_INGEST_3_OK"
 
-          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/job.json",JSON.stringify({taskType:"job_create",profile:"source_shorts",sourceAssetId:process.env.SRC,idempotencyKey:"p15-prod-e2e-20261001-v1",budgetUsd:5,referenceAssetIds:JSON.parse(process.env.IDS)}))'
+          export SRC IDS
+          node -e 'const fs=require("fs");fs.writeFileSync("/tmp/job.json",JSON.stringify({taskType:"job_create",profile:"source_shorts",sourceAssetId:process.env.SRC,idempotencyKey:"p15-prod-e2e-20261001-v2",budgetUsd:5,referenceAssetIds:JSON.parse(process.env.IDS)}))'
           JOB=$(curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/job.json "$BASE/api/story")
           echo "$JOB" > /tmp/jobresp.json
           JID=$(node -e 'const d=require("/tmp/jobresp.json");if(!d.ok||!d.job?.id)throw Error("job create failed");process.stdout.write(d.job.id)')
