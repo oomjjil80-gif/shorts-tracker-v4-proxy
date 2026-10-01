@@ -12,6 +12,7 @@ jobs:
           curl -fsS -H 'X-Sync-Key: p15-final-prod-e2e-v2-0aa2154' 'https://shorts-tracker-v4-proxy.vercel.app/api/story?taskType=job_preview&id=job_12f52575-79f2-456a-95f2-65f9816ae49a' > preview.json
           URL=$(node -e 'const d=require("./preview.json");process.stdout.write(d.previews[0].url)')
           curl -fsSL "$URL" -o render.mp4
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null
           echo "FFPROBE"
           ffprobe -v error -show_entries format=duration,size -show_entries stream=index,codec_type,codec_name,duration -of json render.mp4
           echo "STRICT_DECODE"
