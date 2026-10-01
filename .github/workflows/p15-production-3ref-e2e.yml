@@ -19,5 +19,6 @@ jobs:
           curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_preview&id=$JID" >/tmp/preview.json
           URL=$(node -e 'const d=require("/tmp/preview.json");const p=d.previews[0];if(!p?.url)throw Error("no preview");process.stdout.write(p.url)')
           curl -fsSL "$URL" -o /tmp/render.mp4
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null
           ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/render.mp4
           ffmpeg -hide_banner -i /tmp/render.mp4 -vf "select='gt(scene,0.3)',showinfo" -an -f null - 2>&1 | grep 'pts_time:' || true
