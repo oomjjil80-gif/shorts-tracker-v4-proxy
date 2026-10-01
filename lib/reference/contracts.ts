@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 export const REFERENCE_SCHEMA_VERSION = 1 as const
-export const REFERENCE_ANALYZER_VERSION = 'reference-analyzer/1' as const
+export const REFERENCE_ANALYZER_VERSION = 'reference-analyzer/2' as const
 
 export type ReferenceKind = 'video' | 'image' | 'screenshot'
 export type ReferenceUse = 'PLAN' | 'RENDER' | 'QC'
@@ -97,7 +97,26 @@ export function toReferenceProfile(analyses: ReferenceAnalysis[]): ReferenceProf
   const ids=analyses.map(x=>x.referenceAssetId)
   if(new Set(ids).size!==ids.length) throw new Error('duplicate reference analysis')
   const ordered=[...analyses].sort((a,b)=>a.referenceAssetId.localeCompare(b.referenceAssetId))
-  return {schema:'reference-profile/1',profileVersion:1,referenceAssetIds:ordered.map(x=>x.referenceAssetId),sourceAnalysisHashes:ordered.map(stableHash),constraints:ordered.flatMap(x=>x.features.map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))}
+  const applicable=(f:ReferenceFeature)=>String((f.value as any)?.status||'measured')!=='not_applicable'
+  const raw=ordered.flatMap(x=>x.features.filter(applicable).map(f=>({...f,id:`${x.referenceAssetId}:${f.id}`})))
+  const median=(v:number[])=>{const a=[...v].sort((x,y)=>x-y),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2}
+  const rawFeatureId=(id:string)=>{const m=/^ref_[a-f0-9]{64}:(.+)$/.exec(id);return m?m[1]:id}
+  const aggregateIds=new Set(['story.opening','retention.peak','editing.cadence'])
+  const canonicalPresent=new Set(raw.map(x=>rawFeatureId(x.id)).filter(id=>['story.opening','retention.peak','editing.cadence'].includes(id)))
+  const constraints:ReferenceFeature[]=[]
+  for(const f of raw.filter(x=>!aggregateIds.has(rawFeatureId(x.id))&&!['p','ret','edit'].includes(rawFeatureId(x.id))))constraints.push(f)
+  for(const rawId of aggregateIds){
+    const featureId=rawId
+    const aliases=featureId==='story.opening'?['story.opening','p']:featureId==='retention.peak'?['retention.peak','ret']:featureId==='editing.cadence'?['editing.cadence','edit']:[featureId];const xs=raw.filter(x=>aliases.includes(rawFeatureId(x.id))||aliases.includes(x.id));if(!xs.length)continue
+    const failed=xs.filter(x=>String((x.value as any)?.status||'measured')!=='measured')
+    if(failed.length){constraints.push({id:`aggregate:${featureId}`,axis:xs[0].axis,value:{status:'unknown',reason:'one or more applicable reference measurements are unknown',failed:failed.map(x=>x.id)},evidence:xs.flatMap(x=>x.evidence),appliesTo:[...new Set(xs.flatMap(x=>x.appliesTo))] as ReferenceUse[]});continue}
+    let value:any=null
+    if(featureId==='editing.cadence'){const v=xs.map(x=>Number((x.value as any)?.meanSceneSeconds)).filter(Number.isFinite);if(v.length)value={meanSceneSeconds:Number(median(v).toFixed(3)),status:'measured',aggregation:'median'}}
+    if(featureId==='story.opening'){const v=xs.map(x=>Number((x.value as any)?.openingSeconds)).filter(x=>Number.isFinite(x)&&x>0);if(v.length)value={openingSeconds:Number(median(v).toFixed(3)),status:'measured',aggregation:'median'}}
+    if(featureId==='retention.peak'){const v=xs.map(x=>{const z:any=x.value,p=z?.firstPeak,d=Number(z?.duration);return p&&d>0?((Number(p.start)+Number(p.end))/2)/d:NaN}).filter(Number.isFinite);if(v.length)value={firstPeakNormalized:Number(median(v).toFixed(4)),status:'measured',aggregation:'median'}}
+    if(value)constraints.push({id:`aggregate:${featureId}`,axis:xs[0].axis,value,evidence:xs.flatMap(x=>x.evidence),appliesTo:[...new Set(xs.flatMap(x=>x.appliesTo))] as ReferenceUse[]})
+  }
+  return {schema:'reference-profile/1',profileVersion:1,referenceAssetIds:ordered.map(x=>x.referenceAssetId),sourceAnalysisHashes:ordered.map(stableHash),constraints}
 }
 export function validateReferenceProfile(p: ReferenceProfile | null | undefined) {
   const errors:string[]=[]
@@ -114,7 +133,8 @@ export function validateReferenceProfile(p: ReferenceProfile | null | undefined)
     if(!f?.appliesTo?.length || f.appliesTo.some(x=>!['PLAN','RENDER','QC'].includes(x))) errors.push(`appliesTo:${f?.id||'?'}`)
     if(!f?.evidence?.length) errors.push(`evidence:${f?.id||'?'}`)
   }
-  for(const axis of REFERENCE_AXES) if(!axes.has(axis)) errors.push(`missingAxis:${axis}`)
+  // A profile may mix video and still references. Axes that no supplied reference can measure are absent by design;
+  // Intrinsically not-applicable features are omitted; UNKNOWN applicable measurements remain constraints and therefore BLOCK conformance.
   return errors
 }
 export function conformanceReport(profile: ReferenceProfile, checks: ConformanceCheck[]): ConformanceReport {

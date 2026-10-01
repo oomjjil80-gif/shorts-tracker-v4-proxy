@@ -12,7 +12,8 @@ import { evaluateContentGate } from '../../lib/media/contentGate.js'
 import type { SemanticResult, StoryAnalysis } from '../../lib/media/story.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { evaluateReferenceConformance } from '../../lib/reference/qc.js'
-import type { ReferenceProfile } from '../../lib/reference/contracts.js'
+import type { ReferenceProfile, ReferenceAsset } from '../../lib/reference/contracts.js'
+import { detectCaptionRegions } from '../../lib/reference/serverPipeline.js'
 
 async function framedTimelineCheck(renderPath: string, sourceFile: string, payload: any, framing: SourceFraming): Promise<CheckResult> {
   const id = 'timeline.segment_order_and_trim'
@@ -122,6 +123,7 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
         const jobReferenceProfile = resolveReferenceProfile ? await resolveReferenceProfile(job, blobs) : referenceProfile
         const measurements: Record<string, unknown> = {}
         if (jobReferenceProfile && outputInfo?.width && outputInfo?.height && bytes && manifest) {
+          const renderPath=join(work,`${v.variantId}.mp4`)
           const actual = outputInfo.width === outputInfo.height ? 'square' : outputInfo.height > outputInfo.width ? 'portrait' : 'landscape'
           for (const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':composition.frame') || x.id==='composition.frame')) {
             const target=(x.value as any)?.orientation
@@ -141,15 +143,19 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
           }
           for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':caption.layout')||x.id==='caption.layout')){
             const target=(x.value as any)?.coverage
-            const ev=(v.overlayEvents||[]).filter((e:any)=>e.kind==='subtitle'||e.kind==='headline'||e.kind==='effect'||e.kind==='callout')
-            if(target&&ev.length&&Number(outputInfo.duration)>0){
-              const subtitle=ev.filter((e:any)=>e.kind==='subtitle'),active=subtitle.reduce((n:number,e:any)=>n+Math.max(0,Number(e.end)-Number(e.start)),0),ratio=Math.min(1,active/Number(outputInfo.duration))
-              const targetCenterY=Number(target.y)+Number(target.height)/2,actualCenterY=subtitle.length?0.78:0.085,tolerance=0.18
-              const actual={hasRenderedText:true,subtitleTimelineRatio:Number(ratio.toFixed(3)),centerY:actualCenterY}
-              measurements[x.id]={measured:true,pass:Math.abs(targetCenterY-actualCenterY)<=tolerance,target:{centerY:Number(targetCenterY.toFixed(3))},actual,tolerance:{normalizedY:tolerance},method:'libass-rendered-overlay-events+final-render-bytes',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),overlayEvents:ev.length}}
+            if(target&&Number(outputInfo.duration)>0){
+              try{
+                const renderAsset:any={schema:'reference-asset/1',referenceAssetId:'ref_'+sha256(bytes),kind:'video',sha256:sha256(bytes),bytes:bytes.length,contentType:'video/mp4',blobPath:'render-only',width:outputInfo.width,height:outputInfo.height,duration:Number(outputInfo.duration),createdAt:new Date(0).toISOString()}
+                const actualRegions=await detectCaptionRegions(renderPath,renderAsset)
+                if(actualRegions?.length){
+                  const avg=(k:'x'|'y'|'width'|'height')=>actualRegions.reduce((n,r)=>n+Number(r[k]),0)/actualRegions.length
+                  const actualCoverage={x:avg('x'),y:avg('y'),width:avg('width'),height:avg('height')}
+                  const targetCenterY=Number(target.y)+Number(target.height)/2,actualCenterY=actualCoverage.y+actualCoverage.height/2,tolerance=0.18
+                  measurements[x.id]={measured:true,pass:Math.abs(targetCenterY-actualCenterY)<=tolerance,target:{centerY:Number(targetCenterY.toFixed(3))},actual:{centerY:Number(actualCenterY.toFixed(3)),coverage:actualCoverage},tolerance:{normalizedY:tolerance},method:'reference-caption-vision-output-frame-regions',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),regions:actualRegions.length}}
+                }
+              }catch{/* output caption vision failure remains UNKNOWN */}
             }
           }
-          const renderPath=join(work,`${v.variantId}.mp4`)
           try{
             const scores=await sceneScores(renderPath),duration=Number(outputInfo.duration||v.duration||0),cuts:number[]=[]
             for(const s of scores)if(s.score>0.3&&s.t>0.2&&s.t<duration-0.2&&(!cuts.length||s.t-cuts[cuts.length-1]>=0.5))cuts.push(s.t)
@@ -158,9 +164,10 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               const measured=await analyzeSourceFile(renderPath,{sourceAssetId:`render:${v.renderHash}`,sha256:sha256(bytes)})
               for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':retention.peak')||x.id==='retention.peak')){
                 const target=x.value as any,targetPeak=target?.firstPeak
-                if(targetPeak&&Number.isFinite(Number(target?.duration))&&Number(target.duration)>0&&Number.isFinite(Number(targetPeak.start))&&Number.isFinite(Number(targetPeak.end))&&measured.highlights.length){
-                  const targetCenter=(Number(targetPeak.start)+Number(targetPeak.end))/2,actualPeak=measured.highlights[0],actualCenter=(actualPeak.start+actualPeak.end)/2
-                  const targetDuration=Number(target?.duration),targetNorm=targetCenter/Math.max(0.001,targetDuration),actualNorm=actualCenter/Math.max(0.001,duration),tolerance=0.2
+                const aggregateNorm=Number(target?.firstPeakNormalized)
+                if(((targetPeak&&Number.isFinite(Number(target?.duration))&&Number(target.duration)>0&&Number.isFinite(Number(targetPeak.start))&&Number.isFinite(Number(targetPeak.end)))||Number.isFinite(aggregateNorm))&&measured.highlights.length){
+                  const targetCenter=targetPeak?(Number(targetPeak.start)+Number(targetPeak.end))/2:0,actualPeak=measured.highlights[0],actualCenter=(actualPeak.start+actualPeak.end)/2
+                  const targetDuration=Number(target?.duration),targetNorm=Number.isFinite(aggregateNorm)?aggregateNorm:targetCenter/Math.max(0.001,targetDuration),actualNorm=actualCenter/Math.max(0.001,duration),tolerance=0.2
                   measurements[x.id]={measured:true,pass:Math.abs(targetNorm-actualNorm)<=tolerance,target:{firstPeakNormalized:Number(targetNorm.toFixed(3))},actual:{firstPeakNormalized:Number(actualNorm.toFixed(3)),firstPeak:actualPeak},tolerance:{normalizedTimeline:tolerance},method:'ffmpeg-signals-output-retention-peak',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),duration}}
                 }
               }
@@ -183,11 +190,11 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
           }catch{/* measurement absence remains UNKNOWN, never PASS */}
           for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':narration.structure')||x.id==='narration.structure')){
             const target=x.value as any,ranges=Array.isArray(target?.measuredRanges)?target.measuredRanges:[]
-            if(ranges.length&&Number(target?.duration)>0&&outputInfo.hasAudio){
+            if(Number(target?.duration)>0){
               try{
-                const silent=await detectSilence(renderPath),duration=Math.max(.001,Number(outputInfo.duration||1)),silentTotal=silent.reduce((n,z)=>n+Math.max(0,z.end-z.start),0),actualRatio=Math.max(0,1-silentTotal/duration)
-                const targetDuration=Math.max(.001,Number(target?.duration||0)),targetActive=ranges.reduce((n:number,z:any)=>n+Math.max(0,Number(z.end)-Number(z.start)),0),targetRatio=Math.min(1,targetActive/targetDuration),tolerance=.25
-                measurements[x.id]={measured:true,pass:Math.abs(targetRatio-actualRatio)<=tolerance,target:{speechActivityRatio:Number(targetRatio.toFixed(3))},actual:{speechActivityRatio:Number(actualRatio.toFixed(3))},tolerance:{ratio:tolerance},method:'ffmpeg-silencedetect-output-speech-activity',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),duration,silentRanges:silent}}
+                const duration=Math.max(.001,Number(outputInfo.duration||1)),silent=outputInfo.hasAudio?await detectSilence(renderPath):[],silentTotal=silent.reduce((n,z)=>n+Math.max(0,z.end-z.start),0),actualRatio=outputInfo.hasAudio?Math.max(0,1-silentTotal/duration):0
+                const targetDuration=Math.max(.001,Number(target?.duration||0)),targetRatio=Number.isFinite(Number(target?.audioActivityRatio))?Number(target.audioActivityRatio):Math.min(1,ranges.reduce((n:number,z:any)=>n+Math.max(0,Number(z.end)-Number(z.start)),0)/targetDuration),tolerance=.25
+                measurements[x.id]={measured:true,pass:Math.abs(targetRatio-actualRatio)<=tolerance,target:{audioActivityRatio:Number(targetRatio.toFixed(3))},actual:{audioActivityRatio:Number(actualRatio.toFixed(3))},tolerance:{ratio:tolerance},method:'ffmpeg-silencedetect-output-non-silent-audio-activity-proxy',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),duration,silentRanges:silent}}
               }catch{/* remains UNKNOWN */}
             }
           }
