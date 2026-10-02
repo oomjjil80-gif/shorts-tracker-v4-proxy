@@ -68,3 +68,10 @@ test('P2 wisdom Screen DNA v1 locks black bands, central visual window and motio
  assert.match(ass,/WisdomSub/)
  assert.match(ass,/profile === 'wisdom-v1'/)
 })
+
+test('P2 wisdom headline is deterministically split into two persistent lines',async()=>{
+ const {wisdomHeadline}=await import('../worker/stages/generative.js')
+ const h=wisdomHeadline('나이가 들수록 인간관계에서 정말 중요한 것')
+ assert.match(h,/\\N/)
+ assert.equal(h.replace('\\N',' '),'나이가 들수록 인간관계에서 정말 중요한 것')
+})
