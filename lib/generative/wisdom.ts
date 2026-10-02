@@ -1,4 +1,4 @@
-import type { GenerativeBrief } from './contracts.js'
+import { WISDOM_PROFILE, type GenerativeBrief } from './contracts.js'
 export type WisdomBeat={id:string,narration:string,visualGoal:string,imagePrompt:string,durationSec:number}
 export type WisdomScript={schema:'wisdom-script/1',title:string,hook:string,beats:WisdomBeat[],ending:string,totalSeconds:number}
 export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
@@ -9,7 +9,9 @@ export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
  const beats=Array.isArray(s?.beats)?s.beats:[]
  if(beats.length<4||beats.length>12)e.push('beats.count')
  for(const [i,b] of beats.entries()){
-  if(!String(b?.narration||'').trim())e.push(`beats[${i}].narration`)
+  const narration=String(b?.narration||'').trim()
+  if(!narration)e.push(`beats[${i}].narration`)
+  if(narration.length>WISDOM_PROFILE.narration.maxCharsPerBeat)e.push(`beats[${i}].narration.too_long`)
   if(!String(b?.visualGoal||'').trim())e.push(`beats[${i}].visualGoal`)
   if(!String(b?.imagePrompt||'').trim())e.push(`beats[${i}].imagePrompt`)
   const d=Number(b?.durationSec); if(!Number.isFinite(d)||d<3||d>12)e.push(`beats[${i}].durationSec`)
@@ -17,6 +19,7 @@ export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
  const total=beats.reduce((n:any,b:any)=>n+Number(b.durationSec||0),0)
  if(total<35||total>75)e.push('totalSeconds')
  if(Math.abs(total-Number(s?.totalSeconds||0))>.1)e.push('totalSeconds.mismatch')
+ if(Math.abs(total-brief.targetSeconds)>Math.max(5,brief.targetSeconds*.15))e.push('targetSeconds.mismatch')
  if(brief.profile!=='wisdom')e.push('profile')
  return e
 }
