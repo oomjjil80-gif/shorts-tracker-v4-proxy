@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { runOk, probe } from '../../lib/media/ffmpeg.js'
 import { openAiWisdomImage, openAiWisdomTts } from '../../lib/generative/providers.js'
 import { openAiWisdomPlan, applyVisualBible } from '../../lib/generative/planner.js'
+import { evaluateWisdomSemanticQc } from '../../lib/generative/semanticQc.js'
 
 export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof openAiWisdomPlan}={}):StageExecutor {
  const apiKey=deps.apiKey??process.env.OPENAI_API_KEY??'', aiPlan=deps.plan??openAiWisdomPlan
@@ -24,13 +25,15 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   if(!script)script=deterministicWisdomDraft(brief)
   const errors=validateWisdomScript(script,brief)
   if(errors.length)throw new StageError('SCRIPT_INVALID',errors.join(','))
+  const semanticQc=evaluateWisdomSemanticQc(String(brief.text||''),script)
+  const semanticQcStored=await putAddressed(blobs,'generative-semantic-qc',semanticQc)
   const stored=await putAddressed(blobs,'generative-scripts',script)
   const bibleStored=visualBible?await putAddressed(blobs,'visual-bibles',visualBible):null
   let clock=0
   const captionEvents=script.beats.map((b:any)=>{const start=Number(clock.toFixed(2));clock+=Number(b.durationSec);return {start,end:Number(clock.toFixed(2)),text:b.narration}})
   const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}],headline:script.title,events:captionEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
   const planStored=await putAddressed(blobs,'plans',plan)
-  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,audioPolicy:{bgm:'off',sfx:'off'},beats:script.beats.length,totalSeconds:script.totalSeconds}}
+  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,audioPolicy:{bgm:'off',sfx:'off'},semanticQcRef:semanticQcStored.path,semanticQc,beats:script.beats.length,totalSeconds:script.totalSeconds}}
  }
 }}
 export const generativePlanExecutor=createGenerativePlanExecutor()
