@@ -44,11 +44,15 @@ export function extractRenderPlan(payload: any): { cuts: RenderPlanCut[]; total:
 
 const escFilterPath = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
 
-export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boolean; assPath: string; fontsDir: string; hasOverlays: boolean; sourceFraming?: SourceFraming }): string {
+export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boolean; assPath: string; fontsDir: string; hasOverlays: boolean; sourceFraming?: SourceFraming; wisdomLayout?: boolean }): string {
   const parts: string[] = []
   const embedded = o.sourceFraming?.mode === 'embedded' ? o.sourceFraming.crop : null
   cuts.forEach((c, i) => {
-    if (embedded) {
+    if (o.wisdomLayout) {
+      // Wisdom Screen DNA: immutable black 360px headline band + 1200px visual window + black 360px subtitle band.
+      // The generated source already carries this geometry; preserve it exactly. Never run the generic embedded-framing blur/scale path.
+      parts.push(`[${i}:v]setpts=PTS-STARTPTS,scale=${OUTPUT.width}:${OUTPUT.height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${OUTPUT.width}:${OUTPUT.height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${OUTPUT.fps},format=yuv420p[v${i}]`)
+    } else if (embedded) {
       // Many reposted vertical files are actually a landscape/4:3 picture embedded between black title/padding bands.
       // Crop to the real picture, preserve the full foreground, and fill 9:16 with a darkened blurred duplicate.
       // This removes baked-in title bands without stretching or amputating the CCTV/story frame.
@@ -78,7 +82,7 @@ export async function renderPayload(payload: any, o: { sourceFile: string; sourc
   const assPath = join(o.workDir, 'overlay.ass')
   if (hasOverlays) await writeFile(assPath, built.ass, 'utf8')
   const graphPath = join(o.workDir, 'graph.txt')
-  await writeFile(graphPath, buildFilterGraph(cuts, { sourceHasAudio: o.sourceHasAudio, assPath, fontsDir: o.fontsDir ?? FONTS_DIR, hasOverlays, sourceFraming: o.sourceFraming }), 'utf8')
+  await writeFile(graphPath, buildFilterGraph(cuts, { sourceHasAudio: o.sourceHasAudio, assPath, fontsDir: o.fontsDir ?? FONTS_DIR, hasOverlays, sourceFraming: o.sourceFraming, wisdomLayout: payload?.editorialPlan?.profile === 'wisdom-v1' }), 'utf8')
 
   const args = ['-y']
   for (const c of cuts) args.push('-ss', c.trimStart.toFixed(3), '-t', c.duration.toFixed(3), '-i', o.sourceFile)
