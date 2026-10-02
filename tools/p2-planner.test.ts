@@ -26,3 +26,16 @@ test('AI PLAN output is validated, persisted, and exposes Visual Bible evidence'
  assert.equal(out.result.provider,'openai');assert.ok(out.result.visualBibleRef);assert.ok(out.result.scriptRef)
  const saved:any=await blobs.getJson(out.result.scriptRef);assert.match(saved.beats[0].imagePrompt,/editorial watercolor/)
 })
+
+test('wisdom PLAN emits contiguous narration captions and explicit BGM/SFX off policy',async()=>{
+ const blobs=createMemoryBlobStore();const brief=normalizeGenerativeBrief({kind:'text',text:'관계는 숫자보다 깊이가 중요합니다.',targetSeconds:40});await blobs.putJson('brief-caption.json',brief)
+ const beats=Array.from({length:4},(_,i)=>({id:`b${i+1}`,narration:`자막 문장 ${i+1}`,visualGoal:`goal ${i+1}`,imagePrompt:`scene ${i+1}`,durationSec:10}))
+ const script:any={schema:'wisdom-script/1',title:'관계의 깊이',hook:'훅',beats,ending:'여운',totalSeconds:40}
+ const bible:any={schema:'wisdom-visual-bible/1',style:'watercolor',palette:'warm',lighting:'soft',composition:'single focus',characterPolicy:'consistent',negative:'text'}
+ const ex=createGenerativePlanExecutor({apiKey:'test',plan:async()=>({script,visualBible:bible})})
+ const out:any=await ex.run({job:{id:'j2',profile:'wisdom',planRef:'brief-caption.json',sourceAssetId:'src_gen_y'} as any,blobs,previous:async()=>null,signal:new AbortController().signal} as any)
+ const plan:any=await blobs.getJson(out.planRef);const ev=plan.variantPlan.events
+ assert.deepEqual(ev.map((x:any)=>[x.start,x.end]),[[0,10],[10,20],[20,30],[30,40]])
+ assert.deepEqual(ev.map((x:any)=>x.text),beats.map(x=>x.narration))
+ assert.equal(plan.variantPlan.audioPolicy.bgm,'off');assert.equal(plan.variantPlan.audioPolicy.sfx,'off')
+})
