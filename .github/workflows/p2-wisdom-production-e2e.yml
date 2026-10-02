@@ -15,11 +15,11 @@ jobs:
         run: |
           set -euo pipefail
           BASE='https://shorts-tracker-v4-proxy.vercel.app'
-          KEY='p2-wisdom-prod-e2e-f16f050f'
-          IDEM='p2-wisdom-prod-e2e-20261002-f16f050f-v1'
+          KEY='p2-wisdom-prod-e2e-ccfe82b8'
+          IDEM='p2-wisdom-prod-e2e-20261002-ccfe82b8-v1'
 
           cat >/tmp/job.json <<'JSON'
-          {"taskType":"job_create","profile":"wisdom","idempotencyKey":"p2-wisdom-prod-e2e-20261002-f16f050f-v1","budgetUsd":5,"input":{"kind":"text","text":"나이가 들수록 모든 사람에게 인정받으려 애쓸 필요는 없습니다. 오래 남는 관계는 숫자가 아니라 서로를 편안하게 해주는 깊이로 결정됩니다. 말이 줄어도 마음이 통하는 사람, 어려울 때 조용히 곁을 지켜주는 사람 몇 명이면 충분합니다. 관계를 억지로 붙잡는 대신 내 마음의 평온을 지키는 것도 삶의 지혜입니다.","targetSeconds":40}}
+          {"taskType":"job_create","profile":"wisdom","idempotencyKey":"p2-wisdom-prod-e2e-20261002-ccfe82b8-v1","budgetUsd":5,"input":{"kind":"text","text":"나이가 들수록 모든 사람에게 인정받으려 애쓸 필요는 없습니다. 오래 남는 관계는 숫자가 아니라 서로를 편안하게 해주는 깊이로 결정됩니다. 말이 줄어도 마음이 통하는 사람, 어려울 때 조용히 곁을 지켜주는 사람 몇 명이면 충분합니다. 관계를 억지로 붙잡는 대신 내 마음의 평온을 지키는 것도 삶의 지혜입니다.","targetSeconds":40}}
           JSON
           curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/job.json "$BASE/api/story" >/tmp/jobresp.json
           JID=$(node -e 'const d=require("/tmp/jobresp.json");if(!d.ok||!d.job?.id)throw Error("job create failed "+JSON.stringify(d));process.stdout.write(d.job.id)')
