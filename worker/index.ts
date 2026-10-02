@@ -44,7 +44,15 @@ async function main() {
   console.log(`[worker ${workerId}] started`)
   while (!stopping) {
     try {
-      const out = await runOnce({ store, blobs, workerId, executors, resolveSourceAsset: (id) => getSourceAsset(id) as any, resolveSourceFile: createBlobSourceFileResolver(blobGet as any), leaseMs: 120_000 })
+      const resolveSourceAsset = async (id:string) => {
+        if (id.startsWith('src_gen_')) {
+          const generated:any=await blobs.getJson(`generative-sources/${id}.json`)
+          if(!generated) throw Object.assign(new Error('generated source asset not ready'),{code:'SOURCE_ASSET_NOT_FOUND'})
+          return generated
+        }
+        return getSourceAsset(id) as any
+      }
+      const out = await runOnce({ store, blobs, workerId, executors, resolveSourceAsset, resolveSourceFile: createBlobSourceFileResolver(blobGet as any), leaseMs: 120_000 })
       if (out.ran) {
         let detail = ''
         if (out.outcome === 'failed' || out.outcome === 'retry') {
