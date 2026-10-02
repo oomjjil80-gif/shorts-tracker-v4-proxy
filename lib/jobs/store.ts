@@ -255,6 +255,29 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       })
     },
 
+    // Guarded operator path: approve only the latest server-recommended variant when it is fully publishable.
+    async approveRecommended(input: { jobId: string }): Promise<Job> {
+      const now = clock()
+      return db.transaction(async (tx) => {
+        const job = await lockedJob(tx, input.jobId)
+        if (job.status !== 'WAITING_USER' || job.waitReason !== 'DECISION' || job.stage !== 'DECISION') throw new JobError('NOT_AWAITING_DECISION', `job is ${job.status}/${job.stage}`)
+        const qc = await tx.query(`SELECT result_json FROM job_stage_runs WHERE job_id=$1 AND stage='AUTO_QC' AND status='SUCCEEDED' ORDER BY id DESC LIMIT 1`, [job.id])
+        const result = qc.rows[0]?.result_json
+        const recommended = String(result?.recommendedVariantId || '')
+        const variants = Array.isArray(result?.variants) ? result.variants : []
+        const entry = variants.find((v: any) => v?.variantId === recommended)
+        if (!entry || entry.publishable !== true || !/^[0-9a-f]{64}$/.test(String(entry.manifestHash || ''))) throw new JobError('QC_NOT_PASSED', 'recommended variant is not publishable')
+        const manifestHash = String(entry.manifestHash)
+        const compiled = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='COMPILE' AND status='SUCCEEDED' AND (output_hash=$2 OR result_json->'variants' @> jsonb_build_array(jsonb_build_object('manifestHash', $2::text))) LIMIT 1`, [job.id, manifestHash])
+        if (!compiled.rows[0]) throw new JobError('UNKNOWN_MANIFEST', 'recommended manifest was not produced by this job')
+        const a = await tx.query(`SELECT COALESCE(MAX(attempt),0)+1 AS n FROM job_stage_runs WHERE job_id=$1 AND stage='DECISION' AND kind='run'`, [job.id])
+        await insertRun(tx, { jobId: job.id, stage: 'DECISION', attempt: Number(a.rows[0].n), status: 'SUCCEEDED', outputHash: manifestHash, result: { manifestHash, override: null, selected: 'recommended-publishable' }, startedAt: now, finishedAt: now })
+        const next = nextStage(job.profile, 'DECISION')!
+        const r = await tx.query(`UPDATE production_jobs SET approved_manifest_hash=$2, stage=$3, status='QUEUED', wait_reason=NULL, run_after=NULL, updated_at=$4::timestamptz WHERE id=$1 RETURNING *`, [job.id, manifestHash, next, iso(now)])
+        return mapJob(r.rows[0])
+      })
+    },
+
     // User/API side: continue a job parked for BUDGET or PROVIDER_DOWN (optionally with a larger budget).
     async resumeJob(input: { jobId: string; workspaceId: string; budgetUsd?: number }): Promise<Job> {
       const now = clock()
