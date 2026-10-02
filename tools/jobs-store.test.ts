@@ -227,3 +227,23 @@ test('P1.5: Reference BLOCK cannot be bypassed at DECISION, even with a manual o
   await store.setWaiting({ jobId: job.id, workerId: 'w', reason: 'DECISION' })
   await assert.rejects(() => store.recordDecision({ jobId: job.id, workspaceId: 'ws1', manifestHash: H, override: { reason: 'manual' } }), (e: any) => e.code === 'QC_NOT_PASSED' && /reference conformance/.test(e.message))
 })
+
+
+test('QC_BLOCKED can recheck only AUTO_QC without regenerating paid stages', async () => {
+  const { store, base } = await setup()
+  const { job } = await store.createJob({ ...base, idempotencyKey: 'qc-recheck', planRef: 'p' })
+  const step = async (stages: any[], extra: any = {}) => {
+    await store.claimJob({ workerId: 'w', stages })
+    const { attempt } = await store.startStageRun({ jobId: job.id, workerId: 'w' })
+    return store.completeStage({ jobId: job.id, workerId: 'w', attempt, ...extra })
+  }
+  await step(['COMPILE']); await step(['RENDER'])
+  const blocked = await step(['AUTO_QC'], { wait: 'QC_BLOCKED' })
+  assert.deepEqual([blocked.status, blocked.stage, blocked.waitReason], ['WAITING_USER', 'AUTO_QC', 'QC_BLOCKED'])
+  const requeued = await store.recheckQc({ jobId: job.id })
+  assert.deepEqual([requeued.status, requeued.stage, requeued.waitReason], ['QUEUED', 'AUTO_QC', null])
+  const runs = await store.listStageRuns(job.id)
+  assert.equal(runs.filter(x => x.stage === 'RENDER' && x.status === 'SUCCEEDED').length, 1)
+  assert.equal(runs.filter(x => x.stage === 'COMPILE' && x.status === 'SUCCEEDED').length, 1)
+  await assert.rejects(() => store.recheckQc({ jobId: job.id }), (e:any) => e.code === 'NOT_RECHECKABLE')
+})
