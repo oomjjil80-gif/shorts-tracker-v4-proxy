@@ -64,9 +64,11 @@ export const compileExecutor: StageExecutor = {
 
     // Variants come from PLAN only while that PLAN output is still the job's current plan (a revision resets this).
     const planRun = await previous('PLAN')
+    const assetRun = job.profile === 'wisdom' ? await previous('ASSET') : null
+    const timedPlanRef = (assetRun?.result as any)?.timedPlanRef as string | undefined
     const planned = (planRun?.result as any)?.variants as Array<{ variantId: string; label: string; planRef: string }> | undefined
     const useVariants = !!planned?.length && planRun?.outputRef === job.planRef
-    const list = useVariants ? planned! : [{ variantId: 'v1', label: '추천', planRef: job.planRef }]
+    const list = timedPlanRef ? [{ variantId: 'v1', label: '추천', planRef: timedPlanRef }] : useVariants ? planned! : [{ variantId: 'v1', label: '추천', planRef: job.planRef }]
 
     const variants: CompiledVariant[] = []
     for (const v of list) variants.push(await compileOne(ctx, sourceAsset, v.planRef, v.variantId, v.label))
