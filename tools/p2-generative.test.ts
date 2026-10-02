@@ -89,3 +89,18 @@ test('P2 Korean topic faithfulness tolerates particles and inflection without we
  const bad=evaluateWisdomSemanticQc('퇴직 후 연금 투자 전략',script)
  assert.equal(bad.topicFaithfulness,false)
 })
+
+
+test('P2 wisdom blocks a named philosopher topic unless an early visual explicitly depicts that person',async()=>{
+ const {namedThinkerVisualErrors}=await import('../lib/generative/wisdom.js')
+ const base:any={beats:[
+  {visualGoal:'lonely older man',imagePrompt:'quiet modern room'},
+  {visualGoal:'crowded relationships',imagePrompt:'people at a table'},
+  {visualGoal:'reflection',imagePrompt:'person by a window'},
+  {visualGoal:'ending',imagePrompt:'calm room'}]}
+ assert.deepEqual(namedThinkerVisualErrors('쇼펜하우어가 말하는, 나이가 들수록 인간관계를 줄여야 하는 이유',base),['namedThinker.earlyVisual'])
+ base.beats[1].visualGoal='쇼펜하우어의 실제 초상과 시대적 배경'
+ base.beats[1].imagePrompt='recognizable Arthur Schopenhauer portrait in period-appropriate study'
+ assert.deepEqual(namedThinkerVisualErrors('쇼펜하우어가 말하는, 나이가 들수록 인간관계를 줄여야 하는 이유',base),[])
+ assert.deepEqual(namedThinkerVisualErrors('나이가 들수록 인간관계를 줄여야 하는 이유',base),[])
+})
