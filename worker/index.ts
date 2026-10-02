@@ -55,6 +55,16 @@ async function main() {
   const sourcePlanExecutor = createPlanExecutor({ openAi, resolveReferenceProfile: jobReferenceProfile })
   const planRouter = { ...sourcePlanExecutor, run: (ctx:any) => ctx.job.profile === 'wisdom' ? generativePlanExecutor.run(ctx) : sourcePlanExecutor.run(ctx), inputHash: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.inputHash(job) : sourcePlanExecutor.inputHash(job), estimateUsd: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.estimateUsd(job) : sourcePlanExecutor.estimateUsd(job) }
   const generativeAssetExecutor = createGenerativeAssetExecutor({ apiKey: process.env.OPENAI_API_KEY })
+  const decisionJobId = String(process.env.DECISION_RECOMMENDED_JOB_ID || '').trim()
+  if (decisionJobId) {
+    try {
+      const job = await store.approveRecommended({ jobId: decisionJobId })
+      console.log(`[worker ${workerId}] DECISION_RECOMMENDED_JOB_ID job=${job.id} -> queued ${job.stage}`)
+    } catch (e: any) {
+      console.log(`[worker ${workerId}] DECISION_RECOMMENDED_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
+    }
+  }
+
   const executors = [analyzeExecutor, planRouter as any, generativeAssetExecutor, compileExecutor, renderExecutor, createAutoQcExecutor(null, jobReferenceProfile), decisionExecutor, finalExecutor, packageExecutor]
   const blobs = createVercelJobBlobStore()
   let stopping = false
