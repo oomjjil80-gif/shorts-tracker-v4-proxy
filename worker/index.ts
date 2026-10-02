@@ -6,6 +6,7 @@ import { createJobStore } from '../lib/jobs/store.js'
 import { createVercelJobBlobStore } from '../lib/jobs/blobs.js'
 import { getSourceAsset } from '../lib/sourceAssetRegistry.js'
 import { runOnce } from './runJob.js'
+import { runStartupRechecks } from './startupRechecks.js'
 import { get as blobGet } from '@vercel/blob'
 import { createBlobSourceFileResolver } from './sourceFile.js'
 import { analyzeExecutor } from './stages/analyze.js'
@@ -34,47 +35,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 async function main() {
   const db = await createPgDbFromEnv()
   const store = createJobStore(db)
-  const compileRecheckJobId = String(process.env.COMPILE_RECHECK_JOB_ID || '').trim()
-  if (compileRecheckJobId) {
-    try {
-      const job = await store.recheckCompile({ jobId: compileRecheckJobId })
-      console.log(`[worker ${workerId}] COMPILE_RECHECK_JOB_ID job=${job.id} -> queued COMPILE`)
-    } catch (e:any) {
-      console.log(`[worker ${workerId}] COMPILE_RECHECK_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
-    }
-  }
-  const renderRecheckJobId = String(process.env.RENDER_RECHECK_JOB_ID || '').trim()
-  if (renderRecheckJobId) {
-    try {
-      const job = await store.recheckRender({ jobId: renderRecheckJobId })
-      console.log(`[worker ${workerId}] RENDER_RECHECK_JOB_ID job=${job.id} -> queued RENDER`)
-    } catch (e:any) {
-      console.log(`[worker ${workerId}] RENDER_RECHECK_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
-    }
-  }
-  const assetRecheckJobId = String(process.env.ASSET_RECHECK_JOB_ID || '').trim()
-  if (assetRecheckJobId) {
-    try {
-      const job = await store.recheckAsset({ jobId: assetRecheckJobId })
-      console.log(`[worker ${workerId}] ASSET_RECHECK_JOB_ID job=${job.id} -> queued ASSET`)
-    } catch (e:any) {
-      console.log(`[worker ${workerId}] ASSET_RECHECK_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
-    }
-  }
-  const qcRecheckJobId = String(process.env.QC_RECHECK_JOB_ID || '').trim()
-  if (qcRecheckJobId) {
-    try {
-      const job = await store.recheckQc({ jobId: qcRecheckJobId })
-      console.log(`[worker ${workerId}] QC_RECHECK_JOB_ID job=${job.id} -> queued AUTO_QC`)
-    } catch (e:any) {
-      console.log(`[worker ${workerId}] QC_RECHECK_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
-    }
-  }
+  const assetRerunJobIds = await runStartupRechecks(store, process.env, (line) => console.log(`[worker ${workerId}] ${line}`))
   const sourcePlanExecutor = createPlanExecutor({ openAi, resolveReferenceProfile: jobReferenceProfile })
   const planRouter = { ...sourcePlanExecutor, run: (ctx:any) => ctx.job.profile === 'wisdom' ? generativePlanExecutor.run(ctx) : sourcePlanExecutor.run(ctx), inputHash: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.inputHash(job) : sourcePlanExecutor.inputHash(job), estimateUsd: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.estimateUsd(job) : sourcePlanExecutor.estimateUsd(job) }
   const generativeAssetExecutor = createGenerativeAssetExecutor({ apiKey: process.env.OPENAI_API_KEY })
   const decisionJobId = String(process.env.DECISION_RECOMMENDED_JOB_ID || '').trim()
-  if (decisionJobId) {
+  if (decisionJobId && assetRerunJobIds.has(decisionJobId)) console.log(`[worker ${workerId}] DECISION_RECOMMENDED_JOB_ID skipped: SUPERSEDED_BY_ASSET_RECHECK job=${decisionJobId}`)
+  else if (decisionJobId) {
     try {
       const job = await store.approveRecommended({ jobId: decisionJobId })
       console.log(`[worker ${workerId}] DECISION_RECOMMENDED_JOB_ID job=${job.id} -> queued ${job.stage}`)

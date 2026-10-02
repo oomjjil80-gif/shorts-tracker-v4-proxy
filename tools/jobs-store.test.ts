@@ -271,3 +271,57 @@ test('Wisdom ASSET recheck requeues ASSET from a safe state, keeps paid runs, cl
   const other = (await store.createJob({ ...base, idempotencyKey: 'asset-recheck-src', planRef: 'p' })).job
   await assert.rejects(() => store.recheckAsset({ jobId: other.id }), (e: any) => e.code === 'NOT_ASSET_RECHECKABLE')
 })
+
+
+async function wisdomAtDecision(key: string) {
+  const ctx = await setup()
+  const { job } = await ctx.store.createJob({ ...ctx.base, profile: 'wisdom', sourceAssetId: 'src_gen_' + key, idempotencyKey: key, planRef: 'briefs/b.json' })
+  const step = async (stages: any[], extra: any = {}) => {
+    await ctx.store.claimJob({ workerId: 'w', stages })
+    const { attempt } = await ctx.store.startStageRun({ jobId: job.id, workerId: 'w' })
+    return ctx.store.completeStage({ jobId: job.id, workerId: 'w', attempt, ...extra })
+  }
+  for (const s of ['PLAN', 'ASSET', 'ANALYZE', 'COMPILE', 'RENDER', 'AUTO_QC']) await step([s])
+  const waiting = await step(['DECISION'], { wait: 'DECISION' })
+  assert.deepEqual([waiting.status, waiting.stage, waiting.waitReason], ['WAITING_USER', 'DECISION', 'DECISION'])
+  // a prior approval from the earlier render must not survive the ASSET rerun
+  await ctx.db.query(`UPDATE production_jobs SET approved_manifest_hash=$2 WHERE id=$1`, [job.id, HASH])
+  return { ...ctx, job }
+}
+
+test('Wisdom ASSET recheck succeeds from DECISION waiting and invalidates the approved manifest', async () => {
+  const { store, job } = await wisdomAtDecision('asset-from-decision')
+  const requeued = await store.recheckAsset({ jobId: job.id })
+  assert.deepEqual([requeued.status, requeued.stage, requeued.waitReason, requeued.approvedManifestHash], ['QUEUED', 'ASSET', null, null])
+})
+
+test('Root cause: a RENDER recheck applied first leaves the job QUEUED/RENDER, which ASSET recheck refuses', async () => {
+  const { store, job } = await wisdomAtDecision('render-then-asset')
+  const r = await store.recheckRender({ jobId: job.id })
+  assert.deepEqual([r.status, r.stage], ['QUEUED', 'RENDER'])
+  await assert.rejects(() => store.recheckAsset({ jobId: job.id }), (e: any) => e.code === 'NOT_ASSET_RECHECKABLE')
+})
+
+test('Startup hooks: ASSET recheck wins over a stale RENDER/QC/COMPILE hook naming the same job', async () => {
+  const { runStartupRechecks } = await import('../worker/startupRechecks.js')
+  const { store, job } = await wisdomAtDecision('startup-order')
+  const lines: string[] = []
+  const queued = await runStartupRechecks(store, { RENDER_RECHECK_JOB_ID: job.id, QC_RECHECK_JOB_ID: job.id, COMPILE_RECHECK_JOB_ID: job.id, ASSET_RECHECK_JOB_ID: job.id }, (l) => lines.push(l))
+  assert.deepEqual([...queued], [job.id])
+  assert.equal(lines[0], `ASSET_RECHECK_JOB_ID job=${job.id} -> queued ASSET`)
+  for (const env of ['COMPILE_RECHECK_JOB_ID', 'RENDER_RECHECK_JOB_ID', 'QC_RECHECK_JOB_ID']) assert.ok(lines.includes(`${env} skipped: SUPERSEDED_BY_ASSET_RECHECK job=${job.id}`), env)
+  const after = await store.getJob(job.id, 'ws1')
+  assert.deepEqual([after?.status, after?.stage, after?.approvedManifestHash], ['QUEUED', 'ASSET', null])
+  const runs = await store.listStageRuns(job.id)
+  assert.equal(runs.filter(x => x.stage === 'ASSET' && x.status === 'SUCCEEDED').length, 1) // paid ASSET run kept, not re-created here
+})
+
+test('Startup hooks: RENDER recheck still works on its own and for a different job', async () => {
+  const { runStartupRechecks } = await import('../worker/startupRechecks.js')
+  const { store, job } = await wisdomAtDecision('startup-render-only')
+  const lines: string[] = []
+  const queued = await runStartupRechecks(store, { RENDER_RECHECK_JOB_ID: job.id, ASSET_RECHECK_JOB_ID: 'job_missing' }, (l) => lines.push(l))
+  assert.equal(queued.size, 0)
+  assert.ok(lines.some((l) => l.startsWith('ASSET_RECHECK_JOB_ID skipped:')))
+  assert.ok(lines.includes(`RENDER_RECHECK_JOB_ID job=${job.id} -> queued RENDER`))
+})
