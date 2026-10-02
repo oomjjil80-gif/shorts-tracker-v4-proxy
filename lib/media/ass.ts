@@ -72,8 +72,8 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
   const suppress = callouts.filter((c) => c.suppressSubtitle).map((c) => ({ start: num(c.start, 0), end: num(c.end, 0) }))
 
   if (head) {
-    const fs = fitFontSize(head, textWidth, 84, 2, 56)
-    const wisdomHead = head.includes('\\\\N') ? head.replace('\\\\N', '\\\\N{\\\\c&H0000D7FF&}') : head
+    const fs = fitFontSize(head, textWidth, wisdom ? 100 : 84, 2, wisdom ? 68 : 56)
+    const wisdomHead = head.includes('\\\\N') ? head.replace('\\\\N', '\\\\N{\\\\c&H0000D7FF&}') : head.replace(/\\s+(?=[^\\s]+(?:\\s+[^\\s]+){0,3}$)/, '\\\\N{\\\\c&H0000D7FF&}')
     if (wisdom) add(1, 'headline', 'WisdomHead', 0, total, head, `{\\\\fs${fs}\\\\c&H00FFFFFF&}`, wisdomHead)
     else add(1, 'headline', 'Head', 0, total, head, `{\\\\fs${fs}}`)
   }
