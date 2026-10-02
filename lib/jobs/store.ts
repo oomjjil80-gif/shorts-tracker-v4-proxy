@@ -225,6 +225,19 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       })
     },
 
+    // Re-run only AUTO_QC for an already rendered QC_BLOCKED job. This preserves paid PLAN/ASSET/RENDER artifacts.
+    async recheckQc(input: { jobId: string }): Promise<Job> {
+      const now = clock()
+      return db.transaction(async (tx) => {
+        const job = await lockedJob(tx, input.jobId)
+        if (job.status !== 'WAITING_USER' || job.waitReason !== 'QC_BLOCKED' || job.stage !== 'AUTO_QC') throw new JobError('NOT_RECHECKABLE', `job is ${job.status}/${job.stage}/${job.waitReason}`)
+        const rendered = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='RENDER' AND status='SUCCEEDED' LIMIT 1`, [job.id])
+        if (!rendered.rows[0]) throw new JobError('RENDER_MISSING', 'QC recheck requires an existing successful render')
+        const r = await tx.query(`UPDATE production_jobs SET status='QUEUED', wait_reason=NULL, run_after=NULL, updated_at=$2::timestamptz WHERE id=$1 RETURNING *`, [job.id, iso(now)])
+        return mapJob(r.rows[0])
+      })
+    },
+
     // User/API side: continue a job parked for BUDGET or PROVIDER_DOWN (optionally with a larger budget).
     async resumeJob(input: { jobId: string; workspaceId: string; budgetUsd?: number }): Promise<Job> {
       const now = clock()
