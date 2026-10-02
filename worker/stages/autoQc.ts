@@ -264,7 +264,7 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
         results.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, renderRef: v.renderRef, renderHash: v.renderHash, duration: v.duration, contactSheetRef, posterRef, gate, contentGate, referenceGate, publishable })
       }
       for (const r of results) {
-        if (r.gate.decision !== 'PASS') console.log(`[AUTO_QC] job=${job.id} variant=${r.variantId} technical=${JSON.stringify(r.gate.reasons)}`)
+        if (r.gate.decision !== 'PASS') console.log(`[AUTO_QC] job=${job.id} variant=${r.variantId} technical=${JSON.stringify(r.gate.reasons)} failed=${JSON.stringify((r.gate as any).checks?.filter((x:any)=>x.status !== 'PASS') ?? [])}`)
         if (r.contentGate?.decision !== 'PASS') console.log(`[AUTO_QC] job=${job.id} variant=${r.variantId} content=${JSON.stringify(r.contentGate?.reasons || [])}`)
       }
       const passing = results.filter((r) => r.gate.decision === 'PASS')
