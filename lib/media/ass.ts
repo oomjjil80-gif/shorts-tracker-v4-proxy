@@ -59,12 +59,12 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
   const textWidth = w - marginX * 2
   const events: OverlayEvent[] = []
   const lines: string[] = []
-  const add = (layer: number, kind: OverlayKind, style: string, start: number, end: number, text: string, override = '') => {
+  const add = (layer: number, kind: OverlayKind, style: string, start: number, end: number, text: string, override = '', renderText = text) => {
     if (!text || !(end > start)) return
     const s = clamp(start, 0, total), e = clamp(end, 0, total)
     if (!(e > s)) return
     events.push({ kind, text: text.replace(/\\N/g, ' '), start: s, end: e })
-    lines.push(`Dialogue: ${layer},${assTime(s)},${assTime(e)},${style},,0,0,0,,${override}${text}`)
+    lines.push(`Dialogue: ${layer},${assTime(s)},${assTime(e)},${style},,0,0,0,,${override}${renderText}`)
   }
 
   const head = sanitizeText(input.headline)
@@ -73,8 +73,8 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
 
   if (head) {
     const fs = fitFontSize(head, textWidth, 84, 2, 56)
-    const headOverride = wisdom && head.includes('\\\\N') ? `{\\\\fs${fs}}\\\\c&H00FFFFFF&${head.replace('\\\\N', '\\\\N{\\\\c&H0000D7FF&}')}` : `{\\\\fs${fs}}${head}`
-    if (wisdom) add(1, 'headline', 'WisdomHead', 0, total, head, headOverride)
+    const wisdomHead = head.includes('\\\\N') ? head.replace('\\\\N', '\\\\N{\\\\c&H0000D7FF&}') : head
+    if (wisdom) add(1, 'headline', 'WisdomHead', 0, total, head, `{\\\\fs${fs}\\\\c&H00FFFFFF&}`, wisdomHead)
     else add(1, 'headline', 'Head', 0, total, head, `{\\\\fs${fs}}`)
   }
   for (const sub of input.subtitles || []) {
