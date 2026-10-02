@@ -67,6 +67,20 @@ async function main() {
 
   const executors = [analyzeExecutor, planRouter as any, generativeAssetExecutor, compileExecutor, renderExecutor, createAutoQcExecutor(null, jobReferenceProfile), decisionExecutor, finalExecutor, packageExecutor]
   const blobs = createVercelJobBlobStore()
+  const verifyFinalJobId = String(process.env.FINAL_VERIFY_JOB_ID || '').trim()
+  if (verifyFinalJobId) {
+    try {
+      const runs = await store.listStageRuns(verifyFinalJobId)
+      const fin = [...runs].reverse().find((r: any) => r.stage === 'FINAL' && r.status === 'SUCCEEDED')
+      const ref = String(fin?.outputRef || '')
+      if (!ref.startsWith('renders/')) throw new Error('FINAL_RENDER_MISSING')
+      const signed = await blobs.presign?.(ref)
+      if (!signed?.url) throw new Error('FINAL_RENDER_NOT_SIGNABLE')
+      console.log(`[worker ${workerId}] FINAL_VERIFY_JOB_ID job=${verifyFinalJobId} url=${signed.url} validUntil=${signed.validUntil}`)
+    } catch (e: any) {
+      console.log(`[worker ${workerId}] FINAL_VERIFY_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
+    }
+  }
   let stopping = false
   for (const sig of ['SIGTERM', 'SIGINT'] as const) process.on(sig, () => { stopping = true })
   console.log(`[worker ${workerId}] started`)
