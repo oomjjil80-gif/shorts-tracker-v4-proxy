@@ -15,7 +15,7 @@ import { renderExecutor } from './stages/render.js'
 import { createAutoQcExecutor } from './stages/autoQc.js'
 import { decisionExecutor, finalExecutor, packageExecutor } from './stages/finish.js'
 import type { ReferenceProfile } from '../lib/reference/contracts.js'
-import { generativePlanExecutor, generativeAssetExecutor } from './stages/generative.js'
+import { generativePlanExecutor, createGenerativeAssetExecutor } from './stages/generative.js'
 
 const workerId = process.env.WORKER_ID || `${hostname()}-${process.pid}`
 const pollMs = Number(process.env.WORKER_POLL_MS || 2000)
@@ -36,6 +36,7 @@ async function main() {
   const store = createJobStore(db)
   const sourcePlanExecutor = createPlanExecutor({ openAi, resolveReferenceProfile: jobReferenceProfile })
   const planRouter = { ...sourcePlanExecutor, run: (ctx:any) => ctx.job.profile === 'wisdom' ? generativePlanExecutor.run(ctx) : sourcePlanExecutor.run(ctx), inputHash: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.inputHash(job) : sourcePlanExecutor.inputHash(job), estimateUsd: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.estimateUsd(job) : sourcePlanExecutor.estimateUsd(job) }
+  const generativeAssetExecutor = createGenerativeAssetExecutor({ apiKey: process.env.OPENAI_API_KEY })
   const executors = [analyzeExecutor, planRouter as any, generativeAssetExecutor, compileExecutor, renderExecutor, createAutoQcExecutor(null, jobReferenceProfile), decisionExecutor, finalExecutor, packageExecutor]
   const blobs = createVercelJobBlobStore()
   let stopping = false
