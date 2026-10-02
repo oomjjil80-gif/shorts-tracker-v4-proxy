@@ -20,3 +20,12 @@ test('P2 ASSET declares paid provider budget before execution',()=>{
  const ex=createGenerativeAssetExecutor({apiKey:'k'})
  assert.ok(ex.estimateUsd({} as any)>0)
 })
+
+test('P2 asset request cache keys are stable across retries',()=>{
+ const imagePrompt='same visual prompt', narration='같은 나레이션'
+ const {createHash}=require('node:crypto')
+ const h=(s:string)=>createHash('sha256').update(s).digest('hex')
+ assert.equal(h('image-v1|'+imagePrompt),h('image-v1|'+imagePrompt))
+ assert.equal(h('tts-v1|'+narration),h('tts-v1|'+narration))
+ assert.notEqual(h('image-v1|'+imagePrompt),h('image-v1|changed'))
+})
