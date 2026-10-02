@@ -73,9 +73,24 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
 
   if (head) {
     const fs = wisdom ? 100 : fitFontSize(head, textWidth, 84, 2, 56)
-    const wisdomHead = head.includes('\\\\N') ? head.replace('\\\\N', '\\\\N{\\\\c&H0000D7FF&}') : head.replace(/\\s+(?=[^\\s]+(?:\\s+[^\\s]+){0,3}$)/, '\\\\N{\\\\c&H0000D7FF&}')
-    if (wisdom) add(1, 'headline', 'WisdomHead', 0, total, head, `{\\\\fs${fs}\\\\c&H00FFFFFF&}`, wisdomHead)
-    else add(1, 'headline', 'Head', 0, total, head, `{\\\\fs${fs}}`)
+    if (wisdom) {
+      const plain = head.replace(/\\N/g, ' ').trim()
+      const words = plain.split(/\s+/).filter(Boolean)
+      let cut = Math.max(1, Math.min(words.length - 1, Math.ceil(words.length / 2)))
+      if (words.length > 1) {
+        let best = Infinity
+        for (let i = 1; i < words.length; i++) {
+          const score = Math.abs(words.slice(0, i).join(' ').length - words.slice(i).join(' ').length)
+          if (score < best) { best = score; cut = i }
+        }
+      }
+      const line1 = words.slice(0, cut).join(' ')
+      const line2 = words.slice(cut).join(' ')
+      const render = line2 ? `${line1}\\N{\\c&H0000D7FF&}${line2}` : line1
+      add(1, 'headline', 'WisdomHead', 0, total, head, `{\\fs${fs}\\c&H00FFFFFF&}`, render)
+    } else {
+      add(1, 'headline', 'Head', 0, total, head, `{\\fs${fs}}`)
+    }
   }
   for (const sub of input.subtitles || []) {
     const text = sanitizeText(sub.text)
