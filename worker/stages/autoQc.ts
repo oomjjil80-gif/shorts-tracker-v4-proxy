@@ -113,7 +113,8 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               const assetRun=await previous('ASSET'), assets:any=assetRun?.outputRef?await blobs.getJson(assetRun.outputRef):null
               const beats=Array.isArray(script?.beats)?script.beats:[], items=Array.isArray(assets?.items)?assets.items:[]
               const ready=items.length===beats.length&&items.every((x:any)=>x.image?.status==='ready'&&x.tts?.status==='ready')
-              const target=Number(script?.totalSeconds||0), actual=Number(outputInfo?.duration||v.duration||0)
+              const measuredTotal=items.reduce((sum:number,x:any)=>sum+Number(x.durationSec||0),0)
+              const target=Number(measuredTotal||script?.totalSeconds||0), actual=Number(outputInfo?.duration||v.duration||0)
               contentGate=evaluateGate([
                 {id:'wisdom.script_structure',required:true,status:script?.schema==='wisdom-script/1'&&beats.length>=4?'PASS':'FAIL',evidence:{beats:beats.length}},
                 {id:'wisdom.assets_complete',required:true,status:ready?'PASS':'FAIL',evidence:{beats:beats.length,items:items.length}},
