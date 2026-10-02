@@ -115,6 +115,8 @@ test('Wisdom ASS emits a persistent headline event instead of dropping it',async
  assert.equal(h?.end,40)
  assert.match(r.ass,/WisdomHead/)
  assert.match(r.ass,/쇼펜하우어가 말하는/)
+ assert.equal((r.ass.match(/쇼펜하우어가 말하는/g)||[]).length,1)
+ assert.equal((r.ass.match(/인간관계를 줄여야 하는 이유/g)||[]).length,1)
 })
 
 
