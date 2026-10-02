@@ -9,6 +9,7 @@ import { JobError, type Job, type StageRun } from './types.js'
 import { validateReferenceProfile, stableHash } from '../reference/contracts.js'
 import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
 import { buildReferenceProductionBrief } from '../reference/profile.js'
+import { normalizeGenerativeBrief, generativeBriefHash } from '../generative/contracts.js'
 
 // HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
 // (Hobby plan allows 12 functions). CORS is applied by the router. Domain logic stays in store/gate/pipeline.
@@ -141,11 +142,26 @@ export function createJobsHttp(deps: JobsDeps) {
       if (taskType === 'job_create') {
         const profile = String(body.profile || '')
         need(PIPELINES[profile], `unknown profile: ${profile}`)
-        const sourceAssetId = matching(body.sourceAssetId, /^src_[A-Za-z0-9_]{8,120}$/, 'sourceAssetId is invalid')
+        const generative = profile === 'wisdom'
+        let generativeBriefRef: string | null = null
+        let generativeHash = ''
+        let sourceAssetId: string
+        if (generative) {
+          need(body.plan === undefined, 'wisdom plan is server-owned')
+          need(body.referenceAssetIds === undefined, 'Reference-conditioned synthesis belongs to P2.5; P2 wisdom does not accept references')
+          let brief
+          try { brief = normalizeGenerativeBrief(body.input) } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
+          generativeHash = generativeBriefHash(brief)
+          const storedBrief = await putAddressed(deps.blobs, 'generative-briefs', brief)
+          generativeBriefRef = storedBrief.path
+          sourceAssetId = `src_gen_${generativeHash.slice(0,32)}`
+        } else {
+          sourceAssetId = matching(body.sourceAssetId, /^src_[A-Za-z0-9_]{8,120}$/, 'sourceAssetId is invalid')
+        }
         const idempotencyKey = matching(body.idempotencyKey, /^[A-Za-z0-9_.:-]{8,128}$/, 'idempotencyKey must be 8-128 chars [A-Za-z0-9_.:-]')
         const budgetUsd = body.budgetUsd === undefined ? DEFAULT_BUDGET_USD : Number(body.budgetUsd)
         need(Number.isFinite(budgetUsd) && budgetUsd >= 0 && budgetUsd <= MAX_BUDGET_USD, `budgetUsd must be 0..${MAX_BUDGET_USD}`)
-        if (deps.sourceExists && !(await deps.sourceExists(sourceAssetId))) throw new JobError('SOURCE_ASSET_NOT_FOUND', 'source asset not found')
+        if (!generative && deps.sourceExists && !(await deps.sourceExists(sourceAssetId))) throw new JobError('SOURCE_ASSET_NOT_FOUND', 'source asset not found')
 
         let planRef: string | null = null
         let planHash = ''
@@ -176,7 +192,8 @@ export function createJobsHttp(deps: JobsDeps) {
           referenceProfileHash=bundle.profileHash
           await putAddressed(deps.blobs,'production-briefs',bundle.brief)
         }
-        const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, referenceProfileRef, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}|${referenceProfileHash}` })
+        if (generativeBriefRef) planRef = generativeBriefRef
+        const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, referenceProfileRef, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}|${referenceProfileHash}|${generativeHash}` })
         return res.status(created ? 201 : 200).json({ ok: true, created, job: view(job, await store.listStageRuns(job.id)) })
       }
 
