@@ -43,6 +43,15 @@ async function main() {
       console.log(`[worker ${workerId}] COMPILE_RECHECK_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
     }
   }
+  const renderRecheckJobId = String(process.env.RENDER_RECHECK_JOB_ID || '').trim()
+  if (renderRecheckJobId) {
+    try {
+      const job = await store.recheckRender({ jobId: renderRecheckJobId })
+      console.log(`[worker ${workerId}] RENDER_RECHECK_JOB_ID job=${job.id} -> queued RENDER`)
+    } catch (e:any) {
+      console.log(`[worker ${workerId}] RENDER_RECHECK_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
+    }
+  }
   const qcRecheckJobId = String(process.env.QC_RECHECK_JOB_ID || '').trim()
   if (qcRecheckJobId) {
     try {
