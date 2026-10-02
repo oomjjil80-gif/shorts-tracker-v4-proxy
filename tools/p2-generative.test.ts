@@ -116,3 +116,13 @@ test('Wisdom ASS emits a persistent headline event instead of dropping it',async
  assert.match(r.ass,/WisdomHead/)
  assert.match(r.ass,/쇼펜하우어가 말하는/)
 })
+
+
+test('Wisdom headline style stays above the 360px Screen DNA boundary',async()=>{
+ const {buildAss}=await import('../lib/media/ass.js')
+ const r=buildAss({totalDuration:40,wisdomLayout:true,headline:'나이 들수록 관계를 줄여야 하는 이유',subtitles:[]})
+ assert.match(r.ass,/Style: WisdomHead/)
+ assert.match(r.ass,/WisdomHead/)
+ // 7.5% top margin = 144px; regression guard against the prior 125px margin whose measured box reached y=365.
+ assert.ok(r.ass.includes('Style: WisdomHead,Noto Sans KR,78,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,0,0,8,86,86,144,1'))
+})
