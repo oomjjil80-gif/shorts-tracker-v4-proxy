@@ -225,6 +225,21 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       })
     },
 
+    // Re-run only COMPILE for a QC_BLOCKED job after successful paid ASSET/ANALYZE.
+    // This preserves PLAN/ASSET bytes and is intentionally narrower than a general retry.
+    async recheckCompile(input: { jobId: string }): Promise<Job> {
+      const now = clock()
+      return db.transaction(async (tx) => {
+        const job = await lockedJob(tx, input.jobId)
+        if (job.status !== 'WAITING_USER' || job.waitReason !== 'QC_BLOCKED' || job.stage !== 'COMPILE') throw new JobError('NOT_RECHECKABLE', `job is ${job.status}/${job.stage}/${job.waitReason}`)
+        const asset = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='ASSET' AND status='SUCCEEDED' LIMIT 1`, [job.id])
+        const analyzed = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='ANALYZE' AND status='SUCCEEDED' LIMIT 1`, [job.id])
+        if (!asset.rows[0] || !analyzed.rows[0]) throw new JobError('PREREQUISITE_MISSING', 'COMPILE recheck requires successful ASSET and ANALYZE')
+        const r = await tx.query(`UPDATE production_jobs SET status='QUEUED', wait_reason=NULL, run_after=NULL, updated_at=$2::timestamptz WHERE id=$1 RETURNING *`, [job.id, iso(now)])
+        return mapJob(r.rows[0])
+      })
+    },
+
     // Re-run only AUTO_QC for an already rendered QC_BLOCKED job. This preserves paid PLAN/ASSET/RENDER artifacts.
     async recheckQc(input: { jobId: string }): Promise<Job> {
       const now = clock()
