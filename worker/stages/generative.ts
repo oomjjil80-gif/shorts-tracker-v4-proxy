@@ -41,7 +41,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   }
   const manifest={schema:'generative-assets/1',profile:'wisdom',scriptRef:p.outputRef,items}
   const stored=await putAddressed(blobs,'generative-assets',manifest)
-  return {outputRef:stored.path,outputHash:stored.sha256,result:{assetSpecRef:stored.path,items:items.length,ready:true,bytes},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts',costUsd:0}
+  return {outputRef:stored.path,outputHash:stored.sha256,result:{assetSpecRef:stored.path,items:items.length,ready:true,bytes},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts'}
  }}
 }
 export const generativeAssetExecutor=createGenerativeAssetExecutor()
