@@ -105,7 +105,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
     'Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding',
     // headline: top-center, outlined; subtitle: bottom-center on a translucent box (bottom of text ≈ 78% of height)
     `Style: Head,${FONT_FAMILY},84,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,1,0,0,0,100,100,0,0,1,8,2,8,${marginX},${marginX},${Math.round(h * 0.085)},1`,
-    `Style: WisdomHead,${FONT_FAMILY},78,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,0,0,8,${marginX},${marginX},${Math.round(h * 0.075)},1`,
+    `Style: WisdomHead,${FONT_FAMILY},78,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,0,0,8,${marginX},${marginX},${Math.round(h * 0.055)},1`,
     `Style: WisdomSub,${FONT_FAMILY},56,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,0,0,2,${marginX},${marginX},${Math.round(h * 0.055)},1`,
     `Style: Sub,${FONT_FAMILY},60,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,1,0,0,0,100,100,0,0,3,10,0,2,${marginX},${marginX},${Math.round(h * 0.22)},1`,
     `Style: Fx,${FONT_FAMILY},76,&H00FFFFFF,&H000000FF,&H00111111,&H00000000,1,0,0,0,100,100,0,0,1,6,0,5,${marginX},${marginX},0,1`,
