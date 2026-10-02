@@ -128,3 +128,35 @@ test('Wisdom headline style stays above the 360px Screen DNA boundary',async()=>
  // 5.5% top margin = 106px; regression guard against the prior 125px margin whose measured box reached y=365.
  assert.ok(r.ass.includes('Style: WisdomHead,Noto Sans KR,78,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,0,0,8,86,86,106,1'))
 })
+
+
+// Measures the real libass output, not the \fs number: \fs is the font's ascent+descent box (1.448em), so a fixed
+// \fs100 drew ~62px Hangul. The headline must be exactly two ink lines (white, then yellow) that fill the 360px band.
+test('Wisdom headline renders as two large white/yellow lines filling the 360px top band',async()=>{
+ const {buildAss,FONTS_DIR,CANVAS}=await import('../lib/media/ass.js')
+ const {runOk}=await import('../lib/media/ffmpeg.js')
+ const {mkdtempSync,writeFileSync}=await import('node:fs')
+ const {tmpdir}=await import('node:os')
+ const {join}=await import('node:path')
+ const dir=mkdtempSync(join(tmpdir(),'wisdom-head-'))
+ for(const [headline,minInkHeight] of [['나이 들수록 관계를 줄여야 하는 이유',250],['나이 들수록 인간관계는 줄여도 됩니다',200],['쇼펜하우어가 말하는, 나이가 들수록 인간관계를 줄여야 하는 이유',130]] as const){
+  const r=buildAss({totalDuration:2,wisdomLayout:true,headline,subtitles:[]})
+  const dlg=r.ass.split('\n').filter((l:string)=>l.startsWith('Dialogue:'))
+  assert.equal(dlg.length,1)
+  assert.match(dlg[0],/\\q2/)
+  const p=join(dir,'h.ass'); writeFileSync(p,r.ass)
+  const out=await runOk(['-f','lavfi','-i',`color=c=black:s=${CANVAS.w}x${CANVAS.h}:d=1`,'-vf',`ass=filename=${p}:fontsdir=${FONTS_DIR},format=rgb24`,'-frames:v','1','-f','rawvideo','-'])
+  const px=out.stdout, W=CANVAS.w
+  let x0=W,x1=-1,y0=CANVAS.h,y1=-1; const rows:number[]=[]; let white=0,yellow=0
+  for(let y=0;y<CANVAS.h;y++){let c=0;for(let x=0;x<W;x++){const i=(y*W+x)*3,R=px[i],G=px[i+1],B=px[i+2];if(R+G+B<300)continue;c++;x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);if(R>220&&G>220&&B>220)white++;else if(R>220&&G>180&&B<80)yellow++}rows.push(c)}
+  const bands:number[][]=[];let s=-1;rows.forEach((c,y)=>{if(c&&s<0)s=y;if(!c&&s>=0){bands.push([s,y-1]);s=-1}})
+  assert.equal(bands.length,2,`${headline}: expected 2 ink lines, got ${JSON.stringify(bands)}`)
+  assert.ok(y0>=16&&y1<=352,`${headline}: ink ${y0}-${y1} leaves the 360px band`)
+  assert.ok(x0>=43&&x1<=1037,`${headline}: ink ${x0}-${x1} outside safe x`)
+  assert.ok(x1-x0>=900,`${headline}: widest line only ${x1-x0}px wide`)
+  assert.ok(y1-y0>=minInkHeight,`${headline}: ink block only ${y1-y0}px tall`)
+  assert.ok(white>1000&&yellow>1000,`${headline}: white=${white} yellow=${yellow}`)
+  const lineColor=(b:number[])=>{let w=0,yl=0;for(let y=b[0];y<=b[1];y++)for(let x=0;x<W;x++){const i=(y*W+x)*3;if(px[i]>220&&px[i+1]>220&&px[i+2]>220)w++;else if(px[i]>220&&px[i+1]>180&&px[i+2]<80)yl++}return w>yl?'white':'yellow'}
+  assert.deepEqual(bands.map(lineColor),['white','yellow'])
+ }
+})
