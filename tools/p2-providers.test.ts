@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { openAiWisdomImage,openAiWisdomTts } from '../lib/generative/providers.js'
 import { createGenerativeAssetExecutor } from '../worker/stages/generative.js'
 import { createMemoryBlobStore,putAddressed } from '../lib/jobs/blobs.js'
+import { createHash } from 'node:crypto'
 
 test('P2 image adapter requests vertical low-cost image and requires real bytes',async()=>{
  let body:any
@@ -23,7 +24,6 @@ test('P2 ASSET declares paid provider budget before execution',()=>{
 
 test('P2 asset request cache keys are stable across retries',()=>{
  const imagePrompt='same visual prompt', narration='같은 나레이션'
- const {createHash}=require('node:crypto')
  const h=(s:string)=>createHash('sha256').update(s).digest('hex')
  assert.equal(h('image-v1|'+imagePrompt),h('image-v1|'+imagePrompt))
  assert.equal(h('tts-v1|'+narration),h('tts-v1|'+narration))
