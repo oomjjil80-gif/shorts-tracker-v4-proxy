@@ -5,7 +5,7 @@ import { deterministicWisdomDraft, validateWisdomScript } from '../lib/generativ
 import { PIPELINES } from '../lib/jobs/pipeline.js'
 
 test('P2 wisdom has an explicit generative pipeline with ASSET before COMPILE',()=>{
- assert.deepEqual(PIPELINES.wisdom,['PLAN','ASSET','COMPILE','RENDER','AUTO_QC','DECISION','FINAL','PACKAGE'])
+ assert.deepEqual(PIPELINES.wisdom,['PLAN','ASSET','ANALYZE','COMPILE','RENDER','AUTO_QC','DECISION','FINAL','PACKAGE'])
  assert.ok(!PIPELINES.source_shorts.includes('ASSET'))
 })
 test('P2 wisdom topic/text brief is normalized, bounded and stable',()=>{
