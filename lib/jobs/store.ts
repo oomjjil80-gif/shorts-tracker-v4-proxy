@@ -245,7 +245,9 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       const now = clock()
       return db.transaction(async (tx) => {
         const job = await lockedJob(tx, input.jobId)
-        if (job.profile !== 'wisdom' || job.status !== 'WAITING_USER' || job.waitReason !== 'QC_BLOCKED' || job.stage !== 'AUTO_QC') throw new JobError('NOT_RENDER_RECHECKABLE', 'job is not a QC-blocked Wisdom AUTO_QC job')
+        const qcBlocked = job.status === 'WAITING_USER' && job.waitReason === 'QC_BLOCKED' && job.stage === 'AUTO_QC'
+        const completed = job.status === 'COMPLETE' && job.stage === 'PACKAGE'
+        if (job.profile !== 'wisdom' || (!qcBlocked && !completed)) throw new JobError('NOT_RENDER_RECHECKABLE', 'job is not a QC-blocked or completed Wisdom job')
         const compiled = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='COMPILE' AND status='SUCCEEDED' LIMIT 1`, [job.id])
         const asset = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='ASSET' AND status='SUCCEEDED' LIMIT 1`, [job.id])
         if (!compiled.rows[0] || !asset.rows[0]) throw new JobError('PREREQUISITE_MISSING', 'RENDER recheck requires successful COMPILE and ASSET')
