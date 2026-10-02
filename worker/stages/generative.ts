@@ -10,6 +10,17 @@ import { openAiWisdomImage, openAiWisdomTts } from '../../lib/generative/provide
 import { openAiWisdomPlan, applyVisualBible } from '../../lib/generative/planner.js'
 import { evaluateWisdomSemanticQc } from '../../lib/generative/semanticQc.js'
 
+export function wisdomHeadline(title:string){
+ const t=String(title||'').trim().replace(/\s+/g,' ')
+ if(!t)return ''
+ const split=Math.max(1,Math.min(t.length-1,Math.round(t.length/2)))
+ let i=split
+ while(i<t.length-1&&t[i]!==' ')i++
+ if(i>=t.length-1){i=split;while(i>1&&t[i]!==' ')i--}
+ if(i<=1)return t
+ return t.slice(0,i).trim()+'\\N'+t.slice(i).trim()
+}
+
 export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof openAiWisdomPlan}={}):StageExecutor {
  const apiKey=deps.apiKey??process.env.OPENAI_API_KEY??'', aiPlan=deps.plan??openAiWisdomPlan
  return {
@@ -38,7 +49,8 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   const bibleStored=visualBible?await putAddressed(blobs,'visual-bibles',visualBible):null
   let clock=0
   const captionEvents=script.beats.map((b:any)=>{const start=Number(clock.toFixed(2));clock+=Number(b.durationSec);return {start,end:Number(clock.toFixed(2)),text:b.narration}})
-  const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}],headline:script.title,events:captionEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
+  const headline=wisdomHeadline(script.title)
+  const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}],headline,events:captionEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
   const planStored=await putAddressed(blobs,'plans',plan)
   return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,audioPolicy:{bgm:'off',sfx:'off'},semanticQcRef:semanticQcStored.path,semanticQc,beats:script.beats.length,totalSeconds:script.totalSeconds}}
  }
@@ -95,7 +107,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    let timedClock=0
    const timedEvents=items.map((x:any)=>{const start=Number(timedClock.toFixed(2));timedClock+=Number(x.durationSec);return {start,end:Number(timedClock.toFixed(2)),text:x.narration}})
    const timedTotal=Number(timedClock.toFixed(2))
-   const timedPlan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:timedTotal}],headline:script.title,events:timedEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
+   const timedPlan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:timedTotal}],headline:wisdomHeadline(script.title),events:timedEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
    const timedPlanStored=await putAddressed(blobs,'plans',timedPlan)
    const video=await readFile(out), vh=sha256(video), info=await probe(out), blobPath=`source-collector/generated/${vh}.mp4`
    await blobs.putBytes(blobPath,video,'video/mp4')
