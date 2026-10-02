@@ -21,7 +21,13 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   const brief:any=await blobs.getJson(job.planRef)
   if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom')throw new StageError('BRIEF_INVALID','invalid wisdom brief')
   let script:any, visualBible:any=null, provider='deterministic', fallbackReason:string|undefined
-  if(apiKey){try{const made=await aiPlan(brief,apiKey);script=applyVisualBible(made.script,made.visualBible);visualBible=made.visualBible;provider='openai'}catch(e){fallbackReason=e instanceof Error?e.message:String(e)}}
+  if(apiKey){try{
+   const made=await aiPlan(brief,apiKey)
+   const candidate=applyVisualBible(made.script,made.visualBible)
+   const candidateErrors=validateWisdomScript(candidate,brief)
+   if(candidateErrors.length)throw new Error('AI script validation: '+candidateErrors.join(','))
+   script=candidate;visualBible=made.visualBible;provider='openai'
+  }catch(e){fallbackReason=e instanceof Error?e.message:String(e)}}
   if(!script)script=deterministicWisdomDraft(brief)
   const errors=validateWisdomScript(script,brief)
   if(errors.length)throw new StageError('SCRIPT_INVALID',errors.join(','))
