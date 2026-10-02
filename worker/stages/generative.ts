@@ -7,24 +7,31 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runOk, probe } from '../../lib/media/ffmpeg.js'
 import { openAiWisdomImage, openAiWisdomTts } from '../../lib/generative/providers.js'
+import { openAiWisdomPlan, applyVisualBible } from '../../lib/generative/planner.js'
 
-export const generativePlanExecutor: StageExecutor = {
- stage:'PLAN', estimateUsd:()=>0,
+export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof openAiWisdomPlan}={}):StageExecutor {
+ const apiKey=deps.apiKey??process.env.OPENAI_API_KEY??'', aiPlan=deps.plan??openAiWisdomPlan
+ return {
+ stage:'PLAN', estimateUsd:()=>0.05,
  inputHash:(job)=>sha256(`gen-plan|${job.profile}|${job.planRef}|wisdom/1`),
  async run({job,blobs}){
   if(job.profile!=='wisdom') throw new StageError('PROFILE_UNSUPPORTED','generative PLAN only handles wisdom')
   if(!job.planRef) throw new StageError('BRIEF_MISSING','wisdom requires a generative brief')
   const brief:any=await blobs.getJson(job.planRef)
   if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom')throw new StageError('BRIEF_INVALID','invalid wisdom brief')
-  const script=deterministicWisdomDraft(brief)
+  let script:any, visualBible:any=null, provider='deterministic', fallbackReason:string|undefined
+  if(apiKey){try{const made=await aiPlan(brief,apiKey);script=applyVisualBible(made.script,made.visualBible);visualBible=made.visualBible;provider='openai'}catch(e){fallbackReason=e instanceof Error?e.message:String(e)}}
+  if(!script)script=deterministicWisdomDraft(brief)
   const errors=validateWisdomScript(script,brief)
   if(errors.length)throw new StageError('SCRIPT_INVALID',errors.join(','))
   const stored=await putAddressed(blobs,'generative-scripts',script)
+  const bibleStored=visualBible?await putAddressed(blobs,'visual-bibles',visualBible):null
   const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}]}}
   const planStored=await putAddressed(blobs,'plans',plan)
-  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider:'deterministic',profile:WISDOM_PROFILE,scriptRef:stored.path,beats:script.beats.length,totalSeconds:script.totalSeconds}}
+  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,beats:script.beats.length,totalSeconds:script.totalSeconds}}
  }
-}
+}}
+export const generativePlanExecutor=createGenerativePlanExecutor()
 
 export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeof openAiWisdomImage; tts?:typeof openAiWisdomTts}={}):StageExecutor {
  const image=deps.image??openAiWisdomImage, tts=deps.tts??openAiWisdomTts, apiKey=deps.apiKey??process.env.OPENAI_API_KEY??''
