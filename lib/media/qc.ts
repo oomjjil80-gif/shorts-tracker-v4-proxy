@@ -193,13 +193,12 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       let allOk = true
       for (const [k, ev] of built.events.slice(0, 12).entries()) {
         const { box } = await overlayFor(built, k, total, i.workDir)
-        const wisdom = i.payload?.editorialPlan?.profile === 'wisdom-v1'
         const xSafe = !!box && box.x0 >= CANVAS.w * SAFE.left && box.x1 <= CANVAS.w * (1 - SAFE.right)
         // Wisdom Screen DNA deliberately reserves 360px black bands for persistent headline/subtitles.
         // Validate those overlays against their owned band, not the generic Shorts content safe-area.
-        const ySafe = !!box && (wisdom && ev.kind === 'headline'
+        const ySafe = !!box && (ev.kind === 'headline'
           ? box.y0 >= 16 && box.y1 <= 352
-          : wisdom && ev.kind === 'subtitle'
+          : ev.kind === 'subtitle'
             ? box.y0 >= 1568 && box.y1 <= 1904
             : box.y0 >= CANVAS.h * SAFE.top && box.y1 <= CANVAS.h * SAFE.bottom)
         const okBox = xSafe && ySafe
