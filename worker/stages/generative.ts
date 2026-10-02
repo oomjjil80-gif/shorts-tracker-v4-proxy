@@ -33,6 +33,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   if(errors.length)throw new StageError('SCRIPT_INVALID',errors.join(','))
   const semanticQc=evaluateWisdomSemanticQc(String(brief.text||''),script)
   const semanticQcStored=await putAddressed(blobs,'generative-semantic-qc',semanticQc)
+  if(semanticQc.reasons.length)throw new StageError('SEMANTIC_QC_FAILED',`wisdom semantic QC failed before paid assets: ${semanticQc.reasons.join(',')}`)
   const stored=await putAddressed(blobs,'generative-scripts',script)
   const bibleStored=visualBible?await putAddressed(blobs,'visual-bibles',visualBible):null
   let clock=0
