@@ -219,7 +219,7 @@ test('Wisdom ASSET rerun reuses every cached image/TTS except the anchored think
  const stored=await putAddressed(blobs,'generative-scripts',script)
  const prompts:string[]=[]; let tts=0
  const ex=createGenerativeAssetExecutor({apiKey:'k',image:async(p:string)=>{prompts.push(p);return {bytes:jpg,contentType:'image/jpeg',provider:'openai',model:'m'}},tts:async()=>{tts++;return {bytes:mp3,contentType:'audio/mpeg',provider:'openai',model:'m'}}})
- const out:any=await ex.run({job:{id:'j',profile:'wisdom',planRev:1,sourceAssetId:'src_gen_j'} as any,blobs,previous:async()=>({result:{scriptRef:stored.path}}) as any,signal:new AbortController().signal} as any)
+ const out:any=await ex.run({job:{id:'j',profile:'wisdom',planRev:1,sourceAssetId:'src_gen_j'} as any,blobs,previous:async(stage:string)=>(stage==='PLAN'?{result:{scriptRef:stored.path}}:stage==='ASSET'?{result:{assetSpecRef:'generative-assets/prior.json'}}:null) as any,signal:new AbortController().signal} as any)
  assert.equal(prompts.length,1); assert.match(prompts[0],/Arthur Schopenhauer/); assert.equal(tts,0)
  assert.equal(out.result.generated,1); assert.equal(out.result.reused,7)
  const m:any=await blobs.getJson(out.result.assetSpecRef)
@@ -227,4 +227,23 @@ test('Wisdom ASSET rerun reuses every cached image/TTS except the anchored think
  assert.deepEqual(m.items.slice(1).map((x:any)=>x.image.sha256),script.beats.slice(1).map((b:any)=>imgSha[b.id]))
  assert.notEqual(m.items[0].image.sha256,imgSha.b1)
  assert.deepEqual(m.items.map((x:any)=>[x.narration,x.tts.sha256,x.durationSec]),script.beats.map((b:any)=>[b.narration,mp3Sha,m.items[0].durationSec]))
+})
+
+
+test('Wisdom ASSET rerun refuses before any paid call if a non-anchor image or any TTS is not cached',async()=>{
+ const {createGenerativeAssetExecutor}=await import('../worker/stages/generative.js')
+ const {createMemoryBlobStore,putAddressed}=await import('../lib/jobs/blobs.js')
+ const {createHash}=await import('node:crypto')
+ const h=(x:string)=>createHash('sha256').update(x).digest('hex')
+ const blobs:any=createMemoryBlobStore()
+ const script:any={schema:'wisdom-script/1',title:'쇼펜하우어가 말하는 관계',hook:'h',ending:'e',totalSeconds:16,beats:[1,2,3,4].map(i=>({id:'b'+i,narration:'나레이션 '+i,visualGoal:'g',imagePrompt:'scene '+i,durationSec:4}))}
+ for(const b of script.beats){ // b3 image missing from the cache (e.g. blob deleted)
+  if(b.id!=='b3'){await blobs.putBytes('img/'+b.id,Buffer.from(b.id),'image/jpeg');await blobs.putJson('generative-cache/image/'+h('image-v1|'+b.imagePrompt)+'.json',{ref:'img/'+b.id})}
+  await blobs.putBytes('aud/'+b.id,Buffer.from(b.id),'audio/mpeg');await blobs.putJson('generative-cache/tts/'+h('tts-v1|'+b.narration)+'.json',{ref:'aud/'+b.id})
+ }
+ const stored=await putAddressed(blobs,'generative-scripts',script)
+ let paid=0
+ const ex=createGenerativeAssetExecutor({apiKey:'k',image:async()=>{paid++;throw new Error('must not be called')},tts:async()=>{paid++;throw new Error('must not be called')}})
+ await assert.rejects(()=>ex.run({job:{id:'j',profile:'wisdom',planRev:1,sourceAssetId:'src_gen_j'} as any,blobs,previous:async(stage:string)=>(stage==='PLAN'?{result:{scriptRef:stored.path}}:{result:{assetSpecRef:'prior'}}) as any,signal:new AbortController().signal} as any),(e:any)=>e.code==='ASSET_RECHECK_WOULD_REGENERATE'&&/b3\.image/.test(e.message)&&!/b1/.test(e.message))
+ assert.equal(paid,0)
 })

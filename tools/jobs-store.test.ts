@@ -247,3 +247,27 @@ test('QC_BLOCKED can recheck only AUTO_QC without regenerating paid stages', asy
   assert.equal(runs.filter(x => x.stage === 'COMPILE' && x.status === 'SUCCEEDED').length, 1)
   await assert.rejects(() => store.recheckQc({ jobId: job.id }), (e:any) => e.code === 'NOT_RECHECKABLE')
 })
+
+
+test('Wisdom ASSET recheck requeues ASSET from a safe state, keeps paid runs, clears a stale approval', async () => {
+  const { db, store, base } = await setup()
+  const { job } = await store.createJob({ ...base, profile: 'wisdom', sourceAssetId: 'src_gen_w', idempotencyKey: 'asset-recheck', planRef: 'briefs/b.json' })
+  const step = async (stages: any[], extra: any = {}) => {
+    await store.claimJob({ workerId: 'w', stages })
+    const { attempt } = await store.startStageRun({ jobId: job.id, workerId: 'w' })
+    return store.completeStage({ jobId: job.id, workerId: 'w', attempt, ...extra })
+  }
+  await assert.rejects(() => store.recheckAsset({ jobId: job.id }), (e: any) => e.code === 'NOT_ASSET_RECHECKABLE')
+  for (const s of ['PLAN', 'ASSET', 'ANALYZE', 'COMPILE', 'RENDER']) await step([s])
+  const blocked = await step(['AUTO_QC'], { wait: 'QC_BLOCKED' })
+  assert.deepEqual([blocked.stage, blocked.waitReason], ['AUTO_QC', 'QC_BLOCKED'])
+  await db.query(`UPDATE production_jobs SET approved_manifest_hash=$2 WHERE id=$1`, [job.id, HASH])
+  const requeued = await store.recheckAsset({ jobId: job.id })
+  assert.deepEqual([requeued.status, requeued.stage, requeued.waitReason, requeued.approvedManifestHash], ['QUEUED', 'ASSET', null, null])
+  const runs = await store.listStageRuns(job.id)
+  assert.equal(runs.filter(x => x.stage === 'PLAN' && x.status === 'SUCCEEDED').length, 1)
+  assert.equal(runs.filter(x => x.stage === 'ASSET' && x.status === 'SUCCEEDED').length, 1)
+  await assert.rejects(() => store.recheckAsset({ jobId: job.id }), (e: any) => e.code === 'NOT_ASSET_RECHECKABLE')
+  const other = (await store.createJob({ ...base, idempotencyKey: 'asset-recheck-src', planRef: 'p' })).job
+  await assert.rejects(() => store.recheckAsset({ jobId: other.id }), (e: any) => e.code === 'NOT_ASSET_RECHECKABLE')
+})

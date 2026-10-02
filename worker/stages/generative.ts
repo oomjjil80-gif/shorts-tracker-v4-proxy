@@ -83,16 +83,29 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   if(!apiKey)throw new StageError('PROVIDER_DOWN','OPENAI_API_KEY is not configured',true)
   const p=await previous('PLAN'); const scriptRef=(p?.result as any)?.scriptRef; if(!scriptRef)throw new StageError('SCRIPT_MISSING','ASSET requires PLAN script')
   const planned:any=await blobs.getJson(scriptRef); if(!planned||planned.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
-  // A thinker named in the title/hook must be drawn in the first cuts. Only that beat's image prompt can change, so its
-  // image is the only cache miss; every other image and all narration/TTS (and thus timing) are reused as-is.
-  const {script,anchoredBeatId}=anchorNamedThinkerVisual(planned,`${planned.title} ${planned.hook}`)
+  // A thinker named in the opening (title/hook/first two narrations) must be drawn in the first cuts. Only that beat's image
+  // prompt can change, so its image is the only cache miss; every other image and all narration/TTS (and timing) are reused.
+  const opening=[planned.title,planned.hook,...(planned.beats||[]).slice(0,2).map((b:any)=>b?.narration)].join(' ')
+  const {script,anchoredBeatId}=anchorNamedThinkerVisual(planned,opening)
   const items:any[]=[]; let bytes=0, generated=0, reused=0
+  const cached:Array<{im:any,au:any}>=[]
   for(const b of script.beats){
-   if(signal.aborted)throw new Error('aborted')
    const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256('tts-v1|'+b.narration)
    let im:any=null, au:any=null
    try{const m:any=await blobs.getJson('generative-cache/image/'+ik+'.json');const z=m?.ref?await blobs.getBytes(m.ref):null;if(z)im={...m,bytes:z}}catch{}
    try{const m:any=await blobs.getJson('generative-cache/tts/'+ak+'.json');const z=m?.ref?await blobs.getBytes(m.ref):null;if(z)au={...m,bytes:z}}catch{}
+   cached.push({im,au})
+  }
+  // Rerun of an already-paid ASSET (ASSET_RECHECK_JOB_ID): the only paid call allowed is the named-thinker anchor image.
+  // Any other cache miss would silently re-buy images/TTS and could change timing, so refuse before spending anything.
+  const prior=await previous('ASSET')
+  if((prior?.result as any)?.assetSpecRef){
+   const misses=script.beats.flatMap((b:any,i:number)=>[...(!cached[i].im&&b.id!==anchoredBeatId?[`${b.id}.image`]:[]),...(!cached[i].au?[`${b.id}.tts`]:[])])
+   if(misses.length)throw new StageError('ASSET_RECHECK_WOULD_REGENERATE',`ASSET rerun refuses paid regeneration beyond the named-thinker anchor: ${misses.join(',')}`)
+  }
+  for(const [i,b] of script.beats.entries()){
+   if(signal.aborted)throw new Error('aborted')
+   let {im,au}=cached[i]; const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256('tts-v1|'+b.narration)
    if(im)reused++;else{im=await image(b.imagePrompt,apiKey);generated++}
    if(au)reused++;else{au=await tts(b.narration,apiKey);generated++}
    const ih=sha256(im.bytes), ah=sha256(au.bytes)
@@ -141,7 +154,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    await blobs.putBytes(blobPath,video,'video/mp4')
    const source={sourceAssetId:job.sourceAssetId,blobPath,sha256:vh,duration:info.duration,width:info.width,height:info.height,videoCodec:info.videoCodec,audioCodec:info.audioCodec,generative:true,assetSpecRef:timedStored.path}
    await blobs.putJson(`generative-sources/${job.sourceAssetId}.json`,source)
-   return {outputRef:timedStored.path,outputHash:timedStored.sha256,result:{assetSpecRef:timedStored.path,timedPlanRef:timedPlanStored.path,timedTotalSeconds:timedTotal,items:items.length,ready:true,bytes,generated,reused,source},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts'}
+   return {outputRef:timedStored.path,outputHash:timedStored.sha256,result:{assetSpecRef:timedStored.path,timedPlanRef:timedPlanStored.path,namedThinkerAnchorBeatId:anchoredBeatId,timedTotalSeconds:timedTotal,items:items.length,ready:true,bytes,generated,reused,source},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts'}
   }finally{await rm(work,{recursive:true,force:true})}
  }}
 }

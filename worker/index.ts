@@ -52,6 +52,15 @@ async function main() {
       console.log(`[worker ${workerId}] RENDER_RECHECK_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
     }
   }
+  const assetRecheckJobId = String(process.env.ASSET_RECHECK_JOB_ID || '').trim()
+  if (assetRecheckJobId) {
+    try {
+      const job = await store.recheckAsset({ jobId: assetRecheckJobId })
+      console.log(`[worker ${workerId}] ASSET_RECHECK_JOB_ID job=${job.id} -> queued ASSET`)
+    } catch (e:any) {
+      console.log(`[worker ${workerId}] ASSET_RECHECK_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
+    }
+  }
   const qcRecheckJobId = String(process.env.QC_RECHECK_JOB_ID || '').trim()
   if (qcRecheckJobId) {
     try {
