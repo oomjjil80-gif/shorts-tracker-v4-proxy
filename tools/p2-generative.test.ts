@@ -27,3 +27,16 @@ test('P2 wisdom deterministic draft is structurally valid and provider-neutral',
 test('P2 boundary: Reference conditioning is not part of wisdom v1 contract',()=>{
  assert.equal((WISDOM_PROFILE as any).referenceProfile,undefined)
 })
+
+
+test('P2 timing contract: measured narration duration owns wisdom compile/QC timeline',async()=>{
+ const fs=await import('node:fs/promises')
+ const generative=await fs.readFile(new URL('../worker/stages/generative.ts',import.meta.url),'utf8')
+ const compile=await fs.readFile(new URL('../worker/stages/compile.ts',import.meta.url),'utf8')
+ const qc=await fs.readFile(new URL('../worker/stages/autoQc.ts',import.meta.url),'utf8')
+ assert.match(generative,/narrationSec\+0\.35/)
+ assert.match(generative,/timedPlanRef/)
+ assert.match(generative,/trimEnd:timedTotal/)
+ assert.match(compile,/timedPlanRef/)
+ assert.match(qc,/measuredTotal/)
+})
