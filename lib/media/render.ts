@@ -53,15 +53,10 @@ export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boo
       // The generated source already carries this geometry; preserve it exactly. Never run the generic embedded-framing blur/scale path.
       parts.push(`[${i}:v]setpts=PTS-STARTPTS,scale=${OUTPUT.width}:${OUTPUT.height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${OUTPUT.width}:${OUTPUT.height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${OUTPUT.fps},format=yuv420p[v${i}]`)
     } else if (embedded) {
-      // Many reposted vertical files are actually a landscape/4:3 picture embedded between black title/padding bands.
-      // Crop to the real picture, preserve the full foreground, and fill 9:16 with a darkened blurred duplicate.
-      // This removes baked-in title bands without stretching or amputating the CCTV/story frame.
-      parts.push(`[${i}:v]setpts=PTS-STARTPTS,crop=${embedded.width}:${embedded.height}:${embedded.x}:${embedded.y},split=2[bgsrc${i}][fgsrc${i}]`)
-      parts.push(`[bgsrc${i}]scale=${OUTPUT.width}:${OUTPUT.height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${OUTPUT.width}:${OUTPUT.height},gblur=sigma=30:steps=2,eq=brightness=-0.10:saturation=0.75[bg${i}]`)
-      parts.push(`[fgsrc${i}]scale=${OUTPUT.width}:${OUTPUT.height}:force_original_aspect_ratio=decrease:flags=lanczos[fg${i}]`)
-      parts.push(`[bg${i}][fg${i}]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=${OUTPUT.fps},format=yuv420p[v${i}]`)
+      // Common Shorts Screen DNA: top 360 headline band + center 1200 visual + bottom 360 subtitle band.
+      parts.push(`[${i}:v]setpts=PTS-STARTPTS,crop=${embedded.width}:${embedded.height}:${embedded.x}:${embedded.y},scale=${OUTPUT.width}:1200:force_original_aspect_ratio=increase:flags=lanczos,crop=${OUTPUT.width}:1200,pad=${OUTPUT.width}:${OUTPUT.height}:0:360:black,setsar=1,fps=${OUTPUT.fps},format=yuv420p[v${i}]`)
     } else {
-      parts.push(`[${i}:v]setpts=PTS-STARTPTS,scale=${OUTPUT.width}:${OUTPUT.height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${OUTPUT.width}:${OUTPUT.height},setsar=1,fps=${OUTPUT.fps},format=yuv420p[v${i}]`)
+      parts.push(`[${i}:v]setpts=PTS-STARTPTS,scale=${OUTPUT.width}:1200:force_original_aspect_ratio=increase:flags=lanczos,crop=${OUTPUT.width}:1200,pad=${OUTPUT.width}:${OUTPUT.height}:0:360:black,setsar=1,fps=${OUTPUT.fps},format=yuv420p[v${i}]`)
     }
     const fade = `afade=t=in:d=0.02,afade=t=out:st=${Math.max(0, c.duration - 0.02).toFixed(3)}:d=0.02`
     if (o.sourceHasAudio && !c.mute) parts.push(`[${i}:a]asetpts=PTS-STARTPTS,aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${c.volume},${fade}[a${i}]`)
