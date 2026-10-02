@@ -84,7 +84,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
     let pieces = [{ start: sub.start, end: sub.end }]
     for (const sp of suppress) pieces = pieces.flatMap((p) => (sp.end <= p.start || sp.start >= p.end ? [p] : [{ start: p.start, end: Math.max(p.start, sp.start) }, { start: Math.min(p.end, sp.end), end: p.end }].filter((q) => q.end - q.start > 0.05)))
     const fs = fitFontSize(text, textWidth - 40, 60, wisdom ? 2 : 3, 42)
-    for (const p of pieces) add(2, 'subtitle', wisdom ? 'WisdomSub' : 'Sub', p.start, p.end, text, `{\\fs${fs}}`)
+    for (const p of pieces) add(2, 'subtitle', 'WisdomSub', p.start, p.end, text, `{\\fs${fs}}`)
   }
   const styled = (kind: 'effect' | 'callout', e: Record<string, any>, defX: number, defY: number, defPct: number, layer: number) => {
     const text = sanitizeText(e.text)
