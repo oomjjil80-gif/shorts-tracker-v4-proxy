@@ -34,6 +34,15 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 async function main() {
   const db = await createPgDbFromEnv()
   const store = createJobStore(db)
+  const qcRecheckJobId = String(process.env.QC_RECHECK_JOB_ID || '').trim()
+  if (qcRecheckJobId) {
+    try {
+      const job = await store.recheckQc({ jobId: qcRecheckJobId })
+      console.log(`[worker ${workerId}] QC_RECHECK_JOB_ID job=${job.id} -> queued AUTO_QC`)
+    } catch (e:any) {
+      console.log(`[worker ${workerId}] QC_RECHECK_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
+    }
+  }
   const sourcePlanExecutor = createPlanExecutor({ openAi, resolveReferenceProfile: jobReferenceProfile })
   const planRouter = { ...sourcePlanExecutor, run: (ctx:any) => ctx.job.profile === 'wisdom' ? generativePlanExecutor.run(ctx) : sourcePlanExecutor.run(ctx), inputHash: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.inputHash(job) : sourcePlanExecutor.inputHash(job), estimateUsd: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.estimateUsd(job) : sourcePlanExecutor.estimateUsd(job) }
   const generativeAssetExecutor = createGenerativeAssetExecutor({ apiKey: process.env.OPENAI_API_KEY })
