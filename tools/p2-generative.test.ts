@@ -104,3 +104,15 @@ test('P2 wisdom blocks a named philosopher topic unless an early visual explicit
  assert.deepEqual(namedThinkerVisualErrors('쇼펜하우어가 말하는, 나이가 들수록 인간관계를 줄여야 하는 이유',base),[])
  assert.deepEqual(namedThinkerVisualErrors('나이가 들수록 인간관계를 줄여야 하는 이유',base),[])
 })
+
+
+test('Wisdom ASS emits a persistent headline event instead of dropping it',async()=>{
+ const {buildAss}=await import('../lib/media/ass.js')
+ const r=buildAss({totalDuration:40,wisdomLayout:true,headline:'쇼펜하우어가 말하는\\N인간관계를 줄여야 하는 이유',subtitles:[]})
+ const h=r.events.find((e:any)=>e.kind==='headline')
+ assert.ok(h)
+ assert.equal(h?.start,0)
+ assert.equal(h?.end,40)
+ assert.match(r.ass,/WisdomHead/)
+ assert.match(r.ass,/쇼펜하우어가 말하는/)
+})
