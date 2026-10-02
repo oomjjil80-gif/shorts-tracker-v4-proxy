@@ -106,7 +106,22 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
           gate = evaluateGate(checks)
 
           // Content (editorial) gate — separate from the technical gate above; recorded, never merged into it.
-          try { contentGate = evaluateContentGate({ payload: manifest.payload, analysis, semantic, framing: v.sourceFraming ?? null }) }
+          try {
+            if(job.profile==='wisdom'){
+              const scriptRef=(planRun?.result as any)?.scriptRef
+              const script:any=scriptRef?await blobs.getJson(scriptRef):null
+              const assetRun=await previous('ASSET'), assets:any=assetRun?.outputRef?await blobs.getJson(assetRun.outputRef):null
+              const beats=Array.isArray(script?.beats)?script.beats:[], items=Array.isArray(assets?.items)?assets.items:[]
+              const ready=items.length===beats.length&&items.every((x:any)=>x.image?.status==='ready'&&x.tts?.status==='ready')
+              const target=Number(script?.totalSeconds||0), actual=Number(outputInfo?.duration||v.duration||0)
+              contentGate=evaluateGate([
+                {id:'wisdom.script_structure',required:true,status:script?.schema==='wisdom-script/1'&&beats.length>=4?'PASS':'FAIL',evidence:{beats:beats.length}},
+                {id:'wisdom.assets_complete',required:true,status:ready?'PASS':'FAIL',evidence:{beats:beats.length,items:items.length}},
+                {id:'wisdom.narration_present',required:true,status:outputInfo?.hasAudio?'PASS':'FAIL',evidence:{hasAudio:outputInfo?.hasAudio??false}},
+                {id:'wisdom.duration_matches_script',required:true,status:target>0&&actual>0&&Math.abs(target-actual)<=Math.max(1,target*.05)?'PASS':'FAIL',evidence:{target,actual}}
+              ])
+            } else contentGate = evaluateContentGate({ payload: manifest.payload, analysis, semantic, framing: v.sourceFraming ?? null })
+          }
           catch (e: any) { contentGate = evaluateGate([{ id: 'content.evaluated', required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } }]) }
 
           try {
