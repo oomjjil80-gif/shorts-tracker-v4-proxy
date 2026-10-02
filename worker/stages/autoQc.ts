@@ -118,7 +118,13 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
                 {id:'wisdom.script_structure',required:true,status:script?.schema==='wisdom-script/1'&&beats.length>=4?'PASS':'FAIL',evidence:{beats:beats.length}},
                 {id:'wisdom.assets_complete',required:true,status:ready?'PASS':'FAIL',evidence:{beats:beats.length,items:items.length}},
                 {id:'wisdom.narration_present',required:true,status:outputInfo?.hasAudio?'PASS':'FAIL',evidence:{hasAudio:outputInfo?.hasAudio??false}},
-                {id:'wisdom.duration_matches_script',required:true,status:target>0&&actual>0&&Math.abs(target-actual)<=Math.max(1,target*.05)?'PASS':'FAIL',evidence:{target,actual}}
+                {id:'wisdom.duration_matches_script',required:true,status:target>0&&actual>0&&Math.abs(target-actual)<=Math.max(1,target*.05)?'PASS':'FAIL',evidence:{target,actual}},
+                {id:'wisdom.topic_faithfulness',required:true,status:(planRun?.result as any)?.semanticQc?.topicFaithfulness?'PASS':'FAIL',evidence:(planRun?.result as any)?.semanticQc},
+                {id:'wisdom.hook',required:true,status:(planRun?.result as any)?.semanticQc?.hook?'PASS':'FAIL',evidence:(planRun?.result as any)?.semanticQc},
+                {id:'wisdom.progression',required:true,status:(planRun?.result as any)?.semanticQc?.progression?'PASS':'FAIL',evidence:(planRun?.result as any)?.semanticQc},
+                {id:'wisdom.turn',required:true,status:(planRun?.result as any)?.semanticQc?.turn?'PASS':'FAIL',evidence:(planRun?.result as any)?.semanticQc},
+                {id:'wisdom.ending',required:true,status:(planRun?.result as any)?.semanticQc?.ending?'PASS':'FAIL',evidence:(planRun?.result as any)?.semanticQc},
+                {id:'wisdom.non_repetitive',required:true,status:(planRun?.result as any)?.semanticQc?.nonRepetitive?'PASS':'FAIL',evidence:(planRun?.result as any)?.semanticQc}
               ])
             } else contentGate = evaluateContentGate({ payload: manifest.payload, analysis, semantic, framing: v.sourceFraming ?? null })
           }
