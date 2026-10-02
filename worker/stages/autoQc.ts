@@ -5,7 +5,7 @@ import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
 import { evaluateGate, type CheckResult } from '../../lib/qc/gate.js'
 import { analyzeSourceFile, type SourceAnalysis } from '../../lib/media/analyze.js'
 import { QC_THRESHOLDS, runRenderQc } from '../../lib/media/qc.js'
-import { foregroundRect, measureOuterCanvasFill, regionSignature, type SourceFraming } from '../../lib/media/framing.js'
+import { detectSourceFraming, foregroundRect, measureOuterCanvasFill, regionSignature, type SourceFraming } from '../../lib/media/framing.js'
 import { extractJpeg, signatureDistance, probe, sceneScores, detectSilence } from '../../lib/media/ffmpeg.js'
 import { extractRenderPlan } from '../../lib/media/render.js'
 import { evaluateContentGate } from '../../lib/media/contentGate.js'
@@ -98,10 +98,21 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
           // Output QC is NOT the source detector: it only asks whether the outer canvas still shows persistent pure-black
           // padding. A dark blurred background carries picture energy and passes; true letterbox/pillarbox bars fail.
           try {
-            const fill = await measureOuterCanvasFill(renderPath)
-            checks.push({ id: 'visual.frame_utilization', required: true, status: fill.filled ? 'PASS' : 'FAIL', evidence: fill })
+            if (job.profile === 'wisdom') {
+              const framing = await detectSourceFraming(renderPath)
+              const crop = framing.crop
+              const expectedTop = 360 / 1920, expectedHeight = 1200 / 1920, tolerance = 0.035
+              const actualTop = crop ? crop.y / Number(outputInfo?.height || 1920) : null
+              const actualHeight = crop ? crop.height / Number(outputInfo?.height || 1920) : null
+              const pass = framing.mode === 'embedded' && crop !== null && actualTop !== null && actualHeight !== null
+                && Math.abs(actualTop - expectedTop) <= tolerance && Math.abs(actualHeight - expectedHeight) <= tolerance
+              checks.push({ id: 'wisdom.screen_dna_layout', required: true, status: pass ? 'PASS' : 'FAIL', evidence: { framing, expected: { topBlack: expectedTop, centerHeight: expectedHeight, bottomBlack: expectedTop }, actual: { top: actualTop, centerHeight: actualHeight }, tolerance } })
+            } else {
+              const fill = await measureOuterCanvasFill(renderPath)
+              checks.push({ id: 'visual.frame_utilization', required: true, status: fill.filled ? 'PASS' : 'FAIL', evidence: fill })
+            }
           } catch (e: any) {
-            checks.push({ id: 'visual.frame_utilization', required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } })
+            checks.push({ id: job.profile === 'wisdom' ? 'wisdom.screen_dna_layout' : 'visual.frame_utilization', required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } })
           }
           gate = evaluateGate(checks)
 
