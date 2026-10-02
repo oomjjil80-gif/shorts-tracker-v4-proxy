@@ -74,7 +74,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
   if (head) {
     const fs = fitFontSize(head, textWidth, 84, 2, 56)
     const headOverride = wisdom && head.includes('\\\\N') ? `{\\\\fs${fs}}\\\\c&H00FFFFFF&${head.replace('\\\\N', '\\\\N{\\\\c&H0000D7FF&}')}` : `{\\\\fs${fs}}${head}`
-    if (wisdom) add(1, 'headline', 'WisdomHead', 0, total, '', headOverride)
+    if (wisdom) add(1, 'headline', 'WisdomHead', 0, total, head, headOverride)
     else add(1, 'headline', 'Head', 0, total, head, `{\\\\fs${fs}}`)
   }
   for (const sub of input.subtitles || []) {
