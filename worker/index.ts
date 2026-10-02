@@ -34,6 +34,15 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 async function main() {
   const db = await createPgDbFromEnv()
   const store = createJobStore(db)
+  const compileRecheckJobId = String(process.env.COMPILE_RECHECK_JOB_ID || '').trim()
+  if (compileRecheckJobId) {
+    try {
+      const job = await store.recheckCompile({ jobId: compileRecheckJobId })
+      console.log(`[worker ${workerId}] COMPILE_RECHECK_JOB_ID job=${job.id} -> queued COMPILE`)
+    } catch (e:any) {
+      console.log(`[worker ${workerId}] COMPILE_RECHECK_JOB_ID skipped: ${String(e?.code || e?.message || e)}`)
+    }
+  }
   const qcRecheckJobId = String(process.env.QC_RECHECK_JOB_ID || '').trim()
   if (qcRecheckJobId) {
     try {
