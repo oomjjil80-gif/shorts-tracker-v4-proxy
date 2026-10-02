@@ -13,6 +13,16 @@ async function compileOne(ctx: Pick<StageContext, 'job' | 'blobs'>, sourceAsset:
   const plan: any = await blobs.getJson(planRef)
   if (!plan) throw new StageError('PLAN_MISSING', `plan blob not found: ${planRef}`)
 
+  // Generated Wisdom media is authoritative: older ASSET runs may have a timed plan
+  // based on intended segment durations that exceeds the real concatenated MP4.
+  // Normalize only the compile-time copy; paid assets and immutable stored plans stay untouched.
+  if (job.profile === 'wisdom' && Number(sourceAsset.duration) > 0 && plan?.variantPlan) {
+    const mediaEnd = Number(Number(sourceAsset.duration).toFixed(2))
+    const vp = plan.variantPlan
+    if (Array.isArray(vp.beats) && vp.beats.length) vp.beats = vp.beats.map((b:any) => ({ ...b, trimEnd: Math.min(Number(b.trimEnd ?? mediaEnd), mediaEnd) }))
+    if (Array.isArray(vp.events)) vp.events = vp.events.map((e:any) => ({ ...e, start: Math.min(Number(e.start ?? 0), mediaEnd), end: Math.min(Number(e.end ?? mediaEnd), mediaEnd) })).filter((e:any) => e.end > e.start)
+  }
+
   let compiled
   try { compiled = compileJobPlan({ jobId: job.id, plan, sourceAsset }) }
   catch (e: any) { throw new StageError('PLAN_INVALID', String(e?.message || e)) }
