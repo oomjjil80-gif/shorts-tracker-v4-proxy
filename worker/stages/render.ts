@@ -29,7 +29,7 @@ export function compiledVariantsFromRun(compile: any): CompiledForRender[] {
 export const renderExecutor: StageExecutor = {
   stage: 'RENDER',
   estimateUsd: () => 0,
-  inputHash: (job) => sha256(`render|${job.id}|${job.planRev}`),
+  inputHash: (job) => sha256(`render|v2|${job.id}|${job.planRev}`),
   async run({ job, blobs, previous, resolveSourceAsset, resolveSourceFile, signal }) {
     const compile = await previous('COMPILE')
     const compiled = compiledVariantsFromRun(compile)

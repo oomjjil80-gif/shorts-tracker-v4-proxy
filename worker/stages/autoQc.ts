@@ -46,7 +46,7 @@ async function framedTimelineCheck(renderPath: string, sourceFile: string, paylo
 export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null = null, resolveReferenceProfile?: (job:any, blobs:any)=>Promise<ReferenceProfile|null>): StageExecutor { return {
   stage: 'AUTO_QC',
   estimateUsd: () => 0,
-  inputHash: (job) => sha256(`auto-qc|${job.id}|${job.planRev}|${job.referenceProfileRef ?? 'no-reference'}`),
+  inputHash: (job) => sha256(`auto-qc|v2|${job.id}|${job.planRev}|${job.referenceProfileRef ?? 'no-reference'}`),
   async run({ job, blobs, previous, resolveSourceAsset, resolveSourceFile, signal }) {
     const render = await previous('RENDER')
     const rendered = ((render?.result as any)?.variants || []) as any[]
