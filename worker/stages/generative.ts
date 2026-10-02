@@ -36,13 +36,20 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   if(!apiKey)throw new StageError('PROVIDER_DOWN','OPENAI_API_KEY is not configured',true)
   const p=await previous('PLAN'); const scriptRef=(p?.result as any)?.scriptRef; if(!scriptRef)throw new StageError('SCRIPT_MISSING','ASSET requires PLAN script')
   const script:any=await blobs.getJson(scriptRef); if(!script||script.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
-  const items:any[]=[]; let bytes=0
+  const items:any[]=[]; let bytes=0, generated=0, reused=0
   for(const b of script.beats){
    if(signal.aborted)throw new Error('aborted')
-   const [im,au]=await Promise.all([image(b.imagePrompt,apiKey),tts(b.narration,apiKey)])
+   const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256('tts-v1|'+b.narration)
+   let im:any=null, au:any=null
+   try{const m:any=await blobs.getJson('generative-cache/image/'+ik+'.json');const z=m?.ref?await blobs.getBytes(m.ref):null;if(z)im={...m,bytes:z}}catch{}
+   try{const m:any=await blobs.getJson('generative-cache/tts/'+ak+'.json');const z=m?.ref?await blobs.getBytes(m.ref):null;if(z)au={...m,bytes:z}}catch{}
+   if(im)reused++;else{im=await image(b.imagePrompt,apiKey);generated++}
+   if(au)reused++;else{au=await tts(b.narration,apiKey);generated++}
    const ih=sha256(im.bytes), ah=sha256(au.bytes)
    const ip=`generative-assets/images/${ih}.jpg`, ap=`generative-assets/audio/${ah}.mp3`
    await blobs.putBytes(ip,im.bytes,im.contentType); await blobs.putBytes(ap,au.bytes,au.contentType); bytes+=im.bytes.length+au.bytes.length
+   await blobs.putJson('generative-cache/image/'+ik+'.json',{ref:ip,sha256:ih,contentType:im.contentType,provider:im.provider,model:im.model})
+   await blobs.putJson('generative-cache/tts/'+ak+'.json',{ref:ap,sha256:ah,contentType:au.contentType,provider:au.provider,model:au.model})
    items.push({beatId:b.id,durationSec:b.durationSec,narration:b.narration,image:{status:'ready',ref:ip,sha256:ih,contentType:im.contentType,provider:im.provider,model:im.model},tts:{status:'ready',ref:ap,sha256:ah,contentType:au.contentType,provider:au.provider,model:au.model}})
   }
   const manifest={schema:'generative-assets/1',profile:'wisdom',scriptRef,items}
@@ -65,7 +72,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    await blobs.putBytes(blobPath,video,'video/mp4')
    const source={sourceAssetId:job.sourceAssetId,blobPath,sha256:vh,duration:info.duration,width:info.width,height:info.height,videoCodec:info.videoCodec,audioCodec:info.audioCodec,generative:true,assetSpecRef:stored.path}
    await blobs.putJson(`generative-sources/${job.sourceAssetId}.json`,source)
-   return {outputRef:stored.path,outputHash:stored.sha256,result:{assetSpecRef:stored.path,items:items.length,ready:true,bytes,source},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts'}
+   return {outputRef:stored.path,outputHash:stored.sha256,result:{assetSpecRef:stored.path,items:items.length,ready:true,bytes,generated,reused,source},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts'}
   }finally{await rm(work,{recursive:true,force:true})}
  }}
 }
