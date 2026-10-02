@@ -1,20 +1,37 @@
 import { WISDOM_PROFILE, type GenerativeBrief } from './contracts.js'
 export type WisdomBeat={id:string,narration:string,visualGoal:string,imagePrompt:string,durationSec:number}
 export type WisdomScript={schema:'wisdom-script/1',title:string,hook:string,beats:WisdomBeat[],ending:string,totalSeconds:number}
-const namedThinkerAliases:[RegExp,string[]][]=[
- [/쇼펜하우어|schopenhauer/i,['쇼펜하우어','schopenhauer','arthur schopenhauer']],
- [/니체|nietzsche/i,['니체','nietzsche','friedrich nietzsche']],
- [/소크라테스|socrates/i,['소크라테스','socrates']],
- [/세네카|seneca/i,['세네카','seneca']],
- [/마르쿠스\s*아우렐리우스|marcus\s*aurelius/i,['마르쿠스 아우렐리우스','marcus aurelius']],
+// Named historical thinkers: aliases detect the topic; `likeness` is the public-domain visual identity an image model
+// needs to draw THAT person recognizably instead of a generic elderly man.
+const namedThinkers:{re:RegExp,aliases:string[],name:string,likeness:string}[]=[
+ {re:/쇼펜하우어|schopenhauer/i,aliases:['쇼펜하우어','schopenhauer','arthur schopenhauer'],name:'Arthur Schopenhauer',likeness:'German philosopher (1788-1860) as in his famous 1850s photographic portraits: elderly, bald crown with tufts of white hair swept out at the sides, large bushy white mutton-chop sideburns, clean-shaven chin and upper lip, thin tightly pressed lips, intense sharp eyes, dark 19th-century frock coat with high white collar and black cravat'},
+ {re:/니체|nietzsche/i,aliases:['니체','nietzsche','friedrich nietzsche'],name:'Friedrich Nietzsche',likeness:'German philosopher (1844-1900) as in his 1880s portraits: very large thick drooping walrus moustache, deep-set intense eyes, swept-back dark hair, dark 19th-century suit with high collar'},
+ {re:/소크라테스|socrates/i,aliases:['소크라테스','socrates'],name:'Socrates',likeness:'ancient Athenian philosopher as in classical marble busts: bald head, broad snub nose, full curly beard, simple Greek himation robe, ancient Athens setting'},
+ {re:/세네카|seneca/i,aliases:['세네카','seneca'],name:'Seneca',likeness:'Roman Stoic philosopher as in classical busts: lean aged face, short unkempt beard, receding tousled hair, Roman toga, ancient Rome setting'},
+ {re:/마르쿠스\s*아우렐리우스|marcus\s*aurelius/i,aliases:['마르쿠스 아우렐리우스','marcus aurelius'],name:'Marcus Aurelius',likeness:'Roman emperor and Stoic philosopher as in his classical busts and equestrian statue: thick curly hair, full curly beard, Roman imperial cloak, ancient Rome setting'},
 ]
+const thinkerFor=(topic:string)=>namedThinkers.find(t=>t.re.test(String(topic||'')))
+// applyVisualBible() wraps every beat as "... Character policy: <bible>. Scene goal: <goal>. Scene: <scene>. Avoid: ...".
+// Only the beat's own scene says what is drawn; bible text is shared by all beats and a goal can merely mention a name.
+export const beatScene=(imagePrompt:unknown)=>{const p=String(imagePrompt||''),i=p.lastIndexOf('. Scene: '),j=p.lastIndexOf('. Avoid: ');return i>=0&&j>i?p.slice(i+9,j):p}
+const NAMED_THINKER_EARLY_BEATS=2
+const depictsThinker=(b:any,t:{aliases:string[]})=>t.aliases.some(a=>beatScene(b?.imagePrompt).toLowerCase().includes(a))
 export function namedThinkerVisualErrors(topic:string,s:any):string[]{
- const hit=namedThinkerAliases.find(([re])=>re.test(String(topic||'')))
- if(!hit)return []
- const aliases=hit[1].map(x=>x.toLowerCase())
- const early=(Array.isArray(s?.beats)?s.beats:[]).slice(0,3)
- const present=early.some((b:any)=>aliases.some(a=>(String(b?.visualGoal||'')+' '+String(b?.imagePrompt||'')).toLowerCase().includes(a)))
- return present?[]:['namedThinker.earlyVisual']
+ const t=thinkerFor(topic)
+ if(!t)return []
+ const early=(Array.isArray(s?.beats)?s.beats:[]).slice(0,NAMED_THINKER_EARLY_BEATS)
+ return early.some((b:any)=>depictsThinker(b,t))?[]:['namedThinker.earlyVisual']
+}
+// Deterministic guarantee used right before paid image generation: if the topic names a thinker and neither of the first
+// two beats' scenes depicts them, re-aim the FIRST beat's image (only its image prompt; narration/duration untouched) at a
+// recognizable likeness of that person, keeping the shared style/palette/lighting but not the generic character policy.
+export function anchorNamedThinkerVisual(s:WisdomScript,topic:string):{script:WisdomScript;anchoredBeatId:string|null}{
+ const t=thinkerFor(topic)
+ if(!t||!s.beats.length||!namedThinkerVisualErrors(topic,s).length)return {script:s,anchoredBeatId:null}
+ const b=s.beats[0], p=String(b.imagePrompt||''), cp=p.indexOf(' Character policy: '), av=p.lastIndexOf('. Avoid: ')
+ const style=cp>=0?p.slice(0,cp):'', avoid=av>=0?p.slice(av+2):'no readable text, no watermark'
+ const imagePrompt=`${style?style+' ':''}Main subject: a clearly recognizable portrait of ${t.name}, ${t.likeness}. He is the only person and the focal point, face fully visible in the central area. Setting mood from the scene: ${beatScene(p)}. ${avoid}`
+ return {script:{...s,beats:[{...b,imagePrompt},...s.beats.slice(1)]},anchoredBeatId:b.id}
 }
 export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
  const e:string[]=[]

@@ -1,6 +1,6 @@
 import { sha256, putAddressed } from '../../lib/jobs/blobs.js'
 import { WISDOM_PROFILE } from '../../lib/generative/contracts.js'
-import { deterministicWisdomDraft, validateWisdomScript } from '../../lib/generative/wisdom.js'
+import { deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual } from '../../lib/generative/wisdom.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -34,7 +34,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   let script:any, visualBible:any=null, provider='deterministic', fallbackReason:string|undefined
   if(apiKey){try{
    const made=await aiPlan(brief,apiKey)
-   const candidate=applyVisualBible(made.script,made.visualBible)
+   const candidate=anchorNamedThinkerVisual(applyVisualBible(made.script,made.visualBible),String(brief.text||'')).script
    const candidateErrors=validateWisdomScript(candidate,brief)
    if(candidateErrors.length)throw new Error('AI script validation: '+candidateErrors.join(','))
    script=candidate;visualBible=made.visualBible;provider='openai'
@@ -49,7 +49,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
    try{
     const repairBrief={...brief,text:`${brief.text}\n\n[MANDATORY REPAIR] Previous draft failed semantic QC: ${semanticQc.reasons.join(', ')}. Rewrite the whole script once. Preserve the topic, but make every failed dimension explicit. If "turn" failed, include a clear mid-script reversal such as "하지만 핵심은 단순히 사람 수를 줄이는 것이 아니다" followed by the deeper insight and payoff. Do not mention this repair instruction in narration.`}
     const repaired=await aiPlan(repairBrief,apiKey)
-    const repairedCandidate=applyVisualBible(repaired.script,repaired.visualBible)
+    const repairedCandidate=anchorNamedThinkerVisual(applyVisualBible(repaired.script,repaired.visualBible),String(brief.text||'')).script
     const repairedErrors=validateWisdomScript(repairedCandidate,brief)
     if(!repairedErrors.length){
      const repairedQc=evaluateWisdomSemanticQc(String(brief.text||''),repairedCandidate)
@@ -82,7 +82,10 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   if(job.profile!=='wisdom')throw new StageError('PROFILE_UNSUPPORTED','generative ASSET only handles wisdom')
   if(!apiKey)throw new StageError('PROVIDER_DOWN','OPENAI_API_KEY is not configured',true)
   const p=await previous('PLAN'); const scriptRef=(p?.result as any)?.scriptRef; if(!scriptRef)throw new StageError('SCRIPT_MISSING','ASSET requires PLAN script')
-  const script:any=await blobs.getJson(scriptRef); if(!script||script.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
+  const planned:any=await blobs.getJson(scriptRef); if(!planned||planned.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
+  // A thinker named in the title/hook must be drawn in the first cuts. Only that beat's image prompt can change, so its
+  // image is the only cache miss; every other image and all narration/TTS (and thus timing) are reused as-is.
+  const {script,anchoredBeatId}=anchorNamedThinkerVisual(planned,`${planned.title} ${planned.hook}`)
   const items:any[]=[]; let bytes=0, generated=0, reused=0
   for(const b of script.beats){
    if(signal.aborted)throw new Error('aborted')
@@ -99,7 +102,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    await blobs.putJson('generative-cache/tts/'+ak+'.json',{ref:ap,sha256:ah,contentType:au.contentType,provider:au.provider,model:au.model})
    items.push({beatId:b.id,durationSec:b.durationSec,narration:b.narration,image:{status:'ready',ref:ip,sha256:ih,contentType:im.contentType,provider:im.provider,model:im.model},tts:{status:'ready',ref:ap,sha256:ah,contentType:au.contentType,provider:au.provider,model:au.model}})
   }
-  const manifest={schema:'generative-assets/1',profile:'wisdom',scriptRef,items}
+  const manifest={schema:'generative-assets/1',profile:'wisdom',scriptRef,items,...(anchoredBeatId?{namedThinkerAnchor:{beatId:anchoredBeatId,imagePrompt:script.beats[0].imagePrompt}}:{})}
   const stored=await putAddressed(blobs,'generative-assets',manifest)
   const work=await mkdtemp(join(tmpdir(),'wisdom-asset-'))
   try{
