@@ -118,14 +118,23 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    }
    const list=join(work,'concat.txt');await writeFile(list,segments.map(p=>`file '${p.replaceAll("'","'\\''")}'`).join('\n'))
    const out=join(work,'source.mp4');await runOk(['-y','-f','concat','-safe','0','-i',list,'-c','copy','-movflags','+faststart',out],{signal,timeoutMs:120000})
-   const timedManifest={...manifest,items}
-   const timedStored=await putAddressed(blobs,'generative-assets',timedManifest)
+   const video=await readFile(out), vh=sha256(video), info=await probe(out), blobPath=`source-collector/generated/${vh}.mp4`
+   const actualTotal=Number(Number(info.duration||0).toFixed(2))
+   if(!(actualTotal>0)) throw new StageError('GENERATED_DURATION_INVALID','generated concat duration is invalid')
+   const plannedTotal=items.reduce((sum:number,x:any)=>sum+Number(x.durationSec||0),0)
    let timedClock=0
-   const timedEvents=items.map((x:any)=>{const start=Number(timedClock.toFixed(2));timedClock+=Number(x.durationSec);return {start,end:Number(timedClock.toFixed(2)),text:x.narration}})
-   const timedTotal=Number(timedClock.toFixed(2))
+   const timedEvents=items.map((x:any,i:number)=>{
+    const start=Number(timedClock.toFixed(2))
+    const rawEnd=i===items.length-1?actualTotal:(plannedTotal>0?actualTotal*((timedClock+Number(x.durationSec||0))/plannedTotal):actualTotal)
+    const end=Number(Math.min(actualTotal,Math.max(start,rawEnd)).toFixed(2))
+    timedClock=end
+    return {start,end,text:x.narration}
+   })
+   const timedTotal=actualTotal
+   const timedManifest={...manifest,items,actualDurationSec:actualTotal}
+   const timedStored=await putAddressed(blobs,'generative-assets',timedManifest)
    const timedPlan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:timedTotal}],headline:wisdomHeadline(script.title),events:timedEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
    const timedPlanStored=await putAddressed(blobs,'plans',timedPlan)
-   const video=await readFile(out), vh=sha256(video), info=await probe(out), blobPath=`source-collector/generated/${vh}.mp4`
    await blobs.putBytes(blobPath,video,'video/mp4')
    const source={sourceAssetId:job.sourceAssetId,blobPath,sha256:vh,duration:info.duration,width:info.width,height:info.height,videoCodec:info.videoCodec,audioCodec:info.audioCodec,generative:true,assetSpecRef:timedStored.path}
    await blobs.putJson(`generative-sources/${job.sourceAssetId}.json`,source)
