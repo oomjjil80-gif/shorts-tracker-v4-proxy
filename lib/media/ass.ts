@@ -73,7 +73,9 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
 
   if (head) {
     const fs = fitFontSize(head, textWidth, 84, 2, 56)
-    add(1, 'headline', wisdom ? 'WisdomHead' : 'Head', 0, total, head, `{\\fs${fs}}`)
+    const headOverride = wisdom && head.includes('\\\\N') ? `{\\\\fs${fs}}\\\\c&H00FFFFFF&${head.replace('\\\\N', '\\\\N{\\\\c&H0000D7FF&}')}` : `{\\\\fs${fs}}${head}`
+    if (wisdom) add(1, 'headline', 'WisdomHead', 0, total, '', headOverride)
+    else add(1, 'headline', 'Head', 0, total, head, `{\\\\fs${fs}}`)
   }
   for (const sub of input.subtitles || []) {
     const text = sanitizeText(sub.text)
@@ -81,7 +83,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
     // hide subtitles underneath a callout that asks for it (split around the callout span)
     let pieces = [{ start: sub.start, end: sub.end }]
     for (const sp of suppress) pieces = pieces.flatMap((p) => (sp.end <= p.start || sp.start >= p.end ? [p] : [{ start: p.start, end: Math.max(p.start, sp.start) }, { start: Math.min(p.end, sp.end), end: p.end }].filter((q) => q.end - q.start > 0.05)))
-    const fs = fitFontSize(text, textWidth - 40, 60, 3, 42)
+    const fs = fitFontSize(text, textWidth - 40, 60, wisdom ? 2 : 3, 42)
     for (const p of pieces) add(2, 'subtitle', wisdom ? 'WisdomSub' : 'Sub', p.start, p.end, text, `{\\fs${fs}}`)
   }
   const styled = (kind: 'effect' | 'callout', e: Record<string, any>, defX: number, defY: number, defPct: number, layer: number) => {
