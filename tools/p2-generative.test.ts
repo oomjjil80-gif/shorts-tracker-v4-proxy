@@ -75,3 +75,17 @@ test('P2 wisdom headline is deterministically split into two persistent lines',a
  assert.match(h,/\\N/)
  assert.equal(h.replace('\\N',' '),'나이가 들수록 인간관계에서 정말 중요한 것')
 })
+
+test('P2 Korean topic faithfulness tolerates particles and inflection without weakening unrelated rejection',async()=>{
+ const {evaluateWisdomSemanticQc}=await import('../lib/generative/semanticQc.js')
+ const script:any={schema:'wisdom-script/1',title:'나이 들수록 인간관계는 줄여도 됩니다',hook:'쇼펜하우어의 관점에서 관계의 수보다 중요한 것을 봅니다',ending:'결국 중요한 것은 관계의 숫자가 아니라 깊이입니다',totalSeconds:40,beats:[
+  {id:'b1',narration:'나이가 들수록 모든 인간관계를 붙잡을 필요는 없습니다',visualGoal:'a',imagePrompt:'a',durationSec:8},
+  {id:'b2',narration:'관계가 많아도 마음이 편하지 않다면 피로만 쌓입니다',visualGoal:'b',imagePrompt:'b',durationSec:8},
+  {id:'b3',narration:'하지만 혼자가 되라는 뜻은 아닙니다',visualGoal:'c',imagePrompt:'c',durationSec:8},
+  {id:'b4',narration:'오히려 적은 사람에게 더 깊은 시간을 쓰는 편이 낫습니다',visualGoal:'d',imagePrompt:'d',durationSec:8},
+  {id:'b5',narration:'남길 관계를 고르는 일이 삶을 가볍게 합니다',visualGoal:'e',imagePrompt:'e',durationSec:8}]}
+ const good=evaluateWisdomSemanticQc('쇼펜하우어가 말하는, 나이가 들수록 인간관계를 줄여야 하는 이유',script)
+ assert.equal(good.topicFaithfulness,true)
+ const bad=evaluateWisdomSemanticQc('퇴직 후 연금 투자 전략',script)
+ assert.equal(bad.topicFaithfulness,false)
+})
