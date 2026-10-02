@@ -74,6 +74,12 @@ export const compileExecutor: StageExecutor = {
     for (const v of list) variants.push(await compileOne(ctx, sourceAsset, v.planRef, v.variantId, v.label))
 
     const passing = variants.filter((v) => v.gate.decision === 'PASS')
+    if (!passing.length) {
+      for (const v of variants) {
+        const failed = (v.gate as any)?.checks?.filter((c:any)=>c.status !== 'PASS') ?? []
+        console.info(`[COMPILE_QC] job=${job.id} variant=${v.variantId} decision=${v.gate.decision} failed=${JSON.stringify(failed)}`)
+      }
+    }
     const lead = passing[0] ?? variants[0]
     return {
       outputRef: lead.manifestRef,
