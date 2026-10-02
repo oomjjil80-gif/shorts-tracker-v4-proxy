@@ -134,12 +134,16 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               const beats=Array.isArray(script?.beats)?script.beats:[], items=Array.isArray(assets?.items)?assets.items:[]
               const ready=items.length===beats.length&&items.every((x:any)=>x.image?.status==='ready'&&x.tts?.status==='ready')
               const measuredTotal=items.reduce((sum:number,x:any)=>sum+Number(x.durationSec||0),0)
-              const target=Number(measuredTotal||script?.totalSeconds||0), actual=Number(outputInfo?.duration||v.duration||0)
+              // COMPILE is authoritative for the final timeline. ASSET item durations are pre-compile measurements
+              // and may legitimately exceed the bounded source timeline (for example when generated TTS has tail audio).
+              // Compare the rendered output with the immutable compiled manifest, while retaining script/asset totals as evidence.
+              const manifestTotal=Number(extractRenderPlan(manifest.payload).total)
+              const actual=Number(outputInfo?.duration||v.duration||0)
               contentGate=evaluateGate([
                 {id:'wisdom.script_structure',required:true,status:script?.schema==='wisdom-script/1'&&beats.length>=4?'PASS':'FAIL',evidence:{beats:beats.length}},
                 {id:'wisdom.assets_complete',required:true,status:ready?'PASS':'FAIL',evidence:{beats:beats.length,items:items.length}},
                 {id:'wisdom.narration_present',required:true,status:outputInfo?.hasAudio?'PASS':'FAIL',evidence:{hasAudio:outputInfo?.hasAudio??false}},
-                {id:'wisdom.duration_matches_script',required:true,status:target>0&&actual>0&&Math.abs(target-actual)<=Math.max(1,target*.05)?'PASS':'FAIL',evidence:{target,actual}},
+                {id:'wisdom.duration_matches_script',required:true,status:manifestTotal>0&&actual>0&&Math.abs(manifestTotal-actual)<=Math.max(1,manifestTotal*.05)?'PASS':'FAIL',evidence:{authoritativeManifestTotal:manifestTotal,scriptPlannedTotal:Number(script?.totalSeconds||0),assetMeasuredTotal:measuredTotal,actual}},
                 {id:'wisdom.topic_faithfulness',required:true,status:(planRun?.result as any)?.semanticQc?.topicFaithfulness?'PASS':'FAIL',evidence:(planRun?.result as any)?.semanticQc},
                 {id:'wisdom.hook',required:true,status:(planRun?.result as any)?.semanticQc?.hook?'PASS':'FAIL',evidence:(planRun?.result as any)?.semanticQc},
                 {id:'wisdom.progression',required:true,status:(planRun?.result as any)?.semanticQc?.progression?'PASS':'FAIL',evidence:(planRun?.result as any)?.semanticQc},
