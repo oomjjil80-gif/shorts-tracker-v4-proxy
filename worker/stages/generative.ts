@@ -30,7 +30,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   const captionEvents=script.beats.map((b:any)=>{const start=Number(clock.toFixed(2));clock+=Number(b.durationSec);return {start,end:Number(clock.toFixed(2)),text:b.narration}})
   const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}],headline:script.title,events:captionEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
   const planStored=await putAddressed(blobs,'plans',plan)
-  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,beats:script.beats.length,totalSeconds:script.totalSeconds}}
+  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,audioPolicy:{bgm:'off',sfx:'off'},beats:script.beats.length,totalSeconds:script.totalSeconds}}
  }
 }}
 export const generativePlanExecutor=createGenerativePlanExecutor()
