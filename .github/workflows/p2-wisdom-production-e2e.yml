@@ -1,0 +1,49 @@
+name: P2 wisdom Production E2E
+
+on:
+  push:
+    branches: [p2-wisdom-prod-e2e]
+    paths: ['.github/workflows/p2-wisdom-production-e2e.yml']
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Exercise one paid wisdom Production job
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://shorts-tracker-v4-proxy.vercel.app'
+          KEY='p2-wisdom-prod-e2e-f16f050f'
+          IDEM='p2-wisdom-prod-e2e-20261002-f16f050f-v1'
+
+          cat >/tmp/job.json <<'JSON'
+          {"taskType":"job_create","profile":"wisdom","idempotencyKey":"p2-wisdom-prod-e2e-20261002-f16f050f-v1","budgetUsd":5,"input":{"kind":"text","text":"나이가 들수록 모든 사람에게 인정받으려 애쓸 필요는 없습니다. 오래 남는 관계는 숫자가 아니라 서로를 편안하게 해주는 깊이로 결정됩니다. 말이 줄어도 마음이 통하는 사람, 어려울 때 조용히 곁을 지켜주는 사람 몇 명이면 충분합니다. 관계를 억지로 붙잡는 대신 내 마음의 평온을 지키는 것도 삶의 지혜입니다.","targetSeconds":40}}
+          JSON
+          curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/job.json "$BASE/api/story" >/tmp/jobresp.json
+          JID=$(node -e 'const d=require("/tmp/jobresp.json");if(!d.ok||!d.job?.id)throw Error("job create failed "+JSON.stringify(d));process.stdout.write(d.job.id)')
+          echo "P2_JOB_CREATED=$JID"
+
+          for i in $(seq 1 100); do
+            curl -fsS -H "X-Sync-Key: $KEY" "$BASE/api/story?taskType=job_get&id=$JID" >/tmp/state.json
+            ST=$(node -e 'const d=require("/tmp/state.json");process.stdout.write(d.job.status)')
+            SG=$(node -e 'const d=require("/tmp/state.json");process.stdout.write(d.job.stage)')
+            echo "poll $i $ST $SG"
+            if [ "$ST" = "WAITING_USER" ]; then
+              WR=$(node -e 'const d=require("/tmp/state.json").job;if(d.waitReason)process.stdout.write(d.waitReason)')
+              if [ "$WR" != "DECISION" ]; then echo "BLOCKED=$WR"; cat /tmp/state.json; exit 1; fi
+              MH=$(node -e 'const d=require("/tmp/state.json").job;const v=d.variants.find(x=>x.publishable&&x.manifestHash);if(v)process.stdout.write(v.manifestHash)')
+              if [ -z "$MH" ]; then echo 'DECISION_WITHOUT_PUBLISHABLE_VARIANT'; cat /tmp/state.json; exit 1; fi
+              printf '{"taskType":"job_decision","jobId":"%s","manifestHash":"%s"}' "$JID" "$MH" >/tmp/decision.json
+              curl -fsS -X POST -H "X-Sync-Key: $KEY" -H 'Content-Type: application/json' --data-binary @/tmp/decision.json "$BASE/api/story" >/tmp/decisionresp.json
+            fi
+            if [ "$ST" = "COMPLETE" ]; then
+              node -e "const d=require('/tmp/state.json').job;const v=d.variants.find(x=>x.approved)||d.variants.find(x=>x.publishable);if(!v)throw Error('no publishable/approved variant');if(v.qc!=='PASS')throw Error('Technical QC '+v.qc);if(v.contentQc!=='PASS')throw Error('Content QC '+v.contentQc);if(!v.publishable)throw Error('not publishable');if(!d.final?.publishable||!d.final?.packageRef||!d.final?.renderHash)throw Error('FINAL/PACKAGE incomplete');const done=(d.runs||[]).filter(x=>x.status==='SUCCEEDED').map(x=>x.stage);for(const q of ['PLAN','ASSET','ANALYZE','COMPILE','RENDER','AUTO_QC','FINAL','PACKAGE'])if(!done.includes(q))throw Error(q+' not SUCCEEDED');console.log('P2_WISDOM_PRODUCTION_E2E_PASS',d.id,d.final.renderHash,'TECH',v.qc,'CONTENT',v.contentQc,'PACKAGE',d.final.packageRef)"
+              exit 0
+            fi
+            if [ "$ST" = "FAILED" ] || [ "$ST" = "CANCELLED" ]; then cat /tmp/state.json; exit 1; fi
+            sleep 10
+          done
+          cat /tmp/state.json
+          exit 1
