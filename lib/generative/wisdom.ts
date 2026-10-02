@@ -27,8 +27,9 @@ export function deterministicWisdomDraft(brief:GenerativeBrief): WisdomScript {
  const source=brief.text
  const ideas=source.split(/(?<=[.!?。！？])\s+|\s*[·•]\s*/).map(x=>x.trim()).filter(Boolean)
  const base=ideas.length?ideas:[source]
- const count=Math.max(4,Math.min(8,base.length))
- const duration=Math.max(5,Math.min(10,brief.targetSeconds/count))
+ const minBeats=Math.max(4,Math.ceil(brief.targetSeconds/12))
+ const count=Math.min(8,Math.max(minBeats,Math.min(8,base.length)))
+ const duration=Math.max(3,Math.min(12,brief.targetSeconds/count))
  const beats=Array.from({length:count},(_,i)=>{const idea=base[i%base.length];return {id:`b${i+1}`,narration:idea,visualGoal:`시청자가 “${idea.slice(0,60)}”의 의미를 즉시 이해`,imagePrompt:`vertical 9:16 editorial illustration, calm reflective wisdom theme, visually express: ${idea.slice(0,180)}, no readable text, no watermark`,durationSec:Number(duration.toFixed(2))}})
  const total=Number(beats.reduce((n,b)=>n+b.durationSec,0).toFixed(2))
  return {schema:'wisdom-script/1',title:source.slice(0,40),hook:beats[0].narration,beats,ending:beats[beats.length-1].narration,totalSeconds:total}
