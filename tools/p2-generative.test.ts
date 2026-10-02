@@ -40,3 +40,19 @@ test('P2 timing contract: measured narration duration owns wisdom compile/QC tim
  assert.match(compile,/timedPlanRef/)
  assert.match(qc,/measuredTotal/)
 })
+
+
+test('P2 wisdom rejects narration that exceeds the locked profile limit',()=>{
+ const b=normalizeGenerativeBrief({kind:'topic',text:'좋은 인간관계를 오래 유지하는 법',targetSeconds:40})
+ const s=deterministicWisdomDraft(b)
+ s.beats[0].narration='가'.repeat(WISDOM_PROFILE.narration.maxCharsPerBeat+1)
+ assert.ok(validateWisdomScript(s,b).includes('beats[0].narration.too_long'))
+})
+
+test('P2 wisdom rejects scripts materially away from requested duration',()=>{
+ const b=normalizeGenerativeBrief({kind:'topic',text:'좋은 인간관계를 오래 유지하는 법',targetSeconds:40})
+ const s=deterministicWisdomDraft(b)
+ s.beats.forEach(x=>x.durationSec=12)
+ s.totalSeconds=s.beats.reduce((n,x)=>n+x.durationSec,0)
+ assert.ok(validateWisdomScript(s,b).includes('targetSeconds.mismatch'))
+})
