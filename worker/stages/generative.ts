@@ -85,7 +85,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
     const narrationSec=Number(audioInfo.duration||0)
     const d=Number(Math.max(Number(x.durationSec),narrationSec+0.35).toFixed(2))
     x.plannedDurationSec=Number(x.durationSec);x.narrationDurationSec=Number(narrationSec.toFixed(2));x.durationSec=d
-    await runOk(['-y','-loop','1','-i',ip,'-i',ap,'-t',String(d),'-vf','scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,format=yuv420p','-af','apad','-r','30','-c:v','libx264','-preset','veryfast','-threads','4','-c:a','aac','-ar','44100','-ac','2','-movflags','+faststart',op],{signal,timeoutMs:120000})
+    await runOk(['-y','-loop','1','-i',ip,'-i',ap,'-t',String(d),'-vf',`scale=1080:1200:force_original_aspect_ratio=increase,crop=1080:1200,zoompan=z='min(zoom+0.00035,1.035)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1200:fps=30,pad=1080:1920:0:360:black,format=yuv420p`,'-af','apad','-r','30','-c:v','libx264','-preset','veryfast','-threads','4','-c:a','aac','-ar','44100','-ac','2','-movflags','+faststart',op],{signal,timeoutMs:120000})
     segments.push(op)
    }
    const list=join(work,'concat.txt');await writeFile(list,segments.map(p=>`file '${p.replaceAll("'","'\\''")}'`).join('\n'))
