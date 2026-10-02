@@ -1,6 +1,21 @@
 import { WISDOM_PROFILE, type GenerativeBrief } from './contracts.js'
 export type WisdomBeat={id:string,narration:string,visualGoal:string,imagePrompt:string,durationSec:number}
 export type WisdomScript={schema:'wisdom-script/1',title:string,hook:string,beats:WisdomBeat[],ending:string,totalSeconds:number}
+const namedThinkerAliases:[RegExp,string[]][]=[
+ [/쇼펜하우어|schopenhauer/i,['쇼펜하우어','schopenhauer','arthur schopenhauer']],
+ [/니체|nietzsche/i,['니체','nietzsche','friedrich nietzsche']],
+ [/소크라테스|socrates/i,['소크라테스','socrates']],
+ [/세네카|seneca/i,['세네카','seneca']],
+ [/마르쿠스\s*아우렐리우스|marcus\s*aurelius/i,['마르쿠스 아우렐리우스','marcus aurelius']],
+]
+export function namedThinkerVisualErrors(topic:string,s:any):string[]{
+ const hit=namedThinkerAliases.find(([re])=>re.test(String(topic||'')))
+ if(!hit)return []
+ const aliases=hit[1].map(x=>x.toLowerCase())
+ const early=(Array.isArray(s?.beats)?s.beats:[]).slice(0,3)
+ const present=early.some((b:any)=>aliases.some(a=>(String(b?.visualGoal||'')+' '+String(b?.imagePrompt||'')).toLowerCase().includes(a)))
+ return present?[]:['namedThinker.earlyVisual']
+}
 export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
  const e:string[]=[]
  if(s?.schema!=='wisdom-script/1')e.push('schema')
@@ -21,6 +36,7 @@ export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
  if(Math.abs(total-Number(s?.totalSeconds||0))>.1)e.push('totalSeconds.mismatch')
  if(Math.abs(total-brief.targetSeconds)>Math.max(5,brief.targetSeconds*.15))e.push('targetSeconds.mismatch')
  if(brief.profile!=='wisdom')e.push('profile')
+ e.push(...namedThinkerVisualErrors(String(brief.text||''),s))
  return e
 }
 export function deterministicWisdomDraft(brief:GenerativeBrief): WisdomScript {
