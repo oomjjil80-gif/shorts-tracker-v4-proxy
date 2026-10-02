@@ -42,7 +42,23 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   if(!script)script=deterministicWisdomDraft(brief)
   const errors=validateWisdomScript(script,brief)
   if(errors.length)throw new StageError('SCRIPT_INVALID',errors.join(','))
-  const semanticQc=evaluateWisdomSemanticQc(String(brief.text||''),script)
+  let semanticQc=evaluateWisdomSemanticQc(String(brief.text||''),script)
+  // One free PLAN repair is allowed before any paid image/TTS assets. Never lower semantic QC.
+  // Feed the exact failed dimensions back into the planner so the second draft must repair them explicitly.
+  if(semanticQc.reasons.length && apiKey){
+   try{
+    const repairBrief={...brief,text:`${brief.text}\n\n[MANDATORY REPAIR] Previous draft failed semantic QC: ${semanticQc.reasons.join(', ')}. Rewrite the whole script once. Preserve the topic, but make every failed dimension explicit. If "turn" failed, include a clear mid-script reversal such as "하지만 핵심은 단순히 사람 수를 줄이는 것이 아니다" followed by the deeper insight and payoff. Do not mention this repair instruction in narration.`}
+    const repaired=await aiPlan(repairBrief,apiKey)
+    const repairedCandidate=applyVisualBible(repaired.script,repaired.visualBible)
+    const repairedErrors=validateWisdomScript(repairedCandidate,brief)
+    if(!repairedErrors.length){
+     const repairedQc=evaluateWisdomSemanticQc(String(brief.text||''),repairedCandidate)
+     if(!repairedQc.reasons.length){
+      script=repairedCandidate;visualBible=repaired.visualBible;provider='openai-repair';semanticQc=repairedQc
+     } else fallbackReason=`semantic repair failed: ${repairedQc.reasons.join(',')}`
+    } else fallbackReason='semantic repair script validation: '+repairedErrors.join(',')
+   }catch(e){fallbackReason='semantic repair error: '+(e instanceof Error?e.message:String(e))}
+  }
   const semanticQcStored=await putAddressed(blobs,'generative-semantic-qc',semanticQc)
   if(semanticQc.reasons.length)throw new StageError('SEMANTIC_QC_FAILED',`wisdom semantic QC failed before paid assets: ${semanticQc.reasons.join(',')}`)
   const stored=await putAddressed(blobs,'generative-scripts',script)
