@@ -258,6 +258,24 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       })
     },
 
+    // Re-run Wisdom ASSET -> ... -> PACKAGE reusing the stored PLAN script and cached paid media (the ASSET stage itself
+    // refuses any paid call except the named-thinker anchor image). The render changes, so a prior approval is cleared.
+    async recheckAsset(input: { jobId: string }): Promise<Job> {
+      const now = clock()
+      return db.transaction(async (tx) => {
+        const job = await lockedJob(tx, input.jobId)
+        const qcBlocked = job.status === 'WAITING_USER' && job.waitReason === 'QC_BLOCKED' && job.stage === 'AUTO_QC'
+        const completed = job.status === 'COMPLETE' && job.stage === 'PACKAGE'
+        const awaitingDecision = job.status === 'WAITING_USER' && job.waitReason === 'DECISION' && job.stage === 'DECISION'
+        if (job.profile !== 'wisdom' || (!qcBlocked && !completed && !awaitingDecision)) throw new JobError('NOT_ASSET_RECHECKABLE', 'job is not a safe Wisdom asset recheck state')
+        const plan = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='PLAN' AND status='SUCCEEDED' LIMIT 1`, [job.id])
+        const asset = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='ASSET' AND status='SUCCEEDED' LIMIT 1`, [job.id])
+        if (!plan.rows[0] || !asset.rows[0]) throw new JobError('PREREQUISITE_MISSING', 'ASSET recheck requires successful PLAN and ASSET')
+        const r = await tx.query(`UPDATE production_jobs SET stage='ASSET', status='QUEUED', wait_reason=NULL, approved_manifest_hash=NULL, run_after=NULL, updated_at=$2::timestamptz WHERE id=$1 RETURNING *`, [job.id, iso(now)])
+        return mapJob(r.rows[0])
+      })
+    },
+
     // Re-run only AUTO_QC for an already rendered QC_BLOCKED job. This preserves paid PLAN/ASSET/RENDER artifacts.
     async recheckQc(input: { jobId: string }): Promise<Job> {
       const now = clock()

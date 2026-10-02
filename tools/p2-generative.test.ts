@@ -160,3 +160,90 @@ test('Wisdom headline renders as two large white/yellow lines filling the 360px 
   assert.deepEqual(bands.map(lineColor),['white','yellow'])
  }
 })
+
+
+test('Named-thinker check ignores bible text and name-only goals; only an early beat scene counts',async()=>{
+ const {namedThinkerVisualErrors}=await import('../lib/generative/wisdom.js')
+ const {applyVisualBible}=await import('../lib/generative/planner.js')
+ const topic='쇼펜하우어가 말하는, 나이가 들수록 인간관계를 줄여야 하는 이유'
+ const generic:any={beats:[1,2,3,4].map(i=>({id:'b'+i,narration:'n',visualGoal:'혼자 창가에 앉은 노년 남성',imagePrompt:'an elderly man sitting alone by a window',durationSec:8}))}
+ const bible:any={schema:'wisdom-visual-bible/1',style:'painterly',palette:'muted',lighting:'soft',composition:'center',characterPolicy:"One recurring elderly man embodies Schopenhauer's ideas",negative:'modern logos'}
+ // previously passed because the shared character policy (pasted into every prompt) mentioned the name
+ assert.deepEqual(namedThinkerVisualErrors(topic,applyVisualBible(generic,bible)),['namedThinker.earlyVisual'])
+ const mention:any={beats:[{...generic.beats[0],visualGoal:'쇼펜하우어의 말을 곱씹는 노인'},...generic.beats.slice(1)]}
+ assert.deepEqual(namedThinkerVisualErrors(topic,mention),['namedThinker.earlyVisual'])
+ const third:any={beats:[...generic.beats.slice(0,2),{...generic.beats[2],imagePrompt:'portrait of Arthur Schopenhauer'},generic.beats[3]]}
+ assert.deepEqual(namedThinkerVisualErrors(topic,third),['namedThinker.earlyVisual'])
+ const second:any={beats:[generic.beats[0],{...generic.beats[1],imagePrompt:'portrait of Arthur Schopenhauer in his study'},...generic.beats.slice(2)]}
+ assert.deepEqual(namedThinkerVisualErrors(topic,applyVisualBible(second,bible)),[])
+})
+
+test('Named-thinker anchor re-aims only the first beat image prompt; narration and durations untouched',async()=>{
+ const {anchorNamedThinkerVisual,namedThinkerVisualErrors}=await import('../lib/generative/wisdom.js')
+ const {applyVisualBible}=await import('../lib/generative/planner.js')
+ const bible:any={schema:'wisdom-visual-bible/1',style:'painterly oil',palette:'muted ochre',lighting:'soft lamp',composition:'center',characterPolicy:'one recurring elderly man',negative:'modern logos'}
+ const s:any=applyVisualBible({schema:'wisdom-script/1',title:'쇼펜하우어가 말하는 관계의 이유',hook:'h',ending:'e',totalSeconds:32,beats:[1,2,3,4].map(i=>({id:'b'+i,narration:'나레이션 '+i,visualGoal:'g',imagePrompt:'an elderly man by a window',durationSec:8}))},bible)
+ const {script,anchoredBeatId}=anchorNamedThinkerVisual(s,s.title)
+ assert.equal(anchoredBeatId,'b1')
+ assert.match(script.beats[0].imagePrompt,/recognizable portrait of Arthur Schopenhauer/)
+ assert.match(script.beats[0].imagePrompt,/mutton-chop sideburns/)
+ assert.match(script.beats[0].imagePrompt,/painterly oil/)
+ assert.doesNotMatch(script.beats[0].imagePrompt,/one recurring elderly man/)
+ assert.deepEqual(namedThinkerVisualErrors(s.title,script),[])
+ assert.deepEqual(script.beats.map((b:any)=>[b.id,b.narration,b.durationSec]),s.beats.map((b:any)=>[b.id,b.narration,b.durationSec]))
+ assert.deepEqual(script.beats.slice(1),s.beats.slice(1))
+ assert.equal(anchorNamedThinkerVisual(script,s.title).anchoredBeatId,null) // idempotent
+ assert.equal(anchorNamedThinkerVisual(s,'나이가 들수록 인간관계를 줄여야 하는 이유').anchoredBeatId,null) // no named person
+ assert.match(anchorNamedThinkerVisual({...s,title:'니체가 말한 고독'},'니체가 말한 고독').script.beats[0].imagePrompt,/Friedrich Nietzsche.*walrus moustache/)
+})
+
+test('Wisdom ASSET rerun reuses every cached image/TTS except the anchored thinker image (timing unchanged)',async()=>{
+ const {createGenerativeAssetExecutor}=await import('../worker/stages/generative.js')
+ const {createMemoryBlobStore,putAddressed}=await import('../lib/jobs/blobs.js')
+ const {applyVisualBible}=await import('../lib/generative/planner.js')
+ const {runOk}=await import('../lib/media/ffmpeg.js')
+ const {createHash}=await import('node:crypto')
+ const h=(x:string)=>createHash('sha256').update(x).digest('hex')
+ const jpg=(await runOk(['-f','lavfi','-i','color=c=gray:s=64x96:d=1','-frames:v','1','-f','mjpeg','-'])).stdout
+ const mp3=(await runOk(['-f','lavfi','-i','sine=f=440:d=3.2','-c:a','libmp3lame','-f','mp3','-'])).stdout
+ const blobs:any=createMemoryBlobStore()
+ const bible:any={schema:'wisdom-visual-bible/1',style:'painterly',palette:'muted',lighting:'soft',composition:'center',characterPolicy:'one recurring elderly man',negative:'logos'}
+ const script:any=applyVisualBible({schema:'wisdom-script/1',title:'쇼펜하우어가 말하는 관계의 이유',hook:'h',ending:'e',totalSeconds:16,beats:[1,2,3,4].map(i=>({id:'b'+i,narration:'나레이션 '+i,visualGoal:'g'+i,imagePrompt:'scene '+i,durationSec:4}))},bible)
+ // the existing paid assets: every original image and narration is already in the generative cache
+ const imgSha:Record<string,string>={}, mp3Sha=createHash('sha256').update(mp3).digest('hex')
+ for(const b of script.beats){
+  const img=Buffer.concat([jpg,Buffer.from(b.id)]); imgSha[b.id]=createHash('sha256').update(img).digest('hex')
+  await blobs.putBytes(`generative-assets/images/${imgSha[b.id]}.jpg`,img,'image/jpeg'); await blobs.putJson('generative-cache/image/'+h('image-v1|'+b.imagePrompt)+'.json',{ref:`generative-assets/images/${imgSha[b.id]}.jpg`,sha256:imgSha[b.id],contentType:'image/jpeg',provider:'openai',model:'m'})
+  await blobs.putBytes(`generative-assets/audio/${h('a'+b.id)}.mp3`,mp3,'audio/mpeg'); await blobs.putJson('generative-cache/tts/'+h('tts-v1|'+b.narration)+'.json',{ref:`generative-assets/audio/${h('a'+b.id)}.mp3`,sha256:h('a'+b.id),contentType:'audio/mpeg',provider:'openai',model:'m'})
+ }
+ const stored=await putAddressed(blobs,'generative-scripts',script)
+ const prompts:string[]=[]; let tts=0
+ const ex=createGenerativeAssetExecutor({apiKey:'k',image:async(p:string)=>{prompts.push(p);return {bytes:jpg,contentType:'image/jpeg',provider:'openai',model:'m'}},tts:async()=>{tts++;return {bytes:mp3,contentType:'audio/mpeg',provider:'openai',model:'m'}}})
+ const out:any=await ex.run({job:{id:'j',profile:'wisdom',planRev:1,sourceAssetId:'src_gen_j'} as any,blobs,previous:async(stage:string)=>(stage==='PLAN'?{result:{scriptRef:stored.path}}:stage==='ASSET'?{result:{assetSpecRef:'generative-assets/prior.json'}}:null) as any,signal:new AbortController().signal} as any)
+ assert.equal(prompts.length,1); assert.match(prompts[0],/Arthur Schopenhauer/); assert.equal(tts,0)
+ assert.equal(out.result.generated,1); assert.equal(out.result.reused,7)
+ const m:any=await blobs.getJson(out.result.assetSpecRef)
+ assert.equal(m.namedThinkerAnchor.beatId,'b1')
+ assert.deepEqual(m.items.slice(1).map((x:any)=>x.image.sha256),script.beats.slice(1).map((b:any)=>imgSha[b.id]))
+ assert.notEqual(m.items[0].image.sha256,imgSha.b1)
+ assert.deepEqual(m.items.map((x:any)=>[x.narration,x.tts.sha256,x.durationSec]),script.beats.map((b:any)=>[b.narration,mp3Sha,m.items[0].durationSec]))
+})
+
+
+test('Wisdom ASSET rerun refuses before any paid call if a non-anchor image or any TTS is not cached',async()=>{
+ const {createGenerativeAssetExecutor}=await import('../worker/stages/generative.js')
+ const {createMemoryBlobStore,putAddressed}=await import('../lib/jobs/blobs.js')
+ const {createHash}=await import('node:crypto')
+ const h=(x:string)=>createHash('sha256').update(x).digest('hex')
+ const blobs:any=createMemoryBlobStore()
+ const script:any={schema:'wisdom-script/1',title:'쇼펜하우어가 말하는 관계',hook:'h',ending:'e',totalSeconds:16,beats:[1,2,3,4].map(i=>({id:'b'+i,narration:'나레이션 '+i,visualGoal:'g',imagePrompt:'scene '+i,durationSec:4}))}
+ for(const b of script.beats){ // b3 image missing from the cache (e.g. blob deleted)
+  if(b.id!=='b3'){await blobs.putBytes('img/'+b.id,Buffer.from(b.id),'image/jpeg');await blobs.putJson('generative-cache/image/'+h('image-v1|'+b.imagePrompt)+'.json',{ref:'img/'+b.id})}
+  await blobs.putBytes('aud/'+b.id,Buffer.from(b.id),'audio/mpeg');await blobs.putJson('generative-cache/tts/'+h('tts-v1|'+b.narration)+'.json',{ref:'aud/'+b.id})
+ }
+ const stored=await putAddressed(blobs,'generative-scripts',script)
+ let paid=0
+ const ex=createGenerativeAssetExecutor({apiKey:'k',image:async()=>{paid++;throw new Error('must not be called')},tts:async()=>{paid++;throw new Error('must not be called')}})
+ await assert.rejects(()=>ex.run({job:{id:'j',profile:'wisdom',planRev:1,sourceAssetId:'src_gen_j'} as any,blobs,previous:async(stage:string)=>(stage==='PLAN'?{result:{scriptRef:stored.path}}:{result:{assetSpecRef:'prior'}}) as any,signal:new AbortController().signal} as any),(e:any)=>e.code==='ASSET_RECHECK_WOULD_REGENERATE'&&/b3\.image/.test(e.message)&&!/b1/.test(e.message))
+ assert.equal(paid,0)
+})

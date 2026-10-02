@@ -1,6 +1,6 @@
 import { sha256, putAddressed } from '../../lib/jobs/blobs.js'
 import { WISDOM_PROFILE } from '../../lib/generative/contracts.js'
-import { deterministicWisdomDraft, validateWisdomScript } from '../../lib/generative/wisdom.js'
+import { deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual } from '../../lib/generative/wisdom.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -34,7 +34,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   let script:any, visualBible:any=null, provider='deterministic', fallbackReason:string|undefined
   if(apiKey){try{
    const made=await aiPlan(brief,apiKey)
-   const candidate=applyVisualBible(made.script,made.visualBible)
+   const candidate=anchorNamedThinkerVisual(applyVisualBible(made.script,made.visualBible),String(brief.text||'')).script
    const candidateErrors=validateWisdomScript(candidate,brief)
    if(candidateErrors.length)throw new Error('AI script validation: '+candidateErrors.join(','))
    script=candidate;visualBible=made.visualBible;provider='openai'
@@ -49,7 +49,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
    try{
     const repairBrief={...brief,text:`${brief.text}\n\n[MANDATORY REPAIR] Previous draft failed semantic QC: ${semanticQc.reasons.join(', ')}. Rewrite the whole script once. Preserve the topic, but make every failed dimension explicit. If "turn" failed, include a clear mid-script reversal such as "하지만 핵심은 단순히 사람 수를 줄이는 것이 아니다" followed by the deeper insight and payoff. Do not mention this repair instruction in narration.`}
     const repaired=await aiPlan(repairBrief,apiKey)
-    const repairedCandidate=applyVisualBible(repaired.script,repaired.visualBible)
+    const repairedCandidate=anchorNamedThinkerVisual(applyVisualBible(repaired.script,repaired.visualBible),String(brief.text||'')).script
     const repairedErrors=validateWisdomScript(repairedCandidate,brief)
     if(!repairedErrors.length){
      const repairedQc=evaluateWisdomSemanticQc(String(brief.text||''),repairedCandidate)
@@ -82,14 +82,30 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   if(job.profile!=='wisdom')throw new StageError('PROFILE_UNSUPPORTED','generative ASSET only handles wisdom')
   if(!apiKey)throw new StageError('PROVIDER_DOWN','OPENAI_API_KEY is not configured',true)
   const p=await previous('PLAN'); const scriptRef=(p?.result as any)?.scriptRef; if(!scriptRef)throw new StageError('SCRIPT_MISSING','ASSET requires PLAN script')
-  const script:any=await blobs.getJson(scriptRef); if(!script||script.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
+  const planned:any=await blobs.getJson(scriptRef); if(!planned||planned.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
+  // A thinker named in the opening (title/hook/first two narrations) must be drawn in the first cuts. Only that beat's image
+  // prompt can change, so its image is the only cache miss; every other image and all narration/TTS (and timing) are reused.
+  const opening=[planned.title,planned.hook,...(planned.beats||[]).slice(0,2).map((b:any)=>b?.narration)].join(' ')
+  const {script,anchoredBeatId}=anchorNamedThinkerVisual(planned,opening)
   const items:any[]=[]; let bytes=0, generated=0, reused=0
+  const cached:Array<{im:any,au:any}>=[]
   for(const b of script.beats){
-   if(signal.aborted)throw new Error('aborted')
    const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256('tts-v1|'+b.narration)
    let im:any=null, au:any=null
    try{const m:any=await blobs.getJson('generative-cache/image/'+ik+'.json');const z=m?.ref?await blobs.getBytes(m.ref):null;if(z)im={...m,bytes:z}}catch{}
    try{const m:any=await blobs.getJson('generative-cache/tts/'+ak+'.json');const z=m?.ref?await blobs.getBytes(m.ref):null;if(z)au={...m,bytes:z}}catch{}
+   cached.push({im,au})
+  }
+  // Rerun of an already-paid ASSET (ASSET_RECHECK_JOB_ID): the only paid call allowed is the named-thinker anchor image.
+  // Any other cache miss would silently re-buy images/TTS and could change timing, so refuse before spending anything.
+  const prior=await previous('ASSET')
+  if((prior?.result as any)?.assetSpecRef){
+   const misses=script.beats.flatMap((b:any,i:number)=>[...(!cached[i].im&&b.id!==anchoredBeatId?[`${b.id}.image`]:[]),...(!cached[i].au?[`${b.id}.tts`]:[])])
+   if(misses.length)throw new StageError('ASSET_RECHECK_WOULD_REGENERATE',`ASSET rerun refuses paid regeneration beyond the named-thinker anchor: ${misses.join(',')}`)
+  }
+  for(const [i,b] of script.beats.entries()){
+   if(signal.aborted)throw new Error('aborted')
+   let {im,au}=cached[i]; const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256('tts-v1|'+b.narration)
    if(im)reused++;else{im=await image(b.imagePrompt,apiKey);generated++}
    if(au)reused++;else{au=await tts(b.narration,apiKey);generated++}
    const ih=sha256(im.bytes), ah=sha256(au.bytes)
@@ -99,7 +115,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    await blobs.putJson('generative-cache/tts/'+ak+'.json',{ref:ap,sha256:ah,contentType:au.contentType,provider:au.provider,model:au.model})
    items.push({beatId:b.id,durationSec:b.durationSec,narration:b.narration,image:{status:'ready',ref:ip,sha256:ih,contentType:im.contentType,provider:im.provider,model:im.model},tts:{status:'ready',ref:ap,sha256:ah,contentType:au.contentType,provider:au.provider,model:au.model}})
   }
-  const manifest={schema:'generative-assets/1',profile:'wisdom',scriptRef,items}
+  const manifest={schema:'generative-assets/1',profile:'wisdom',scriptRef,items,...(anchoredBeatId?{namedThinkerAnchor:{beatId:anchoredBeatId,imagePrompt:script.beats[0].imagePrompt}}:{})}
   const stored=await putAddressed(blobs,'generative-assets',manifest)
   const work=await mkdtemp(join(tmpdir(),'wisdom-asset-'))
   try{
@@ -138,7 +154,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    await blobs.putBytes(blobPath,video,'video/mp4')
    const source={sourceAssetId:job.sourceAssetId,blobPath,sha256:vh,duration:info.duration,width:info.width,height:info.height,videoCodec:info.videoCodec,audioCodec:info.audioCodec,generative:true,assetSpecRef:timedStored.path}
    await blobs.putJson(`generative-sources/${job.sourceAssetId}.json`,source)
-   return {outputRef:timedStored.path,outputHash:timedStored.sha256,result:{assetSpecRef:timedStored.path,timedPlanRef:timedPlanStored.path,timedTotalSeconds:timedTotal,items:items.length,ready:true,bytes,generated,reused,source},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts'}
+   return {outputRef:timedStored.path,outputHash:timedStored.sha256,result:{assetSpecRef:timedStored.path,timedPlanRef:timedPlanStored.path,namedThinkerAnchorBeatId:anchoredBeatId,timedTotalSeconds:timedTotal,items:items.length,ready:true,bytes,generated,reused,source},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts'}
   }finally{await rm(work,{recursive:true,force:true})}
  }}
 }
