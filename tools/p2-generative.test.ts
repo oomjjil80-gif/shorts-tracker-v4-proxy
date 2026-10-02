@@ -56,3 +56,15 @@ test('P2 wisdom rejects scripts materially away from requested duration',()=>{
  s.totalSeconds=s.beats.reduce((n,x)=>n+x.durationSec,0)
  assert.ok(validateWisdomScript(s,b).includes('targetSeconds.mismatch'))
 })
+
+test('P2 wisdom Screen DNA v1 locks black bands, central visual window and motion',async()=>{
+ const fs=await import('node:fs/promises')
+ const generative=await fs.readFile(new URL('../worker/stages/generative.ts',import.meta.url),'utf8')
+ const ass=await fs.readFile(new URL('../lib/media/ass.ts',import.meta.url),'utf8')
+ assert.match(generative,/scale=1080:1200/)
+ assert.match(generative,/pad=1080:1920:0:360:black/)
+ assert.match(generative,/zoompan/)
+ assert.match(ass,/WisdomHead/)
+ assert.match(ass,/WisdomSub/)
+ assert.match(ass,/profile === 'wisdom-v1'/)
+})

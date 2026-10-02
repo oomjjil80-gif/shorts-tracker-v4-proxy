@@ -44,6 +44,7 @@ export function fitFontSize(text: string, widthPx: number, basePx: number, maxLi
 
 export type AssInput = {
   totalDuration: number
+  wisdomLayout?: boolean
   headline?: string
   subtitles?: Array<{ start: number; end: number; text: string }>
   effects?: Array<Record<string, any>>
@@ -53,6 +54,7 @@ export type AssInput = {
 export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[] } {
   const { w, h } = CANVAS
   const total = input.totalDuration
+  const wisdom = input.wisdomLayout === true
   const marginX = Math.round(w * 0.08)
   const textWidth = w - marginX * 2
   const events: OverlayEvent[] = []
@@ -71,7 +73,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
 
   if (head) {
     const fs = fitFontSize(head, textWidth, 84, 2, 56)
-    add(1, 'headline', 'Head', 0, total, head, `{\\fs${fs}}`)
+    add(1, 'headline', wisdom ? 'WisdomHead' : 'Head', 0, total, head, `{\\fs${fs}}`)
   }
   for (const sub of input.subtitles || []) {
     const text = sanitizeText(sub.text)
@@ -80,7 +82,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
     let pieces = [{ start: sub.start, end: sub.end }]
     for (const sp of suppress) pieces = pieces.flatMap((p) => (sp.end <= p.start || sp.start >= p.end ? [p] : [{ start: p.start, end: Math.max(p.start, sp.start) }, { start: Math.min(p.end, sp.end), end: p.end }].filter((q) => q.end - q.start > 0.05)))
     const fs = fitFontSize(text, textWidth - 40, 60, 3, 42)
-    for (const p of pieces) add(2, 'subtitle', 'Sub', p.start, p.end, text, `{\\fs${fs}}`)
+    for (const p of pieces) add(2, 'subtitle', wisdom ? 'WisdomSub' : 'Sub', p.start, p.end, text, `{\\fs${fs}}`)
   }
   const styled = (kind: 'effect' | 'callout', e: Record<string, any>, defX: number, defY: number, defPct: number, layer: number) => {
     const text = sanitizeText(e.text)
@@ -101,6 +103,8 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
     'Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding',
     // headline: top-center, outlined; subtitle: bottom-center on a translucent box (bottom of text ≈ 78% of height)
     `Style: Head,${FONT_FAMILY},84,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,1,0,0,0,100,100,0,0,1,8,2,8,${marginX},${marginX},${Math.round(h * 0.085)},1`,
+    `Style: WisdomHead,${FONT_FAMILY},78,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,0,0,8,${marginX},${marginX},${Math.round(h * 0.065)},1`,
+    `Style: WisdomSub,${FONT_FAMILY},56,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,0,0,2,${marginX},${marginX},${Math.round(h * 0.055)},1`,
     `Style: Sub,${FONT_FAMILY},60,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,1,0,0,0,100,100,0,0,3,10,0,2,${marginX},${marginX},${Math.round(h * 0.22)},1`,
     `Style: Fx,${FONT_FAMILY},76,&H00FFFFFF,&H000000FF,&H00111111,&H00000000,1,0,0,0,100,100,0,0,1,6,0,5,${marginX},${marginX},0,1`,
     '', '[Events]', 'Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text', ...lines, ''
@@ -112,6 +116,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
 export function assFromPayload(payload: any) {
   return buildAss({
     totalDuration: Number(payload.totalDuration),
+    wisdomLayout: payload.editorialPlan?.profile === 'wisdom-v1',
     headline: payload.editorialPlan?.headline || '',
     subtitles: (payload.subtitleEvents || []).filter((e: any) => e?.text).map((e: any) => ({ start: Number(e.start), end: Number(e.end), text: e.text })),
     effects: payload.sourceEffectCaptions || [],
