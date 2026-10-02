@@ -56,7 +56,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
     const ip=join(work,`i${i}.jpg`),ap=join(work,`a${i}.mp3`),op=join(work,`s${i}.mp4`)
     await writeFile(ip,im);await writeFile(ap,au)
     const d=Number(x.durationSec)
-    await runOk(['-y','-loop','1','-i',ip,'-i',ap,'-t',String(d),'-vf','scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,format=yuv420p','-af','apad','-r','30','-c:v','libx264','-preset','veryfast','-c:a','aac','-ar','44100','-ac','2','-movflags','+faststart',op],{signal,timeoutMs:120000})
+    await runOk(['-y','-loop','1','-i',ip,'-i',ap,'-t',String(d),'-vf','scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,format=yuv420p','-af','apad','-r','30','-c:v','libx264','-preset','veryfast','-threads','4','-c:a','aac','-ar','44100','-ac','2','-movflags','+faststart',op],{signal,timeoutMs:120000})
     segments.push(op)
    }
    const list=join(work,'concat.txt');await writeFile(list,segments.map(p=>`file '${p.replaceAll("'","'\\''")}'`).join('\n'))
