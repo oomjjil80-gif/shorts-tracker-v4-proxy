@@ -240,6 +240,20 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       })
     },
 
+    // Re-run RENDER for a QC-blocked Wisdom job after a renderer-only fix. Paid PLAN/ASSET/ANALYZE/COMPILE artifacts are preserved.
+    async recheckRender(input: { jobId: string }): Promise<Job> {
+      const now = clock()
+      return db.transaction(async (tx) => {
+        const job = await lockedJob(tx, input.jobId)
+        if (job.profile !== 'wisdom' || job.status !== 'WAITING_USER' || job.waitReason !== 'QC_BLOCKED' || job.stage !== 'AUTO_QC') throw new JobError('NOT_RENDER_RECHECKABLE', 'job is not a QC-blocked Wisdom AUTO_QC job')
+        const compiled = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='COMPILE' AND status='SUCCEEDED' LIMIT 1`, [job.id])
+        const asset = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='ASSET' AND status='SUCCEEDED' LIMIT 1`, [job.id])
+        if (!compiled.rows[0] || !asset.rows[0]) throw new JobError('PREREQUISITE_MISSING', 'RENDER recheck requires successful COMPILE and ASSET')
+        const r = await tx.query(`UPDATE production_jobs SET stage='RENDER', status='QUEUED', wait_reason=NULL, run_after=NULL, updated_at=$2::timestamptz WHERE id=$1 RETURNING *`, [job.id, iso(now)])
+        return mapJob(r.rows[0])
+      })
+    },
+
     // Re-run only AUTO_QC for an already rendered QC_BLOCKED job. This preserves paid PLAN/ASSET/RENDER artifacts.
     async recheckQc(input: { jobId: string }): Promise<Job> {
       const now = clock()
