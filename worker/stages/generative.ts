@@ -85,11 +85,16 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    const out=join(work,'source.mp4');await runOk(['-y','-f','concat','-safe','0','-i',list,'-c','copy','-movflags','+faststart',out],{signal,timeoutMs:120000})
    const timedManifest={...manifest,items}
    const timedStored=await putAddressed(blobs,'generative-assets',timedManifest)
+   let timedClock=0
+   const timedEvents=items.map((x:any)=>{const start=Number(timedClock.toFixed(2));timedClock+=Number(x.durationSec);return {start,end:Number(timedClock.toFixed(2)),text:x.narration}})
+   const timedTotal=Number(timedClock.toFixed(2))
+   const timedPlan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:timedTotal}],headline:script.title,events:timedEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
+   const timedPlanStored=await putAddressed(blobs,'plans',timedPlan)
    const video=await readFile(out), vh=sha256(video), info=await probe(out), blobPath=`source-collector/generated/${vh}.mp4`
    await blobs.putBytes(blobPath,video,'video/mp4')
    const source={sourceAssetId:job.sourceAssetId,blobPath,sha256:vh,duration:info.duration,width:info.width,height:info.height,videoCodec:info.videoCodec,audioCodec:info.audioCodec,generative:true,assetSpecRef:timedStored.path}
    await blobs.putJson(`generative-sources/${job.sourceAssetId}.json`,source)
-   return {outputRef:timedStored.path,outputHash:timedStored.sha256,result:{assetSpecRef:timedStored.path,items:items.length,ready:true,bytes,generated,reused,source},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts'}
+   return {outputRef:timedStored.path,outputHash:timedStored.sha256,result:{assetSpecRef:timedStored.path,timedPlanRef:timedPlanStored.path,timedTotalSeconds:timedTotal,items:items.length,ready:true,bytes,generated,reused,source},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts'}
   }finally{await rm(work,{recursive:true,force:true})}
  }}
 }
