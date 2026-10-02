@@ -35,8 +35,10 @@ export async function runOk(args: string[], opts?: Parameters<typeof runFfmpeg>[
   const r = await runFfmpeg(args, opts)
   if (r.code !== 0) {
     const lines = r.stderr.split('\n').filter(Boolean)
-    const bad = lines.filter((l) => /error|invalid|unable|no such|cannot|failed|unrecogni|not found|option/i.test(l))
-    throw new Error(`ffmpeg exit ${r.code}: ${(bad.length ? bad : lines).slice(-6).join(' | ')}`)
+    const bad = lines.filter((l) => /error|invalid|unable|no such|cannot|failed|unrecogni|not found|out of memory|resource temporarily unavailable|pthread_create/i.test(l))
+    const tail = lines.slice(-12)
+    const evidence = [...bad.slice(-6), ...tail].filter((v, i, a) => a.indexOf(v) === i).slice(-12)
+    throw new Error(`ffmpeg exit ${r.code}: ${evidence.join(' | ')}`)
   }
   return r
 }
