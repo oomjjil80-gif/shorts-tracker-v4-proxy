@@ -153,7 +153,12 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    const timedPlanStored=await putAddressed(blobs,'plans',timedPlan)
    await blobs.putBytes(blobPath,video,'video/mp4')
    const source={sourceAssetId:job.sourceAssetId,blobPath,sha256:vh,duration:info.duration,width:info.width,height:info.height,videoCodec:info.videoCodec,audioCodec:info.audioCodec,generative:true,assetSpecRef:timedStored.path}
-   await blobs.putJson(`generative-sources/${job.sourceAssetId}.json`,source)
+   // generative-sources/<id>.json is the job's mutable source POINTER (ANALYZE/COMPILE/RENDER resolve the source through it).
+   // It must be overwritten on an ASSET rerun, and read back: a stale pointer silently re-renders the previous video.
+   const pointer=`generative-sources/${job.sourceAssetId}.json`
+   await blobs.putJson(pointer,source,{overwrite:true})
+   const current:any=await blobs.getJson(pointer)
+   if(current?.sha256!==vh||current?.blobPath!==blobPath)throw new StageError('SOURCE_POINTER_STALE',`${pointer} still points at ${String(current?.sha256||'nothing').slice(0,12)}, not the new source ${vh.slice(0,12)}`,true)
    return {outputRef:timedStored.path,outputHash:timedStored.sha256,result:{assetSpecRef:timedStored.path,timedPlanRef:timedPlanStored.path,namedThinkerAnchorBeatId:anchoredBeatId,timedTotalSeconds:timedTotal,items:items.length,ready:true,bytes,generated,reused,source},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts'}
   }finally{await rm(work,{recursive:true,force:true})}
  }}

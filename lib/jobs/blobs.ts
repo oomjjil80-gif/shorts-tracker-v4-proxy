@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto'
 import { canonicalize } from '../tracker-core/renderManifest.js'
 
 export interface JobBlobStore {
-  putJson(path: string, value: unknown): Promise<{ path: string; sha256: string }>
+  // Create-once by default. `overwrite` is only for the few mutable POINTERS (e.g. generative-sources/<id>.json); without
+  // it an existing path is kept and the call still "succeeds", which silently froze rerun outputs.
+  putJson(path: string, value: unknown, opts?: { overwrite?: boolean }): Promise<{ path: string; sha256: string }>
   getJson<T = unknown>(path: string): Promise<T | null>
   // Binary artifacts (rendered MP4, contact sheets). Content-addressed by the caller; never overwritten.
   putBytes(path: string, bytes: Buffer, contentType: string): Promise<{ path: string; sha256: string; bytes: number }>
@@ -28,9 +30,9 @@ export function createMemoryBlobStore(): JobBlobStore & { files: Map<string, str
     async putBytes(path, bytes) { if (!binaries.has(path)) binaries.set(path, Buffer.from(bytes)); return { path, sha256: sha256(binaries.get(path)!), bytes: binaries.get(path)!.length } },
     async getBytes(path) { const b = binaries.get(path); return b ? Buffer.from(b) : null },
     async presign(path) { return binaries.has(path) || files.has(path) ? { url: `memory://${path}`, validUntil: Date.now() + 3_600_000 } : null },
-    async putJson(path, value) {
+    async putJson(path, value, opts) {
       const body = JSON.stringify(value)
-      if (!files.has(path)) files.set(path, body)
+      if (!files.has(path) || opts?.overwrite === true) files.set(path, body)
       return { path, sha256: sha256(files.get(path)!) }
     },
     async getJson(path) { const v = files.get(path); return v === undefined ? null : JSON.parse(v) }
@@ -41,13 +43,14 @@ export function createMemoryBlobStore(): JobBlobStore & { files: Map<string, str
 export function createVercelJobBlobStore(deps?: { put?: any; get?: any }): JobBlobStore {
   const lazy = async () => (deps?.put && deps?.get ? { put: deps.put, get: deps.get } : await import('@vercel/blob'))
   return {
-    async putJson(path, value) {
+    async putJson(path, value, opts) {
       const { put } = await lazy()
       const body = JSON.stringify(value)
+      const overwrite = opts?.overwrite === true
       try {
-        await put(path, body, { access: 'private', addRandomSuffix: false, allowOverwrite: false, contentType: 'application/json' })
+        await put(path, body, { access: 'private', addRandomSuffix: false, allowOverwrite: overwrite, contentType: 'application/json' })
       } catch (e: any) {
-        if (!/already exists|exists/i.test(String(e?.message || e))) throw e
+        if (overwrite || !/already exists|exists/i.test(String(e?.message || e))) throw e
       }
       return { path, sha256: sha256(body) }
     },
