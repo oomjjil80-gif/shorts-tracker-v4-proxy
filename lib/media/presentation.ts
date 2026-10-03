@@ -4,9 +4,12 @@
 //   hook    -> persistent top headline (exactly one, mandatory, never dropped by any budget)
 //   payoff  -> timed caption over the payoff (priority right after the hook)
 //   context -> timed short explanation captions at story changes
-//   effect  -> short pop word (onomatopoeia/mimetic) tied to a visible motion
-// Budget (screen messages incl. the headline): 6. Priority when the budget is tight: hook > payoff > context > effect,
-// and among the same kind the cue that most reduces the longest stretch with nothing new on screen wins.
+//   effect  -> short pop word (onomatopoeia/mimetic). NOT DRAWN: the Common Shorts Screen DNA has no zone for it (the
+//              centre is visual only), so it gets no budget, no rhythm credit and is never selected.
+// Budget (screen messages incl. the headline): 6 — unchanged; the two former effect slots are context captions now, so
+// the maximum number of timed messages (5) and the coverable edit length stay what they were.
+// Priority when the budget is tight: hook > payoff > context, and among the same kind the cue that most reduces the
+// longest stretch with nothing new on screen wins.
 import type { Range } from './story.js'
 
 export type CueKind = 'hook' | 'context' | 'payoff' | 'effect'
@@ -14,11 +17,11 @@ export type Cue = { kind: CueKind; start: number; end: number; text: string; bas
 
 export const PRESENTATION_LIMITS = {
   hook: 1,
-  contexts: 3,
+  contexts: 4,
   payoffs: 1,
-  effects: 2,
-  totalMessages: 6,          // hook + payoff + contexts + effects
-  eventsMax: 4,              // context + payoff (timed explanation captions)
+  effects: 0,                // Common Shorts Screen DNA: effect captions have no zone and are never shown
+  totalMessages: 6,          // hook + payoff + contexts (drawn messages only)
+  eventsMax: 5,              // context + payoff (timed explanation captions)
   hookMaxOutputStart: 1.2,   // the headline must be tied to the first ~second of the clean edit
   maxDynamicGapSec: 5.5,     // longest allowed stretch without a NEW timed message/effect (output time)
   explanationMinTotalSec: 10, // edits this long need at least one context/payoff explanation, not only a hook/effects
@@ -78,7 +81,7 @@ export function selectCues(placed: PlacedCue[], total: number): { kept: PlacedCu
       if (tooClose(c)) { dropped.push({ cue: c, reason: 'starts within 0.5s of another message' }); continue }
       kept.push(c)
     }
-    for (const c of rest) dropped.push({ cue: c, reason: count(kind) >= caps[kind] ? `at most ${caps[kind]} ${kind} message(s)` : 'screen-message budget exhausted' })
+    for (const c of rest) dropped.push({ cue: c, reason: kind === 'effect' && !caps.effect ? 'not drawn: the Common Shorts Screen DNA has no zone for effect captions' : count(kind) >= caps[kind] ? `at most ${caps[kind]} ${kind} message(s)` : 'screen-message budget exhausted' })
   }
   take(placed, 'payoff', false)
   take(placed, 'context', true)

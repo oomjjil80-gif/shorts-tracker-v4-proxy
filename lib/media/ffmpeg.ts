@@ -91,8 +91,8 @@ export async function fullDecode(file: string, opts?: { signal?: AbortSignal }):
   return { ok: r.code === 0 && errors.length === 0, errors: errors.slice(0, 8), decodedSeconds: last ? hms(last[1], last[2], last[3]) : null }
 }
 
-export async function detectBlack(file: string, o: { minDuration?: number; pixelThreshold?: number } = {}): Promise<Interval[]> {
-  const r = await runFfmpeg(['-i', file, '-an', '-vf', `blackdetect=d=${o.minDuration ?? 0.1}:pix_th=${o.pixelThreshold ?? 0.1}:pic_th=0.98`, '-f', 'null', '-'], { collectStdout: false })
+export async function detectBlack(file: string, o: { minDuration?: number; pixelThreshold?: number; crop?: string } = {}): Promise<Interval[]> {
+  const r = await runFfmpeg(['-i', file, '-an', '-vf', `${o.crop ? o.crop + ',' : ''}blackdetect=d=${o.minDuration ?? 0.1}:pix_th=${o.pixelThreshold ?? 0.1}:pic_th=0.98`, '-f', 'null', '-'], { collectStdout: false })
   return [...r.stderr.matchAll(/black_start:([\d.]+)\s+black_end:([\d.]+)/g)].map((m) => ({ start: Number(m[1]), end: Number(m[2]) }))
 }
 

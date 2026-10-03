@@ -40,7 +40,7 @@ async function main() {
   const planRouter = { ...sourcePlanExecutor, run: (ctx:any) => ctx.job.profile === 'wisdom' ? generativePlanExecutor.run(ctx) : sourcePlanExecutor.run(ctx), inputHash: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.inputHash(job) : sourcePlanExecutor.inputHash(job), estimateUsd: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.estimateUsd(job) : sourcePlanExecutor.estimateUsd(job) }
   const generativeAssetExecutor = createGenerativeAssetExecutor({ apiKey: process.env.OPENAI_API_KEY })
   const decisionJobId = String(process.env.DECISION_RECOMMENDED_JOB_ID || '').trim()
-  if (decisionJobId && assetRerunJobIds.has(decisionJobId)) console.log(`[worker ${workerId}] DECISION_RECOMMENDED_JOB_ID skipped: SUPERSEDED_BY_ASSET_RECHECK job=${decisionJobId}`)
+  if (decisionJobId && assetRerunJobIds.has(decisionJobId)) console.log(`[worker ${workerId}] DECISION_RECOMMENDED_JOB_ID skipped: SUPERSEDED_BY_PLAN_OR_ASSET_RECHECK job=${decisionJobId}`)
   else if (decisionJobId) {
     try {
       const job = await store.approveRecommended({ jobId: decisionJobId })

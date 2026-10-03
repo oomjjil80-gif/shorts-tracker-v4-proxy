@@ -135,7 +135,8 @@ test('9+10 + integration: PLAN → JobPlan → RenderManifest → renderer input
   const subs = payload.subtitleEvents.map((e: any) => e.text)
   assert.ok(subs.includes('결국 같이 걷는다'), `payoff lost: ${subs}`)
   assert.ok(subs.length >= 2)
-  assert.ok(payload.sourceEffectCaptions.length >= 1 && payload.sourceEffectCaptions.length <= PRESENTATION_LIMITS.effects)
+  // Common Shorts Screen DNA: effect cues get no budget (no zone), so the plan carries none
+  assert.equal(PRESENTATION_LIMITS.effects, 0); assert.equal((payload.sourceEffectCaptions || []).length, 0)
   // every timed cue lands inside the output duration and after the clean opening
   const total = extractRenderPlan(payload).total
   for (const e of payload.subtitleEvents) assert.ok(e.start >= 0 && e.end <= total + 0.05 && e.end > e.start)
@@ -144,10 +145,8 @@ test('9+10 + integration: PLAN → JobPlan → RenderManifest → renderer input
   const head = events.find((e) => e.kind === 'headline')!
   assert.equal(head.text, '뭐 하는 거지?'); assert.equal(head.start, 0); assert.ok(head.end >= total - 0.05)
   for (const t of subs) assert.ok(events.some((e) => e.kind === 'subtitle' && e.text === t) && ass.includes(t))
-  // Common Shorts Screen DNA: the effect caption stays in the manifest, but no zone may draw it (CENTER is visual only)
-  assert.ok(payload.sourceEffectCaptions.length >= 1)
-  assert.ok(!events.some((e) => e.kind === 'effect' || e.kind === 'callout'))
-  for (const e of payload.sourceEffectCaptions) assert.ok(!ass.includes(`,Fx,`) && !events.some((x) => x.text === e.text && x.kind !== 'subtitle'))
+  // Common Shorts Screen DNA: nothing but the headline and captions is drawn (CENTER is visual only)
+  assert.ok(!events.some((e) => e.kind === 'effect' || e.kind === 'callout')); assert.ok(!ass.includes(',Fx,'))
   // payoff caption timing matches the payoff scene in output time
   const payoffEv = payload.subtitleEvents.find((e: any) => e.text === '결국 같이 걷는다')
   const p = s.story!.payoffRange

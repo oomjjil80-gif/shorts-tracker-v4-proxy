@@ -369,6 +369,45 @@ export async function textBandsCheck(i: ScreenDnaInput): Promise<CheckResult> {
   })
 }
 
+// 4b) the format of the drawn text: headline = exactly 2 lines (line 1 white, line 2 yellow), each caption <= 2 lines.
+// Measured on each event's own rendered glyphs (colour), not on the manifest text.
+export async function textLinesCheck(i: ScreenDnaInput): Promise<CheckResult> {
+  const id = 'screen_dna.text_lines'
+  return guard(id, async () => {
+    if (!i.overlays) return st(id, 'UNKNOWN', { reason: 'overlay script unavailable' })
+    const { ass, events } = i.overlays
+    const lines = ass.split('\n'), dlg = lines.filter((l) => l.startsWith('Dialogue:')), head = lines.filter((l) => !l.startsWith('Dialogue:'))
+    const header = head.slice(0, head.findIndex((l) => l.startsWith('Format: Layer')) + 1)
+    if (dlg.length !== events.length) return st(id, 'UNKNOWN', { reason: `overlay events (${events.length}) and dialogue lines (${dlg.length}) differ` })
+    // judges the FORMAT of what is drawn; whether a headline exists at all is content.headline_present (content gate)
+    const work = await mkdtemp(join(tmpdir(), 'dna-lines-'))
+    const esc = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
+    try {
+      const rows: any[] = []
+      for (const [k, ev] of events.entries()) {
+        if (ev.kind !== 'headline' && ev.kind !== 'subtitle') continue
+        const p = join(work, `l${k}.ass`); await writeFile(p, [...header, dlg[k]].join('\n'), 'utf8')
+        const first = Math.ceil(Math.round(ev.start * 100) / 100 * FPS - 1e-6), last = Math.ceil(Math.round(ev.end * 100) / 100 * FPS - 1e-6) - 1
+        if (last < first) { rows.push({ k, kind: ev.kind, status: 'UNKNOWN', reason: 'never on a frame' }); continue }
+        const n = Math.floor((first + last) / 2)
+        const r = await runOk(['-f', 'lavfi', '-i', `color=c=black:s=${W}x${H}:r=${FPS}:d=${((n + 2) / FPS).toFixed(3)}`, '-vf', `ass=filename='${esc(p)}':fontsdir='${esc(FONTS_DIR)}',format=rgb24`, '-ss', ((n - 0.25) / FPS).toFixed(4), '-frames:v', '1', '-f', 'rawvideo', '-'], { signal: i.signal, timeoutMs: 120_000 })
+        const px = r.stdout
+        if (px.length < FRAME * 3) { rows.push({ k, kind: ev.kind, status: 'UNKNOWN', reason: 'frame not rendered' }); continue }
+        // ink rows (any glyph pixel), split into lines at blank-row gaps; colour per line from its bright pixels
+        const ink: number[] = [], white: number[] = [], yellow: number[] = []
+        for (let y = 0; y < H; y++) { let c = 0, wv = 0, yv = 0; for (let x = 0; x < W; x++) { const o = (y * W + x) * 3, R = px[o], G = px[o + 1], B = px[o + 2]; if (R + G + B > 150) { c++; if (R > 200 && G > 200 && B > 200) wv++; else if (R > 200 && G > 150 && B < 90) yv++ } } ink.push(c); white.push(wv); yellow.push(yv) }
+        const bands: Array<{ y0: number; y1: number; white: number; yellow: number }> = []
+        for (let y = 0; y < H; y++) if (ink[y]) { const b = bands[bands.length - 1]; if (b && y - b.y1 <= 3) { b.y1 = y; b.white += white[y]; b.yellow += yellow[y] } else bands.push({ y0: y, y1: y, white: white[y], yellow: yellow[y] }) }
+        const colour = (b: { white: number; yellow: number }) => (b.white > 2 * b.yellow ? 'white' : b.yellow > 2 * b.white ? 'yellow' : 'mixed')
+        const ok = ev.kind === 'headline' ? bands.length === 2 && colour(bands[0]) === 'white' && colour(bands[1]) === 'yellow' : bands.length >= 1 && bands.length <= 2
+        rows.push({ k, kind: ev.kind, text: ev.text.slice(0, 24), lines: bands.length, colours: bands.map(colour), status: ok ? 'PASS' : 'FAIL' })
+      }
+      const status = rows.some((r) => r.status === 'FAIL') ? 'FAIL' : rows.some((r) => r.status === 'UNKNOWN') ? 'UNKNOWN' : 'PASS'
+      return st(id, status, { rule: 'headline exactly 2 lines (white, yellow); captions <= 2 lines', headlineDrawn: events.some((e) => e.kind === 'headline'), rows })
+    } finally { await rm(work, { recursive: true, force: true }) }
+  })
+}
+
 // 5) the file QC looked at is the one the receipts and manifest name, at the contract canvas
 export async function outputIdentityCheck(i: ScreenDnaInput): Promise<CheckResult> {
   const id = 'screen_dna.output_identity', dna = i.dna ?? SHORTS_SCREEN_DNA
@@ -393,7 +432,8 @@ export async function runScreenDnaQc(i: ScreenDnaInput, cuts: Array<{ start: num
     await geometryContractCheck(i),
     render ? await windowGeometryCheck(i, cuts) : await sourceGeometryCheck(i),
     render ? await windowPreservesCheck(i, cuts) : await renderPreservesSourceCheck(i, cuts),
-    await textBandsCheck(i)
+    await textBandsCheck(i),
+    await textLinesCheck(i)
   ]
   const status = checks.some((c) => c.status === 'FAIL') ? 'FAIL' : checks.every((c) => c.status === 'PASS') ? 'PASS' : 'UNKNOWN'
   // Aggregate kept under the historical id; it is derived ONLY from the checks above (no pixel-brightness framing).

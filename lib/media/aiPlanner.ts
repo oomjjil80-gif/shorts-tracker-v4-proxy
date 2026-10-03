@@ -6,7 +6,7 @@ import { EXCLUDE_REASONS, OFFSTORY_REASONS, PACING_REASONS, STORY_LIMITS, STORY_
 import { planPresentation, PRESENTATION_LIMITS } from './presentation.js'
 import { storyBeats, totalSeconds } from './plan.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/11'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/12'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
 const captionBody = {
@@ -59,13 +59,13 @@ export function storyPrompt(a: SourceAnalysis): string {
     '- excludeRanges: intro_confusion, repeat, dead_air, product_demo, foreign_text (PROMINENT viewer-facing spans only), post_payoff, unrelated.',
     '  REPEAT RULE: a second person/animal copying, reacting, following, interrupting or joining is NOT repeat when that new participant changes the humor/meaning; keep it as escalation/payoff.',
     '- hookStrategy: chronological by default. preview ONLY if a <=3s escalation/payoff preview is independently understandable and returning to the start will not confuse.',
-    `- openingHook is REQUIRED and structurally separate from the other captions. It must start at/just after causalStart, within the first ~1 second of the clean edit, contain short Korean text (<=${STORY_LIMITS.maxCaptionChars} chars), and be grounded in what is visibly happening. It becomes the persistent top headline. Never leave it blank.`,
-    `- minimalCaptions contains 1–5 ADDITIONAL grounded cues only; do NOT put another hook in this array. At most ${PRESENTATION_LIMITS.totalMessages} screen messages are ever shown (hook 1, payoff ${PRESENTATION_LIMITS.payoffs}, context ${PRESENTATION_LIMITS.contexts}, effect ${PRESENTATION_LIMITS.effects}); the hook always has priority. Cues must lie INSIDE the selected story (after causalStart, before recommendedEnd) and NEVER on excluded footage. Any stretch of the final edit longer than ${PRESENTATION_LIMITS.maxDynamicGapSec}s without a new timed cue is rejected.`,
-    `  * Add 1–3 kind="context" cues (<=${STORY_LIMITS.maxCaptionChars} chars), spaced across meaningful story changes. They are short explanatory captions, not transcript subtitles.`,
+    `- openingHook is REQUIRED and structurally separate from the other captions. It must start at/just after causalStart, within the first ~1 second of the clean edit, contain short Korean text (<=${STORY_LIMITS.maxCaptionChars} chars) of AT LEAST TWO words separated by a space (it is shown as an exactly two-line headline), and be grounded in what is visibly happening. It becomes the persistent top headline. Never leave it blank.`,
+    `- minimalCaptions contains 1–5 ADDITIONAL grounded cues only; do NOT put another hook in this array. At most ${PRESENTATION_LIMITS.totalMessages} screen messages are ever shown (hook 1, payoff ${PRESENTATION_LIMITS.payoffs}, context ${PRESENTATION_LIMITS.contexts}); the hook always has priority. Cues must lie INSIDE the selected story (after causalStart, before recommendedEnd) and NEVER on excluded footage. Any stretch of the final edit longer than ${PRESENTATION_LIMITS.maxDynamicGapSec}s without a new timed cue is rejected.`,
+    `  * Add 1–${PRESENTATION_LIMITS.contexts} kind="context" cues (<=${STORY_LIMITS.maxCaptionChars} chars), spaced across meaningful story changes. They are short explanatory captions, not transcript subtitles.`,
     `  * Add optional kind="payoff" over the actual payoff (<=${STORY_LIMITS.maxCaptionChars} chars) when it sharpens the punchline.`,
-    `  * Add 0–2 kind="effect" cues (<=${STORY_LIMITS.maxEffectChars} chars), only when a literal visible motion/reaction supports it. Korean onomatopoeia/mimetic examples: "슥", "휙", "멈칫", "힐끔", "쓱". Never sprinkle effects randomly.`,
+    '  * Do NOT add kind="effect" cues: the Shorts layout shows only the top headline and bottom captions, so pop/effect words are never displayed and do not count toward pacing.',
     '  * Every cue needs a visual basis explaining what on screen justifies the words. Avoid long sentences.',
-    '  * Aim for a new timed context/effect/payoff cue roughly every 3–5 seconds of active story so the mobile screen does not feel unattended, while allowing a purposeful quiet beat.',
+    '  * Aim for a new timed context/payoff caption roughly every 3–5 seconds of active story so the mobile screen does not feel unattended, while allowing a purposeful quiet beat.',
     '- publishabilityWarnings: remaining issues such as tiny persistent timestamps/watermarks. Put tiny metadata here instead of excluding the story.',
     '- storyType + confidence: be honest; use unclear and low confidence if you cannot tell.',
     'Measured signals (per second: [t, visualChange, audioDb]):', JSON.stringify(signals)
@@ -160,6 +160,8 @@ function assessStory(providerRaw: any, a: SourceAnalysis, model: string): Assess
   if (!hook) errors.push('publishable source-first Short requires one grounded Korean opening hook/headline')
   else {
     if (!/[가-힣]/.test(hook.text)) errors.push('opening hook/headline must contain Korean text')
+    // the Common Shorts headline is exactly two lines (split between words): a one-word hook cannot form it
+    if (String(hook.text).trim().split(/\s+/).filter(Boolean).length < 2) errors.push(`opening hook/headline "${hook.text}" must have at least two words (it is rendered as an exactly two-line headline)`)
     if (hook.start < v.story.causalStart - 0.05 || hook.start > v.story.causalStart + 1.0) errors.push(`opening hook must begin within 1s of causalStart (${v.story.causalStart}), got ${hook.start}`)
   }
   if (v.story.minimalCaptions.filter((c) => c.kind === 'hook').length !== 1) errors.push('exactly one hook/headline caption is required')
@@ -187,7 +189,7 @@ function assessStory(providerRaw: any, a: SourceAnalysis, model: string): Assess
     if (!report.explanationPresent) errors.push(`the ${total}s edit needs at least one context/payoff caption, not only the hook/effects`)
     if (!report.rhythm.ok) {
       const g = report.rhythm.worstGap
-      errors.push(`the ${total}s edit leaves ${report.rhythm.maxGapSeconds}s${g ? ` (edit time ${g.from}-${g.to}s)` : ''} with no new timed caption/effect (allowed ${PRESENTATION_LIMITS.maxDynamicGapSec}s, min ${report.rhythm.minDynamic} timed cue(s)); add grounded context/effect cues at story changes inside the selected story, not on excluded footage`)
+      errors.push(`the ${total}s edit leaves ${report.rhythm.maxGapSeconds}s${g ? ` (edit time ${g.from}-${g.to}s)` : ''} with no new timed caption (allowed ${PRESENTATION_LIMITS.maxDynamicGapSec}s, min ${report.rhythm.minDynamic} timed caption(s)); add grounded context captions at story changes inside the selected story, not on excluded footage (effect cues are not displayed and do not count)`)
     }
   }
   return { story: errors.length ? null : v.story, errors, warnings: v.warnings }
@@ -253,7 +255,7 @@ export async function aiAnalyzeStory(a: SourceAnalysis, deps: StoryModelDeps): P
       'CORRECTION REQUIRED: your previous structured answer was not publishable/valid.',
       `Validation errors: ${assessed.errors.join('; ').slice(0, 1200)}`,
       previousForRepair ? `Previous JSON: ${JSON.stringify(previousForRepair).slice(0, 7000)}` : 'Previous response was not valid JSON.',
-      'Return the COMPLETE corrected JSON object. Keep every field of the previous answer that was not named in an error unchanged. Re-check image timestamps. openingHook is mandatory and must be valid Korean text within 1 second of causalStart. Every range/cue needs end > start with at least 0.5 seconds of duration (a moment is a window, never start == end). Keep prominent opening foreign title footage out, tiny CCTV metadata only as a warning, and keep additional context/payoff/effect cues grounded in visible actions.'
+      'Return the COMPLETE corrected JSON object. Keep every field of the previous answer that was not named in an error unchanged. Re-check image timestamps. openingHook is mandatory and must be valid Korean text within 1 second of causalStart. Every range/cue needs end > start with at least 0.5 seconds of duration (a moment is a window, never start == end). Keep prominent opening foreign title footage out, tiny CCTV metadata only as a warning, and keep additional context/payoff cues grounded in visible actions (no effect cues; they are never displayed).'
     ].join('\n')
     const second = await call('repair', repairPrompt, deps.repairTimeoutMs ?? STORY_TIMEOUTS.repairMs)
     if (second.error || !second.text) return out('invalid', `${assessed.errors.join('; ')}; repair failed: ${second.error || 'no text'}`.slice(0, 700), assessed.warnings)

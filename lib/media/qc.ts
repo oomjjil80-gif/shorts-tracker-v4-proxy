@@ -12,6 +12,8 @@ import { extractRenderPlan, OUTPUT } from './render.js'
 import { COMMON_SHORTS_SCREEN_DNA as DNA, bandOf, windowSourceRect } from './screenDnaContract.js'
 import { regionSignature, type SourceFraming } from './framing.js'
 
+const WINDOW_CROP = `crop=${DNA.center.w}:${DNA.center.h}:${DNA.center.x}:${DNA.center.y}`
+
 export const QC_THRESHOLDS = {
   minBytes: 20_000, durationToleranceSec: 0.25, maxBlackSec: 0.3, unexplainedFreezeSec: 1.5, minFrameLuma: 6,
   frameMatchMaxDist: 45, frameMismatchMargin: 15, deadAudioDb: -60, maxSilentExcess: 0.2, minOverlayDelta: 6
@@ -75,7 +77,8 @@ async function overlayFor(built: { ass: string; events: OverlayEvent[] }, k: num
   const dlg = lines.filter((l) => l.startsWith('Dialogue:'))
   const head = lines.filter((l) => !l.startsWith('Dialogue:'))
   const ass = [...head.slice(0, head.findIndex((l) => l.startsWith('Format: Layer')) + 1), dlg[k] ?? ''].join('\n')
-  const mask = await overlayMask(ass, workDir, t, `${k}`)
+  // unique scratch name: the overlay checks run concurrently and must never read each other's half-written script
+  const mask = await overlayMask(ass, workDir, t, `${k}-${process.hrtime.bigint()}-${Math.random().toString(36).slice(2)}`)
   return { mask, box: bbox(mask, CANVAS.w, CANVAS.h), t }
 }
 
@@ -132,7 +135,7 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       return ok(v.duration !== null && Number.isFinite(total) && Math.abs(v.duration - total) <= T.durationToleranceSec, { rendered: v.duration, manifest: total, tolerance: T.durationToleranceSec })
     }, to),
     () => runCheck('visual.no_black', true, async () => {
-      const black = await detectBlack(i.renderPath)
+      const black = await detectBlack(i.renderPath, { crop: WINDOW_CROP }) // a black visual window, not the black bands
       const sum = black.reduce((s, b) => s + (b.end - b.start), 0)
       return ok(sum <= T.maxBlackSec, { black, totalBlackSec: sum })
     }, to),
@@ -147,7 +150,8 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
     () => runCheck('visual.first_last_frame', true, async () => {
       const v = await getInfo()
       const dur = v.duration ?? total
-      const luma = async (t: number) => { const g = await grayFrame(i.renderPath, t, 32, 56); return g.reduce((s, x) => s + x, 0) / g.length }
+      // the picture lives in the Screen DNA visual window; the bands are black by design and carry the (bright) headline
+      const luma = async (t: number) => { const g = await grayFrame(i.renderPath, t, 32, 36, WINDOW_CROP); return g.reduce((s, x) => s + x, 0) / g.length }
       const [a, b] = [await luma(0.05), await luma(Math.max(0, dur - 0.15))]
       return ok(a > T.minFrameLuma && b > T.minFrameLuma, { firstLuma: a, lastLuma: b, min: T.minFrameLuma })
     }, to),
