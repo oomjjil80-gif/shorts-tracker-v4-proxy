@@ -19,7 +19,7 @@ export const PRESENTATION_LIMITS = {
   hook: 1,
   contexts: 4,
   payoffs: 1,
-  effects: 0,                // Common Shorts Screen DNA: effect captions have no zone and are never shown
+  effects: 2,                // short action SFX (e.g. 퍽!) are allowed over the visual when grounded in the source
   totalMessages: 6,          // hook + payoff + contexts (drawn messages only)
   eventsMax: 5,              // context + payoff (timed explanation captions)
   hookMaxOutputStart: 1.2,   // the headline must be tied to the first ~second of the clean edit
