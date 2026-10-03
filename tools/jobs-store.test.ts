@@ -347,3 +347,24 @@ test('QC-only retry (QC_RECHECK) keeps source/manifest/render hashes and paid sp
   assert.equal(after?.spentUsd, blocked.spentUsd)
   assert.equal(after?.stage, 'DECISION')
 })
+
+
+test('RENDER recheck works for a General source_shorts job (no ASSET stage) and never re-runs paid stages', async () => {
+  const { store, base } = await setup()
+  const { job } = await store.createJob({ ...base, idempotencyKey: 'gen-render-recheck' })
+  const step = async (stages: any[], extra: any = {}) => {
+    await store.claimJob({ workerId: 'w', stages })
+    const { attempt } = await store.startStageRun({ jobId: job.id, workerId: 'w' })
+    return store.completeStage({ jobId: job.id, workerId: 'w', attempt, ...extra })
+  }
+  await assert.rejects(() => store.recheckRender({ jobId: job.id }), (e: any) => e.code === 'NOT_RENDER_RECHECKABLE')
+  for (const s of ['ANALYZE', 'PLAN']) await step([s])
+  await step(['COMPILE'], { outputHash: 'm'.repeat(64) }); await step(['RENDER'], { outputHash: 'r'.repeat(64) })
+  const blocked = await step(['AUTO_QC'], { wait: 'QC_BLOCKED' })
+  assert.equal(blocked.profile, 'source_shorts')
+  const r = await store.recheckRender({ jobId: job.id })
+  assert.deepEqual([r.status, r.stage], ['QUEUED', 'RENDER'])
+  const runs = await store.listStageRuns(job.id)
+  const ok = (stage: string) => runs.filter((x) => x.stage === stage && x.status === 'SUCCEEDED').length
+  assert.deepEqual([ok('ANALYZE'), ok('PLAN'), ok('COMPILE'), ok('RENDER')], [1, 1, 1, 1])
+})

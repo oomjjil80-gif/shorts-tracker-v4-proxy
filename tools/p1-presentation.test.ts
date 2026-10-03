@@ -144,7 +144,10 @@ test('9+10 + integration: PLAN → JobPlan → RenderManifest → renderer input
   const head = events.find((e) => e.kind === 'headline')!
   assert.equal(head.text, '뭐 하는 거지?'); assert.equal(head.start, 0); assert.ok(head.end >= total - 0.05)
   for (const t of subs) assert.ok(events.some((e) => e.kind === 'subtitle' && e.text === t) && ass.includes(t))
-  assert.ok(events.some((e) => e.kind === 'effect'))
+  // Common Shorts Screen DNA: the effect caption stays in the manifest, but no zone may draw it (CENTER is visual only)
+  assert.ok(payload.sourceEffectCaptions.length >= 1)
+  assert.ok(!events.some((e) => e.kind === 'effect' || e.kind === 'callout'))
+  for (const e of payload.sourceEffectCaptions) assert.ok(!ass.includes(`,Fx,`) && !events.some((x) => x.text === e.text && x.kind !== 'subtitle'))
   // payoff caption timing matches the payoff scene in output time
   const payoffEv = payload.subtitleEvents.find((e: any) => e.text === '결국 같이 걷는다')
   const p = s.story!.payoffRange

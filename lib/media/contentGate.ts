@@ -3,7 +3,8 @@
 // story; without one they are UNKNOWN/BLOCK. Presentation cues must be grounded in that story, not invented by QC.
 import { evaluateGate, type CheckResult, type GateResult } from '../qc/gate.js'
 import type { SourceAnalysis } from './analyze.js'
-import { foregroundRect, type SourceFraming } from './framing.js'
+import type { SourceFraming } from './framing.js'
+import { COMMON_SHORTS_SCREEN_DNA as DNA } from './screenDnaContract.js'
 import { deadAirRuns, PLAN_LIMITS, storyMaxSeconds } from './plan.js'
 import { PRESENTATION_LIMITS, rhythmReport } from './presentation.js'
 import { OFFSTORY_REASONS, overlap, PACING_REASONS, STORY_LIMITS, type Range, type SemanticResult } from './story.js'
@@ -15,6 +16,7 @@ export const CONTENT_LIMITS = {
   minPayoffCoverage: 0.8,
   maxDeadRunSec: 2.5,
   minForegroundArea: 0.3,
+  maxWindowUpscale: 4, // a picture cover-scaled more than 4x into the visual window is too small to read on a phone
   maxTextItems: PRESENTATION_LIMITS.totalMessages,
   maxDynamicGapSec: PRESENTATION_LIMITS.maxDynamicGapSec
 }
@@ -46,13 +48,13 @@ function textItems(payload: any): Array<{ kind: string; text: string }> {
   const out: Array<{ kind: string; text: string }> = []
   if (payload?.editorialPlan?.headline) out.push({ kind: 'headline', text: String(payload.editorialPlan.headline) })
   for (const e of payload?.subtitleEvents || []) if (e?.text) out.push({ kind: 'subtitle', text: String(e.text) })
-  for (const e of payload?.sourceEffectCaptions || []) if (e?.text) out.push({ kind: 'effect', text: String(e.text) })
-  for (const e of payload?.sourceCallouts || []) if (e?.text) out.push({ kind: 'callout', text: String(e.text) })
+  // Common Shorts Screen DNA draws only the headline (top band) and captions (bottom band); effect captions and callouts
+  // have no zone and are not on screen, so they are not presentation text.
   return out
 }
 
 function dynamicCueStarts(payload: any, total: number): number[] {
-  const rows = [...(payload?.subtitleEvents || []), ...(payload?.sourceEffectCaptions || []), ...(payload?.sourceCallouts || [])]
+  const rows = [...(payload?.subtitleEvents || [])] // only drawn, timed text (captions) can change the screen
   return rows.map((e: any) => Number(e?.start)).filter((x: number) => Number.isFinite(x) && x >= 0 && x <= total).sort((a: number, b: number) => a - b)
 }
 
@@ -127,10 +129,15 @@ export function evaluateContentGate(i: ContentGateInput): GateResult {
   }
 
   // 7. mobile readability of the real picture.
+  // The picture always fills the Common Screen DNA visual window (cover-scaled, after any embedded-picture crop), so the
+  // on-screen area is fixed; what can still make it unreadable is a tiny real picture blown up to fill the window.
   if (!i.framing) checks.push({ id: 'content.mobile_foreground', required: true, status: 'UNKNOWN', evidence: { reason: 'render framing not recorded' } })
   else {
-    const area = i.framing.mode === 'embedded' && i.framing.crop ? (() => { const r = foregroundRect(i.framing!.crop!); return (r.width * r.height) / (1080 * 1920) })() : 1
-    checks.push(verdict('content.mobile_foreground', area >= CONTENT_LIMITS.minForegroundArea, { foregroundAreaFraction: r2(area), min: CONTENT_LIMITS.minForegroundArea, framing: i.framing.mode }))
+    const area = (DNA.center.w * DNA.center.h) / (DNA.canvas.w * DNA.canvas.h)
+    const pic = i.framing.mode === 'embedded' && i.framing.crop ? { w: i.framing.crop.width, h: i.framing.crop.height } : { w: Number(i.analysis?.media?.width), h: Number(i.analysis?.media?.height) }
+    const upscale = pic.w > 0 && pic.h > 0 ? Math.max(DNA.center.w / pic.w, DNA.center.h / pic.h) : null
+    if (upscale === null) checks.push({ id: 'content.mobile_foreground', required: true, status: 'UNKNOWN', evidence: { reason: 'source picture size unknown', framing: i.framing.mode } })
+    else checks.push(verdict('content.mobile_foreground', area >= CONTENT_LIMITS.minForegroundArea && upscale <= CONTENT_LIMITS.maxWindowUpscale, { foregroundAreaFraction: r2(area), window: DNA.center, picture: pic, windowUpscale: r2(upscale), maxWindowUpscale: CONTENT_LIMITS.maxWindowUpscale, framing: i.framing.mode }))
   }
 
   // 8. all text is minimal and semantically grounded. A Korean top headline is mandatory for P1 source shorts.

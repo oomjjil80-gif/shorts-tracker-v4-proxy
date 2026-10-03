@@ -2,6 +2,7 @@
 // libass does the Hangul shaping and line wrapping inside safe margins; the layout is measured again by QC.
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { COMMON_SHORTS_SCREEN_DNA } from './screenDnaContract.js'
 
 export const FONT_FAMILY = 'Noto Sans KR'
 export const FONTS_DIR = process.env.TRACKER_FONTS_DIR || join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'fonts')
@@ -47,7 +48,7 @@ export function fitFontSize(text: string, widthPx: number, basePx: number, maxLi
 // \fs100 draws a ~69px em and ~62px-tall Hangul. That is why raising a fixed size 84→100 barely changed the screen.
 const HEAD_FONT = { cell: 1.448, ascent: 1.16, inkTop: 0.84, inkBottom: 0.09 }
 // Visible ink must stay inside the 360px top band (QC accepts y 16..352, x 43..1037).
-export const WISDOM_HEAD_BAND = { centerY: 180, maxInkWidth: 984, maxInkHeight: 300 }
+export const WISDOM_HEAD_BAND = { centerY: COMMON_SHORTS_SCREEN_DNA.top.y + COMMON_SHORTS_SCREEN_DNA.top.h / 2, maxInkWidth: 984, maxInkHeight: 300 }
 // Advance width in em: every Hangul syllable is 920 units in this font; punctuation/Latin from hmtx (wide Latin rounded up).
 export const headAdvanceEm = (line: string) => [...line].reduce((s, ch) => s + (/[ㄱ-ㆎ가-힣一-鿿]/.test(ch) ? 0.92 : ch === ' ' ? 0.227 : /[,.'":;!]/.test(ch) ? 0.37 : /[MWmw]/.test(ch) ? 0.97 : 0.65), 0)
 
@@ -68,6 +69,9 @@ export function wisdomHeadlineLayout(lines: string[]): { fs: number; em: number;
 export type AssInput = {
   totalDuration: number
   wisdomLayout?: boolean
+  // Common Shorts Screen DNA text layout: 2-line headline in the top band, max-2-line captions in the bottom band, and
+  // nothing else (the visual window carries no text, so effect captions / callouts are not drawn).
+  screenDna?: boolean
   headline?: string
   subtitles?: Array<{ start: number; end: number; text: string }>
   effects?: Array<Record<string, any>>
@@ -77,7 +81,7 @@ export type AssInput = {
 export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[] } {
   const { w, h } = CANVAS
   const total = input.totalDuration
-  const wisdom = input.wisdomLayout === true
+  const wisdom = input.wisdomLayout === true || input.screenDna === true
   const marginX = Math.round(w * 0.08)
   const textWidth = w - marginX * 2
   const events: OverlayEvent[] = []
@@ -91,7 +95,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
   }
 
   const head = sanitizeText(input.headline)
-  const callouts = (input.callouts || []).filter((c) => c?.text)
+  const callouts = wisdom ? [] : (input.callouts || []).filter((c) => c?.text)
   const suppress = callouts.filter((c) => c.suppressSubtitle).map((c) => ({ start: num(c.start, 0), end: num(c.end, 0) }))
 
   if (head) {
@@ -136,7 +140,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
     const tags = `{\\an5\\pos(${x},${y})\\frz${-rot}\\fs${fs}\\c${assColor(e.color)}\\3c${assColor(e.strokeColor, '#111111')}\\bord${Math.max(4, Math.round(fs * 0.09))}\\shad0${pop}}`
     add(layer, kind, 'Fx', num(e.start, 0), num(e.end, 0), text, tags)
   }
-  for (const e of input.effects || []) styled('effect', e, 50, 58, 8.2, 3)
+  for (const e of wisdom ? [] : input.effects || []) styled('effect', e, 50, 58, 8.2, 3)
   for (const c of callouts) styled('callout', c, 48, 34, 7.6, 4)
 
   const ass = [
@@ -159,6 +163,7 @@ export function assFromPayload(payload: any) {
   return buildAss({
     totalDuration: Number(payload.totalDuration),
     wisdomLayout: payload.editorialPlan?.profile === 'wisdom-v1',
+    screenDna: true, // every 1080x1920 Short uses the Common Shorts Screen DNA
     headline: payload.editorialPlan?.headline || '',
     subtitles: (payload.subtitleEvents || []).filter((e: any) => e?.text).map((e: any) => ({ start: Number(e.start), end: Number(e.end), text: e.text })),
     effects: payload.sourceEffectCaptions || [],

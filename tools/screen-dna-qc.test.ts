@@ -208,3 +208,128 @@ test('AUTO_QC (wisdom) runs the Screen DNA contract checks end-to-end and no lon
   assert.ok(!JSON.stringify(checks.find((c: any) => c.id === 'wisdom.screen_dna_layout')).includes('luma'))
   assert.equal(ex.estimateUsd({} as any), 0)
 })
+
+// ======================= COMMON SHORTS SCREEN DNA — General / source-first (RENDER composes) =======================
+import { COMMON_SHORTS_SCREEN_DNA, screenDnaWindowFilter, geometryFromSegmentFilter, contractDiffs, windowLineDiffs, bandOf } from '../lib/media/screenDna.js'
+import { buildFilterGraph } from '../lib/media/render.js'
+import { WISDOM_HEAD_BAND } from '../lib/media/ass.js'
+
+const dnaWith = (center: { y: number; h: number }) => ({ ...COMMON_SHORTS_SCREEN_DNA, top: { x: 0, y: 0, w: 1080, h: center.y }, center: { x: 0, y: center.y, w: 1080, h: center.h }, bottom: { x: 0, y: center.y + center.h, w: 1080, h: 1920 - center.y - center.h } })
+async function general(o: { kind?: 'bright' | 'dark'; dna?: any; tamperVf?: string } = {}) {
+  const d = fx.dir()
+  const src = await fx.generalSource(d, o.kind ?? 'bright')
+  const manifest = fx.generalManifest(src)
+  const out = await fx.generalRender(d, src, manifest, { dna: o.dna, tamperVf: o.tamperVf })
+  const receipt = { schema: 'screen-dna-receipt/1', stage: 'RENDER', jobId: 'job_gen', attempt: 1, contract: COMMON_SHORTS_SCREEN_DNA, composer: 'render', manifestHash: manifest.manifestHash, sourceSha256: src.sha256, sourceWidth: 1280, sourceHeight: 720, filterGraphSha256: filterGraphSha256(out.filterGraph), videoFilters: renderVideoFilters(out.filterGraph), renderHash: out.sha256 }
+  const total = extractRenderPlan(manifest.payload).total
+  const input: any = {
+    job: { id: 'job_gen' }, composer: 'render', sourceFile: src.path, sourceSha256: src.sha256,
+    renderPath: out.path, renderBytesSha256: out.sha256, output: { width: out.info.width, height: out.info.height },
+    variant: { manifestHash: manifest.manifestHash, renderHash: out.sha256, geometryReceipt: receipt },
+    manifest, renderRun: { attempt: 1 }, assetRun: null, assetManifest: null, getBytes: async () => null,
+    overlays: assFromPayload({ ...manifest.payload, totalDuration: total })
+  }
+  return { src, manifest, out, receipt, input, cuts: extractRenderPlan(manifest.payload).cuts }
+}
+let gen: Awaited<ReturnType<typeof general>>
+
+test('B. General source-first 1080x1920 360/1200/360: every Screen DNA check PASS', async () => {
+  gen = await general()
+  assert.deepEqual([gen.out.info.width, gen.out.info.height], [1080, 1920])
+  const checks = await runScreenDnaQc(gen.input, gen.cuts)
+  assert.deepEqual(checks.map((c) => [c.id, c.status]), [['screen_dna.output_identity', 'PASS'], ['screen_dna.geometry_contract', 'PASS'], ['screen_dna.source_geometry', 'PASS'], ['screen_dna.render_preserves_source', 'PASS'], ['screen_dna.text_bands', 'PASS'], ['wisdom.screen_dna_layout', 'PASS']], JSON.stringify(checks.filter((c) => c.status !== 'PASS')))
+  assert.equal(evaluateGate(checks).decision, 'PASS')
+  // the headline is the same exactly-2-line white/yellow renderer as Wisdom, inside the top band
+  const head = gen.input.overlays.ass.split('\n').find((l: string) => l.includes(',WisdomHead,'))
+  assert.match(head, /\\q2/); assert.match(head, /\\c&H00FFFFFF&/); assert.match(head, /\\N\{\\c&H0000D7FF&\}/)
+})
+
+for (const [label, center] of [['C. General top=359', { y: 359, h: 1200 }], ['C. General top=361', { y: 361, h: 1200 }], ['D. General center=1198', { y: 360, h: 1198 }], ['D. General center=1202', { y: 360, h: 1202 }]] as const) {
+  test(`${label}: FAIL`, async () => {
+    const g = await general({ dna: dnaWith(center) })
+    const checks = await runScreenDnaQc(g.input, g.cuts)
+    assert.equal(status(checks, 'screen_dna.geometry_contract'), 'FAIL') // the executed RENDER filter is not the contract
+    assert.equal(status(checks, 'wisdom.screen_dna_layout'), 'FAIL')
+    assert.equal(evaluateGate(checks).decision, 'BLOCK')
+    // the pixels alone refute it too when re-executed against the contract window (yuv420p rounds pad y=361 to 360,
+    // so that output is pixel-identical to the contract and only the execution contract can catch it)
+    if (center.y !== 361) {
+      const asContract = { ...g.input, variant: { ...g.input.variant, geometryReceipt: { ...g.receipt, videoFilters: renderVideoFilters(buildFilterGraph(g.cuts.map((c: any) => ({ ...c, volume: 1, mute: false })), { sourceHasAudio: false, assPath: '', fontsDir: '', hasOverlays: false })) } } }
+      const px = await runScreenDnaQc(asContract, g.cuts)
+      assert.equal(status(px, 'screen_dna.geometry_contract'), 'PASS')
+      assert.equal(status(px, 'wisdom.screen_dna_layout'), 'FAIL', JSON.stringify(px.map((c) => [c.id, c.status])))
+    }
+  })
+}
+
+test('E/F. General: headline or caption 1px into the visual window FAIL; flush to the band edge PASS', async () => {
+  const header = gen.input.overlays.ass.split('\n').filter((l: string) => !l.startsWith('Dialogue:'))
+  const mk = (kind: 'headline' | 'subtitle', body: string) => ({ ass: [...header, `Dialogue: 1,0:00:00.00,0:00:01.00,${kind === 'headline' ? 'WisdomHead' : 'WisdomSub'},,0,0,0,,${body}`].join('\n'), events: [{ kind, text: 'x', start: 0, end: 1 }] })
+  const t = (o: any) => textBandsCheck({ ...gen.input, overlays: o })
+  assert.equal((await t(mk('headline', draw(300, 360)))).status, 'PASS')
+  assert.equal((await t(mk('headline', draw(300, 361)))).status, 'FAIL')
+  assert.equal((await t(mk('subtitle', draw(1560, 1700)))).status, 'PASS')
+  assert.equal((await t(mk('subtitle', draw(1559, 1700)))).status, 'FAIL')
+})
+
+test('G. General dark visual: PASS (geometry never depends on brightness)', async () => {
+  const g = await general({ kind: 'dark' })
+  const checks = await runScreenDnaQc(g.input, g.cuts)
+  assert.equal(status(checks, 'wisdom.screen_dna_layout'), 'PASS', JSON.stringify(checks.filter((c) => c.status !== 'PASS')))
+})
+
+test('H. General: receipt/manifest say contract but the actual output geometry is wrong: FAIL', async () => {
+  // shift the picture down 2px inside the window and let it leak into the caption band, after the contract render
+  for (const tamperVf of ['split[a][b];[a]null[base];[b]crop=1080:1200:0:360[c];[base][c]overlay=0:362', 'split[a][b];[a]null[base];[b]crop=1080:1200:0:360,scale=1080:1204[c];[base][c]overlay=0:358']) {
+    const g = await general({ tamperVf })
+    const checks = await runScreenDnaQc(g.input, g.cuts)
+    assert.equal(status(checks, 'screen_dna.geometry_contract'), 'PASS') // the declaration alone looks perfect
+    assert.equal(status(checks, 'wisdom.screen_dna_layout'), 'FAIL', JSON.stringify(checks.map((c) => [c.id, c.status])))
+  }
+})
+
+test('I. General: missing RENDER execution evidence is UNKNOWN and blocks', async () => {
+  const noReceipt = { ...gen.input, variant: { ...gen.input.variant, geometryReceipt: null } }
+  const checks = await runScreenDnaQc(noReceipt, gen.cuts)
+  assert.equal(status(checks, 'screen_dna.geometry_contract'), 'UNKNOWN')
+  assert.equal(status(checks, 'wisdom.screen_dna_layout'), 'UNKNOWN')
+  assert.equal(evaluateGate(checks).decision, 'BLOCK')
+})
+
+test('J. Wisdom and General execute and check ONE common geometry contract', () => {
+  const asset = geometryFromSegmentFilter(BASE), window = geometryFromSegmentFilter(screenDnaWindowFilter())
+  assert.deepEqual(contractDiffs(asset), []); assert.deepEqual(contractDiffs(window), [])
+  assert.deepEqual({ ...asset, fillsCenter: true }, { ...window, fillsCenter: true })
+  assert.equal(SHORTS_SCREEN_DNA, COMMON_SHORTS_SCREEN_DNA)
+  assert.equal(WISDOM_HEAD_BAND.centerY, COMMON_SHORTS_SCREEN_DNA.top.y + COMMON_SHORTS_SCREEN_DNA.top.h / 2)
+  assert.equal(bandOf(COMMON_SHORTS_SCREEN_DNA, 'headline'), COMMON_SHORTS_SCREEN_DNA.top); assert.equal(bandOf(COMMON_SHORTS_SCREEN_DNA, 'subtitle'), COMMON_SHORTS_SCREEN_DNA.bottom)
+  // General render line is exactly the contract window; Wisdom render line is byte-identical to the pre-contract graph
+  const cut = [{ start: 0, duration: 2, trimStart: 0, trimEnd: 2, volume: 1, mute: false }]
+  const general = buildFilterGraph(cut, { sourceHasAudio: false, assPath: '', fontsDir: '', hasOverlays: false })
+  assert.deepEqual(windowLineDiffs(renderVideoFilters(general)[0]), [])
+  const wisdom = buildFilterGraph(cut, { sourceHasAudio: false, assPath: '', fontsDir: '', hasOverlays: false, wisdomLayout: true })
+  assert.equal(renderVideoFilters(wisdom)[0], '[0:v]setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p[v0]')
+})
+
+test('AUTO_QC (General source_shorts) runs the same Common Screen DNA checks end-to-end; technical gate PASS', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { createMemoryBlobStore, putAddressed } = await import('../lib/jobs/blobs.js')
+  const { analyzeSourceFile } = await import('../lib/media/analyze.js')
+  const { createAutoQcExecutor } = await import('../worker/stages/autoQc.js')
+  const blobs: any = createMemoryBlobStore()
+  const g = gen
+  const manifestRef = (await putAddressed(blobs, 'manifests', g.manifest)).path
+  const renderRef = `renders/${g.out.sha256}.mp4`; await blobs.putBytes(renderRef, readFileSync(g.out.path), 'video/mp4')
+  const analysisRef = (await putAddressed(blobs, 'analysis', await analyzeSourceFile(g.src.path, { sourceAssetId: 'src_raw_fx', sha256: g.src.sha256 }))).path
+  const built = g.input.overlays
+  const runs: Record<string, any> = {
+    ANALYZE: { attempt: 1, outputRef: analysisRef, result: {} },
+    RENDER: { attempt: 1, result: { variants: [{ variantId: 'v1', label: '추천', manifestHash: g.manifest.manifestHash, manifestRef, renderRef, renderHash: g.out.sha256, duration: 2.4, overlayEvents: built.events, assSha256: fx.sha(built.ass), sourceFraming: { mode: 'full', crop: null, confidence: 0, sampleCount: 7, detector: 'luma-bands-v1' }, geometryReceipt: g.receipt }] } }
+  }
+  const out: any = await createAutoQcExecutor(null).run({ job: { id: 'job_gen', profile: 'source_shorts', planRev: 1, sourceAssetId: 'src_raw_fx' } as any, attempt: 1, blobs, previous: async (s: string) => runs[s] ?? null, signal: new AbortController().signal,
+    resolveSourceAsset: async () => ({ sourceAssetId: 'src_raw_fx', blobPath: 'x', sha256: g.src.sha256 }), resolveSourceFile: async () => ({ path: g.src.path, cleanup: async () => {} }) } as any)
+  const gate = out.result.variants[0].gate
+  for (const id of ['screen_dna.output_identity', 'screen_dna.geometry_contract', 'screen_dna.source_geometry', 'screen_dna.render_preserves_source', 'screen_dna.text_bands', 'wisdom.screen_dna_layout', 'timeline.segment_order_and_trim', 'overlay.safe_area_no_clipping']) assert.equal(status(gate.checks, id), 'PASS', `${id}: ${JSON.stringify(gate.checks.find((c: any) => c.id === id))}`)
+  assert.ok(!gate.checks.some((c: any) => c.id === 'visual.frame_utilization'))
+  assert.equal(gate.decision, 'PASS', JSON.stringify(gate.reasons))
+})

@@ -70,7 +70,8 @@ test('black frames inside the output block the gate', async () => {
 })
 
 test('overlay that cannot fit the safe area is FAIL (clipping is measured, not assumed)', async () => {
-  const payload = compile({ profile: 'v1', beats: BEATS, effectCaptions: [{ text: '가'.repeat(40), start: 0, end: 2, xPct: 92, yPct: 50, fontSizePct: 12 }] })
+  // a caption far too long for two lines overflows the Screen DNA caption band upward into the visual window
+  const payload = compile({ profile: 'v1', beats: BEATS, events: [{ start: 0, end: 2, text: '가나다라마바사아자차 '.repeat(40) }], plansTimeDomain: 'source' })
   const { status, qc } = await renderAndQc(payload)
   assert.equal(status('overlay.safe_area_no_clipping'), 'FAIL'); assert.equal(qc.gate.decision, 'BLOCK')
 })

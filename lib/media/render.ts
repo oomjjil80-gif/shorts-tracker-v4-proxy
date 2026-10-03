@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { assFromPayload, FONTS_DIR, type OverlayEvent } from './ass.js'
 import { runOk } from './ffmpeg.js'
 import type { SourceFraming } from './framing.js'
+import { COMMON_SHORTS_SCREEN_DNA, screenDnaComposedFilter, screenDnaWindowFilter, type ScreenDna } from './screenDnaContract.js'
 
 export const OUTPUT = { width: 1080, height: 1920, fps: 30 } as const
 // Container hosts can expose dozens of CPUs while the Railway service has a much smaller memory/process budget.
@@ -44,24 +45,20 @@ export function extractRenderPlan(payload: any): { cuts: RenderPlanCut[]; total:
 
 const escFilterPath = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
 
-export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boolean; assPath: string; fontsDir: string; hasOverlays: boolean; sourceFraming?: SourceFraming; wisdomLayout?: boolean }): string {
+export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boolean; assPath: string; fontsDir: string; hasOverlays: boolean; sourceFraming?: SourceFraming; wisdomLayout?: boolean; dna?: ScreenDna }): string {
   const parts: string[] = []
   const embedded = o.sourceFraming?.mode === 'embedded' ? o.sourceFraming.crop : null
+  const dna = o.dna ?? COMMON_SHORTS_SCREEN_DNA
   cuts.forEach((c, i) => {
     if (o.wisdomLayout) {
-      // Wisdom Screen DNA: immutable black 360px headline band + 1200px visual window + black 360px subtitle band.
-      // The generated source already carries this geometry; preserve it exactly. Never run the generic embedded-framing blur/scale path.
-      parts.push(`[${i}:v]setpts=PTS-STARTPTS,scale=${OUTPUT.width}:${OUTPUT.height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${OUTPUT.width}:${OUTPUT.height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${OUTPUT.fps},format=yuv420p[v${i}]`)
-    } else if (embedded) {
-      // Many reposted vertical files are actually a landscape/4:3 picture embedded between black title/padding bands.
-      // Crop to the real picture, preserve the full foreground, and fill 9:16 with a darkened blurred duplicate.
-      // This removes baked-in title bands without stretching or amputating the CCTV/story frame.
-      parts.push(`[${i}:v]setpts=PTS-STARTPTS,crop=${embedded.width}:${embedded.height}:${embedded.x}:${embedded.y},split=2[bgsrc${i}][fgsrc${i}]`)
-      parts.push(`[bgsrc${i}]scale=${OUTPUT.width}:${OUTPUT.height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${OUTPUT.width}:${OUTPUT.height},gblur=sigma=30:steps=2,eq=brightness=-0.10:saturation=0.75[bg${i}]`)
-      parts.push(`[fgsrc${i}]scale=${OUTPUT.width}:${OUTPUT.height}:force_original_aspect_ratio=decrease:flags=lanczos[fg${i}]`)
-      parts.push(`[bg${i}][fg${i}]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=${OUTPUT.fps},format=yuv420p[v${i}]`)
+      // Pre-composed source (ASSET already built the Common Screen DNA): keep it pixel-for-pixel.
+      parts.push(`[${i}:v]setpts=PTS-STARTPTS,${screenDnaComposedFilter(dna)},setsar=1,fps=${OUTPUT.fps},format=yuv420p[v${i}]`)
     } else {
-      parts.push(`[${i}:v]setpts=PTS-STARTPTS,scale=${OUTPUT.width}:${OUTPUT.height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${OUTPUT.width}:${OUTPUT.height},setsar=1,fps=${OUTPUT.fps},format=yuv420p[v${i}]`)
+      // Raw source (General / source-first): the picture goes into the Common Screen DNA visual window between the black
+      // headline and caption bands. A reposted file whose real picture sits inside baked-in black bands is cropped to that
+      // picture first, so the window shows the picture, not old padding.
+      const pre = embedded ? `crop=${embedded.width}:${embedded.height}:${embedded.x}:${embedded.y},` : ''
+      parts.push(`[${i}:v]setpts=PTS-STARTPTS,${pre}${screenDnaWindowFilter(dna)},setsar=1,fps=${OUTPUT.fps},format=yuv420p[v${i}]`)
     }
     const fade = `afade=t=in:d=0.02,afade=t=out:st=${Math.max(0, c.duration - 0.02).toFixed(3)}:d=0.02`
     if (o.sourceHasAudio && !c.mute) parts.push(`[${i}:a]asetpts=PTS-STARTPTS,aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${c.volume},${fade}[a${i}]`)
@@ -74,7 +71,7 @@ export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boo
 
 export type RenderResult = { outPath: string; overlayEvents: OverlayEvent[]; assPath: string | null; ass: string; total: number; cuts: RenderPlanCut[]; sourceHasAudio: boolean; sourceFraming: SourceFraming | null; filterGraph: string }
 
-export async function renderPayload(payload: any, o: { sourceFile: string; sourceHasAudio: boolean; workDir: string; outPath: string; signal?: AbortSignal; fontsDir?: string; sourceFraming?: SourceFraming }): Promise<RenderResult> {
+export async function renderPayload(payload: any, o: { sourceFile: string; sourceHasAudio: boolean; workDir: string; outPath: string; signal?: AbortSignal; fontsDir?: string; sourceFraming?: SourceFraming; dna?: ScreenDna }): Promise<RenderResult> {
   const { cuts, total } = extractRenderPlan(payload)
   await mkdir(o.workDir, { recursive: true })
   const built = assFromPayload({ ...payload, totalDuration: total })
@@ -82,7 +79,7 @@ export async function renderPayload(payload: any, o: { sourceFile: string; sourc
   const assPath = join(o.workDir, 'overlay.ass')
   if (hasOverlays) await writeFile(assPath, built.ass, 'utf8')
   const graphPath = join(o.workDir, 'graph.txt')
-  const filterGraph = buildFilterGraph(cuts, { sourceHasAudio: o.sourceHasAudio, assPath, fontsDir: o.fontsDir ?? FONTS_DIR, hasOverlays, sourceFraming: o.sourceFraming, wisdomLayout: payload?.editorialPlan?.profile === 'wisdom-v1' })
+  const filterGraph = buildFilterGraph(cuts, { sourceHasAudio: o.sourceHasAudio, assPath, fontsDir: o.fontsDir ?? FONTS_DIR, hasOverlays, sourceFraming: o.sourceFraming, wisdomLayout: payload?.editorialPlan?.profile === 'wisdom-v1', dna: o.dna })
   await writeFile(graphPath, filterGraph, 'utf8')
 
   const args = ['-y']
