@@ -162,7 +162,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
       for (const p of pieces) add(2, 'subtitle', 'WindowSub', p.start, p.end, text, pos, text, capZone)
       continue
     }
-    let fs = fitFontSize(text, textWidth - 40, 60, wisdom ? 2 : 3, 42)
+    let fs = fitFontSize(text, textWidth - 40, wisdom ? 76 : 60, wisdom ? 2 : 3, wisdom ? 54 : 42)
     // Screen DNA captions are at most 2 lines. fitFontSize estimates Hangul at 0.72em but this font advances 0.92em, so a
     // long caption can still wrap to 3+ lines; only then shrink using the real advances (captions that fit are untouched).
     if (wisdom) while (fs > CAPTION_MIN_PX && captionLines(text, textWidth, fs) > 2) fs -= 2
