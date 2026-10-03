@@ -319,7 +319,9 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       const now = clock()
       return db.transaction(async (tx) => {
         const job = await lockedJob(tx, input.jobId)
-        if (job.status !== 'WAITING_USER' || job.waitReason !== 'DECISION' || job.stage !== 'DECISION') throw new JobError('NOT_AWAITING_DECISION', `job is ${job.status}/${job.stage}`)
+        const awaitingDecision = job.status === 'WAITING_USER' && job.waitReason === 'DECISION' && job.stage === 'DECISION'
+        const qcBlocked = job.status === 'WAITING_USER' && job.waitReason === 'QC_BLOCKED' && job.stage === 'AUTO_QC'
+        if (!awaitingDecision && !qcBlocked) throw new JobError('NOT_AWAITING_DECISION', `job is ${job.status}/${job.stage}`)
         const qc = await tx.query(`SELECT result_json FROM job_stage_runs WHERE job_id=$1 AND stage='AUTO_QC' AND status='SUCCEEDED' ORDER BY id DESC LIMIT 1`, [job.id])
         const result = qc.rows[0]?.result_json
         const recommended = String(result?.recommendedVariantId || '')
