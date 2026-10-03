@@ -23,6 +23,17 @@ export function lockNamedThinkerAcrossBeats(s:WisdomScript,topic:string):WisdomS
 // applyVisualBible() wraps every beat as "... Character policy: <bible>. Scene goal: <goal>. Scene: <scene>. Avoid: ...".
 // Only the beat's own scene says what is drawn; bible text is shared by all beats and a goal can merely mention a name.
 export const beatScene=(imagePrompt:unknown)=>{const p=String(imagePrompt||''),i=p.lastIndexOf('. Scene: '),j=p.lastIndexOf('. Avoid: ');return i>=0&&j>i?p.slice(i+9,j):p}
+
+export function lockWisdomProtagonistAcrossBeats(s:WisdomScript,topic:string):WisdomScript{
+ const thinker=thinkerFor(topic)
+ const identity='Recurring protagonist LOCK: when an unnamed everyday protagonist appears, depict the SAME Korean adult in every such scene — early 40s, oval face, short neat dark hair, calm dark eyes, charcoal coat over a plain light shirt; identical face, apparent age, hair and clothing across scenes. Do not redesign this recurring protagonist.'
+ return {...s,beats:s.beats.map(b=>{const scene=beatScene(b.imagePrompt).toLowerCase();const named=thinker?.aliases.some(a=>scene.includes(a))??false;return named?b:{...b,imagePrompt:`${b.imagePrompt} ${identity}`}})}
+}
+
+export function wisdomCaptionChunks(text:string,maxChars=18):string[]{
+ const words=String(text||'').trim().split(/\\s+/).filter(Boolean);if(!words.length)return[]
+ const out:string[]=[];let line='';for(const w of words){const next=line?line+' '+w:w;if(next.length<=maxChars||!line)line=next;else{out.push(line);line=w}}if(line)out.push(line);return out
+}
 const NAMED_THINKER_EARLY_BEATS=2
 const depictsThinker=(b:any,t:{aliases:string[]})=>t.aliases.some(a=>beatScene(b?.imagePrompt).toLowerCase().includes(a))
 export function namedThinkerVisualErrors(topic:string,s:any):string[]{
@@ -41,7 +52,7 @@ export function anchorNamedThinkerVisual(s:WisdomScript,topic:string):{script:Wi
  const style=cp>=0?p.slice(0,cp):'', avoid=av>=0?p.slice(av+2):'no readable text, no watermark'
  const imagePrompt=`${style?style+' ':''}Main subject: a clearly recognizable portrait of ${t.name}, ${t.likeness}. He is the only person and the focal point, face fully visible in the central area. Setting mood from the scene: ${beatScene(p)}. ${avoid}`
  const anchored={...s,beats:[{...b,imagePrompt},...s.beats.slice(1)]}
- return {script:lockNamedThinkerAcrossBeats(anchored,topic),anchoredBeatId:b.id}
+ return {script:lockWisdomProtagonistAcrossBeats(lockNamedThinkerAcrossBeats(anchored,topic),topic),anchoredBeatId:b.id}
 }
 export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
  const e:string[]=[]
