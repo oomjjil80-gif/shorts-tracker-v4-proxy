@@ -217,6 +217,9 @@ test('Wisdom ASSET rerun reuses every cached image/TTS except the anchored think
   await blobs.putBytes(`generative-assets/audio/${h('a'+b.id)}.mp3`,mp3,'audio/mpeg'); await blobs.putJson('generative-cache/tts/'+h('tts-v1|'+b.narration)+'.json',{ref:`generative-assets/audio/${h('a'+b.id)}.mp3`,sha256:h('a'+b.id),contentType:'audio/mpeg',provider:'openai',model:'m'})
  }
  const stored=await putAddressed(blobs,'generative-scripts',script)
+ // the first ASSET run already wrote the job's source pointer (create-once blob store)
+ const oldPointer={sourceAssetId:'src_gen_j',blobPath:'source-collector/generated/'+'0'.repeat(64)+'.mp4',sha256:'0'.repeat(64),generative:true}
+ await blobs.putJson('generative-sources/src_gen_j.json',oldPointer)
  const prompts:string[]=[]; let tts=0
  const ex=createGenerativeAssetExecutor({apiKey:'k',image:async(p:string)=>{prompts.push(p);return {bytes:jpg,contentType:'image/jpeg',provider:'openai',model:'m'}},tts:async()=>{tts++;return {bytes:mp3,contentType:'audio/mpeg',provider:'openai',model:'m'}}})
  const out:any=await ex.run({job:{id:'j',profile:'wisdom',planRev:1,sourceAssetId:'src_gen_j'} as any,blobs,previous:async(stage:string)=>(stage==='PLAN'?{result:{scriptRef:stored.path}}:stage==='ASSET'?{result:{assetSpecRef:'generative-assets/prior.json'}}:null) as any,signal:new AbortController().signal} as any)
@@ -224,6 +227,12 @@ test('Wisdom ASSET rerun reuses every cached image/TTS except the anchored think
  assert.equal(out.result.generated,1); assert.equal(out.result.reused,7)
  const m:any=await blobs.getJson(out.result.assetSpecRef)
  assert.equal(m.namedThinkerAnchor.beatId,'b1')
+ assert.equal(out.result.namedThinkerAnchorBeatId,'b1')
+ // ANALYZE/COMPILE/RENDER resolve the source through this pointer: it must now name the new video, not the first run's
+ const pointer:any=await blobs.getJson('generative-sources/src_gen_j.json')
+ assert.equal(pointer.sha256,out.result.source.sha256); assert.equal(pointer.blobPath,out.result.source.blobPath)
+ assert.notEqual(pointer.sha256,oldPointer.sha256)
+ assert.ok(blobs.binaries.has(pointer.blobPath))
  assert.deepEqual(m.items.slice(1).map((x:any)=>x.image.sha256),script.beats.slice(1).map((b:any)=>imgSha[b.id]))
  assert.notEqual(m.items[0].image.sha256,imgSha.b1)
  assert.deepEqual(m.items.map((x:any)=>[x.narration,x.tts.sha256,x.durationSec]),script.beats.map((b:any)=>[b.narration,mp3Sha,m.items[0].durationSec]))
@@ -246,4 +255,31 @@ test('Wisdom ASSET rerun refuses before any paid call if a non-anchor image or a
  const ex=createGenerativeAssetExecutor({apiKey:'k',image:async()=>{paid++;throw new Error('must not be called')},tts:async()=>{paid++;throw new Error('must not be called')}})
  await assert.rejects(()=>ex.run({job:{id:'j',profile:'wisdom',planRev:1,sourceAssetId:'src_gen_j'} as any,blobs,previous:async(stage:string)=>(stage==='PLAN'?{result:{scriptRef:stored.path}}:{result:{assetSpecRef:'prior'}}) as any,signal:new AbortController().signal} as any),(e:any)=>e.code==='ASSET_RECHECK_WOULD_REGENERATE'&&/b3\.image/.test(e.message)&&!/b1/.test(e.message))
  assert.equal(paid,0)
+})
+
+
+test('Source pointer chain: a new generated source sha changes the compiled manifest hash (so the render and FINAL change)',async()=>{
+ const {compileJobPlan}=await import('../lib/tracker-core/jobCompile.js')
+ const plan:any={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:'src_gen_j',variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:16}],headline:'쇼펜하우어가 말하는\\N관계의 이유',events:[{start:0,end:16,text:'나레이션'}],plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'x'}}}
+ const src=(sha:string)=>({sourceAssetId:'src_gen_j',blobPath:`source-collector/generated/${sha}.mp4`,sha256:sha,duration:16,width:1080,height:1920,generative:true})
+ const a=compileJobPlan({jobId:'j',plan,sourceAsset:src('a'.repeat(64))}).manifest, b=compileJobPlan({jobId:'j',plan,sourceAsset:src('b'.repeat(64))}).manifest
+ assert.notEqual(a.manifestHash,b.manifestHash)
+ assert.equal(b.payload.cuts[0].sourceVideo.sha256,'b'.repeat(64))
+ // everything except the source identity is identical: timing, overlays, headline
+ const strip=(m:any)=>JSON.stringify({...m.payload,cuts:m.payload.cuts.map((c:any)=>({...c,sourceVideo:{...c.sourceVideo,sha256:null,blobPath:null}}))})
+ assert.equal(strip(a),strip(b))
+})
+
+test('Blob store: create-once by default, explicit overwrite for mutable pointers',async()=>{
+ const {createMemoryBlobStore,createVercelJobBlobStore}=await import('../lib/jobs/blobs.js')
+ const m=createMemoryBlobStore()
+ await m.putJson('p.json',{v:1}); await m.putJson('p.json',{v:2}); assert.deepEqual(await m.getJson('p.json'),{v:1})
+ await m.putJson('p.json',{v:3},{overwrite:true}); assert.deepEqual(await m.getJson('p.json'),{v:3})
+ const calls:any[]=[]
+ const v=createVercelJobBlobStore({put:async(path:string,_b:any,o:any)=>{calls.push([path,o.allowOverwrite]);if(!o.allowOverwrite)throw new Error('This blob already exists')},get:async()=>null})
+ await v.putJson('a.json',{x:1}) // create-once: "already exists" is still swallowed
+ await v.putJson('ptr.json',{x:1},{overwrite:true})
+ assert.deepEqual(calls,[['a.json',false],['ptr.json',true]])
+ const failing=createVercelJobBlobStore({put:async()=>{throw new Error('This blob already exists')},get:async()=>null})
+ await assert.rejects(()=>failing.putJson('ptr.json',{x:1},{overwrite:true}),/already exists/) // never silently kept on overwrite
 })
