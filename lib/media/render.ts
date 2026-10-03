@@ -72,7 +72,7 @@ export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boo
   return parts.join(';\n')
 }
 
-export type RenderResult = { outPath: string; overlayEvents: OverlayEvent[]; assPath: string | null; ass: string; total: number; cuts: RenderPlanCut[]; sourceHasAudio: boolean; sourceFraming: SourceFraming | null }
+export type RenderResult = { outPath: string; overlayEvents: OverlayEvent[]; assPath: string | null; ass: string; total: number; cuts: RenderPlanCut[]; sourceHasAudio: boolean; sourceFraming: SourceFraming | null; filterGraph: string }
 
 export async function renderPayload(payload: any, o: { sourceFile: string; sourceHasAudio: boolean; workDir: string; outPath: string; signal?: AbortSignal; fontsDir?: string; sourceFraming?: SourceFraming }): Promise<RenderResult> {
   const { cuts, total } = extractRenderPlan(payload)
@@ -82,7 +82,8 @@ export async function renderPayload(payload: any, o: { sourceFile: string; sourc
   const assPath = join(o.workDir, 'overlay.ass')
   if (hasOverlays) await writeFile(assPath, built.ass, 'utf8')
   const graphPath = join(o.workDir, 'graph.txt')
-  await writeFile(graphPath, buildFilterGraph(cuts, { sourceHasAudio: o.sourceHasAudio, assPath, fontsDir: o.fontsDir ?? FONTS_DIR, hasOverlays, sourceFraming: o.sourceFraming, wisdomLayout: payload?.editorialPlan?.profile === 'wisdom-v1' }), 'utf8')
+  const filterGraph = buildFilterGraph(cuts, { sourceHasAudio: o.sourceHasAudio, assPath, fontsDir: o.fontsDir ?? FONTS_DIR, hasOverlays, sourceFraming: o.sourceFraming, wisdomLayout: payload?.editorialPlan?.profile === 'wisdom-v1' })
+  await writeFile(graphPath, filterGraph, 'utf8')
 
   const args = ['-y']
   for (const c of cuts) args.push('-ss', c.trimStart.toFixed(3), '-t', c.duration.toFixed(3), '-i', o.sourceFile)
@@ -91,5 +92,5 @@ export async function renderPayload(payload: any, o: { sourceFile: string; sourc
     '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2',
     '-t', total.toFixed(3), '-movflags', '+faststart', '-map_metadata', '-1', o.outPath)
   await runOk(args, { signal: o.signal, timeoutMs: 15 * 60_000 })
-  return { outPath: o.outPath, overlayEvents: built.events, assPath: hasOverlays ? assPath : null, ass: built.ass, total, cuts, sourceHasAudio: o.sourceHasAudio, sourceFraming: o.sourceFraming ?? null }
+  return { outPath: o.outPath, overlayEvents: built.events, assPath: hasOverlays ? assPath : null, ass: built.ass, total, cuts, sourceHasAudio: o.sourceHasAudio, sourceFraming: o.sourceFraming ?? null, filterGraph }
 }

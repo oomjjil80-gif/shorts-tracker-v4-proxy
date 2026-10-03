@@ -5,7 +5,9 @@ import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
 import { evaluateGate, type CheckResult } from '../../lib/qc/gate.js'
 import { analyzeSourceFile, type SourceAnalysis } from '../../lib/media/analyze.js'
 import { QC_THRESHOLDS, runRenderQc } from '../../lib/media/qc.js'
-import { detectSourceFraming, foregroundRect, measureOuterCanvasFill, regionSignature, type SourceFraming } from '../../lib/media/framing.js'
+import { foregroundRect, measureOuterCanvasFill, regionSignature, type SourceFraming } from '../../lib/media/framing.js'
+import { runScreenDnaQc } from '../../lib/media/screenDna.js'
+import { assFromPayload } from '../../lib/media/ass.js'
 import { extractJpeg, signatureDistance, probe, sceneScores, detectSilence } from '../../lib/media/ffmpeg.js'
 import { extractRenderPlan } from '../../lib/media/render.js'
 import { evaluateContentGate } from '../../lib/media/contentGate.js'
@@ -99,29 +101,24 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
           // padding. A dark blurred background carries picture energy and passes; true letterbox/pillarbox bars fail.
           try {
             if (job.profile === 'wisdom') {
-              const framing = await detectSourceFraming(renderPath)
-              const crop = framing.crop
-              const expectedTop = 360 / 1920, expectedHeight = 1200 / 1920, tolerance = 0.035
-              const h = Number(outputInfo?.height || 1920)
-              const actualTop = crop ? crop.y / h : null
-              const actualHeight = crop ? crop.height / h : null
-              const actualBottom = crop ? Math.max(0, h - crop.y - crop.height) / h : null
-              // Headline/subtitle glyphs intentionally live inside the black bands. Pixel-based framing can therefore
-              // see the text as foreground and shrink one/both bars. Accept either a clean measured 360/1200/360
-              // crop OR prove the immutable render manifest is the wisdom layout and the measured center stays bounded.
-              const measuredExact = framing.mode === 'embedded' && crop !== null && actualTop !== null && actualHeight !== null
-                && Math.abs(actualTop - expectedTop) <= tolerance && Math.abs(actualHeight - expectedHeight) <= tolerance
-                && actualBottom !== null && Math.abs(actualBottom - expectedTop) <= tolerance
-              const manifestWisdom = manifest?.payload?.editorialPlan?.profile === 'wisdom-v1'
-              const centerBounded = crop !== null && actualHeight !== null && actualHeight >= 0.55 && actualHeight <= 0.75
-              const pass = measuredExact || (manifestWisdom && centerBounded)
-              checks.push({ id: 'wisdom.screen_dna_layout', required: true, status: pass ? 'PASS' : 'FAIL', evidence: { framing, manifestWisdom, expected: { topBlack: expectedTop, centerHeight: expectedHeight, bottomBlack: expectedTop }, actual: { top: actualTop, centerHeight: actualHeight, bottom: actualBottom }, tolerance, method: measuredExact ? 'pixel-framing' : 'manifest+bounded-center' } })
+              // Fixed Shorts Screen DNA: proven from the execution contract AND the actual pixels (see lib/media/screenDna.ts).
+              // Picture brightness is never used to locate the bands, so a dark visual cannot be mistaken for black padding.
+              const assetRun = await previous('ASSET')
+              const assetManifest: any = (assetRun?.result as any)?.assetSpecRef ? await blobs.getJson((assetRun!.result as any).assetSpecRef) : null
+              const plan = extractRenderPlan(manifest.payload)
+              checks.push(...await runScreenDnaQc({
+                job, sourceFile: file.path, sourceSha256: asset.sha256 ?? null,
+                renderPath, renderBytesSha256: sha256(bytes), output: { width: outputInfo?.width ?? null, height: outputInfo?.height ?? null },
+                variant: { manifestHash: v.manifestHash, renderHash: v.renderHash, geometryReceipt: v.geometryReceipt ?? null },
+                manifest, renderRun: render ? { attempt: render.attempt } : null, assetRun: assetRun ? { attempt: assetRun.attempt, result: assetRun.result } : null,
+                assetManifest, getBytes: (ref) => blobs.getBytes(ref), overlays: assFromPayload({ ...manifest.payload, totalDuration: plan.total }), signal
+              }, plan.cuts))
             } else {
               const fill = await measureOuterCanvasFill(renderPath)
               checks.push({ id: 'visual.frame_utilization', required: true, status: fill.filled ? 'PASS' : 'FAIL', evidence: fill })
             }
           } catch (e: any) {
-            checks.push({ id: job.profile === 'wisdom' ? 'wisdom.screen_dna_layout' : 'visual.frame_utilization', required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } })
+            if (!checks.some((c) => c.id === (job.profile === 'wisdom' ? 'wisdom.screen_dna_layout' : 'visual.frame_utilization'))) checks.push({ id: job.profile === 'wisdom' ? 'wisdom.screen_dna_layout' : 'visual.frame_utilization', required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } })
           }
           gate = evaluateGate(checks)
 
