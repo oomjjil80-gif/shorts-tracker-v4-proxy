@@ -1,6 +1,6 @@
 import { sha256, putAddressed } from '../../lib/jobs/blobs.js'
 import { WISDOM_PROFILE } from '../../lib/generative/contracts.js'
-import { deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual } from '../../lib/generative/wisdom.js'
+import { deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual, wisdomCaptionChunks } from '../../lib/generative/wisdom.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -141,13 +141,15 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    if(!(actualTotal>0)) throw new StageError('GENERATED_DURATION_INVALID','generated concat duration is invalid')
    const plannedTotal=items.reduce((sum:number,x:any)=>sum+Number(x.durationSec||0),0)
    let timedClock=0
-   const timedEvents=items.map((x:any,i:number)=>{
+   const timedEvents:any[]=[]
+   for(const [i,x] of items.entries()){
     const start=Number(timedClock.toFixed(2))
     const rawEnd=i===items.length-1?actualTotal:(plannedTotal>0?actualTotal*((timedClock+Number(x.durationSec||0))/plannedTotal):actualTotal)
-    const end=Number(Math.min(actualTotal,Math.max(start,rawEnd)).toFixed(2))
-    timedClock=end
-    return {start,end,text:x.narration}
-   })
+    const end=Number(Math.min(actualTotal,Math.max(start,rawEnd)).toFixed(2));timedClock=end
+    const chunks=wisdomCaptionChunks(x.narration)
+    const span=Math.max(0,end-start),step=chunks.length?span/chunks.length:span
+    chunks.forEach((text:string,j:number)=>timedEvents.push({start:Number((start+j*step).toFixed(2)),end:Number((j===chunks.length-1?end:start+(j+1)*step).toFixed(2)),text}))
+   }
    const timedTotal=actualTotal
    const timedManifest={...manifest,items,actualDurationSec:actualTotal}
    const timedStored=await putAddressed(blobs,'generative-assets',timedManifest)
