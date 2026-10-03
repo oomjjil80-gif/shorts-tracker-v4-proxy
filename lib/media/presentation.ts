@@ -19,14 +19,15 @@ export const PRESENTATION_LIMITS = {
   hook: 1,
   contexts: 4,
   payoffs: 1,
-  effects: 0,                // planner budget remains caption-only; renderer can still honor explicit sourceEffectCaptions
-  totalMessages: 6,          // hook + payoff + contexts (drawn messages only)
+  effects: 4,                // per-impact pop words (퍽!) drawn large inside the visual window; own budget, not messages
+  totalMessages: 6,          // hook + payoff + contexts (effects are counted separately above)
   eventsMax: 5,              // context + payoff (timed explanation captions)
   hookMaxOutputStart: 1.2,   // the headline must be tied to the first ~second of the clean edit
   maxDynamicGapSec: 5.5,     // longest allowed stretch without a NEW timed message/effect (output time)
   explanationMinTotalSec: 10, // edits this long need at least one context/payoff explanation, not only a hook/effects
   minCueSec: 0.6,            // a clipped cue shorter than this is not readable
   minEffectSec: 0.4,
+  minEffectGapSec: 0.2,       // two impacts closer than this are one hit
   maxHookChars: 20, maxCaptionChars: 20, maxEffectChars: 8, maxHeadlineChars: 24
 } as const
 
@@ -63,13 +64,14 @@ export function selectCues(placed: PlacedCue[], total: number): { kept: PlacedCu
   const caps: Record<Exclude<CueKind, 'hook'>, number> = { payoff: L.payoffs, context: L.contexts, effect: L.effects }
   const count = (k: CueKind) => kept.filter((c) => c.kind === k).length
   const timed = () => kept.filter((c) => c.kind !== 'hook').map((c) => c.outStart)
-  const budgetLeft = () => L.totalMessages - kept.length
+  const budgetLeft = (kind: CueKind) => (kind === 'effect' ? Infinity : L.totalMessages - kept.filter((c) => c.kind !== 'effect').length)
 
-  // two timed messages that start within 0.5s add no new information: keep the higher-priority one
-  const tooClose = (c: PlacedCue) => kept.some((k) => k.kind !== 'hook' && Math.abs(k.outStart - c.outStart) < 0.5)
+  // two timed messages that start within 0.5s add no new information: keep the higher-priority one. Effects mark separate
+  // impacts (퍽! 퍽! 퍽!) in their own zone: they only collide with another effect, and only when nearly simultaneous.
+  const tooClose = (c: PlacedCue) => kept.some((k) => k.kind !== 'hook' && (k.kind === 'effect') === (c.kind === 'effect') && Math.abs(k.outStart - c.outStart) < (c.kind === 'effect' ? L.minEffectGapSec : 0.5))
   const take = (pool: PlacedCue[], kind: Exclude<CueKind, 'hook'>, greedy: boolean) => {
     let rest = pool.filter((c) => c.kind === kind)
-    while (rest.length && count(kind) < caps[kind] && budgetLeft() > 0) {
+    while (rest.length && count(kind) < caps[kind] && budgetLeft(kind) > 0) {
       let best = 0
       if (greedy) {
         // the cue that leaves the smallest longest-silent-stretch; ties -> earlier
@@ -81,11 +83,12 @@ export function selectCues(placed: PlacedCue[], total: number): { kept: PlacedCu
       if (tooClose(c)) { dropped.push({ cue: c, reason: 'starts within 0.5s of another message' }); continue }
       kept.push(c)
     }
-    for (const c of rest) dropped.push({ cue: c, reason: kind === 'effect' && !caps.effect ? 'not drawn: the Common Shorts Screen DNA has no zone for effect captions' : count(kind) >= caps[kind] ? `at most ${caps[kind]} ${kind} message(s)` : 'screen-message budget exhausted' })
+    for (const c of rest) dropped.push({ cue: c, reason: count(kind) >= caps[kind] ? `at most ${caps[kind]} ${kind} message(s)` : 'screen-message budget exhausted' })
   }
   take(placed, 'payoff', false)
   take(placed, 'context', true)
-  take(placed, 'effect', true)
+  // effects follow the action: every impact in time order (the first N hits, not the N that best fill gaps)
+  take([...placed].sort((a, b) => a.outStart - b.outStart), 'effect', false)
   kept.sort((a, b) => a.outStart - b.outStart || a.srcStart - b.srcStart)
   return { kept, dropped }
 }

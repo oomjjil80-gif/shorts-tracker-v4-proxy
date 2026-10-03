@@ -213,9 +213,9 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
         const xSafe = !!box && box.x0 >= CANVAS.w * SAFE.left && box.x1 <= CANVAS.w * (1 - SAFE.right)
         // Common Shorts Screen DNA reserves the black bands for the headline / captions: validate each against its own band
         // (with an inner margin so glyphs never touch the band edge), not the generic full-frame safe area.
-        const band = bandOf(DNA, ev.kind)
+        const band = ev.zone ?? bandOf(DNA, ev.kind)
         const ySafe = !!box && (band
-          ? ev.kind === 'headline' ? box.y0 >= band.y + 16 && box.y1 <= band.y + band.h - 8 : box.y0 >= band.y + 8 && box.y1 <= band.y + band.h - 16
+          ? ev.zone ? box.y0 >= band.y + 8 && box.y1 <= band.y + band.h - 8 : ev.kind === 'headline' ? box.y0 >= band.y + 16 && box.y1 <= band.y + band.h - 8 : box.y0 >= band.y + 8 && box.y1 <= band.y + band.h - 16
           : box.y0 >= CANVAS.h * SAFE.top && box.y1 <= CANVAS.h * SAFE.bottom)
         const okBox = xSafe && ySafe
         // text that fits the safe area but is tiny is unreadable on a phone: a single line must be at least this tall

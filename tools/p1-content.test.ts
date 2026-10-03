@@ -5,6 +5,7 @@ import { planVariants, storyBeats, toJobPlan, totalSeconds, validateVariant, chr
 import { computeHighlights, type SourceAnalysis } from '../lib/media/analyze.js'
 import { validateStory, semanticFromStory, type SemanticResult } from '../lib/media/story.js'
 import { evaluateContentGate } from '../lib/media/contentGate.js'
+import { PRESENTATION_LIMITS } from '../lib/media/presentation.js'
 import { compileJobPlan } from '../lib/tracker-core/jobCompile.js'
 import type { SourceFraming } from '../lib/media/framing.js'
 
@@ -56,9 +57,8 @@ test('1. chronological causal clip: story + grounded presentation => content gat
   assert.ok(Math.abs(v1.beats[0].trimStart - 2) < 0.01 && v1.beats[v1.beats.length - 1].trimEnd <= 18.5 + 1e-6)
   assert.equal(v1.headline, '왜 저러는 걸까?')
   assert.deepEqual(v1.events?.map((e) => e.text), ['갑자기 움직이기 시작', '아이도 보고 있다', '결국 따라간다'])
-  // Common Shorts Screen DNA: the grounded effect cue has no zone, so it is not selected (and says why)
-  assert.equal(v1.effectCaptions, undefined)
-  assert.ok(v1.presentation!.dropped.some((d) => d.kind === 'effect' && /no zone/.test(d.reason)))
+  // the grounded effect cue is drawn large inside the visual window (its own budget, not a caption slot)
+  assert.deepEqual(v1.effectCaptions?.map((e: any) => e.text), ['슥'])
   assert.deepEqual(validateVariant(v1, a), [])
   const g = evaluateContentGate({ payload: payloadFor(a, v1), analysis: a, semantic: s, framing: FULL })
   assert.equal(g.decision, 'PASS', JSON.stringify(g.reasons))
@@ -153,7 +153,7 @@ test('9. presentation cues are grounded, limited, and paced; invented/sparse pre
   assert.equal(long.story, null)
   const s = semantic(a)
   const [v] = planVariants(a, s)
-  assert.ok(v.headline); assert.ok((v.events || []).length >= 2); assert.equal((v.effectCaptions || []).length, 0)
+  assert.ok(v.headline); assert.ok((v.events || []).length >= 2); assert.ok((v.effectCaptions || []).length <= PRESENTATION_LIMITS.effects)
   const invented = { ...v, headline: '없는 사실입니다' }
   assert.equal(status(evaluateContentGate({ payload: payloadFor(a, invented), analysis: a, semantic: s, framing: FULL }), 'content.presentation_grounded'), 'FAIL')
   const sparse = { ...v, events: [{ start: 15, end: 16.8, text: '결국 따라간다' }], effectCaptions: [] }
@@ -173,8 +173,8 @@ test('10. GOLDEN regression: causal story, product tail removed, trend presentat
   assert.ok(vs.every((x) => x.kind !== 'preview'))
   for (const x of vs) assert.ok(x.beats.every((b) => b.trimEnd <= g.astra.productTailStartsAtSource + 0.5), `${x.id} includes product tail`)
   const secs = totalSeconds(rec.beats); assert.ok(secs >= 15 && secs <= 22, `length ${secs}s`)
-  // Common Shorts: headline + timed captions only (the story's effect cue is not drawn and not selected)
-  assert.ok(rec.headline && (rec.events || []).length >= 2 && (rec.effectCaptions || []).length === 0)
+  // headline + timed captions; the story's grounded effect cue (if any) is a pop inside the window
+  assert.ok(rec.headline && (rec.events || []).length >= 2 && (rec.effectCaptions || []).length <= PRESENTATION_LIMITS.effects)
   assert.equal(rec.beats.length, g.astra.keepSource.length)
   rec.beats.forEach((b, i) => { assert.ok(Math.abs(b.trimStart - g.astra.keepSource[i][0]) <= 0.3 && Math.abs(b.trimEnd - g.astra.keepSource[i][1]) <= 0.3, JSON.stringify(b)) })
   const content = evaluateContentGate({ payload: payloadFor(a, rec), analysis: a, semantic: s, framing: EMBED })

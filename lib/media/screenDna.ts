@@ -95,13 +95,14 @@ async function reconstructGray(imagePath: string, segmentFilter: string, count: 
   return splitFrames(r.stdout)
 }
 // Mean absolute difference of a vs b shifted by (dx,dy) over rows [y0,y1) — the overlap only.
-function mad(a: Buffer, b: Buffer, y0: number, y1: number, dx = 0, dy = 0, stride = 1): number {
+// mask (optional): pixels of `a` to ignore (text drawn over the picture is not picture).
+function mad(a: Buffer, b: Buffer, y0: number, y1: number, dx = 0, dy = 0, stride = 1, mask?: Uint8Array): number {
   let s = 0, n = 0
   for (let y = Math.max(y0, y0 - dy, 0); y < Math.min(y1, y1 - dy, H); y++) {
     const ra = y * W, rb = (y + dy) * W
-    for (let x = Math.max(0, -dx); x < Math.min(W, W - dx); x += stride) { s += Math.abs(a[ra + x] - b[rb + x + dx]); n++ }
+    for (let x = Math.max(0, -dx); x < Math.min(W, W - dx); x += stride) { if (mask?.[ra + x]) continue; s += Math.abs(a[ra + x] - b[rb + x + dx]); n++ }
   }
-  return n ? s / n : Infinity
+  return n ? s / n : mask ? 0 : Infinity
 }
 export const PIXEL = { maxMad: 4, maxBandMad: 3, maxEdgeRowMad: 20, searchPx: 2, ambiguity: 0.02 }
 // Rows right at the band/visual boundaries carry the geometry: a 1-2px taller/shorter/shifted window changes exactly these
@@ -114,8 +115,8 @@ function edgeRowMad(a: Buffer, b: Buffer, dna: ScreenDna): { row: number; mad: n
 }
 // Aligned (0,0) must be the best spatial match. A flat picture (all offsets equal) carries no geometry signal either way
 // and is accepted only within PIXEL.ambiguity — a real 1px shift of any textured picture is far outside that.
-function alignment(a: Buffer, b: Buffer, y0: number, y1: number) {
-  const at = (dx: number, dy: number) => mad(a, b, y0, y1, dx, dy, 2)
+function alignment(a: Buffer, b: Buffer, y0: number, y1: number, mask?: Uint8Array) {
+  const at = (dx: number, dy: number) => mad(a, b, y0, y1, dx, dy, 2, mask)
   const zero = at(0, 0)
   let best = { dx: 0, dy: 0, mad: zero }
   for (let dy = -PIXEL.searchPx; dy <= PIXEL.searchPx; dy++) for (let dx = -PIXEL.searchPx; dx <= PIXEL.searchPx; dx++) {
@@ -237,13 +238,14 @@ function windowEvidence(i: ScreenDnaInput, cuts: Array<{ start: number; duration
       const r = await runOk(['-ss', Math.max(0, srcT - 2 / FPS).toFixed(3), '-i', i.sourceFile, '-frames:v', '5', '-vf', `${vf},format=gray`, '-f', 'rawvideo', '-'], { signal: i.signal, timeoutMs: 120_000 })
       const exp = splitFrames(r.stdout)
       if (!out || !exp.length) return { unknown: `frames at ${t.toFixed(2)}s could not be decoded` }
-      let best = { k: 0, m: Infinity }
-      exp.forEach((f, n) => { const m = mad(out, f, dna.center.y, dna.center.y + dna.center.h, 0, 0, 4); if (m < best.m) best = { k: n, m } })
-      const e = exp[best.k]
-      const a = alignment(out, e, dna.center.y, dna.center.y + dna.center.h)
-      let ce = { row: -1, mad: 0 }
-      for (const row of [dna.center.y, dna.center.y + 1, dna.center.y + dna.center.h - 2, dna.center.y + dna.center.h - 1]) { const m = mad(out, e, row, row + 1); if (m > ce.mad) ce = { row, mad: Number(m.toFixed(3)) } }
+      // captions / effects drawn over the visual window are masked out of the picture comparison too
       const mask = i.overlays ? await glyphMaskAt(i.overlays.ass, t, i.signal) : new Uint8Array(FRAME)
+      let best = { k: 0, m: Infinity }
+      exp.forEach((f, n) => { const m = mad(out, f, dna.center.y, dna.center.y + dna.center.h, 0, 0, 4, mask); if (m < best.m) best = { k: n, m } })
+      const e = exp[best.k]
+      const a = alignment(out, e, dna.center.y, dna.center.y + dna.center.h, mask)
+      let ce = { row: -1, mad: 0 }
+      for (const row of [dna.center.y, dna.center.y + 1, dna.center.y + dna.center.h - 2, dna.center.y + dna.center.h - 1]) { const m = mad(out, e, row, row + 1, 0, 0, 1, mask); if (m > ce.mad) ce = { row, mad: Number(m.toFixed(3)) } }
       const bandMad = Math.max(maskedMad(out, e, mask, dna.top.y, dna.top.y + dna.top.h), maskedMad(out, e, mask, dna.bottom.y, dna.bottom.y + dna.bottom.h))
       const bandEdge = Math.max(...[dna.center.y - 2, dna.center.y - 1, dna.center.y + dna.center.h, dna.center.y + dna.center.h + 1].map((row) => maskedMad(out, e, mask, row, row + 1)))
       rows.push({ t: Number(t.toFixed(3)), sourceT: Number(srcT.toFixed(3)), cut: k + 1, ...a, centerEdgeRow: ce, bandMad: Number(bandMad.toFixed(3)), bandEdgeRowMad: Number(bandEdge.toFixed(3)) })
@@ -348,7 +350,8 @@ export async function textBandsCheck(i: ScreenDnaInput): Promise<CheckResult> {
     try {
       const rows: any[] = []
       for (const [k, ev] of events.entries()) {
-        const band = ev.kind === 'headline' ? [dna.top] : ev.kind === 'subtitle' ? [dna.bottom] : [dna.top, dna.bottom]
+        // an event laid out in its own zone (caption / effect inside the visual window) is checked against that zone
+        const band = ev.zone ? [ev.zone] : ev.kind === 'headline' ? [dna.top] : ev.kind === 'subtitle' ? [dna.bottom] : [dna.top, dna.bottom]
         const varying = TIME_VARYING.test(dlg[k])
         const p = join(work, `e${k}.ass`); await writeFile(p, [...header, dlg[k]].join('\n'), 'utf8')
         // the output is a 30fps grid: the event is on screen in frames i with start <= i/30 < end (ASS centisecond times)

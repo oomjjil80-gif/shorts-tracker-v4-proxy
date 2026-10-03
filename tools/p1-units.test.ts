@@ -132,7 +132,7 @@ test('PLAN stage: model failure keeps deterministic plan; success stores story +
   assert.ok(stored.variantPlan.beats.every((b: any) => b.trimEnd <= 19.5 + 1e-6))
   assert.equal(stored.variantPlan.headline, '왜 저러는 걸까?')
   assert.deepEqual(stored.variantPlan.events.map((e: any) => e.text), ['갑자기 기어가기 시작', '아이도 보고 있다', '결국 따라간다'])
-  assert.equal(stored.variantPlan.effectCaptions, undefined) // Common Shorts: effect cues are not drawn, so not planned
-  assert.equal(stored.variantPlan.plansTimeDomain, 'source'); assert.equal(stored.variantPlan.timeDomain, undefined) // timeDomain only accompanies effect captions
+  assert.deepEqual(stored.variantPlan.effectCaptions.map((e: any) => e.text), ['슥']) // grounded effect cue -> drawn pop
+  assert.equal(stored.variantPlan.plansTimeDomain, 'source'); assert.equal(stored.variantPlan.timeDomain, 'source') // timeDomain accompanies effect captions
   await assert.rejects(() => createPlanExecutor().run({ job, blobs, previous: async () => null, signal: new AbortController().signal } as any), /ANALYZE/)
 })
