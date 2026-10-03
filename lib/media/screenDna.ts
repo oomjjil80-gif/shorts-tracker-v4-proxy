@@ -18,6 +18,13 @@ const sha = (s: string | Buffer) => createHash('sha256').update(s).digest('hex')
 
 // Geometry an ASSET segment filter actually produces, read from the filter text itself (not from any declaration).
 export function geometryFromSegmentFilter(vf: string): { canvas: { w: number; h: number }; center: Rect; top: Rect; bottom: Rect; fillsCenter: boolean } | null {
+  // Fit form (no side crop): scale into the window, pad to the canvas centred inside the window. The window is fully
+  // owned by the source picture (letter/pillarbox bars inside it are part of the source framing, not a band).
+  const fit = /^scale=(\d+):(\d+):force_original_aspect_ratio=decrease:flags=lanczos,pad=(\d+):(\d+):\(ow-iw\)\/2:(\d+)\+\((\d+)-ih\)\/2:black$/.exec(vf)
+  if (fit && fit[2] === fit[6]) {
+    const [w, h, W, H, y] = [fit[1], fit[2], fit[3], fit[4], fit[5]].map(Number), x = Math.floor((W - w) / 2)
+    return { canvas: { w: W, h: H }, center: { x, y, w, h }, top: { x: 0, y: 0, w: W, h: y }, bottom: { x: 0, y: y + h, w: W, h: H - (y + h) }, fillsCenter: true }
+  }
   const scale = /(?:^|,)scale=(\d+):(\d+):force_original_aspect_ratio=increase(?:,|$|:)/.exec(vf)
   const crop = /(?:^|,)crop=(\d+):(\d+)(?:,|$)/.exec(vf)
   const zoom = /(?:^|,)zoompan=[^,]*?:s=(\d+)x(\d+)/.exec(vf)
@@ -56,12 +63,14 @@ export function renderPreservesGeometry(filterGraph: string, source: { width: nu
 }
 
 // A RENDER per-input line for a raw source must be exactly: [optional embedded-picture crop] + the window filter.
-const WINDOW_LINE = /^\[(\d+):v\]setpts=PTS-STARTPTS,(crop=\d+:\d+:\d+:\d+,)?(scale=\d+:\d+:force_original_aspect_ratio=increase:flags=lanczos,crop=\d+:\d+,pad=\d+:\d+:\d+:\d+:black),setsar=1,fps=(\d+),format=yuv420p\[v\d+\]$/
+const WINDOW_LINE = /^\[(\d+):v\]setpts=PTS-STARTPTS,(crop=\d+:\d+:\d+:\d+,)?(scale=\d+:\d+:force_original_aspect_ratio=(?:increase|decrease):flags=lanczos,(?:crop=\d+:\d+,)?pad=[^,]+:black),setsar=1,fps=(\d+),format=yuv420p\[v\d+\]$/
 export function windowLineDiffs(line: string, dna: ScreenDna = SHORTS_SCREEN_DNA): string[] {
   const m = WINDOW_LINE.exec(line.trim())
   if (!m) return [`render.videoFilter.notCanonicalWindow: ${line.slice(0, 140)}`]
+  // The contract filter (fit inside the visual window, no side crop) is canonical by definition.
+  if (m[3] === screenDnaWindowFilter(dna)) return []
   const d = contractDiffs(geometryFromSegmentFilter(m[3]), dna)
-  if (m[3] !== screenDnaWindowFilter(dna) && !d.length) d.push('render.videoFilter.window differs from the contract filter')
+  if (!d.length) d.push('render.videoFilter.window differs from the contract filter')
   return d
 }
 // The geometry part of a recorded line, re-executable on the source by itself (no labels / timestamps).

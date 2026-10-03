@@ -9,7 +9,7 @@ import { assFromPayload, CANVAS, FONTS_DIR, SAFE, type OverlayEvent } from './as
 import type { SourceAnalysis } from './analyze.js'
 import { contactSheet, detectBlack, detectFreeze, detectSilence, frameSignature, fullDecode, probe, runOk, signatureDistance, volumeStats, type Interval } from './ffmpeg.js'
 import { extractRenderPlan, OUTPUT } from './render.js'
-import { COMMON_SHORTS_SCREEN_DNA as DNA, bandOf, windowSourceRect } from './screenDnaContract.js'
+import { COMMON_SHORTS_SCREEN_DNA as DNA, bandOf, windowFit } from './screenDnaContract.js'
 import { regionSignature, type SourceFraming } from './framing.js'
 
 const WINDOW_CROP = `crop=${DNA.center.w}:${DNA.center.h}:${DNA.center.x}:${DNA.center.y}`
@@ -179,8 +179,11 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       const composed = i.payload?.editorialPlan?.profile === 'wisdom-v1'
       const src = await probe(i.sourceFile)
       if (!src.width || !src.height) throw new Error('source dimensions unknown')
-      const win = { x: DNA.center.x, y: DNA.center.y, width: DNA.center.w, height: DNA.center.h }
-      const srcRect = composed ? win : windowSourceRect(src.width, src.height, i.sourceFraming?.mode === 'embedded' ? i.sourceFraming.crop : null, DNA)
+      const window = { x: DNA.center.x, y: DNA.center.y, width: DNA.center.w, height: DNA.center.h }
+      // raw source: the whole picture is FITTED into the window (no crop), so compare that fitted rectangle with it
+      const fit = composed ? null : windowFit(src.width, src.height, i.sourceFraming?.mode === 'embedded' ? i.sourceFraming.crop : null, DNA)
+      const win = fit ? fit.output : window
+      const srcRect = fit ? fit.source : window
       const outSig: Buffer[] = [], srcSig: Buffer[] = []
       for (let k = 0; k < n; k++) {
         outSig.push(await regionSignature(i.renderPath, plan.cuts[k].start + probeAt[k], win))
