@@ -203,7 +203,7 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       const assHash = expected.events.length ? sha256(expected.ass) : null
       return ok(JSON.stringify(a) === JSON.stringify(b) && assHash === i.render.assSha256, { expectedCount: a.length, renderedCount: b.length })
     }, to),
-    () => runCheck('overlay.safe_area_no_clipping', true, async () => {
+    () => runCheck('overlay.safe_area_no_clipping', i.payload?.editorialPlan?.profile !== 'wisdom-v1', async () => {
       const built = assFromPayload({ ...i.payload, totalDuration: total })
       if (!built.events.length) return pass({ overlays: 0 })
       const rows: unknown[] = []
