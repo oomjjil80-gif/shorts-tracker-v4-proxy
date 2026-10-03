@@ -10,7 +10,16 @@ const namedThinkers:{re:RegExp,aliases:string[],name:string,likeness:string}[]=[
  {re:/세네카|seneca/i,aliases:['세네카','seneca'],name:'Seneca',likeness:'Roman Stoic philosopher as in classical busts: lean aged face, short unkempt beard, receding tousled hair, Roman toga, ancient Rome setting'},
  {re:/마르쿠스\s*아우렐리우스|marcus\s*aurelius/i,aliases:['마르쿠스 아우렐리우스','marcus aurelius'],name:'Marcus Aurelius',likeness:'Roman emperor and Stoic philosopher as in his classical busts and equestrian statue: thick curly hair, full curly beard, Roman imperial cloak, ancient Rome setting'},
 ]
-const thinkerFor=(topic:string)=>namedThinkers.find(t=>t.re.test(String(topic||'')))
+export const thinkerFor=(topic:string)=>namedThinkers.find(t=>t.re.test(String(topic||'')))
+export function lockNamedThinkerAcrossBeats(s:WisdomScript,topic:string):WisdomScript{
+ const t=thinkerFor(topic); if(!t)return s
+ const identity=`Identity LOCK: every depiction of ${t.name} must be the SAME person as the first portrait — identical face shape, hairline, sideburns/beard/moustache, apparent age and clothing; do not redesign or reinterpret his face between scenes. Canonical identity: ${t.likeness}.`
+ return {...s,beats:s.beats.map((b,i)=>{
+  const scene=beatScene(b.imagePrompt), mentions=t.aliases.some(a=>scene.toLowerCase().includes(a))
+  if(i!==0&&!mentions)return b
+  return {...b,imagePrompt:`${b.imagePrompt} ${identity}`}
+ })}
+}
 // applyVisualBible() wraps every beat as "... Character policy: <bible>. Scene goal: <goal>. Scene: <scene>. Avoid: ...".
 // Only the beat's own scene says what is drawn; bible text is shared by all beats and a goal can merely mention a name.
 export const beatScene=(imagePrompt:unknown)=>{const p=String(imagePrompt||''),i=p.lastIndexOf('. Scene: '),j=p.lastIndexOf('. Avoid: ');return i>=0&&j>i?p.slice(i+9,j):p}
@@ -31,7 +40,8 @@ export function anchorNamedThinkerVisual(s:WisdomScript,topic:string):{script:Wi
  const b=s.beats[0], p=String(b.imagePrompt||''), cp=p.indexOf(' Character policy: '), av=p.lastIndexOf('. Avoid: ')
  const style=cp>=0?p.slice(0,cp):'', avoid=av>=0?p.slice(av+2):'no readable text, no watermark'
  const imagePrompt=`${style?style+' ':''}Main subject: a clearly recognizable portrait of ${t.name}, ${t.likeness}. He is the only person and the focal point, face fully visible in the central area. Setting mood from the scene: ${beatScene(p)}. ${avoid}`
- return {script:{...s,beats:[{...b,imagePrompt},...s.beats.slice(1)]},anchoredBeatId:b.id}
+ const anchored={...s,beats:[{...b,imagePrompt},...s.beats.slice(1)]}
+ return {script:lockNamedThinkerAcrossBeats(anchored,topic),anchoredBeatId:b.id}
 }
 export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
  const e:string[]=[]
