@@ -1,0 +1,40 @@
+name: Source Analysis Request
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'analysis-requests/*.json'
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read request
+        id: request
+        shell: bash
+        run: |
+          FILE=$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep '^analysis-requests/.*\.json$' | tail -1)
+          test -n "$FILE"
+          URL=$(jq -r '.sourceUrl' "$FILE")
+          test -n "$URL" && test "$URL" != "null"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+      - name: Collect with existing Production Collector
+        shell: bash
+        env:
+          SOURCE_URL: ${{ steps.request.outputs.url }}
+        run: |
+          mkdir -p analysis-output
+          jq -n --arg u "$SOURCE_URL" '{taskType:"source_collect",sourceUrl:$u}' > /tmp/request.json
+          curl --fail-with-body --retry 2 --max-time 180 -sS -H 'Content-Type: application/json' --data-binary @/tmp/request.json https://shorts-tracker-v4-proxy.vercel.app/api/story > analysis-output/collect.json
+          jq -e '.ok == true' analysis-output/collect.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-collection-${{ github.sha }}
+          path: analysis-output/
+          retention-days: 7
