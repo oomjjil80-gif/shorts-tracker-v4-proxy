@@ -67,8 +67,13 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
       } : null
       console.info(`[plan] job=${job.id} semantic=${semantic.status} provider=${provider} story=${JSON.stringify(storySummary)}`)
 
+      // A low-confidence semantic read is still useful for lightweight Shorts presentation (headline/context/effects).
+      // Do not throw that information away and produce a blank video; QC remains advisory for these presentation cues.
+      const semanticForPlan: SemanticResult = semantic.status === 'low_confidence' && semantic.story
+        ? { status: 'ok', reason: 'accepted low-confidence story for presentation', story: semantic.story }
+        : semantic
       let variants
-      try { variants = planVariants(analysis, semantic) }
+      try { variants = planVariants(analysis, semanticForPlan) }
       catch (e: any) { throw new StageError('PLAN_EMPTY', String(e?.message || e)) }
       const referenceProfile = options.resolveReferenceProfile ? await options.resolveReferenceProfile(job, blobs) : (options.referenceProfile ?? null)
       const referencePlan = referenceProfile ? applyReferencePlanConstraints(variants, referenceProfile.constraints) : null
