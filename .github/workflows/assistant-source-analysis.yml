@@ -1,0 +1,54 @@
+name: Assistant Source Analysis
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'analysis-requests/*.json'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pick request
+        id: req
+        shell: bash
+        run: |
+          FILE=$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep '^analysis-requests/.*\.json$' | tail -1)
+          test -n "$FILE"
+          URL=$(jq -r '.sourceUrl' "$FILE")
+          test -n "$URL" && test "$URL" != "null"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+      - name: Collect source through Production Collector
+        shell: bash
+        env:
+          SOURCE_URL: ${{ steps.req.outputs.url }}
+        run: |
+          mkdir -p analysis-output/frames
+          jq -n --arg u "$SOURCE_URL" '{taskType:"source_collect",sourceUrl:$u}' > /tmp/collect-request.json
+          curl --fail-with-body --retry 2 --max-time 180 -sS             -H 'Content-Type: application/json'             --data-binary @/tmp/collect-request.json             https://shorts-tracker-v4-proxy.vercel.app/api/story > analysis-output/collect.json
+          jq -e '.ok == true and .needsSelection == false and (.sourceAssetId|length>0)' analysis-output/collect.json
+          ID=$(jq -r '.sourceAssetId' analysis-output/collect.json)
+          jq -n --arg id "$ID" '{taskType:"source_playback",sourceAssetId:$id}' > /tmp/playback-request.json
+          curl --fail-with-body --max-time 60 -sS             -H 'Content-Type: application/json'             --data-binary @/tmp/playback-request.json             https://shorts-tracker-v4-proxy.vercel.app/api/story > /tmp/playback.json
+          PLAYBACK=$(jq -r '.playbackUrl' /tmp/playback.json)
+          test -n "$PLAYBACK" && test "$PLAYBACK" != "null"
+          curl --fail-with-body --max-time 180 -L -sS "$PLAYBACK" -o analysis-output/source.mp4
+      - name: Extract analysis package
+        shell: bash
+        run: |
+          ffprobe -v error -show_entries format=duration,size:stream=codec_name,codec_type,width,height,r_frame_rate             -of json analysis-output/source.mp4 > analysis-output/ffprobe.json
+          ffmpeg -v error -i analysis-output/source.mp4 -vf fps=2 -q:v 3 analysis-output/frames/frame_%05d.jpg
+          ffmpeg -v error -i analysis-output/source.mp4 -vn -ac 1 -ar 16000 -c:a pcm_s16le analysis-output/audio.wav || true
+          sha256sum analysis-output/source.mp4 > analysis-output/sha256.txt
+      - name: Upload analysis package
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-analysis-${{ github.sha }}
+          path: analysis-output/
+          retention-days: 7
