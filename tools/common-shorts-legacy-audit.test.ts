@@ -89,7 +89,7 @@ test('content.headline_present judges the drawn headline: missing / non-Korean /
 
 // ---------------- AI planner asks for what Common Shorts draws ----------------
 test('AI planner: prompt v13 asks for one effect per hit and a two-word hook; a one-word hook is repaired, never shipped', async () => {
-  assert.equal(AI_PLANNER_PROMPT_VERSION, 'source-story-analysis/13')
+  assert.equal(AI_PLANNER_PROMPT_VERSION, 'source-story-analysis/14')
   const a = analysis(30, 'src_audit_000001')
   const prompt = storyPrompt(a)
   assert.match(prompt, /ONE effect cue PER visible impact/); assert.match(prompt, /AT LEAST TWO words/); assert.doesNotMatch(prompt, /Do NOT add kind="effect"/)
