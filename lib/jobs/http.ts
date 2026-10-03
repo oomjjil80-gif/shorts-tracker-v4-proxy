@@ -148,7 +148,9 @@ export function createJobsHttp(deps: JobsDeps) {
           const video = typeof packageJson?.finalRenderRef === 'string' && packageJson.finalRenderRef.startsWith('renders/') ? await deps.blobs.presign?.(packageJson.finalRenderRef) : null
           return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, upload: packageJson?.metadata ?? null, thumbnailUrl: thumb?.url ?? null, videoUrl: video?.url ?? null, script: script ? { title:script.title, hook:script.hook } : null })
         }
-        return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, script: script ? { title:script.title, hook:script.hook, ending:script.ending, beats:(script.beats||[]).map((b:any)=>({ narration:b.narration })) } : null })
+        // Wisdom Shorts: server-made click thumbnail when PACKAGE produced one (older jobs have none)
+        const shortsThumb = typeof packageJson?.thumbnailRef === 'string' && packageJson.thumbnailRef.startsWith('renders/') ? await deps.blobs.presign?.(packageJson.thumbnailRef) : null
+        return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, thumbnailUrl: shortsThumb?.url ?? null, script: script ? { title:script.title, hook:script.hook, ending:script.ending, beats:(script.beats||[]).map((b:any)=>({ narration:b.narration })) } : null })
       }
 
       if (taskType === 'job_get') {

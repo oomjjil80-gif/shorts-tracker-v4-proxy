@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto'
 import { canonicalize } from '../tracker-core/renderManifest.js'
 import { FONT_FAMILY, assTime, headAdvanceEm } from '../media/ass.js'
+import { thumbnailCopyErrors } from './wisdomThumbnail.js'
 
 export const LONGFORM_PROFILE_ID = 'wisdom_longform'
 export const LONGFORM = {
@@ -50,7 +51,8 @@ export function validateLongformScript(s: any, brief: LongformBrief): string[] {
   for (const k of ['title', 'hook']) if (!String(s?.[k] || '').trim()) e.push(k)
   if (!String(s?.figure?.imagePrompt || '').trim()) e.push('figure.imagePrompt')
   const tl = s?.thumbnail?.lines
-  if (!Array.isArray(tl) || tl.length < 2 || tl.length > 4 || tl.some((l: any) => !String(l?.text || '').trim() || [...String(l.text)].length > 10 || !(l.color in ACCENTS))) e.push('thumbnail.lines')
+  // the thumbnail is its own click copy (2-3 meaning units, coloured by meaning, never the title)
+  e.push(...thumbnailCopyErrors(Array.isArray(tl) ? tl : [], String(s?.title || '')).map((x) => `thumbnail.${x}`))
   if (!String(s?.metadata?.description || '').trim()) e.push('metadata.description')
   if (!Array.isArray(s?.metadata?.tags) || !s.metadata.tags.length) e.push('metadata.tags')
   const sections = Array.isArray(s?.sections) ? s.sections : []
@@ -152,15 +154,6 @@ export function longformCardsAss(s: LongformScript, timeline: Array<{ start: num
   }
   return { ass: [...lines, ''].join('\n'), cards }
 }
-export function longformThumbnailAss(s: LongformScript): string {
-  const { w, h } = LONGFORM.thumb, rows = s.thumbnail.lines
-  const fs = cardFontSize(rows.map((r) => r.text), 700, 190, 110)
-  const lines = header(w, h, 10, 6)
-  const body = rows.map((r) => `{\\c${assHex(ACCENTS[r.color])}}${esc(r.text)}`).join('\\N')
-  lines.push(`Dialogue: 1,${assTime(0)},${assTime(5)},Card,,0,0,0,,{\\an4\\pos(60,${h / 2})\\fs${fs}\\fsp2}${body}`)
-  return [...lines, ''].join('\n')
-}
-
 // ---------------- ffmpeg: static picture + left darkening + text (no zoom, pan, motion or transition) ----------------
 // The left column is darkened with a fixed horizontal gradient so the text always reads, whatever the image.
 const leftShade = (w: number, h: number) => `[sh];color=c=black:s=${w}x${h},format=rgba,geq=r=0:g=0:b=0:a='clip(200*(1-X/(${w}*0.62)),0,200)'[g];[sh][g]overlay=0:0`
@@ -179,12 +172,6 @@ export function longformVideoArgv(o: { background: string; audio: string; ass: s
     '-c:v', 'libx264', '-tune', 'stillimage', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', String(LONGFORM.fps), '-g', String(LONGFORM.fps * 4),
     '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2', '-movflags', '+faststart', o.out]
 }
-export function longformThumbnailArgv(o: { image: string; ass: string; fontsDir: string; out: string }): string[] {
-  const { w, h } = LONGFORM.thumb
-  const e = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
-  return ['-y', '-i', o.image, '-filter_complex', `[0:v]${longformPictureFilter(w, h)},ass=filename='${e(o.ass)}':fontsdir='${e(o.fontsDir)}'[v]`, '-map', '[v]', '-frames:v', '1', '-q:v', '2', o.out]
-}
-
 // ---------------- upload package text ----------------
 export function longformPackageMetadata(s: LongformScript) {
   const tags = [...new Set(s.metadata.tags.map((t) => t.replace(/^#/, '').trim()).filter(Boolean))].slice(0, 15)
@@ -211,7 +198,7 @@ export function deterministicLongformScript(brief: LongformBrief): LongformScrip
   return {
     schema: 'wisdom-longform-script/1', title, hook: sents[0] || title,
     figure: { name: 'sage', imagePrompt: 'a calm elderly East Asian sage in a dark simple robe, thoughtful expression' },
-    thumbnail: { lines: [{ text: '지금', color: 'red' }, { text: '꼭 알아야 할', color: 'purple' }, { text: '인생의 지혜', color: 'green' }] },
+    thumbnail: { lines: [{ text: '모르면', color: 'white' }, { text: '평생 후회할', color: 'red' }, { text: '한 가지', color: 'green' }] },
     metadata: { description: title, tags: ['지혜', '인생', '철학', '명언'], hashtags: ['지혜', '인생', '철학'], pinnedComment: '오늘 이야기에서 가장 마음에 남은 문장은 무엇인가요?' },
     sections: [{ id: 's1', sentences }]
   }

@@ -10,8 +10,9 @@ import { openAiLongformImage, openAiWisdomTts } from '../../lib/generative/provi
 import { openAiLongformPlan } from '../../lib/generative/longformPlanner.js'
 import {
   LONGFORM_PROFILE_ID, LONGFORM, validateLongformScript, deterministicLongformScript, longformImagePrompt, ttsChunks, cardTimeline,
-  longformCardsAss, longformThumbnailAss, longformBackgroundArgv, longformVideoArgv, longformThumbnailArgv, longformPackageMetadata, type LongformBrief, type LongformScript
+  longformCardsAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
 } from '../../lib/generative/longform.js'
+import { thumbnailArgv, thumbnailFigure, THUMB } from '../../lib/generative/wisdomThumbnail.js'
 import { StageError, type StageExecutor } from '../types.js'
 
 const isLongform = (job: any) => job?.profile === LONGFORM_PROFILE_ID
@@ -42,11 +43,11 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; plan?: typeo
         // one free repair: the exact validation errors go back to the planner before any paid asset
         for (let attempt = 0; attempt < 2 && !script; attempt++) {
           const b = attempt ? { ...brief, text: `${brief.text}\n\n[REPAIR] The previous draft was rejected: ${errors.join(', ')}. Fix exactly these points.` } : brief
-          try { const s = await plan(b, apiKey); errors = validateLongformScript(s, brief); if (!errors.length) { script = s; provider = attempt ? 'openai-repair' : 'openai' } }
+          try { const s = await plan(b, apiKey); s.figure = { ...s.figure, imagePrompt: thumbnailFigure(brief.text, s.figure?.imagePrompt) }; errors = validateLongformScript(s, brief); if (!errors.length) { script = s; provider = attempt ? 'openai-repair' : 'openai' } }
           catch (e: any) { errors = [String(e?.message || e)] }
         }
       } else if (brief.kind === 'topic') throw new StageError('PROVIDER_DOWN', 'a longform script from a topic needs the planner (OPENAI_API_KEY)', true)
-      if (!script && brief.kind === 'text') { script = deterministicLongformScript(brief); provider = 'deterministic' }
+      if (!script && brief.kind === 'text') { script = deterministicLongformScript(brief); script.figure.imagePrompt = thumbnailFigure(brief.text, script.figure.imagePrompt); provider = 'deterministic' }
       if (!script) throw new StageError('SCRIPT_INVALID', errors.join(','))
       const stored = await putAddressed(blobs, 'generative-scripts', script)
       return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: LONGFORM_PROFILE_ID, provider, scriptRef: stored.path, sentences: script.sections.reduce((n, s) => n + s.sentences.length, 0), validation: errors } }
@@ -56,7 +57,7 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; plan?: typeo
 
 // Which side of the picture holds the subject: mean + spread of luma per side (the figure is brighter / more detailed
 // than the dark negative space). A figure on the LEFT is mirrored so the text column is always the empty side.
-async function subjectSide(imagePath: string): Promise<{ left: number; right: number; side: 'left' | 'right' }> {
+export async function subjectSide(imagePath: string): Promise<{ left: number; right: number; side: 'left' | 'right' }> {
   const W = 192, H = 108
   const px = (await runOk(['-i', imagePath, '-vf', `scale=${W}:${H},format=gray`, '-frames:v', '1', '-f', 'rawvideo', '-'])).stdout
   const score = (x0: number, x1: number) => { let s = 0, s2 = 0, n = 0; for (let y = 0; y < H; y++) for (let x = x0; x < x1; x++) { const v = px[y * W + x]; s += v; s2 += v * v; n++ } const m = s / n; return m + Math.sqrt(Math.max(0, s2 / n - m * m)) }
@@ -145,15 +146,16 @@ export const longformRenderExecutor: StageExecutor = {
       const background = join(work, 'background.png')
       await runOk(longformBackgroundArgv({ image, out: background }), { signal })
       await runOk(longformVideoArgv({ background, audio, ass: assPath, fontsDir: FONTS_DIR, out, seconds }), { signal, timeoutMs: 90 * 60_000 })
-      await writeFile(thumbAss, longformThumbnailAss(script), 'utf8')
-      await runOk(longformThumbnailArgv({ image, ass: thumbAss, fontsDir: FONTS_DIR, out: thumb }), { signal })
+      // click thumbnail: the same single image (figure RIGHT), the planner's re-written punch lines on the LEFT
+      const t = thumbnailArgv({ image, lines: script.thumbnail.lines, assPath: thumbAss, fontsDir: FONTS_DIR, out: thumb })
+      await writeFile(thumbAss, t.ass, 'utf8'); await runOk(t.argv, { signal })
       // fatal-only output checks (broken file / wrong canvas / missing narration / wrong length)
       const info = await probe(out), tinfo = await probe(thumb)
       const problems = [
         ...(info.width !== LONGFORM.canvas.w || info.height !== LONGFORM.canvas.h ? [`video ${info.width}x${info.height}`] : []),
         ...(!info.hasAudio ? ['no narration audio'] : []),
         ...(Math.abs(Number(info.duration || 0) - seconds) > 1.5 ? [`duration ${info.duration} vs narration ${seconds}`] : []),
-        ...(tinfo.width !== LONGFORM.thumb.w || tinfo.height !== LONGFORM.thumb.h ? [`thumbnail ${tinfo.width}x${tinfo.height}`] : [])
+        ...(tinfo.width !== THUMB.w || tinfo.height !== THUMB.h ? [`thumbnail ${tinfo.width}x${tinfo.height}`] : [])
       ]
       if (problems.length) throw new StageError('LONGFORM_OUTPUT_INVALID', problems.join('; '))
       const bytes = await readFile(out), renderHash = sha256(bytes)

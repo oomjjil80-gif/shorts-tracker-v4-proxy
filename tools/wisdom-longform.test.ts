@@ -15,6 +15,7 @@ import { runOnce } from '../worker/runJob.js'
 import { runOk, probe } from '../lib/media/ffmpeg.js'
 import { withLongform, createLongformPlanExecutor, createLongformAssetExecutor, longformRenderExecutor, longformPackageExecutor } from '../worker/stages/longform.js'
 import { PIPELINES } from '../lib/jobs/pipeline.js'
+import { standInPortrait, measureThumbnail, assertThumbnail } from './thumbnailMeasure.js'
 import { LONGFORM, ACCENTS, validateLongformScript, normalizeLongformBrief, ttsChunks, cardTimeline, sentencesOf, type LongformScript } from '../lib/generative/longform.js'
 
 const KEY = 'k'.repeat(32)
@@ -48,9 +49,7 @@ const sample = (d: string) => async () => SAMPLE
 // image stand-in: a lit bust on the LEFT of a dark frame (the ASSET must mirror it to the right)
 async function standInImage(d: string) {
   const p = join(d, 'portrait.jpg')
-  await runOk(['-y', '-f', 'lavfi', '-i', 'color=c=0x1a1410:s=1536x1024:d=1', '-vf',
-    "geq=r='clip(26+150*exp(-((X-430)*(X-430)/9000+(Y-330)*(Y-330)/12000))+120*exp(-((X-430)*(X-430)/60000+(Y-900)*(Y-900)/30000))+12*sin(X/7)*sin(Y/9),0,255)':g='clip(20+125*exp(-((X-430)*(X-430)/9000+(Y-330)*(Y-330)/12000))+95*exp(-((X-430)*(X-430)/60000+(Y-900)*(Y-900)/30000))+10*sin(X/7)*sin(Y/9),0,255)':b='clip(16+100*exp(-((X-430)*(X-430)/9000+(Y-330)*(Y-330)/12000))+70*exp(-((X-430)*(X-430)/60000+(Y-900)*(Y-900)/30000))+8*sin(X/7)*sin(Y/9),0,255)'",
-    '-frames:v', '1', '-q:v', '2', p])
+  await standInPortrait(p, { side: 'left', tint: [205, 160, 110], bg: [26, 18, 12] }) // figure on the LEFT: must be mirrored
   return (await import('node:fs/promises')).readFile(p)
 }
 // TTS stand-in: speech-length tone (chars / pace) with short pauses, mp3 like the OpenAI voice
@@ -162,14 +161,17 @@ test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 M
   // figure side: brightness/detail of the right vs the left column of the picture (frame without text: thumbnail-free region)
   const lum = (f: Buffer, x0: number, x1: number) => { let s = 0, n = 0; for (let y = 0; y < H; y += 4) for (let x = x0; x < x1; x += 4) { const o = (y * W + x) * 3; s += f[o] + f[o + 1] + f[o + 2]; n++ } return s / n / 3 }
   const tf = (await runOk(['-i', thumb, '-frames:v', '1', '-vf', 'format=rgb24', '-f', 'rawvideo', '-'])).stdout
-  const thumbAccents = accentPixels(tf, 1280, 30, 768, 0, 720), thumbLines = textLines(tf, 1280, 720)
+  const pic = join(d, 'picture.jpg'); await writeFile(pic, blobs.binaries.get(assets.image.ref)!)
+  const picRgb = (await runOk(['-i', pic, '-frames:v', '1', '-vf', 'scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,format=rgb24', '-f', 'rawvideo', '-'])).stdout
+  const thumbM = measureThumbnail(tf, picRgb, SAMPLE.thumbnail.lines as any)
+  const thumbAccents = thumbM.accent, thumbLines = thumbM.lineHeights
   const report = {
     jobId, stages: runs.filter((r: any) => r.status === 'SUCCEEDED').map((r: any) => r.stage), mp4: { w: info.width, h: info.height, duration: info.duration, hasAudio: info.hasAudio, narrationSeconds: assets.narration.seconds },
     imageCalls, ttsCalls, chunks: assets.chunks.length, mirrored: assets.image.mirrored, subjectSide: assets.image.subjectSide,
     rightColumnLum: Number(lum(first, Math.round(W * 0.66), W).toFixed(1)), leftColumnLumNoText: null,
     imageStillMaxMad: Math.max(...imageStill), textChangeMad: textChange, linesPerCard: lines.map((l) => l.length), lineHeights: lines.map((l) => l.map(([a, b]) => b - a + 1)),
     accentPixelsPerCard: accents.map((a) => Object.fromEntries(Object.entries(a).filter(([k, v]) => k !== 'white' && v > 200))),
-    cards: tl.map((t) => [t.start, t.end]), thumbnail: { w: tinfo.width, h: tinfo.height, lines: thumbLines.length, accents: thumbAccents }
+    cards: tl.map((t) => [t.start, t.end]), thumbnail: { w: tinfo.width, h: tinfo.height, ...thumbM }
   }
   console.log('LONGFORM_REPORT ' + JSON.stringify(report))
   const out = process.env.LONGFORM_SAMPLE_OUT
@@ -185,5 +187,5 @@ test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 M
   assert.ok(accents.every((a) => Object.entries(a).some(([k, v]) => k !== 'white' && v > 400)), `every card has a coloured key phrase: ${JSON.stringify(report.accentPixelsPerCard)}`)
   assert.ok(accents.every((a) => a.white > 2000), 'the rest of the card is white')
   assert.deepEqual([tinfo.width, tinfo.height], [1280, 720])
-  assert.ok(thumbLines.length >= 2 && thumbLines.length <= 4 && thumbAccents.red > 500 && thumbAccents.purple > 500 && thumbAccents.green > 500, `thumbnail: ${JSON.stringify(report.thumbnail)}`)
+  assertThumbnail(thumbM, 'longform'); void thumbAccents; void thumbLines
 })
