@@ -6,7 +6,7 @@ import { EXCLUDE_REASONS, OFFSTORY_REASONS, PACING_REASONS, STORY_LIMITS, STORY_
 import { planPresentation, PRESENTATION_LIMITS } from './presentation.js'
 import { storyBeats, totalSeconds } from './plan.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/13'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/14'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
 const captionBody = {
@@ -49,6 +49,9 @@ export function storyPrompt(a: SourceAnalysis): string {
     'You are the story editor and mobile presentation editor for vertical Korean YouTube Shorts cut from ONE source video. The image is a keyframe sheet; each tile is labeled with its SOURCE time in seconds.',
     'Describe the story structure and a small set of GROUNDED on-screen Korean presentation cues. ALL times are SOURCE seconds within the video duration. Every range MUST have end > start by at least 0.5 seconds: a single moment (the payoff, a caption) is a short WINDOW, never start == end.',
     'PRIMARY STORY RULE: choose the strongest self-contained viewer story, not the uploader\'s full source-file purpose. Human/animal action, reaction, relationship, humor, surprise or emotion normally outranks a later product explanation/demo when that human/animal arc already has its own payoff.',
+    'EDITORIAL DNA: preserve the real event as curiosity -> development -> payoff. When visible action supports it, add a simple character/relationship/intention/misunderstanding angle that makes the moment funnier. Never force jokes onto a strong emotional story.',
+    'DUBBING/CAPTION RULE: explain as little as possible. Prefer short reactions, character lines, relationship cues or unexpected interpretations over describing visible action. The source video stays primary.',
+    'ENDING RULE: protect the strongest payoff and end immediately after it. Do not explain or repeat the conclusion after the payoff.',
     'MANDATORY OPENING AUDIT: inspect the 0s tile and the first ~2 seconds before choosing causalStart. A Korean upload-ready Short must NOT begin on PROMINENT burned-in Chinese/English/Japanese/other foreign-language title cards, large captions, product labels, or other viewer-facing source text. Mark the actual span of that prominent opening text as foreign_text and/or intro_confusion, and place causalStart AFTER it disappears. Even a brief large foreign-language title flash at the first frame is not acceptable as the opening.',
     'WHOLE-VIDEO FOREIGN-TEXT AUDIT: scan EVERY tile of the keyframe sheet, not only the opening. Burned-in Chinese (or other non-Korean) captions, title cards or labels often reappear in the middle or at the end. Report EACH such span as its own excludeRanges entry with reason foreign_text and its real start/end. A span inside the selected story that the story cannot lose must still be reported (it is then covered or masked at render, never silently kept).',
     'FOREIGN-TEXT SCOPE: foreign_text means prominent viewer-facing text that competes with the Korean edit. Do NOT classify a tiny persistent CCTV timestamp/date, camera ID, channel watermark, corner logo, or other small technical metadata as foreign_text that removes footage. If such tiny metadata persists, mention it only in publishabilityWarnings.',
