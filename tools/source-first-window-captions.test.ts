@@ -109,7 +109,7 @@ test('presentation: every hit gets its own effect; effects do not take caption s
 })
 
 test('planner prompt: captions add meaning (never restate the picture), one effect per hit, whole-video foreign-text audit', () => {
-  assert.equal(AI_PLANNER_PROMPT_VERSION, 'source-story-analysis/13')
+  assert.equal(AI_PLANNER_PROMPT_VERSION, 'source-story-analysis/14')
   const p = storyPrompt({ media: { duration: 30, hasAudio: true }, scenes: [], usable: [], ranges: { black: [], freeze: [], silent: [] }, timeline: [] } as any)
   assert.match(p, /NEVER restate what the viewer can already see/)
   assert.match(p, /context \(who\/why\), curiosity/)
