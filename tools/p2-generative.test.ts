@@ -64,7 +64,8 @@ test('P2 wisdom Screen DNA v1 locks black bands, central visual window and motio
  // the ASSET segment command is built from the shared Screen DNA contract and is byte-identical to the locked v1 filter
  const {screenDnaSegmentFilter,screenDnaSegmentArgv}=await import('../lib/media/screenDna.js')
  assert.match(generative,/screenDnaSegmentArgv\(ip,ap,d,op\)/)
- assert.equal(screenDnaSegmentFilter(),"scale=1080:1200:force_original_aspect_ratio=increase,crop=1080:1200,zoompan=z='min(zoom+0.00035,1.035)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1200:fps=30,pad=1080:1920:0:360:black,format=yuv420p")
+ // Ken Burns driven by the output frame counter `on` (zoom+step never accumulates on a -loop 1 image: measured still picture)
+ assert.equal(screenDnaSegmentFilter(),"scale=2160:2400:force_original_aspect_ratio=increase,crop=2160:2400,zoompan=z='min(1+0.0007*on,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1200:fps=30,pad=1080:1920:0:360:black,format=yuv420p")
  assert.deepEqual(screenDnaSegmentArgv('i.jpg','a.mp3',4.2,'o.mp4'),['-y','-loop','1','-i','i.jpg','-i','a.mp3','-t','4.2','-vf',screenDnaSegmentFilter(),'-af','apad','-r','30','-c:v','libx264','-preset','veryfast','-threads','4','-c:a','aac','-ar','44100','-ac','2','-movflags','+faststart','o.mp4'])
  assert.match(ass,/WisdomHead/)
  assert.match(ass,/WisdomSub/)

@@ -30,9 +30,34 @@ export function lockWisdomProtagonistAcrossBeats(s:WisdomScript,topic:string):Wi
  return {...s,beats:s.beats.map(b=>{const scene=beatScene(b.imagePrompt).toLowerCase();const named=thinker?.aliases.some(a=>scene.includes(a))??false;return named?b:{...b,imagePrompt:`${b.imagePrompt} ${identity}`}})}
 }
 
-export function wisdomCaptionChunks(text:string,maxChars=18):string[]{
- const words=String(text||'').trim().split(/\\s+/).filter(Boolean);if(!words.length)return[]
- const out:string[]=[];let line='';for(const w of words){const next=line?line+' '+w:w;if(next.length<=maxChars||!line)line=next;else{out.push(line);line=w}}if(line)out.push(line);return out
+// Mobile-readable Wisdom captions: short phrases (one line at the Wisdom caption size, two at most), each on screen long
+// enough to read. NOTE the regex is whitespace (/\s+/); a former /\\s+/ matched a literal backslash, so every narration
+// stayed ONE caption and the renderer shrank it to the minimum size.
+export const WISDOM_CAPTION={maxChars:14,minSec:1.2}
+// n phrases of roughly equal length (word boundaries only): no dangling one-word tail that would flash by.
+function balancedChunks(words:string[],n:number):string[]{
+ const len=(a:string[])=>a.join(' ').length,out:string[]=[];let rest=words
+ for(let k=n;k>1;k--){
+  const target=len(rest)/k;let cut=1
+  while(cut<rest.length-(k-1)&&Math.abs(len(rest.slice(0,cut+1))-target)<=Math.abs(len(rest.slice(0,cut))-target))cut++
+  out.push(rest.slice(0,cut).join(' '));rest=rest.slice(cut)
+ }
+ out.push(rest.join(' '));return out.filter(Boolean)
+}
+const wordsOf=(text:string)=>String(text||'').trim().split(/\s+/).filter(Boolean)
+export function wisdomCaptionChunks(text:string,maxChars=WISDOM_CAPTION.maxChars):string[]{
+ const words=wordsOf(text);if(!words.length)return[]
+ for(let n=Math.max(1,Math.ceil(words.join(' ').length/maxChars));n<words.length;n++){const c=balancedChunks(words,n);if(c.every(x=>x.length<=maxChars))return c}
+ return words
+}
+// Timed caption events for one narrated beat [start,end]: fewer, longer phrases until each stays >= minSec on screen; the
+// beat span is shared by phrase length (narration speed is roughly constant per character), so captions follow the voice.
+export function wisdomCaptionEvents(text:string,start:number,end:number):Array<{start:number;end:number;text:string}>{
+ const span=Math.max(0,end-start),words=wordsOf(text);let chunks=wisdomCaptionChunks(text)
+ const shortest=(c:string[])=>span*Math.min(...c.map(x=>x.length))/(c.reduce((s,x)=>s+x.length,0)||1)
+ while(chunks.length>1&&shortest(chunks)<WISDOM_CAPTION.minSec)chunks=balancedChunks(words,chunks.length-1)
+ const total=chunks.reduce((s,c)=>s+c.length,0)||1;let acc=0
+ return chunks.map((c,j)=>{const s=start+span*acc/total;acc+=c.length;const e=j===chunks.length-1?end:start+span*acc/total;return {start:Number(s.toFixed(2)),end:Number(e.toFixed(2)),text:c}})
 }
 const NAMED_THINKER_EARLY_BEATS=2
 const depictsThinker=(b:any,t:{aliases:string[]})=>t.aliases.some(a=>beatScene(b?.imagePrompt).toLowerCase().includes(a))

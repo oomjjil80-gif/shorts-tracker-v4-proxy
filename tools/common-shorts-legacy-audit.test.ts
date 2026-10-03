@@ -8,7 +8,7 @@ import { validateStory, semanticFromStory } from '../lib/media/story.js'
 import { evaluateContentGate } from '../lib/media/contentGate.js'
 import { compileJobPlan } from '../lib/tracker-core/jobCompile.js'
 import { PRESENTATION_LIMITS, selectCues, type PlacedCue } from '../lib/media/presentation.js'
-import { buildAss, assFromPayload, captionLines, CAPTION_MIN_PX, fitFontSize } from '../lib/media/ass.js'
+import { buildAss, assFromPayload, captionLines, CAPTION_MIN_PX, fitFontSize, WISDOM_CAPTION_PX } from '../lib/media/ass.js'
 import { textLinesCheck, textBandsCheck } from '../lib/media/screenDna.js'
 import { aiAnalyzeStory, AI_PLANNER_PROMPT_VERSION, storyPrompt } from '../lib/media/aiPlanner.js'
 import type { SourceFraming } from '../lib/media/framing.js'
@@ -141,7 +141,7 @@ test('captions: a caption that would wrap to 3+ lines is shrunk until libass dra
   const dlg = o.ass.split('\n').filter((l) => l.includes(',WisdomSub,'))
   const fsLong = Number(/\\fs(\d+)/.exec(dlg[0])![1]), fsShort = Number(/\\fs(\d+)/.exec(dlg[1])![1])
   assert.ok(fsLong < 42 && fsLong >= CAPTION_MIN_PX && captionLines(long, W - 2 * Math.round(W * 0.08), fsLong) <= 2, `fs ${fsLong}`)
-  assert.equal(fsShort, 60) // unchanged: fitFontSize result for a caption that already fits
+  assert.equal(fsShort, WISDOM_CAPTION_PX.base) // unchanged: the Wisdom base size for a caption that already fits
   const r = await linesQc(o)
   assert.equal(r.status, 'PASS', JSON.stringify(r.evidence))
   assert.ok((r.evidence as any).rows.filter((x: any) => x.kind === 'subtitle').every((x: any) => x.lines <= 2))
@@ -153,7 +153,7 @@ test('captions: the 2-line guard never changes a caption that already fits (Wisd
     const withGuard = buildAss({ totalDuration: 2, screenDna: true, wisdomLayout: true, headline: '', subtitles: [{ start: 0, end: 1, text: t }] }).ass
     const fs = Number(/\\fs(\d+)/.exec(withGuard.split('\n').find((l) => l.includes(',WisdomSub,'))!)![1])
     assert.ok(captionLines(t, W - 2 * Math.round(W * 0.08), fs) <= 2)
-    assert.equal(fs, fitFontSize(t, W - 2 * Math.round(W * 0.08) - 40, 60, 2, 42), t) // the guard did not engage
+    assert.equal(fs, fitFontSize(t, W - 2 * Math.round(W * 0.08) - 40, WISDOM_CAPTION_PX.base, 2, WISDOM_CAPTION_PX.min), t) // the guard did not engage
   }
   // the Golden payload drawn as-is: headline over the whole edit, captions in the bottom band
   const { a, rec } = goldenReplay()

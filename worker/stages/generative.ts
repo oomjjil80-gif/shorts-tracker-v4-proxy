@@ -1,6 +1,6 @@
 import { sha256, putAddressed } from '../../lib/jobs/blobs.js'
 import { WISDOM_PROFILE } from '../../lib/generative/contracts.js'
-import { deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual, wisdomCaptionChunks } from '../../lib/generative/wisdom.js'
+import { deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual, wisdomCaptionEvents } from '../../lib/generative/wisdom.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -68,8 +68,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   const captionEvents:any[]=[]
   for(const b of script.beats){
    const start=Number(clock.toFixed(2));clock+=Number(b.durationSec);const end=Number(clock.toFixed(2))
-   const chunks=wisdomCaptionChunks(b.narration),span=Math.max(0,end-start),step=chunks.length?span/chunks.length:span
-   chunks.forEach((text:string,j:number)=>captionEvents.push({start:Number((start+j*step).toFixed(2)),end:Number((j===chunks.length-1?end:start+(j+1)*step).toFixed(2)),text}))
+   captionEvents.push(...wisdomCaptionEvents(b.narration,start,end))
   }
   const headline=wisdomHeadline(script.title)
   const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}],headline,events:captionEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
@@ -151,9 +150,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
     const start=Number(timedClock.toFixed(2))
     const rawEnd=i===items.length-1?actualTotal:(plannedTotal>0?actualTotal*((timedClock+Number(x.durationSec||0))/plannedTotal):actualTotal)
     const end=Number(Math.min(actualTotal,Math.max(start,rawEnd)).toFixed(2));timedClock=end
-    const chunks=wisdomCaptionChunks(x.narration)
-    const span=Math.max(0,end-start),step=chunks.length?span/chunks.length:span
-    chunks.forEach((text:string,j:number)=>timedEvents.push({start:Number((start+j*step).toFixed(2)),end:Number((j===chunks.length-1?end:start+(j+1)*step).toFixed(2)),text}))
+    timedEvents.push(...wisdomCaptionEvents(x.narration,start,end))
    }
    const timedTotal=actualTotal
    const timedManifest={...manifest,items,actualDurationSec:actualTotal}
