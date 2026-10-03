@@ -161,7 +161,8 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
     const tags = `{\\an5\\pos(${x},${y})\\frz${-rot}\\fs${fs}\\c${assColor(e.color)}\\3c${assColor(e.strokeColor, '#111111')}\\bord${Math.max(4, Math.round(fs * 0.09))}\\shad0${pop}}`
     add(layer, kind, 'Fx', num(e.start, 0), num(e.end, 0), text, tags)
   }
-  for (const e of wisdom ? [] : input.effects || []) styled('effect', e, 50, 58, 8.2, 3)
+  // General/source-first Shorts may use brief grounded action SFX over the visual (e.g. 퍽! 퍽! 퍽!).
+  for (const e of input.effects || []) styled('effect', e, 50, 58, 8.2, 3)
   for (const c of callouts) styled('callout', c, 48, 34, 7.6, 4)
 
   const ass = [

@@ -30,7 +30,9 @@ export function screenDnaSegmentArgv(imagePath: string, audioPath: string, durat
 // crop to the window, black bands. Same window, same bands, same numbers as producer A.
 export function screenDnaWindowFilter(dna: ScreenDna = COMMON_SHORTS_SCREEN_DNA): string {
   const c = dna.center
-  return `scale=${c.w}:${c.h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${c.w}:${c.h},pad=${dna.canvas.w}:${dna.canvas.h}:${c.x}:${c.y}:black`
+  // Preserve the full source action. Fit inside the locked visual window instead of cropping people at the sides.
+  // pad directly to the final canvas while centering inside the center band.
+  return `scale=${c.w}:${c.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${dna.canvas.w}:${dna.canvas.h}:(ow-iw)/2:${c.y}+(${c.h}-ih)/2:black`
 }
 
 // RENDER pass-through for a source producer A already composed (keeps a canvas-sized source pixel-for-pixel).
