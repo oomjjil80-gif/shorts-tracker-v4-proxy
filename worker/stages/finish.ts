@@ -48,10 +48,7 @@ export const packageExecutor: StageExecutor = {
       // true only if every mandatory gate (technical, content, and Reference when present) passed; an approved-but-not-publishable video stays flagged
       publishable: v.publishable === true,
       override: (decision?.result as any)?.override ?? null,
-      metadata: (() => {
-        const planResult:any = (decision?.result as any) || {}
-        return { title: null, description: null, tags: [], pinnedComment: null, planResult }
-      })()
+      metadata: { title: null, description: null, tags: [], pinnedComment: null }
     }
     const stored = await putAddressed(blobs, 'packages', pkg)
     return { outputRef: stored.path, outputHash: sha256(stored.path), result: { packageRef: stored.path, finalRenderRef: fin.outputRef, renderHash: v.renderHash, manifestHash: v.manifestHash, durationSec: v.duration, publishable: v.publishable === true } }
