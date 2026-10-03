@@ -32,7 +32,7 @@ export function screenDnaWindowFilter(dna: ScreenDna = COMMON_SHORTS_SCREEN_DNA)
   const c = dna.center
   // Preserve the full source action. Fit inside the locked visual window instead of cropping people at the sides.
   // pad directly to the final canvas while centering inside the center band.
-  return `scale=${c.w}:${c.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${dna.canvas.w}:${dna.canvas.h}:(ow-iw)/2:${c.y}+( ${c.h}-ih)/2:black`
+  return `scale=${c.w}:${c.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${dna.canvas.w}:${dna.canvas.h}:(ow-iw)/2:${c.y}+(${c.h}-ih)/2:black`
 }
 
 // RENDER pass-through for a source producer A already composed (keeps a canvas-sized source pixel-for-pixel).
