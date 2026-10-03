@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { Queryable, SqlDb } from './db.js'
 import { firstStage, nextStage } from './pipeline.js'
+import { PIPELINES } from './pipeline.js'
 import { JobError, LeaseLostError, WAIT_REASONS, type Job, type JobStage, type StageRun, type StageRunKind, type WaitReason } from './types.js'
 
 export const DEFAULT_MAX_ATTEMPTS = 3
@@ -249,10 +250,13 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
         const completed = job.status === 'COMPLETE' && job.stage === 'PACKAGE'
         const queuedQc = job.status === 'QUEUED' && job.stage === 'AUTO_QC'
         const awaitingDecision = job.status === 'WAITING_USER' && job.waitReason === 'DECISION' && job.stage === 'DECISION'
-        if (job.profile !== 'wisdom' || (!qcBlocked && !completed && !queuedQc && !awaitingDecision)) throw new JobError('NOT_RENDER_RECHECKABLE', 'job is not a safe Wisdom rerender state')
+        // Any Shorts profile (all share the Common Screen DNA renderer). Paid stages are never re-run: RENDER re-renders the
+        // existing compiled manifest from the existing source; ASSET is required only where the pipeline has one.
+        const stages = PIPELINES[job.profile] || []
+        if (!stages.includes('RENDER') || (!qcBlocked && !completed && !queuedQc && !awaitingDecision)) throw new JobError('NOT_RENDER_RECHECKABLE', 'job is not a safe Shorts rerender state')
         const compiled = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='COMPILE' AND status='SUCCEEDED' LIMIT 1`, [job.id])
-        const asset = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='ASSET' AND status='SUCCEEDED' LIMIT 1`, [job.id])
-        if (!compiled.rows[0] || !asset.rows[0]) throw new JobError('PREREQUISITE_MISSING', 'RENDER recheck requires successful COMPILE and ASSET')
+        const asset = stages.includes('ASSET') ? await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='ASSET' AND status='SUCCEEDED' LIMIT 1`, [job.id]) : { rows: [true] }
+        if (!compiled.rows[0] || !asset.rows[0]) throw new JobError('PREREQUISITE_MISSING', 'RENDER recheck requires successful COMPILE (and ASSET where the pipeline has one)')
         const r = await tx.query(`UPDATE production_jobs SET stage='RENDER', status='QUEUED', wait_reason=NULL, run_after=NULL, updated_at=$2::timestamptz WHERE id=$1 RETURNING *`, [job.id, iso(now)])
         return mapJob(r.rows[0])
       })

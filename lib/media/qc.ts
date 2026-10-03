@@ -9,6 +9,8 @@ import { assFromPayload, CANVAS, FONTS_DIR, SAFE, type OverlayEvent } from './as
 import type { SourceAnalysis } from './analyze.js'
 import { contactSheet, detectBlack, detectFreeze, detectSilence, frameSignature, fullDecode, probe, runOk, signatureDistance, volumeStats, type Interval } from './ffmpeg.js'
 import { extractRenderPlan, OUTPUT } from './render.js'
+import { COMMON_SHORTS_SCREEN_DNA as DNA, bandOf, windowSourceRect } from './screenDnaContract.js'
+import { regionSignature, type SourceFraming } from './framing.js'
 
 export const QC_THRESHOLDS = {
   minBytes: 20_000, durationToleranceSec: 0.25, maxBlackSec: 0.3, unexplainedFreezeSec: 1.5, minFrameLuma: 6,
@@ -80,6 +82,7 @@ async function overlayFor(built: { ass: string; events: OverlayEvent[] }, k: num
 export type RenderQcInput = {
   renderPath: string; expectedRenderHash: string; payload: any; sourceFile: string; analysis: SourceAnalysis
   render: { overlayEvents: OverlayEvent[]; assSha256: string | null }
+  sourceFraming?: SourceFraming | null
   workDir: string; contactSheetOut?: string
 }
 export type RenderQcResult = { gate: GateResult; metrics: Record<string, unknown> }
@@ -167,17 +170,24 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       if (!plan) throw new Error('manifest not renderable')
       const n = plan.cuts.length
       const probeAt = plan.cuts.map((c) => Math.min(0.5, c.duration / 2))
+      // Compare the picture the viewer sees (the Screen DNA visual window) with the source region it was taken from:
+      // a pre-composed source carries the same window; a raw source is cover-cropped into it (after any embedded crop).
+      const composed = i.payload?.editorialPlan?.profile === 'wisdom-v1'
+      const src = await probe(i.sourceFile)
+      if (!src.width || !src.height) throw new Error('source dimensions unknown')
+      const win = { x: DNA.center.x, y: DNA.center.y, width: DNA.center.w, height: DNA.center.h }
+      const srcRect = composed ? win : windowSourceRect(src.width, src.height, i.sourceFraming?.mode === 'embedded' ? i.sourceFraming.crop : null, DNA)
       const outSig: Buffer[] = [], srcSig: Buffer[] = []
       for (let k = 0; k < n; k++) {
-        outSig.push(await frameSignature(i.renderPath, plan.cuts[k].start + probeAt[k]))
-        srcSig.push(await frameSignature(i.sourceFile, plan.cuts[k].trimStart + probeAt[k], { cover: true }))
+        outSig.push(await regionSignature(i.renderPath, plan.cuts[k].start + probeAt[k], win))
+        srcSig.push(await regionSignature(i.sourceFile, plan.cuts[k].trimStart + probeAt[k], srcRect))
       }
       const rows = outSig.map((o, k) => {
         const d = srcSig.map((s) => signatureDistance(o, s))
         const best = Math.min(...d.filter((_, j) => j !== k), Infinity)
         return { cut: k + 1, dist: Number(d[k].toFixed(1)), bestOther: Number.isFinite(best) ? Number(best.toFixed(1)) : null, ok: d[k] <= T.frameMatchMaxDist && !(best + T.frameMismatchMargin < d[k]) }
       })
-      return ok(rows.every((r) => r.ok), rows)
+      return ok(rows.every((r) => r.ok), { window: win, sourceRegion: srcRect, rows })
     }, { timeoutMs: 240_000 }),
     () => runCheck('overlay.matches_manifest', true, async () => {
       const expected = assFromPayload({ ...i.payload, totalDuration: total })
@@ -193,15 +203,13 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       let allOk = true
       for (const [k, ev] of built.events.slice(0, 12).entries()) {
         const { box } = await overlayFor(built, k, total, i.workDir)
-        const wisdom = i.payload?.editorialPlan?.profile === 'wisdom-v1'
         const xSafe = !!box && box.x0 >= CANVAS.w * SAFE.left && box.x1 <= CANVAS.w * (1 - SAFE.right)
-        // Wisdom Screen DNA deliberately reserves 360px black bands for persistent headline/subtitles.
-        // Validate those overlays against their owned band, not the generic Shorts content safe-area.
-        const ySafe = !!box && (wisdom && ev.kind === 'headline'
-          ? box.y0 >= 16 && box.y1 <= 352
-          : wisdom && ev.kind === 'subtitle'
-            ? box.y0 >= 1568 && box.y1 <= 1904
-            : box.y0 >= CANVAS.h * SAFE.top && box.y1 <= CANVAS.h * SAFE.bottom)
+        // Common Shorts Screen DNA reserves the black bands for the headline / captions: validate each against its own band
+        // (with an inner margin so glyphs never touch the band edge), not the generic full-frame safe area.
+        const band = bandOf(DNA, ev.kind)
+        const ySafe = !!box && (band
+          ? ev.kind === 'headline' ? box.y0 >= band.y + 16 && box.y1 <= band.y + band.h - 8 : box.y0 >= band.y + 8 && box.y1 <= band.y + band.h - 16
+          : box.y0 >= CANVAS.h * SAFE.top && box.y1 <= CANVAS.h * SAFE.bottom)
         const okBox = xSafe && ySafe
         // text that fits the safe area but is tiny is unreadable on a phone: a single line must be at least this tall
         const tall = !!box && box.y1 - box.y0 >= MIN_TEXT_BOX_PX

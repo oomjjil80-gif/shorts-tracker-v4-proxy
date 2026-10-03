@@ -11,27 +11,10 @@ import type { CheckResult } from '../qc/gate.js'
 import { runOk } from './ffmpeg.js'
 import { FONTS_DIR, type OverlayEvent } from './ass.js'
 
-export type Rect = { x: number; y: number; w: number; h: number }
-export type ScreenDna = { schema: 'shorts-screen-dna/1'; canvas: { w: number; h: number }; top: Rect; center: Rect; bottom: Rect; tolerancePx: 0 }
-export const SHORTS_SCREEN_DNA: ScreenDna = Object.freeze({
-  schema: 'shorts-screen-dna/1', canvas: { w: 1080, h: 1920 },
-  top: { x: 0, y: 0, w: 1080, h: 360 }, center: { x: 0, y: 360, w: 1080, h: 1200 }, bottom: { x: 0, y: 1560, w: 1080, h: 360 },
-  tolerancePx: 0
-}) as ScreenDna
+import { COMMON_SHORTS_SCREEN_DNA, SHORTS_SCREEN_DNA, screenDnaSegmentFilter, screenDnaSegmentArgv, screenDnaWindowFilter, screenDnaComposedFilter, bandOf, type Rect, type ScreenDna } from './screenDnaContract.js'
+export { COMMON_SHORTS_SCREEN_DNA, SHORTS_SCREEN_DNA, screenDnaSegmentFilter, screenDnaSegmentArgv, screenDnaWindowFilter, screenDnaComposedFilter, bandOf, type Rect, type ScreenDna }
 
 const sha = (s: string | Buffer) => createHash('sha256').update(s).digest('hex')
-
-// The per-beat ASSET video filter, built from the contract (byte-identical to the filter used before the contract existed).
-export function screenDnaSegmentFilter(dna: ScreenDna = SHORTS_SCREEN_DNA, fps = 30): string {
-  const c = dna.center
-  return `scale=${c.w}:${c.h}:force_original_aspect_ratio=increase,crop=${c.w}:${c.h},zoompan=z='min(zoom+0.00035,1.035)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${c.w}x${c.h}:fps=${fps},pad=${dna.canvas.w}:${dna.canvas.h}:${c.x}:${c.y}:black,format=yuv420p`
-}
-
-// Exact ffmpeg argv of one ASSET segment (image + narration -> 1080x1920 Screen DNA segment). Shared by ASSET (execution),
-// its receipt (evidence) and tests (fixtures), so all three are the same command.
-export function screenDnaSegmentArgv(imagePath: string, audioPath: string, durationSec: number, outPath: string, vf = screenDnaSegmentFilter()): string[] {
-  return ['-y', '-loop', '1', '-i', imagePath, '-i', audioPath, '-t', String(durationSec), '-vf', vf, '-af', 'apad', '-r', '30', '-c:v', 'libx264', '-preset', 'veryfast', '-threads', '4', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-movflags', '+faststart', outPath]
-}
 
 // Geometry an ASSET segment filter actually produces, read from the filter text itself (not from any declaration).
 export function geometryFromSegmentFilter(vf: string): { canvas: { w: number; h: number }; center: Rect; top: Rect; bottom: Rect; fillsCenter: boolean } | null {
@@ -72,9 +55,21 @@ export function renderPreservesGeometry(filterGraph: string, source: { width: nu
   return d
 }
 
+// A RENDER per-input line for a raw source must be exactly: [optional embedded-picture crop] + the window filter.
+const WINDOW_LINE = /^\[(\d+):v\]setpts=PTS-STARTPTS,(crop=\d+:\d+:\d+:\d+,)?(scale=\d+:\d+:force_original_aspect_ratio=increase:flags=lanczos,crop=\d+:\d+,pad=\d+:\d+:\d+:\d+:black),setsar=1,fps=(\d+),format=yuv420p\[v\d+\]$/
+export function windowLineDiffs(line: string, dna: ScreenDna = SHORTS_SCREEN_DNA): string[] {
+  const m = WINDOW_LINE.exec(line.trim())
+  if (!m) return [`render.videoFilter.notCanonicalWindow: ${line.slice(0, 140)}`]
+  const d = contractDiffs(geometryFromSegmentFilter(m[3]), dna)
+  if (m[3] !== screenDnaWindowFilter(dna) && !d.length) d.push('render.videoFilter.window differs from the contract filter')
+  return d
+}
+// The geometry part of a recorded line, re-executable on the source by itself (no labels / timestamps).
+export const windowLineFilter = (line: string) => { const m = WINDOW_LINE.exec(line.trim()); return m ? `${m[2] ?? ''}${m[3]},setsar=1,format=yuv420p` : null }
+
 // ---- execution receipts (recorded by ASSET / RENDER; verified by QC) ----
 export type AssetGeometryReceipt = { schema: 'screen-dna-receipt/1'; stage: 'ASSET'; jobId: string; attempt: number; contract: ScreenDna; segmentFilter: string; segmentArgv: string[]; segments: Array<{ beatId: string; imageSha256: string; durationSec: number }>; outputSha256: string; outputRef: string }
-export type RenderGeometryReceipt = { schema: 'screen-dna-receipt/1'; stage: 'RENDER'; jobId: string; attempt: number; contract: ScreenDna; manifestHash: string; sourceSha256: string; sourceWidth: number | null; sourceHeight: number | null; filterGraphSha256: string; videoFilters: string[]; renderHash: string }
+export type RenderGeometryReceipt = { schema: 'screen-dna-receipt/1'; stage: 'RENDER'; jobId: string; attempt: number; contract: ScreenDna; composer?: 'asset' | 'render'; manifestHash: string; sourceSha256: string; sourceWidth: number | null; sourceHeight: number | null; filterGraphSha256: string; videoFilters: string[]; renderHash: string }
 export const renderVideoFilters = (graph: string) => graph.split(';').map((l) => l.trim()).filter((l) => /^\[\d+:v\]/.test(l))
 export const filterGraphSha256 = (graph: string) => sha(graph)
 
@@ -129,6 +124,9 @@ function bestTemporal(src: Buffer[], ref: Buffer[]): { si: number; ri: number; m
 
 export type ScreenDnaInput = {
   job: { id: string }
+  // who executed the geometry: 'asset' = ASSET pre-composed the source (Wisdom); 'render' = RENDER placed a raw source
+  // into the window (General / source-first). It only selects WHICH execution evidence is required; both need pixels.
+  composer?: 'asset' | 'render'
   dna?: ScreenDna
   sourceFile: string; sourceSha256: string | null
   renderPath: string; renderBytesSha256: string; output: { width: number | null; height: number | null }
@@ -148,6 +146,20 @@ const guard = async (id: string, f: () => Promise<CheckResult>): Promise<CheckRe
 export async function geometryContractCheck(i: ScreenDnaInput): Promise<CheckResult> {
   const id = 'screen_dna.geometry_contract', dna = i.dna ?? SHORTS_SCREEN_DNA
   return guard(id, async () => {
+    if (i.composer === 'render') {
+      const rr = i.variant.geometryReceipt ?? null
+      if (!rr) return st(id, 'UNKNOWN', { reason: 'RENDER recorded no Screen DNA receipt: the window geometry has no execution evidence' })
+      const bind: string[] = []
+      if (rr.schema !== 'screen-dna-receipt/1' || rr.stage !== 'RENDER') bind.push('render.receipt.schema')
+      if (rr.jobId !== i.job.id) bind.push(`render.receipt.jobId=${rr.jobId}`)
+      if (!i.renderRun || rr.attempt !== i.renderRun.attempt) bind.push(`render.receipt.attempt=${rr.attempt} (run ${i.renderRun?.attempt})`)
+      if (rr.renderHash !== i.variant.renderHash || rr.renderHash !== i.renderBytesSha256) bind.push('render.receipt.renderHash != rendered bytes')
+      if (rr.manifestHash !== i.variant.manifestHash) bind.push('render.receipt.manifestHash != variant manifest')
+      if (!i.sourceSha256 || rr.sourceSha256 !== i.sourceSha256) bind.push('render.receipt.sourceSha256 != resolved source')
+      const lines = rr.videoFilters || []
+      const diffs = lines.length ? lines.flatMap((l) => windowLineDiffs(l, dna)) : ['render.videoFilters.missing']
+      return st(id, diffs.length || bind.length ? 'FAIL' : 'PASS', { contract: dna, composer: 'render', videoFilters: lines, diffs, binding: bind })
+    }
     if (!i.assetRun) return st(id, 'UNKNOWN', { reason: 'no successful ASSET run: the source geometry has no execution evidence' })
     const ar: AssetGeometryReceipt | null = i.assetRun.result?.geometryReceipt ?? null
     const segmentFilter = ar ? ar.segmentFilter : screenDnaSegmentFilter(dna)
@@ -173,6 +185,80 @@ export async function geometryContractCheck(i: ScreenDnaInput): Promise<CheckRes
     }
     const evidence = { contract: dna, segmentFilter, segmentFilterSource: ar ? 'asset-receipt' : 'asset-code-path (legacy run without receipt; proven by screen_dna.source_geometry re-execution)', renderReceipt: !!rr, diffs, renderDiffs, binding: bind }
     return st(id, diffs.length || renderDiffs.length || bind.length ? 'FAIL' : 'PASS', evidence)
+  })
+}
+
+// ---- composer=render: re-execute the recorded window line on the source and compare with the real output ----
+async function glyphMaskAt(ass: string, t: number, signal?: AbortSignal): Promise<Uint8Array> {
+  const work = await mkdtemp(join(tmpdir(), 'dna-mask-'))
+  const esc = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
+  try {
+    const p = join(work, 'm.ass'); await writeFile(p, ass, 'utf8')
+    const r = await runOk(['-f', 'lavfi', '-i', `color=c=0x808080:s=${W}x${H}:r=${FPS}:d=${(t + 1).toFixed(3)}`, '-vf', `ass=filename='${esc(p)}':fontsdir='${esc(FONTS_DIR)}',format=gray`, '-ss', t.toFixed(4), '-frames:v', '1', '-f', 'rawvideo', '-'], { signal, timeoutMs: 120_000 })
+    const f = splitFrames(r.stdout)[0]
+    const m = new Uint8Array(FRAME)
+    if (!f) return m
+    // glyph pixels dilated by 6px: encoder ringing around white text is not picture leaking into the band
+    const R = 6
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (Math.abs(f[y * W + x] - 128) > 8) {
+      for (let yy = Math.max(0, y - R); yy <= Math.min(H - 1, y + R); yy++) m.fill(1, yy * W + Math.max(0, x - R), yy * W + Math.min(W, x + R + 1))
+    }
+    return m
+  } finally { await rm(work, { recursive: true, force: true }) }
+}
+function maskedMad(a: Buffer, b: Buffer, mask: Uint8Array, y0: number, y1: number): number {
+  let s = 0, n = 0
+  for (let y = y0; y < y1; y++) for (let x = 0; x < W; x++) { const k = y * W + x; if (mask[k]) continue; s += Math.abs(a[k] - b[k]); n++ }
+  return n ? s / n : 0
+}
+type WindowRow = { t: number; sourceT: number; cut: number; aligned: boolean; mad: number; best: any; centerEdgeRow: { row: number; mad: number }; bandMad: number; bandEdgeRowMad: number }
+const windowCache = new WeakMap<object, Promise<{ rows: WindowRow[] } | { unknown: string }>>()
+function windowEvidence(i: ScreenDnaInput, cuts: Array<{ start: number; duration: number; trimStart: number }>) {
+  if (!windowCache.has(i)) windowCache.set(i, (async () => {
+    const dna = i.dna ?? SHORTS_SCREEN_DNA
+    const lines = i.variant.geometryReceipt?.videoFilters || []
+    if (!lines.length) return { unknown: 'RENDER receipt with the executed window filters is missing' }
+    if (!cuts.length) return { unknown: 'render plan has no cuts' }
+    const rows: WindowRow[] = []
+    for (const [k, c] of cuts.entries()) {
+      const vf = windowLineFilter(lines[k] ?? '')
+      if (!vf) return { unknown: `cut ${k + 1}: recorded video filter is not re-executable` }
+      const t = c.start + Math.min(0.5, c.duration / 2), srcT = c.trimStart + (t - c.start)
+      const [out] = await decodeGray(i.renderPath, t, 1, i.signal)
+      const r = await runOk(['-ss', Math.max(0, srcT - 2 / FPS).toFixed(3), '-i', i.sourceFile, '-frames:v', '5', '-vf', `${vf},format=gray`, '-f', 'rawvideo', '-'], { signal: i.signal, timeoutMs: 120_000 })
+      const exp = splitFrames(r.stdout)
+      if (!out || !exp.length) return { unknown: `frames at ${t.toFixed(2)}s could not be decoded` }
+      let best = { k: 0, m: Infinity }
+      exp.forEach((f, n) => { const m = mad(out, f, dna.center.y, dna.center.y + dna.center.h, 0, 0, 4); if (m < best.m) best = { k: n, m } })
+      const e = exp[best.k]
+      const a = alignment(out, e, dna.center.y, dna.center.y + dna.center.h)
+      let ce = { row: -1, mad: 0 }
+      for (const row of [dna.center.y, dna.center.y + 1, dna.center.y + dna.center.h - 2, dna.center.y + dna.center.h - 1]) { const m = mad(out, e, row, row + 1); if (m > ce.mad) ce = { row, mad: Number(m.toFixed(3)) } }
+      const mask = i.overlays ? await glyphMaskAt(i.overlays.ass, t, i.signal) : new Uint8Array(FRAME)
+      const bandMad = Math.max(maskedMad(out, e, mask, dna.top.y, dna.top.y + dna.top.h), maskedMad(out, e, mask, dna.bottom.y, dna.bottom.y + dna.bottom.h))
+      const bandEdge = Math.max(...[dna.center.y - 2, dna.center.y - 1, dna.center.y + dna.center.h, dna.center.y + dna.center.h + 1].map((row) => maskedMad(out, e, mask, row, row + 1)))
+      rows.push({ t: Number(t.toFixed(3)), sourceT: Number(srcT.toFixed(3)), cut: k + 1, ...a, centerEdgeRow: ce, bandMad: Number(bandMad.toFixed(3)), bandEdgeRowMad: Number(bandEdge.toFixed(3)) })
+    }
+    return { rows }
+  })())
+  return windowCache.get(i)!
+}
+async function windowGeometryCheck(i: ScreenDnaInput, cuts: Array<{ start: number; duration: number; trimStart: number }>): Promise<CheckResult> {
+  const id = 'screen_dna.source_geometry'
+  return guard(id, async () => {
+    const ev = await windowEvidence(i, cuts)
+    if ('unknown' in ev) return st(id, 'UNKNOWN', { reason: ev.unknown })
+    const rows = ev.rows.map((r) => ({ cut: r.cut, t: r.t, centerEdgeRow: r.centerEdgeRow, bandMad: r.bandMad, bandEdgeRowMad: r.bandEdgeRowMad, ok: r.centerEdgeRow.mad <= PIXEL.maxEdgeRowMad && r.bandMad <= PIXEL.maxBandMad && r.bandEdgeRowMad <= PIXEL.maxEdgeRowMad }))
+    return st(id, rows.every((r) => r.ok) ? 'PASS' : 'FAIL', { method: 're-executed RENDER window filter on the source vs output bands/boundary rows (text glyphs masked)', thresholds: PIXEL, rows })
+  })
+}
+async function windowPreservesCheck(i: ScreenDnaInput, cuts: Array<{ start: number; duration: number; trimStart: number }>): Promise<CheckResult> {
+  const id = 'screen_dna.render_preserves_source'
+  return guard(id, async () => {
+    const ev = await windowEvidence(i, cuts)
+    if ('unknown' in ev) return st(id, 'UNKNOWN', { reason: ev.unknown })
+    const rows = ev.rows.map((r) => ({ cut: r.cut, t: r.t, sourceT: r.sourceT, aligned: r.aligned, mad: r.mad, best: r.best, ok: r.aligned && r.mad <= PIXEL.maxMad }))
+    return st(id, rows.every((r) => r.ok) ? 'PASS' : 'FAIL', { method: 'output visual window vs re-executed RENDER window on the source (0px spatial alignment)', window: (i.dna ?? SHORTS_SCREEN_DNA).center, thresholds: PIXEL, rows })
   })
 }
 
@@ -301,11 +387,12 @@ export async function outputIdentityCheck(i: ScreenDnaInput): Promise<CheckResul
 }
 
 export async function runScreenDnaQc(i: ScreenDnaInput, cuts: Array<{ start: number; duration: number; trimStart: number }>): Promise<CheckResult[]> {
+  const render = i.composer === 'render'
   const checks = [
     await outputIdentityCheck(i),
     await geometryContractCheck(i),
-    await sourceGeometryCheck(i),
-    await renderPreservesSourceCheck(i, cuts),
+    render ? await windowGeometryCheck(i, cuts) : await sourceGeometryCheck(i),
+    render ? await windowPreservesCheck(i, cuts) : await renderPreservesSourceCheck(i, cuts),
     await textBandsCheck(i)
   ]
   const status = checks.some((c) => c.status === 'FAIL') ? 'FAIL' : checks.every((c) => c.status === 'PASS') ? 'PASS' : 'UNKNOWN'

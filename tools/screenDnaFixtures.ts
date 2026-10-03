@@ -79,3 +79,27 @@ export function qcInput(o: { src: Awaited<ReturnType<typeof source>>; out: Await
     cuts: extractRenderPlan(o.manifest.payload).cuts
   }
 }
+
+// ---- General / source-first fixtures: a raw (non-composed) source placed into the window by RENDER ----
+export async function generalSource(d: string, kind: 'bright' | 'dark' = 'bright', size = '1280x720', sec = 2.4): Promise<{ path: string; sha256: string }> {
+  const p = join(d, `raw-${kind}.mp4`)
+  const vf = kind === 'dark' ? ',eq=brightness=-0.62:contrast=0.35' : ''
+  await runOk(['-y', '-f', 'lavfi', '-i', `testsrc2=s=${size}:r=30:d=${sec}`, '-f', 'lavfi', '-i', `sine=f=440:d=${sec}`, '-vf', `format=yuv420p${vf}`, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', p], { timeoutMs: 120_000 })
+  return { path: p, sha256: sha(readFileSync(p)) }
+}
+export function generalManifest(src: { sha256: string }, sec = 2.4) {
+  const plan: any = { schema: 'job-plan/1', profile: 'source_shorts', sourceAssetId: 'src_raw_fx', variantPlan: { profile: 'v1', beats: [{ label: 'a', trimStart: 0, trimEnd: sec }], headline: '왜 이렇게 될까\\N끝까지 보면 안다', events: [{ start: 0, end: 1.2, text: '처음 장면입니다' }, { start: 1.2, end: sec, text: '결국 이렇게 됩니다' }], plansTimeDomain: 'source' } }
+  const c = compileJobPlan({ jobId: 'job_gen', plan, sourceAsset: { sourceAssetId: 'src_raw_fx', blobPath: `source-collector/${src.sha256}.mp4`, sha256: src.sha256, duration: sec, width: 1280, height: 720 } as any })
+  return { ...c.manifest, identity: c.identity }
+}
+// RENDER exactly (renderPayload, optionally executing a non-contract geometry), optional post-render tamper of the pixels
+export async function generalRender(d: string, src: { path: string }, manifest: any, o: { dna?: any; tamperVf?: string } = {}) {
+  const out = join(d, 'gen-final.mp4')
+  const r = await renderPayload(manifest.payload, { sourceFile: src.path, sourceHasAudio: true, workDir: join(d, 'gw'), outPath: out, dna: o.dna })
+  let path = out
+  if (o.tamperVf) {
+    path = join(d, 'gen-tampered.mp4')
+    await runOk(['-y', '-i', out, '-vf', o.tamperVf, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '19', '-pix_fmt', 'yuv420p', '-c:a', 'copy', path])
+  }
+  return { path, sha256: sha(readFileSync(path)), filterGraph: r.filterGraph, info: await probe(path) }
+}
