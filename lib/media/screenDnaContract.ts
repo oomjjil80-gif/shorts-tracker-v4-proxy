@@ -30,7 +30,9 @@ export function screenDnaSegmentArgv(imagePath: string, audioPath: string, durat
 // crop to the window, black bands. Same window, same bands, same numbers as producer A.
 export function screenDnaWindowFilter(dna: ScreenDna = COMMON_SHORTS_SCREEN_DNA): string {
   const c = dna.center
-  return `scale=${c.w}:${c.h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${c.w}:${c.h},pad=${dna.canvas.w}:${dna.canvas.h}:${c.x}:${c.y}:black`
+  // Source-first footage must never lose people/actions at the left/right edges. Fit the whole frame inside
+  // the visual window and use black letterboxing when aspect ratios differ; do not cover-crop.
+  return `scale=${c.w}:${c.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${c.w}:${c.h}:(ow-iw)/2:(oh-ih)/2:black,pad=${dna.canvas.w}:${dna.canvas.h}:${c.x}:${c.y}:black`
 }
 
 // RENDER pass-through for a source producer A already composed (keeps a canvas-sized source pixel-for-pixel).
