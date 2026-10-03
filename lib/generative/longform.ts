@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto'
 import { canonicalize } from '../tracker-core/renderManifest.js'
 import { FONT_FAMILY, assTime, headAdvanceEm } from '../media/ass.js'
 import { thumbnailCopyErrors } from './wisdomThumbnail.js'
+import { uploadMetadataErrors, uploadPackageText } from './uploadPackage.js'
 
 export const LONGFORM_PROFILE_ID = 'wisdom_longform'
 export const LONGFORM = {
@@ -53,8 +54,6 @@ export function validateLongformScript(s: any, brief: LongformBrief): string[] {
   const tl = s?.thumbnail?.lines
   // the thumbnail is its own click copy (2-3 meaning units, coloured by meaning, never the title)
   e.push(...thumbnailCopyErrors(Array.isArray(tl) ? tl : [], String(s?.title || '')).map((x) => `thumbnail.${x}`))
-  if (!String(s?.metadata?.description || '').trim()) e.push('metadata.description')
-  if (!Array.isArray(s?.metadata?.tags) || !s.metadata.tags.length) e.push('metadata.tags')
   const sections = Array.isArray(s?.sections) ? s.sections : []
   if (!sections.length) e.push('sections')
   let n = 0
@@ -74,6 +73,9 @@ export function validateLongformScript(s: any, brief: LongformBrief): string[] {
     }
   }
   if (!n) e.push('sentences')
+  // upload text written for THIS video (never script copy / title words / fixed hashtags / generic comment)
+  if (n && s?.metadata) e.push(...uploadMetadataErrors({ title: String(s.title || ''), ...s.metadata }, { narration: narrationOf(s as LongformScript), format: 'longform' }).map((x) => `upload.${x}`))
+  else if (!s?.metadata) e.push('upload.missing')
   if (!e.length) {
     const est = estimatedSeconds(s as LongformScript)
     if (est < brief.targetSeconds * 0.6 || est > brief.targetSeconds * 1.4) e.push(`length: ~${Math.round(est)}s for a ${brief.targetSeconds}s target`)
@@ -174,9 +176,11 @@ export function longformVideoArgv(o: { background: string; audio: string; ass: s
 }
 // ---------------- upload package text ----------------
 export function longformPackageMetadata(s: LongformScript) {
-  const tags = [...new Set(s.metadata.tags.map((t) => t.replace(/^#/, '').trim()).filter(Boolean))].slice(0, 15)
-  const hashtags = [...new Set(s.metadata.hashtags.map((t) => '#' + t.replace(/^#/, '').trim()).filter((t) => t.length > 1))].slice(0, 5)
-  return { title: s.title.trim(), description: `${s.metadata.description.trim()}\n\n${hashtags.join(' ')}`.trim(), tags, hashtags, pinnedComment: s.metadata.pinnedComment.trim() }
+  // null when the text does not pass the upload rules (e.g. the no-model text path): nothing made-up is shown
+  const m = { title: s.title, ...s.metadata }
+  if (uploadMetadataErrors(m, { narration: narrationOf(s), format: 'longform' }).length) return null
+  const t = uploadPackageText(m)
+  return { title: t.title, description: t.descriptionWithHashtags, tags: t.tags, hashtags: t.hashtags, pinnedComment: t.pinnedComment }
 }
 
 // ---------------- deterministic script for a user-supplied text (no model) ----------------

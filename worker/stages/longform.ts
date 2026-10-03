@@ -175,7 +175,7 @@ export const longformPackageExecutor: StageExecutor = {
     const r = await previous('RENDER'), v = (r?.result as any)?.variants?.[0]
     const p = await previous('PLAN'), script = ((p?.result as any)?.scriptRef ? await blobs.getJson((p!.result as any).scriptRef) : null) as LongformScript | null
     if (!v || !script) throw new StageError('RENDER_MISSING', 'PACKAGE requires the longform RENDER and PLAN')
-    const pkg = { schema: 'longform-package/1', profile: LONGFORM_PROFILE_ID, finalRenderRef: v.renderRef, renderHash: v.renderHash, thumbnailRef: v.thumbnailRef, durationSec: v.duration, aspectRatio: '16:9', publishable: true, metadata: longformPackageMetadata(script), thumbnailLines: script.thumbnail.lines }
+    const pkg = { schema: 'longform-package/1', profile: LONGFORM_PROFILE_ID, finalRenderRef: v.renderRef, renderHash: v.renderHash, thumbnailRef: v.thumbnailRef, durationSec: v.duration, aspectRatio: '16:9', publishable: true, ...(() => { const m = longformPackageMetadata(script); return { metadata: m, uploadReady: !!m } })(), thumbnailLines: script.thumbnail.lines }
     const stored = await putAddressed(blobs, 'packages', pkg)
     return { outputRef: stored.path, outputHash: sha256(stored.path), result: { packageRef: stored.path, finalRenderRef: v.renderRef, renderHash: v.renderHash, thumbnailRef: v.thumbnailRef, durationSec: v.duration, publishable: true } }
   }

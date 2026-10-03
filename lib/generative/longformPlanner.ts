@@ -1,5 +1,6 @@
 import type { LongformBrief, LongformScript } from './longform.js'
 import { LONGFORM, ACCENTS } from './longform.js'
+import { UPLOAD_METADATA_RULES } from './uploadPackage.js'
 
 // One structured call: title, hook, the whole narration as sentences, the card shown for each sentence, the single image
 // subject, the thumbnail phrase and the upload text. The renderer never invents text; it only lays out these fields.
@@ -21,7 +22,7 @@ export async function openAiLongformPlan(brief: LongformBrief, apiKey: string, m
     'Each sentence object: "say" = exactly what is spoken (one or two natural sentences). "show" = the KEY phrase of that moment for the screen, 1-3 short lines (<=14 Korean characters per line), condensed, never the full sentence. "accent" = the exact word or phrase inside "show" that carries the meaning (it is coloured); "color" = one of red, purple, green, yellow, white. Vary colors; never colour a whole card.',
     'figure.imagePrompt: the ONE representative person for the whole video (a philosopher, historical sage or wise elder fitting the topic; if the topic names a person, depict that person recognizably). Describe only the person, clothing and mood; composition is added later.',
     'thumbnail.lines: 2-3 separate meaning units (<=8 Korean characters each, spaces not counted) that make a viewer NEED to click (curiosity/warning/benefit/contrast). NEVER the title or a trimmed title. Colour by meaning: the key word/phrase red, purple or green; do not use only white/yellow; not every line the same colour. Example shape: ["절대"(red),"만만하게"(purple),"보이지 마라"(green)].',
-    'metadata: YouTube description (3-5 sentences), 8-15 tags, 3-5 hashtags, and a pinned comment that invites discussion.'
+    'title + metadata = the YouTube upload text for THIS video, written from its actual content:', UPLOAD_METADATA_RULES
   ].join('\n')
   const input = `Input kind: ${brief.kind}\nTopic or source: ${brief.text}`
   const res = await f('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model, instructions, input, text: { format: { type: 'json_schema', name: 'wisdom_longform_plan', strict: true, schema } } }) })

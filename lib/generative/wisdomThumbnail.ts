@@ -3,6 +3,7 @@
 // by a box: only a soft feathered shade sits behind the text block, so the image mood and the person stay visible.
 import { FONT_FAMILY, assTime, headAdvanceEm } from '../media/ass.js'
 import { thinkerFor } from './wisdom.js'
+import { UPLOAD_METADATA_RULES, UPLOAD_METADATA_SCHEMA, type UploadMetadata } from './uploadPackage.js'
 
 export const THUMB = { w: 1280, h: 720, textX: 56, textMaxWidth: 640, basePx: 200, minPx: 110 } as const
 export const THUMB_COLORS = { red: '#FF2D2D', purple: '#B45CFF', green: '#3DFF6E', yellow: '#FFD60A', white: '#FFFFFF' } as const
@@ -81,20 +82,22 @@ export function thumbnailArgv(o: { image: string; lines: ThumbLine[]; assPath: s
   return { ass: t.ass, argv: ['-y', '-i', o.image, '-filter_complex', `[0:v]${thumbnailPictureFilter(t.block)},ass=filename='${e(o.assPath)}':fontsdir='${e(o.fontsDir)}',format=yuv420p[v]`, '-map', '[v]', '-frames:v', '1', '-q:v', '2', o.out] }
 }
 
-// Click copy for a Wisdom SHORTS video (Longform gets it from its planner): 2-3 re-written meaning units + colours.
-export async function openAiWisdomThumbnailCopy(input: { topic: string; title: string; hook: string; narration: string }, apiKey: string, model = process.env.OPENAI_PLAN_MODEL || 'gpt-6-luna', f: typeof fetch = fetch): Promise<{ lines: ThumbLine[]; figure: string }> {
-  const schema = { type: 'object', additionalProperties: false, required: ['lines', 'figure'], properties: {
+// Publish kit for a Wisdom SHORTS video (Longform gets the same from its planner): the thumbnail's 2-3 re-written
+// meaning units + colours, the thumbnail hero, and the YouTube upload text — one call, written from the actual content.
+export async function openAiWisdomPublishKit(input: { topic: string; title: string; hook: string; narration: string; repair?: string[] }, apiKey: string, model = process.env.OPENAI_PLAN_MODEL || 'gpt-6-luna', f: typeof fetch = fetch): Promise<{ lines: ThumbLine[]; figure: string; metadata: UploadMetadata }> {
+  const schema = { type: 'object', additionalProperties: false, required: ['lines', 'figure', 'metadata'], properties: {
     lines: { type: 'array', minItems: 2, maxItems: 3, items: { type: 'object', additionalProperties: false, required: ['text', 'color'], properties: { text: { type: 'string' }, color: { type: 'string', enum: Object.keys(THUMB_COLORS) } } } },
-    figure: { type: 'string' } } }
+    figure: { type: 'string' }, metadata: UPLOAD_METADATA_SCHEMA } }
   const instructions = [
-    'Write the click copy for a Korean YouTube wisdom video thumbnail. 2-3 lines, each a separate meaning unit of at most 8 Korean characters (spaces not counted).',
-    'Do NOT copy or merely trim the title. Rewrite it so the reason to click (curiosity, warning, benefit, contrast) is obvious in one glance on a phone, e.g. ["절대","만만하게","보이지 마라"].',
-    'Colour by meaning: the single most important word/phrase red or purple or green; never only white/yellow; do not give every line the same colour.',
-    'figure: the one person who should be the hero of the thumbnail (if the topic names a philosopher or historical figure, that person with recognizable traits; otherwise a fitting sage). Describe appearance only.'
+    'You prepare the YouTube publishing kit for ONE Korean wisdom Shorts video from its real script.',
+    'lines (thumbnail click copy): 2-3 lines, each a separate meaning unit of at most 8 Korean characters (spaces not counted). Do NOT copy or merely trim the title. The reason to click (curiosity, warning, benefit, contrast) must be obvious in one glance on a phone, e.g. ["절대","만만하게","보이지 마라"]. Colour by meaning: the single most important word/phrase red or purple or green; never only white/yellow; not every line the same colour.',
+    'figure: the one person who should be the hero of the thumbnail (if the topic names a philosopher or historical figure, that person with recognizable traits; otherwise a fitting sage). Appearance only.',
+    'metadata (Korean, YouTube Shorts upload text):', UPLOAD_METADATA_RULES,
+    ...(input.repair?.length ? [`The previous kit was rejected for: ${input.repair.join(', ')}. Fix exactly these.`] : [])
   ].join('\n')
-  const res = await f('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model, instructions, input: `Topic: ${input.topic}\nTitle: ${input.title}\nHook: ${input.hook}\nNarration: ${input.narration.slice(0, 1500)}`, text: { format: { type: 'json_schema', name: 'wisdom_thumbnail', strict: true, schema } } }) })
-  if (!res.ok) throw new Error(`OpenAI thumbnail copy HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`)
+  const res = await f('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model, instructions, input: `Topic: ${input.topic}\nTitle: ${input.title}\nHook: ${input.hook}\nNarration: ${input.narration.slice(0, 2500)}`, text: { format: { type: 'json_schema', name: 'wisdom_publish_kit', strict: true, schema } } }) })
+  if (!res.ok) throw new Error(`OpenAI publish kit HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`)
   const j: any = await res.json(); const raw = j.output_text ?? j.output?.flatMap((x: any) => x.content ?? []).find((x: any) => x.type === 'output_text')?.text
-  if (!raw) throw new Error('OpenAI thumbnail copy returned no output_text')
+  if (!raw) throw new Error('OpenAI publish kit returned no output_text')
   return JSON.parse(raw)
 }

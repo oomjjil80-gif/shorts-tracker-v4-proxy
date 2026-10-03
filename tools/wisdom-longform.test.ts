@@ -15,6 +15,7 @@ import { runOnce } from '../worker/runJob.js'
 import { runOk, probe } from '../lib/media/ffmpeg.js'
 import { withLongform, createLongformPlanExecutor, createLongformAssetExecutor, longformRenderExecutor, longformPackageExecutor } from '../worker/stages/longform.js'
 import { PIPELINES } from '../lib/jobs/pipeline.js'
+import { uploadMetadataErrors } from '../lib/generative/uploadPackage.js'
 import { standInPortrait, measureThumbnail, assertThumbnail } from './thumbnailMeasure.js'
 import { LONGFORM, ACCENTS, validateLongformScript, normalizeLongformBrief, ttsChunks, cardTimeline, sentencesOf, type LongformScript } from '../lib/generative/longform.js'
 
@@ -26,7 +27,12 @@ const SAMPLE: LongformScript = {
   title: '만만하게 보이지 않는 사람들의 5가지 태도', hook: '사람에게 만만하게 보이는 순간, 관계는 달라집니다.',
   figure: { name: 'Seneca', imagePrompt: 'the Roman Stoic philosopher Seneca, elderly, short white beard, wearing a simple dark toga, calm and stern gaze' },
   thumbnail: { lines: [{ text: '절대', color: 'red' }, { text: '만만하게', color: 'purple' }, { text: '보이지 마라', color: 'green' }] },
-  metadata: { description: '사람에게 만만하게 보이지 않는 사람들은 무엇이 다를까요? 세네카의 지혜로 관계의 균형을 지키는 태도를 이야기합니다.', tags: ['지혜', '인간관계', '세네카', '스토아철학', '자존감', '인생조언', '철학', '명언'], hashtags: ['지혜', '인간관계', '세네카'], pinnedComment: '여러분은 어떤 순간에 만만하게 보였다고 느끼셨나요? 댓글로 나눠주세요.' },
+  metadata: {
+    description: '친절한데도 늘 손해만 보는 사람과, 조용한데도 함부로 대하지 못하는 사람은 무엇이 다를까요? 스토아 철학자 세네카의 말을 바탕으로 부탁에 바로 답하지 않기, 변명을 줄이기, 경계를 지키면서도 다정함을 잃지 않는 법을 일상 장면으로 풀어 봅니다. 관계에서 자꾸 지치는 분이라면 오늘 영상에서 나를 지키는 기준 하나를 가져가 보세요.',
+    tags: ['세네카', '스토아 철학', '만만해 보이는 사람', '거절하는 법', '자존감 높이기', '인간관계 경계', '호구 탈출', '부탁 거절', '착한 사람 콤플렉스', '관계 스트레스'],
+    hashtags: ['세네카', '스토아철학', '인간관계', '자존감'],
+    pinnedComment: '부탁을 받으면 바로 대답하시는 편인가요, 아니면 잠시 멈추시나요? 만만하게 보였다고 느낀 순간이 있다면 댓글로 나눠 주세요.'
+  },
   sections: [
     { id: 's1', sentences: [
       S('사람에게 만만하게 보이는 순간, 관계는 조용히 달라지기 시작합니다.', ['사람에게', '만만하게 보이는 순간', '관계는 달라진다'], '만만하게 보이는 순간', 'red'),
@@ -97,6 +103,9 @@ test('script contract: sentences, 1-3 line cards with an accent inside, length s
   assert.deepEqual(validateLongformScript(SAMPLE, brief), [])
   assert.throws(() => normalizeLongformBrief({ kind: 'topic', text: '주제', targetSeconds: 1500 }))
   assert.equal(normalizeLongformBrief({ kind: 'topic', text: '나이 들수록 멀리해야 할 사람' }).targetSeconds, 1500)
+  const generic = { ...JSON.parse(JSON.stringify(SAMPLE)), metadata: { description: SAMPLE.sections[0].sentences.map((x) => x.say).join(' '), tags: ['만만하게', '보이지', '사람들의', '지혜', '인생', '철학'], hashtags: ['지혜', '인생', '철학'], pinnedComment: '오늘 이야기에서 가장 마음에 남은 문장은 무엇인가요? 여러분의 생각도 댓글로 남겨주세요.' } }
+  const ge = validateLongformScript(generic, brief)
+  for (const k of ['upload.description.copies_script', 'upload.hashtags.fixed_set', 'upload.pinnedComment.generic']) assert.ok(ge.includes(k), `${k}: ${ge}`)
   const bad = JSON.parse(JSON.stringify(SAMPLE)); bad.sections[0].sentences[0].accent = '없는 말'
   assert.ok(validateLongformScript(bad, brief).some((e) => /accent/.test(e)))
   // TTS chunks keep every sentence once, in order
@@ -137,6 +146,9 @@ test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 M
 
   const pk = (await call('GET', { query: { taskType: 'job_package', id: jobId } })).json
   for (const k of ['title', 'description', 'tags', 'hashtags', 'pinnedComment']) assert.ok(pk.upload[k] && String(pk.upload[k]).length, k)
+  assert.deepEqual(uploadMetadataErrors({ ...pk.upload, description: pk.upload.description.split('\n\n#')[0] }, { narration: sentencesOf(SAMPLE).map((x) => x.say).join(' '), format: 'longform' }), [])
+  console.log('EXAMPLE_B ' + JSON.stringify(pk.upload))
+  if (process.env.LONGFORM_SAMPLE_OUT) { mkdirSync(process.env.LONGFORM_SAMPLE_OUT, { recursive: true }); writeFileSync(join(process.env.LONGFORM_SAMPLE_OUT, 'upload-example-B-longform.json'), JSON.stringify({ topic: '만만하게 보이지 않는 사람들의 태도', format: 'Wisdom Longform', upload: pk.upload, thumbnailLines: SAMPLE.thumbnail.lines }, null, 2)) }
   assert.match(pk.thumbnailUrl, /^memory:\/\/renders\/.+\.jpg$/); assert.match(pk.videoUrl, /^memory:\/\/renders\/.+\.mp4$/)
   const preview = (await call('GET', { query: { taskType: 'job_preview', id: jobId } })).json.previews
   assert.equal(preview.length, 1); assert.equal(preview[0].publishable, true)

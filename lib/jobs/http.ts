@@ -150,7 +150,7 @@ export function createJobsHttp(deps: JobsDeps) {
         }
         // Wisdom Shorts: server-made click thumbnail when PACKAGE produced one (older jobs have none)
         const shortsThumb = typeof packageJson?.thumbnailRef === 'string' && packageJson.thumbnailRef.startsWith('renders/') ? await deps.blobs.presign?.(packageJson.thumbnailRef) : null
-        return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, thumbnailUrl: shortsThumb?.url ?? null, script: script ? { title:script.title, hook:script.hook, ending:script.ending, beats:(script.beats||[]).map((b:any)=>({ narration:b.narration })) } : null })
+        return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, upload: packageJson?.metadata?.title ? packageJson.metadata : null, thumbnailUrl: shortsThumb?.url ?? null, script: script ? { title:script.title, hook:script.hook, ending:script.ending, beats:(script.beats||[]).map((b:any)=>({ narration:b.narration })) } : null })
       }
 
       if (taskType === 'job_get') {
