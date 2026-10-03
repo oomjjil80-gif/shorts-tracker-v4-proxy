@@ -5,6 +5,7 @@ import { evaluateGate, type CheckResult, type GateResult } from '../qc/gate.js'
 import type { SourceAnalysis } from './analyze.js'
 import type { SourceFraming } from './framing.js'
 import { COMMON_SHORTS_SCREEN_DNA as DNA } from './screenDnaContract.js'
+import { assFromPayload } from './ass.js'
 import { deadAirRuns, PLAN_LIMITS, storyMaxSeconds } from './plan.js'
 import { PRESENTATION_LIMITS, rhythmReport } from './presentation.js'
 import { OFFSTORY_REASONS, overlap, PACING_REASONS, STORY_LIMITS, type Range, type SemanticResult } from './story.js'
@@ -144,7 +145,8 @@ export function evaluateContentGate(i: ContentGateInput): GateResult {
   {
     const texts = textItems(i.payload)
     const headline = String(i.payload?.editorialPlan?.headline || '').trim()
-    const tooMany = texts.length > CONTENT_LIMITS.maxTextItems || (i.payload?.subtitleEvents || []).length > PLAN_LIMITS.maxEvents || (i.payload?.sourceEffectCaptions || []).length > PLAN_LIMITS.maxEffects
+    // only drawn text counts (effect captions / callouts have no Screen DNA zone and are never on screen)
+    const tooMany = texts.length > CONTENT_LIMITS.maxTextItems || (i.payload?.subtitleEvents || []).length > PLAN_LIMITS.maxEvents
     const tooLong = texts.filter((t) => [...t.text].length > (t.kind === 'headline' ? 24 : t.kind === 'effect' ? STORY_LIMITS.maxEffectChars : STORY_LIMITS.maxCaptionChars))
     if (!headline || !/[가-힣]/.test(headline)) checks.push(verdict('content.presentation_grounded', false, { reason: 'missing Korean top headline', headline }))
     else if (tooMany || tooLong.length) checks.push(verdict('content.presentation_grounded', false, { count: texts.length, tooLong }))
@@ -168,8 +170,11 @@ export function evaluateContentGate(i: ContentGateInput): GateResult {
     const subs = (i.payload?.subtitleEvents || []).filter((e: any) => String(e?.text || '').trim())
     const need = total >= PRESENTATION_LIMITS.explanationMinTotalSec
     checks.push(verdict('content.explanation_present', !need || subs.length >= 1, { totalSeconds: r2(total), timedExplanationCaptions: subs.length, requiredFrom: PRESENTATION_LIMITS.explanationMinTotalSec }))
+    // judged on what is actually drawn: the overlay builder must emit the headline over the whole edit (top band)
     const hl = String(i.payload?.editorialPlan?.headline || '').trim()
-    checks.push(verdict('content.headline_present', !!hl && /[가-힣]/.test(hl), { headline: hl }))
+    const drawn = assFromPayload({ ...i.payload, totalDuration: total }).events.find((e) => e.kind === 'headline') ?? null
+    const spans = !!drawn && drawn.start <= 0.05 && drawn.end >= total - 0.05
+    checks.push(verdict('content.headline_present', !!hl && /[가-힣]/.test(hl) && !!drawn && /[가-힣]/.test(drawn.text) && spans, { headline: hl, drawn: drawn ? { text: drawn.text, start: drawn.start, end: drawn.end } : null, total: r2(total) }))
   }
 
   // 10. length suits the story type.

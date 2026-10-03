@@ -66,6 +66,24 @@ export function wisdomHeadlineLayout(lines: string[]): { fs: number; em: number;
   return { fs: Math.round(em * HEAD_FONT.cell), em, x: CANVAS.w / 2, y: Math.round(WISDOM_HEAD_BAND.centerY - inkCenterBelowBoxCenter * em) }
 }
 
+// Lines libass needs for a caption at \fs`fs` in `widthPx` (word wrap with the real advances; \fs = 1.448em cell).
+// Measured: libass breaks a line once it reaches ~895-898px of a 908px margin box (constant across sizes), so the estimate
+// wraps 16px early and is never optimistic.
+export const CAPTION_MIN_PX = 30
+const LIBASS_WRAP_SLACK_PX = 16
+export function captionLines(text: string, boxPx: number, fs: number): number {
+  const em = fs / HEAD_FONT.cell, space = 0.227 * em, widthPx = boxPx - LIBASS_WRAP_SLACK_PX
+  return text.replace(/\\N/g, '\n').split('\n').reduce((n, para) => {
+    let lines = 1, x = 0
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      const w = headAdvanceEm(word) * em
+      if (x > 0 && x + space + w > widthPx) { lines++; x = w } else x += (x > 0 ? space : 0) + w
+      while (x > widthPx) { lines++; x -= widthPx } // a single word wider than the line breaks inside it
+    }
+    return n + lines
+  }, 0)
+}
+
 export type AssInput = {
   totalDuration: number
   wisdomLayout?: boolean
@@ -127,7 +145,10 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
     // hide subtitles underneath a callout that asks for it (split around the callout span)
     let pieces = [{ start: sub.start, end: sub.end }]
     for (const sp of suppress) pieces = pieces.flatMap((p) => (sp.end <= p.start || sp.start >= p.end ? [p] : [{ start: p.start, end: Math.max(p.start, sp.start) }, { start: Math.min(p.end, sp.end), end: p.end }].filter((q) => q.end - q.start > 0.05)))
-    const fs = fitFontSize(text, textWidth - 40, 60, wisdom ? 2 : 3, 42)
+    let fs = fitFontSize(text, textWidth - 40, 60, wisdom ? 2 : 3, 42)
+    // Screen DNA captions are at most 2 lines. fitFontSize estimates Hangul at 0.72em but this font advances 0.92em, so a
+    // long caption can still wrap to 3+ lines; only then shrink using the real advances (captions that fit are untouched).
+    if (wisdom) while (fs > CAPTION_MIN_PX && captionLines(text, textWidth, fs) > 2) fs -= 2
     for (const p of pieces) add(2, 'subtitle', wisdom ? 'WisdomSub' : 'Sub', p.start, p.end, text, `{\\fs${fs}}`)
   }
   const styled = (kind: 'effect' | 'callout', e: Record<string, any>, defX: number, defY: number, defPct: number, layer: number) => {

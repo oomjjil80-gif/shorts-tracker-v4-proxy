@@ -29,7 +29,7 @@ test.before(async () => { bright = await build('bright') })
 test('1. 360/1200/360 + bright visual: every Screen DNA check PASS (with and without receipts)', async () => {
   const { input, cuts } = qc(bright)
   const checks = await runScreenDnaQc(input, cuts)
-  assert.deepEqual(checks.map((c) => [c.id, c.status]), [['screen_dna.output_identity', 'PASS'], ['screen_dna.geometry_contract', 'PASS'], ['screen_dna.source_geometry', 'PASS'], ['screen_dna.render_preserves_source', 'PASS'], ['screen_dna.text_bands', 'PASS'], ['wisdom.screen_dna_layout', 'PASS']])
+  assert.deepEqual(checks.map((c) => [c.id, c.status]), [['screen_dna.output_identity', 'PASS'], ['screen_dna.geometry_contract', 'PASS'], ['screen_dna.source_geometry', 'PASS'], ['screen_dna.render_preserves_source', 'PASS'], ['screen_dna.text_bands', 'PASS'], ['screen_dna.text_lines', 'PASS'], ['wisdom.screen_dna_layout', 'PASS']])
   assert.equal(evaluateGate(checks).decision, 'PASS')
   // legacy run (no receipts): contract comes from the ASSET code path and is proven by re-execution
   const legacy = fx.qcInput({ src: bright.src, out: bright.out, manifest: bright.manifest })
@@ -204,7 +204,7 @@ test('AUTO_QC (wisdom) runs the Screen DNA contract checks end-to-end and no lon
   const out: any = await ex.run({ job: { id: 'job_fx', profile: 'wisdom', planRev: 1, sourceAssetId: 'src_gen_fx' } as any, attempt: 1, blobs, previous: async (s: string) => runs[s] ?? null, signal: new AbortController().signal,
     resolveSourceAsset: async () => ({ sourceAssetId: 'src_gen_fx', blobPath: 'x', sha256: b.src.sha256 }), resolveSourceFile: async () => ({ path: b.src.path, cleanup: async () => {} }) } as any)
   const checks = out.result.variants[0].gate.checks
-  for (const id of ['screen_dna.output_identity', 'screen_dna.geometry_contract', 'screen_dna.source_geometry', 'screen_dna.render_preserves_source', 'screen_dna.text_bands', 'wisdom.screen_dna_layout']) assert.equal(status(checks, id), 'PASS', `${id}: ${JSON.stringify(checks.find((c: any) => c.id === id))}`)
+  for (const id of ['screen_dna.output_identity', 'screen_dna.geometry_contract', 'screen_dna.source_geometry', 'screen_dna.render_preserves_source', 'screen_dna.text_bands', 'screen_dna.text_lines', 'wisdom.screen_dna_layout']) assert.equal(status(checks, id), 'PASS', `${id}: ${JSON.stringify(checks.find((c: any) => c.id === id))}`)
   assert.ok(!JSON.stringify(checks.find((c: any) => c.id === 'wisdom.screen_dna_layout')).includes('luma'))
   assert.equal(ex.estimateUsd({} as any), 0)
 })
@@ -237,7 +237,7 @@ test('B. General source-first 1080x1920 360/1200/360: every Screen DNA check PAS
   gen = await general()
   assert.deepEqual([gen.out.info.width, gen.out.info.height], [1080, 1920])
   const checks = await runScreenDnaQc(gen.input, gen.cuts)
-  assert.deepEqual(checks.map((c) => [c.id, c.status]), [['screen_dna.output_identity', 'PASS'], ['screen_dna.geometry_contract', 'PASS'], ['screen_dna.source_geometry', 'PASS'], ['screen_dna.render_preserves_source', 'PASS'], ['screen_dna.text_bands', 'PASS'], ['wisdom.screen_dna_layout', 'PASS']], JSON.stringify(checks.filter((c) => c.status !== 'PASS')))
+  assert.deepEqual(checks.map((c) => [c.id, c.status]), [['screen_dna.output_identity', 'PASS'], ['screen_dna.geometry_contract', 'PASS'], ['screen_dna.source_geometry', 'PASS'], ['screen_dna.render_preserves_source', 'PASS'], ['screen_dna.text_bands', 'PASS'], ['screen_dna.text_lines', 'PASS'], ['wisdom.screen_dna_layout', 'PASS']], JSON.stringify(checks.filter((c) => c.status !== 'PASS')))
   assert.equal(evaluateGate(checks).decision, 'PASS')
   // the headline is the same exactly-2-line white/yellow renderer as Wisdom, inside the top band
   const head = gen.input.overlays.ass.split('\n').find((l: string) => l.includes(',WisdomHead,'))

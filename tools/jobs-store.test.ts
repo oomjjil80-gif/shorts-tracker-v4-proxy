@@ -368,3 +368,49 @@ test('RENDER recheck works for a General source_shorts job (no ASSET stage) and 
   const ok = (stage: string) => runs.filter((x) => x.stage === stage && x.status === 'SUCCEEDED').length
   assert.deepEqual([ok('ANALYZE'), ok('PLAN'), ok('COMPILE'), ok('RENDER')], [1, 1, 1, 1])
 })
+
+
+test('PLAN recheck: a legacy General job re-plans from a safe state (no paid media), clears approval; Wisdom is refused', async () => {
+  const { db, store, base } = await setup()
+  const { job } = await store.createJob({ ...base, idempotencyKey: 'plan-recheck' })
+  const step = async (stages: any[], extra: any = {}) => {
+    await store.claimJob({ workerId: 'w', stages })
+    const { attempt } = await store.startStageRun({ jobId: job.id, workerId: 'w' })
+    return store.completeStage({ jobId: job.id, workerId: 'w', attempt, ...extra })
+  }
+  await assert.rejects(() => store.recheckPlan({ jobId: job.id }), (e: any) => e.code === 'NOT_PLAN_RECHECKABLE')
+  for (const s of ['ANALYZE', 'PLAN', 'COMPILE', 'RENDER']) await step([s])
+  await step(['AUTO_QC'], { wait: 'QC_BLOCKED' })
+  await db.query(`UPDATE production_jobs SET approved_manifest_hash=$2 WHERE id=$1`, [job.id, HASH])
+  const r = await store.recheckPlan({ jobId: job.id })
+  assert.deepEqual([r.status, r.stage, r.approvedManifestHash], ['QUEUED', 'PLAN', null])
+  const runs = await store.listStageRuns(job.id)
+  assert.equal(runs.filter((x) => x.stage === 'ANALYZE' && x.status === 'SUCCEEDED').length, 1) // source analysis reused
+  // a generative job's PLAN owns its paid narration/images: never re-planned this way
+  const w = (await store.createJob({ ...base, profile: 'wisdom', sourceAssetId: 'src_gen_p', idempotencyKey: 'plan-recheck-w', planRef: 'briefs/b.json' })).job
+  await assert.rejects(() => store.recheckPlan({ jobId: w.id }), (e: any) => e.code === 'NOT_PLAN_RECHECKABLE')
+})
+
+test('Startup hooks: PLAN_RECHECK wins over stale RENDER/QC hooks naming the same General job', async () => {
+  const { runStartupRechecks } = await import('../worker/startupRechecks.js')
+  const { store, base } = await setup()
+  const { job } = await store.createJob({ ...base, idempotencyKey: 'plan-startup' })
+  const step = async (stages: any[], extra: any = {}) => {
+    await store.claimJob({ workerId: 'w', stages })
+    const { attempt } = await store.startStageRun({ jobId: job.id, workerId: 'w' })
+    return store.completeStage({ jobId: job.id, workerId: 'w', attempt, ...extra })
+  }
+  for (const s of ['ANALYZE', 'PLAN', 'COMPILE', 'RENDER', 'AUTO_QC']) await step([s])
+  await step(['DECISION'], { wait: 'DECISION' })
+  const lines: string[] = []
+  const off: string[] = []
+  assert.equal((await runStartupRechecks(store, { PLAN_RECHECK_JOB_ID: job.id }, (l) => off.push(l))).size, 0)
+  assert.match(off[0], /PLAN_RECHECK_JOB_ID skipped: SEMANTIC_PLANNER_OFF/)
+  assert.equal((await store.getJob(job.id, 'ws1'))?.stage, 'DECISION') // untouched
+  const queued = await runStartupRechecks(store, { WORKER_AI_PLANNER: 'on', OPENAI_API_KEY: 'k', RENDER_RECHECK_JOB_ID: job.id, QC_RECHECK_JOB_ID: job.id, PLAN_RECHECK_JOB_ID: job.id }, (l) => lines.push(l))
+  assert.deepEqual([...queued], [job.id])
+  assert.equal(lines[0], `PLAN_RECHECK_JOB_ID job=${job.id} -> queued PLAN`)
+  assert.ok(lines.includes(`RENDER_RECHECK_JOB_ID skipped: SUPERSEDED_BY_PLAN_RECHECK job=${job.id}`))
+  assert.ok(lines.includes(`QC_RECHECK_JOB_ID skipped: SUPERSEDED_BY_PLAN_RECHECK job=${job.id}`))
+  assert.equal((await store.getJob(job.id, 'ws1'))?.stage, 'PLAN')
+})
