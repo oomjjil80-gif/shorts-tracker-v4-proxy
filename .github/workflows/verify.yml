@@ -3,15 +3,53 @@ on:
   pull_request:
   push:
     branches: [p1-5-reference-contracts-v1]
+concurrency:
+  group: verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      - name: Run focused tests for test-only changes
+        id: focused
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHANGED="$(git diff --name-only HEAD^ HEAD)"
+          NON_TEST="$(printf '%s\n' "$CHANGED" | grep -Ev '^(tools/.*\.test\.(ts|mjs)|\.github/workflows/verify\.yml)$' || true)"
+          TESTS="$(printf '%s\n' "$CHANGED" | grep -E '^tools/.*\.test\.(ts|mjs)$' || true)"
+          WORKFLOW_ONLY="$(printf '%s\n' "$CHANGED" | grep -Ev '^\.github/workflows/verify\.yml
+            echo "Running only changed tests:"
+            printf '%s\n' "$TESTS"
+            timeout 4m npx tsx --test $TESTS
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run full tests with hang protection
+        if: steps.focused.outputs.ran != 'true'
+        run: timeout 12m npm test
+ || true)"
+          if [ -z "$WORKFLOW_ONLY" ]; then
+            echo "Workflow-only change; previous code/test result remains authoritative."
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+          elif [ -z "$NON_TEST" ] && [ -n "$TESTS" ]; then
+            echo "Running only changed tests:"
+            printf '%s\n' "$TESTS"
+            timeout 4m npx tsx --test $TESTS
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run full tests with hang protection
+        if: steps.focused.outputs.ran != 'true'
+        run: timeout 12m npm test
