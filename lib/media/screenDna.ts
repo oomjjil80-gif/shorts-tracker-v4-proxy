@@ -27,14 +27,15 @@ export function geometryFromSegmentFilter(vf: string): { canvas: { w: number; h:
   }
   const scale = /(?:^|,)scale=(\d+):(\d+):force_original_aspect_ratio=increase(?:,|$|:)/.exec(vf)
   const crop = /(?:^|,)crop=(\d+):(\d+)(?:,|$)/.exec(vf)
-  const zoom = /(?:^|,)zoompan=[^,]*?:s=(\d+)x(\d+)/.exec(vf)
+  const zoom = /(?:^|,)zoompan=.*?:s=(\d+)x(\d+)/.exec(vf) // the z expression may itself contain commas (min(…,max))
   const pad = /(?:^|,)pad=(\d+):(\d+):(\d+):(\d+):black(?:,|$)/.exec(vf)
   if (!crop || !pad) return null
   const [cw, ch] = [Number(crop[1]), Number(crop[2])]
   const [W, H, x, y] = [Number(pad[1]), Number(pad[2]), Number(pad[3]), Number(pad[4])]
   const zw = zoom ? Number(zoom[1]) : cw, zh = zoom ? Number(zoom[2]) : ch
   // "increase" scale + crop to the same size = the picture covers the whole window (no letterbox inside the visual)
-  const fillsCenter = !!scale && Number(scale[1]) === cw && Number(scale[2]) === ch && zw === cw && zh === ch
+  // (a zoompan after the cover crop always outputs a full s=WxH picture, whatever the oversampled crop size)
+  const fillsCenter = !!scale && Number(scale[1]) === cw && Number(scale[2]) === ch && (zoom ? true : zw === cw && zh === ch)
   return { canvas: { w: W, h: H }, center: { x, y, w: zw, h: zh }, top: { x: 0, y: 0, w: W, h: y }, bottom: { x: 0, y: y + zh, w: W, h: H - (y + zh) }, fillsCenter }
 }
 

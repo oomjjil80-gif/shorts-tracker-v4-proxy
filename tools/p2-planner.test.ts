@@ -35,8 +35,13 @@ test('wisdom PLAN emits contiguous narration captions and explicit BGM/SFX off p
  const ex=createGenerativePlanExecutor({apiKey:'test',plan:async()=>({script,visualBible:bible})})
  const out:any=await ex.run({job:{id:'j2',profile:'wisdom',planRef:'brief-caption.json',sourceAssetId:'src_gen_y'} as any,blobs,previous:async()=>null,signal:new AbortController().signal} as any)
  const plan:any=await blobs.getJson(out.planRef);const ev=plan.variantPlan.events
- assert.deepEqual(ev.map((x:any)=>[x.start,x.end]),[[0,10],[10,20],[20,30],[30,40]])
- assert.deepEqual(ev.map((x:any)=>x.text),beats.map(x=>x.narration))
+ // each narration is shown as short phrases that tile its beat exactly (no gap, no overlap), never one long sentence
+ for(const [i,b] of beats.entries()){
+  const mine=ev.filter((x:any)=>x.start>=i*10&&x.end<=(i+1)*10)
+  assert.ok(mine.length>=2,b.narration); assert.equal(mine.map((x:any)=>x.text).join(' '),b.narration)
+  assert.equal(mine[0].start,i*10); assert.equal(mine[mine.length-1].end,(i+1)*10)
+  for(let k=1;k<mine.length;k++)assert.equal(mine[k].start,mine[k-1].end)
+ }
  assert.equal(plan.variantPlan.audioPolicy.bgm,'off');assert.equal(plan.variantPlan.audioPolicy.sfx,'off')
 })
 

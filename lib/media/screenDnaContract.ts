@@ -17,10 +17,14 @@ export const SHORTS_SCREEN_DNA = COMMON_SHORTS_SCREEN_DNA
 export const SCREEN_DNA_TEXT_ZONES = Object.freeze({ headline: 'top', subtitle: 'bottom' } as const)
 export const bandOf = (dna: ScreenDna, kind: string): Rect | null => (kind === 'headline' ? dna.top : kind === 'subtitle' ? dna.bottom : null)
 
-// Producer A — ASSET builds a pre-composed source per beat image (Wisdom). Byte-identical to the v1 filter.
+// Producer A — ASSET builds a pre-composed source per beat image (Wisdom) with a slow Ken Burns zoom-in.
+// The image is fed with -loop 1, i.e. a NEW input frame every tick, and zoompan d=1 restarts `zoom` at 1 for every input
+// frame: `zoom+step` therefore never accumulates (the old filter produced a perfectly still picture). The zoom is driven by
+// the output frame counter `on` instead. The picture is cover-scaled at 2x first so the sub-pixel pan does not jitter.
+export const KEN_BURNS = { perFrame: 0.0007, max: 1.12, oversample: 2 }
 export function screenDnaSegmentFilter(dna: ScreenDna = COMMON_SHORTS_SCREEN_DNA, fps = 30): string {
-  const c = dna.center
-  return `scale=${c.w}:${c.h}:force_original_aspect_ratio=increase,crop=${c.w}:${c.h},zoompan=z='min(zoom+0.0015,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${c.w}x${c.h}:fps=${fps},pad=${dna.canvas.w}:${dna.canvas.h}:${c.x}:${c.y}:black,format=yuv420p`
+  const c = dna.center, k = KEN_BURNS.oversample
+  return `scale=${c.w * k}:${c.h * k}:force_original_aspect_ratio=increase,crop=${c.w * k}:${c.h * k},zoompan=z='min(1+${KEN_BURNS.perFrame}*on,${KEN_BURNS.max})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${c.w}x${c.h}:fps=${fps},pad=${dna.canvas.w}:${dna.canvas.h}:${c.x}:${c.y}:black,format=yuv420p`
 }
 export function screenDnaSegmentArgv(imagePath: string, audioPath: string, durationSec: number, outPath: string, vf = screenDnaSegmentFilter()): string[] {
   return ['-y', '-loop', '1', '-i', imagePath, '-i', audioPath, '-t', String(durationSec), '-vf', vf, '-af', 'apad', '-r', '30', '-c:v', 'libx264', '-preset', 'veryfast', '-threads', '4', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-movflags', '+faststart', outPath]
