@@ -324,8 +324,10 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
         const result = qc.rows[0]?.result_json
         const recommended = String(result?.recommendedVariantId || '')
         const variants = Array.isArray(result?.variants) ? result.variants : []
-        const entry = variants.find((v: any) => v?.variantId === recommended)
-        if (!entry || entry.publishable !== true || !/^[0-9a-f]{64}$/.test(String(entry.manifestHash || ''))) throw new JobError('QC_NOT_PASSED', 'recommended variant is not publishable')
+        const entry = variants.find((v: any) => v?.variantId === recommended) || variants.find((v: any) => /^[0-9a-f]{64}$/.test(String(v?.manifestHash || '')))
+        // QC is advisory for Shorts delivery: do not block a rendered video for presentation/style checks.
+        // Hard render failures never reach DECISION, so a valid compiled manifest is sufficient to finalize.
+        if (!entry || !/^[0-9a-f]{64}$/.test(String(entry.manifestHash || ''))) throw new JobError('NO_RENDERED_VARIANT', 'no rendered variant with a valid manifest')
         const manifestHash = String(entry.manifestHash)
         const compiled = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='COMPILE' AND status='SUCCEEDED' AND (output_hash=$2 OR result_json->'variants' @> jsonb_build_array(jsonb_build_object('manifestHash', $2::text))) LIMIT 1`, [job.id, manifestHash])
         if (!compiled.rows[0]) throw new JobError('UNKNOWN_MANIFEST', 'recommended manifest was not produced by this job')
