@@ -24,7 +24,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASE="${{ github.event.pull_request.base.sha }}"
+          BASE="HEAD^"
           if [ -z "$BASE" ]; then BASE="HEAD^"; fi
           CHANGED="$(git diff --name-only "$BASE"...HEAD || git diff --name-only HEAD^ HEAD)"
           NON_TEST="$(printf '%s\n' "$CHANGED" | grep -Ev '^(tools/.*\.test\.(ts|mjs)|\.github/workflows/verify\.yml)$' || true)"
