@@ -6,7 +6,7 @@ import { EXCLUDE_REASONS, OFFSTORY_REASONS, PACING_REASONS, STORY_LIMITS, STORY_
 import { planPresentation, PRESENTATION_LIMITS } from './presentation.js'
 import { storyBeats, totalSeconds } from './plan.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/12'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/13'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
 const captionBody = {
@@ -32,7 +32,7 @@ export const STORY_JSON_SCHEMA = {
     // Structurally required: the provider cannot satisfy the schema without a Korean opening hook object.
     openingHook: captionBody,
     minimalCaptions: {
-      type: 'array', minItems: 1, maxItems: 5,
+      type: 'array', minItems: 1, maxItems: 9,
       items: { type: 'object', additionalProperties: false, required: ['kind', 'start', 'end', 'text', 'basis'], properties: { kind: { type: 'string', enum: ['context', 'payoff', 'effect'] }, start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, basis: { type: 'string' } } }
     },
     publishabilityWarnings: { type: 'array', items: { type: 'string' } }
@@ -50,6 +50,7 @@ export function storyPrompt(a: SourceAnalysis): string {
     'Describe the story structure and a small set of GROUNDED on-screen Korean presentation cues. ALL times are SOURCE seconds within the video duration. Every range MUST have end > start by at least 0.5 seconds: a single moment (the payoff, a caption) is a short WINDOW, never start == end.',
     'PRIMARY STORY RULE: choose the strongest self-contained viewer story, not the uploader\'s full source-file purpose. Human/animal action, reaction, relationship, humor, surprise or emotion normally outranks a later product explanation/demo when that human/animal arc already has its own payoff.',
     'MANDATORY OPENING AUDIT: inspect the 0s tile and the first ~2 seconds before choosing causalStart. A Korean upload-ready Short must NOT begin on PROMINENT burned-in Chinese/English/Japanese/other foreign-language title cards, large captions, product labels, or other viewer-facing source text. Mark the actual span of that prominent opening text as foreign_text and/or intro_confusion, and place causalStart AFTER it disappears. Even a brief large foreign-language title flash at the first frame is not acceptable as the opening.',
+    'WHOLE-VIDEO FOREIGN-TEXT AUDIT: scan EVERY tile of the keyframe sheet, not only the opening. Burned-in Chinese (or other non-Korean) captions, title cards or labels often reappear in the middle or at the end. Report EACH such span as its own excludeRanges entry with reason foreign_text and its real start/end. A span inside the selected story that the story cannot lose must still be reported (it is then covered or masked at render, never silently kept).',
     'FOREIGN-TEXT SCOPE: foreign_text means prominent viewer-facing text that competes with the Korean edit. Do NOT classify a tiny persistent CCTV timestamp/date, camera ID, channel watermark, corner logo, or other small technical metadata as foreign_text that removes footage. If such tiny metadata persists, mention it only in publishabilityWarnings.',
     'MANDATORY TAIL AUDIT: inspect the final ~35% of the keyframe sheet separately. If people/animals finish their action or leave and the source switches to a product/robot/device operating, cleaning, demonstrating features, returning to dock, showing branding/titles, or otherwise explaining the product, mark that complete tail product_demo and/or post_payoff through the file end.',
     'Do NOT treat a late product/device activation or feature demonstration as the payoff merely because it explains the joke. If a human/animal payoff and product resolution are both plausible, prefer the human/animal payoff. If uncertain, use storyType="unclear" or lower confidence.',
@@ -60,10 +61,11 @@ export function storyPrompt(a: SourceAnalysis): string {
     '  REPEAT RULE: a second person/animal copying, reacting, following, interrupting or joining is NOT repeat when that new participant changes the humor/meaning; keep it as escalation/payoff.',
     '- hookStrategy: chronological by default. preview ONLY if a <=3s escalation/payoff preview is independently understandable and returning to the start will not confuse.',
     `- openingHook is REQUIRED and structurally separate from the other captions. It must start at/just after causalStart, within the first ~1 second of the clean edit, contain short Korean text (<=${STORY_LIMITS.maxCaptionChars} chars) of AT LEAST TWO words separated by a space (it is shown as an exactly two-line headline), and be grounded in what is visibly happening. It becomes the persistent top headline. Never leave it blank.`,
-    `- minimalCaptions contains 1–5 ADDITIONAL grounded cues only; do NOT put another hook in this array. At most ${PRESENTATION_LIMITS.totalMessages} screen messages are ever shown (hook 1, payoff ${PRESENTATION_LIMITS.payoffs}, context ${PRESENTATION_LIMITS.contexts}); the hook always has priority. Cues must lie INSIDE the selected story (after causalStart, before recommendedEnd) and NEVER on excluded footage. Any stretch of the final edit longer than ${PRESENTATION_LIMITS.maxDynamicGapSec}s without a new timed cue is rejected.`,
+    `- minimalCaptions contains 1–9 ADDITIONAL grounded cues only (at most 5 context/payoff captions plus the per-hit effect cues); do NOT put another hook in this array. At most ${PRESENTATION_LIMITS.totalMessages} screen messages are ever shown (hook 1, payoff ${PRESENTATION_LIMITS.payoffs}, context ${PRESENTATION_LIMITS.contexts}); the hook always has priority. Cues must lie INSIDE the selected story (after causalStart, before recommendedEnd) and NEVER on excluded footage. Any stretch of the final edit longer than ${PRESENTATION_LIMITS.maxDynamicGapSec}s without a new timed cue is rejected.`,
     `  * Add 1–${PRESENTATION_LIMITS.contexts} kind="context" cues (<=${STORY_LIMITS.maxCaptionChars} chars), spaced across meaningful story changes. They are short explanatory captions, not transcript subtitles.`,
+    '  * CAPTION WRITING RULE (context/payoff): NEVER restate what the viewer can already see (bad: "여자가 남자를 때린다", "아이가 기어간다"). Each caption must ADD something the picture alone does not give: context (who/why), curiosity (what happens next), the relationship between the people, the meaning of the moment, or the payoff\'s punch. If a caption adds none of these, leave it out. Write short spoken Korean (one breath, 1–2 short lines), like a friend commenting, not a narrator describing.',
     `  * Add optional kind="payoff" over the actual payoff (<=${STORY_LIMITS.maxCaptionChars} chars) when it sharpens the punchline.`,
-    '  * Do NOT add kind="effect" cues: the Shorts layout shows only the top headline and bottom captions, so pop/effect words are never displayed and do not count toward pacing.',
+    `  * kind="effect" = a short sound-word (<=${STORY_LIMITS.maxEffectChars} chars, e.g. "퍽!", "쾅!", "철썩!") drawn large in the middle of the video. Add ONE effect cue PER visible impact/hit at its exact moment (start = the contact frame, end ~0.4–0.6s later): three separate hits = three separate "퍽!" cues with three different start times. Never merge repeated hits into one cue and never add an effect where nothing physically hits. At most ${PRESENTATION_LIMITS.effects} effects; they do not use the caption budget.`,
     '  * Every cue needs a visual basis explaining what on screen justifies the words. Avoid long sentences.',
     '  * Aim for a new timed context/payoff caption roughly every 3–5 seconds of active story so the mobile screen does not feel unattended, while allowing a purposeful quiet beat.',
     '- publishabilityWarnings: remaining issues such as tiny persistent timestamps/watermarks. Put tiny metadata here instead of excluding the story.',
@@ -189,7 +191,7 @@ function assessStory(providerRaw: any, a: SourceAnalysis, model: string): Assess
     if (!report.explanationPresent) errors.push(`the ${total}s edit needs at least one context/payoff caption, not only the hook/effects`)
     if (!report.rhythm.ok) {
       const g = report.rhythm.worstGap
-      errors.push(`the ${total}s edit leaves ${report.rhythm.maxGapSeconds}s${g ? ` (edit time ${g.from}-${g.to}s)` : ''} with no new timed caption (allowed ${PRESENTATION_LIMITS.maxDynamicGapSec}s, min ${report.rhythm.minDynamic} timed caption(s)); add grounded context captions at story changes inside the selected story, not on excluded footage (effect cues are not displayed and do not count)`)
+      errors.push(`the ${total}s edit leaves ${report.rhythm.maxGapSeconds}s${g ? ` (edit time ${g.from}-${g.to}s)` : ''} with no new timed caption (allowed ${PRESENTATION_LIMITS.maxDynamicGapSec}s, min ${report.rhythm.minDynamic} timed caption(s)); add grounded context captions at story changes inside the selected story, not on excluded footage`)
     }
   }
   return { story: errors.length ? null : v.story, errors, warnings: v.warnings }

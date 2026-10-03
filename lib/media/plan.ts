@@ -132,7 +132,8 @@ export function sourceToOutput(beats: Beat[], t: number): number | null {
 }
 
 // Effect placement is decided at render time (it needs the real framing); PLAN only says WHERE in time.
-const EFFECT_SLOTS = [{ xPct: 38, yPct: 46 }, { xPct: 62, yPct: 40 }]
+// Consecutive impacts alternate left/right inside the visual window so repeated hits read as separate beats.
+const EFFECT_SLOTS = [{ xPct: 40, yPct: 42 }, { xPct: 60, yPct: 36 }, { xPct: 50, yPct: 48 }]
 
 // Turns grounded semantic cues into the presentation layer of ONE edit:
 // hook => persistent top headline; context/payoff => timed explanation captions; effect => short pop text.
@@ -142,8 +143,11 @@ export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<Varia
   const { placed, report } = planPresentation(beats, story.minimalCaptions, { pinHook: (beats as any)[0]?.label === 'preview' })
   const hook = placed.find((c) => c.kind === 'hook')
   const events = placed.filter((c) => c.kind === 'context' || c.kind === 'payoff').map((c) => ({ start: c.srcStart, end: c.srcEnd, text: c.text }))
-  const effectCaptions = placed.filter((c) => c.kind === 'effect').map((c, idx) => ({
-    start: c.srcStart, end: c.srcEnd, text: c.text, ...EFFECT_SLOTS[idx % EFFECT_SLOTS.length], fontSizePct: 8.8, animation: 'pop'
+  const fx = placed.filter((c) => c.kind === 'effect').sort((a, b) => a.srcStart - b.srcStart)
+  // one pop per impact: each ends before the next one starts, so 퍽! 퍽! 퍽! never stack on the same frame
+  const effectCaptions = fx.map((c, idx) => ({
+    start: c.srcStart, end: idx + 1 < fx.length && fx[idx + 1].srcStart > c.srcStart ? Math.min(c.srcEnd, fx[idx + 1].srcStart) : c.srcEnd,
+    text: c.text, ...EFFECT_SLOTS[idx % EFFECT_SLOTS.length], fontSizePct: 13, animation: 'pop'
   }))
   return {
     ...(hook ? { headline: hook.text } : {}),

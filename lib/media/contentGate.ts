@@ -49,13 +49,13 @@ function textItems(payload: any): Array<{ kind: string; text: string }> {
   const out: Array<{ kind: string; text: string }> = []
   if (payload?.editorialPlan?.headline) out.push({ kind: 'headline', text: String(payload.editorialPlan.headline) })
   for (const e of payload?.subtitleEvents || []) if (e?.text) out.push({ kind: 'subtitle', text: String(e.text) })
-  // Common Shorts Screen DNA draws only the headline (top band) and captions (bottom band); effect captions and callouts
-  // have no zone and are not on screen, so they are not presentation text.
+  // Message budget: headline + captions. Effect captions (퍽!) are drawn in the visual window but are pop words with their
+  // own budget, so they are not counted as messages here.
   return out
 }
 
 function dynamicCueStarts(payload: any, total: number): number[] {
-  const rows = [...(payload?.subtitleEvents || [])] // only drawn, timed text (captions) can change the screen
+  const rows = [...(payload?.subtitleEvents || []), ...(payload?.sourceEffectCaptions || [])] // drawn, timed text: captions and effect pops
   return rows.map((e: any) => Number(e?.start)).filter((x: number) => Number.isFinite(x) && x >= 0 && x <= total).sort((a: number, b: number) => a - b)
 }
 
@@ -145,7 +145,7 @@ export function evaluateContentGate(i: ContentGateInput): GateResult {
   {
     const texts = textItems(i.payload)
     const headline = String(i.payload?.editorialPlan?.headline || '').trim()
-    // only drawn text counts (effect captions / callouts have no Screen DNA zone and are never on screen)
+    // message count: headline + captions (effect pops have their own budget)
     const tooMany = texts.length > CONTENT_LIMITS.maxTextItems || (i.payload?.subtitleEvents || []).length > PLAN_LIMITS.maxEvents
     const tooLong = texts.filter((t) => [...t.text].length > (t.kind === 'headline' ? 24 : t.kind === 'effect' ? STORY_LIMITS.maxEffectChars : STORY_LIMITS.maxCaptionChars))
     if (!headline || !/[가-힣]/.test(headline)) checks.push(verdict('content.presentation_grounded', false, { reason: 'missing Korean top headline', headline }))

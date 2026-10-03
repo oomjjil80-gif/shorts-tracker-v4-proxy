@@ -61,7 +61,8 @@ test('2. hook stays the first-priority cue: selectCues never drops it, whatever 
   const { kept } = selectCues(crowded, 16)
   assert.ok(kept.some((c) => c.kind === 'hook'))
   assert.ok(kept.some((c) => c.kind === 'payoff'), 'payoff outranks context/effect')
-  assert.ok(kept.length <= PRESENTATION_LIMITS.totalMessages)
+  assert.ok(kept.filter((c) => c.kind !== 'effect').length <= PRESENTATION_LIMITS.totalMessages)
+  assert.ok(kept.filter((c) => c.kind === 'effect').length <= PRESENTATION_LIMITS.effects)
 })
 
 test('3. context / payoff / effect counts respect the limits', () => {
@@ -71,7 +72,7 @@ test('3. context / payoff / effect counts respect the limits', () => {
   assert.ok(kinds.filter((k) => k === 'context').length <= PRESENTATION_LIMITS.contexts)
   assert.ok(kinds.filter((k) => k === 'payoff').length <= PRESENTATION_LIMITS.payoffs)
   assert.ok(kinds.filter((k) => k === 'effect').length <= PRESENTATION_LIMITS.effects)
-  assert.ok(kinds.length <= PRESENTATION_LIMITS.totalMessages)
+  assert.ok(kinds.filter((k) => k !== 'effect').length <= PRESENTATION_LIMITS.totalMessages)
   assert.ok(v1.presentation!.dropped.length > 0, 'over-production is reported, not silent')
 })
 
@@ -135,8 +136,8 @@ test('9+10 + integration: PLAN → JobPlan → RenderManifest → renderer input
   const subs = payload.subtitleEvents.map((e: any) => e.text)
   assert.ok(subs.includes('결국 같이 걷는다'), `payoff lost: ${subs}`)
   assert.ok(subs.length >= 2)
-  // Common Shorts Screen DNA: effect cues get no budget (no zone), so the plan carries none
-  assert.equal(PRESENTATION_LIMITS.effects, 0); assert.equal((payload.sourceEffectCaptions || []).length, 0)
+  // effect cues: PLAN -> manifest as source effect captions (drawn inside the visual window)
+  assert.ok((payload.sourceEffectCaptions || []).length >= 1 && (payload.sourceEffectCaptions || []).length <= PRESENTATION_LIMITS.effects)
   // every timed cue lands inside the output duration and after the clean opening
   const total = extractRenderPlan(payload).total
   for (const e of payload.subtitleEvents) assert.ok(e.start >= 0 && e.end <= total + 0.05 && e.end > e.start)
@@ -145,8 +146,8 @@ test('9+10 + integration: PLAN → JobPlan → RenderManifest → renderer input
   const head = events.find((e) => e.kind === 'headline')!
   assert.equal(head.text, '뭐 하는 거지?'); assert.equal(head.start, 0); assert.ok(head.end >= total - 0.05)
   for (const t of subs) assert.ok(events.some((e) => e.kind === 'subtitle' && e.text === t) && ass.includes(t))
-  // Common Shorts Screen DNA: nothing but the headline and captions is drawn (CENTER is visual only)
-  assert.ok(!events.some((e) => e.kind === 'effect' || e.kind === 'callout')); assert.ok(!ass.includes(',Fx,'))
+  // effects drawn inside the visual window; callouts never
+  assert.ok(events.some((e) => e.kind === 'effect' && e.zone && e.zone.y >= 360)); assert.ok(!events.some((e) => e.kind === 'callout'))
   // payoff caption timing matches the payoff scene in output time
   const payoffEv = payload.subtitleEvents.find((e: any) => e.text === '결국 같이 걷는다')
   const p = s.story!.payoffRange

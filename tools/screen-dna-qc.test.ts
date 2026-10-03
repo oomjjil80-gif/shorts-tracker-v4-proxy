@@ -215,12 +215,12 @@ import { buildFilterGraph } from '../lib/media/render.js'
 import { WISDOM_HEAD_BAND } from '../lib/media/ass.js'
 
 const dnaWith = (center: { y: number; h: number }) => ({ ...COMMON_SHORTS_SCREEN_DNA, top: { x: 0, y: 0, w: 1080, h: center.y }, center: { x: 0, y: center.y, w: 1080, h: center.h }, bottom: { x: 0, y: center.y + center.h, w: 1080, h: 1920 - center.y - center.h } })
-async function general(o: { kind?: 'bright' | 'dark'; dna?: any; tamperVf?: string } = {}) {
-  const d = fx.dir()
-  const src = await fx.generalSource(d, o.kind ?? 'bright')
-  const manifest = fx.generalManifest(src)
+async function general(o: { kind?: 'bright' | 'dark'; dna?: any; tamperVf?: string; size?: string } = {}) {
+  const d = fx.dir(), size = o.size ?? '1280x720'
+  const src = await fx.generalSource(d, o.kind ?? 'bright', size)
+  const manifest = fx.generalManifest(src, 2.4, size)
   const out = await fx.generalRender(d, src, manifest, { dna: o.dna, tamperVf: o.tamperVf })
-  const receipt = { schema: 'screen-dna-receipt/1', stage: 'RENDER', jobId: 'job_gen', attempt: 1, contract: COMMON_SHORTS_SCREEN_DNA, composer: 'render', manifestHash: manifest.manifestHash, sourceSha256: src.sha256, sourceWidth: 1280, sourceHeight: 720, filterGraphSha256: filterGraphSha256(out.filterGraph), videoFilters: renderVideoFilters(out.filterGraph), renderHash: out.sha256 }
+  const receipt = { schema: 'screen-dna-receipt/1', stage: 'RENDER', jobId: 'job_gen', attempt: 1, contract: COMMON_SHORTS_SCREEN_DNA, composer: 'render', manifestHash: manifest.manifestHash, sourceSha256: src.sha256, sourceWidth: Number(size.split('x')[0]), sourceHeight: Number(size.split('x')[1]), filterGraphSha256: filterGraphSha256(out.filterGraph), videoFilters: renderVideoFilters(out.filterGraph), renderHash: out.sha256 }
   const total = extractRenderPlan(manifest.payload).total
   const input: any = {
     job: { id: 'job_gen' }, composer: 'render', sourceFile: src.path, sourceSha256: src.sha256,
@@ -246,7 +246,8 @@ test('B. General source-first 1080x1920 360/1200/360: every Screen DNA check PAS
 
 for (const [label, center] of [['C. General top=359', { y: 359, h: 1200 }], ['C. General top=361', { y: 361, h: 1200 }], ['D. General center=1198', { y: 360, h: 1198 }], ['D. General center=1202', { y: 360, h: 1202 }]] as const) {
   test(`${label}: FAIL`, async () => {
-    const g = await general({ dna: dnaWith(center) })
+    // portrait source: the fitted picture touches the window's top/bottom rows, so a 1-2px window change shows in pixels
+    const g = await general({ dna: dnaWith(center), size: '720x1280' })
     const checks = await runScreenDnaQc(g.input, g.cuts)
     assert.equal(status(checks, 'screen_dna.geometry_contract'), 'FAIL') // the executed RENDER filter is not the contract
     assert.equal(status(checks, 'wisdom.screen_dna_layout'), 'FAIL')
@@ -281,7 +282,7 @@ test('G. General dark visual: PASS (geometry never depends on brightness)', asyn
 test('H. General: receipt/manifest say contract but the actual output geometry is wrong: FAIL', async () => {
   // shift the picture down 2px inside the window and let it leak into the caption band, after the contract render
   for (const tamperVf of ['split[a][b];[a]null[base];[b]crop=1080:1200:0:360[c];[base][c]overlay=0:362', 'split[a][b];[a]null[base];[b]crop=1080:1200:0:360,scale=1080:1204[c];[base][c]overlay=0:358']) {
-    const g = await general({ tamperVf })
+    const g = await general({ tamperVf, size: '720x1280' })
     const checks = await runScreenDnaQc(g.input, g.cuts)
     assert.equal(status(checks, 'screen_dna.geometry_contract'), 'PASS') // the declaration alone looks perfect
     assert.equal(status(checks, 'wisdom.screen_dna_layout'), 'FAIL', JSON.stringify(checks.map((c) => [c.id, c.status])))

@@ -87,9 +87,10 @@ export async function generalSource(d: string, kind: 'bright' | 'dark' = 'bright
   await runOk(['-y', '-f', 'lavfi', '-i', `testsrc2=s=${size}:r=30:d=${sec}`, '-f', 'lavfi', '-i', `sine=f=440:d=${sec}`, '-vf', `format=yuv420p${vf}`, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', p], { timeoutMs: 120_000 })
   return { path: p, sha256: sha(readFileSync(p)) }
 }
-export function generalManifest(src: { sha256: string }, sec = 2.4) {
+export function generalManifest(src: { sha256: string }, sec = 2.4, size = '1280x720') {
+  const [width, height] = size.split('x').map(Number)
   const plan: any = { schema: 'job-plan/1', profile: 'source_shorts', sourceAssetId: 'src_raw_fx', variantPlan: { profile: 'v1', beats: [{ label: 'a', trimStart: 0, trimEnd: sec }], headline: '왜 이렇게 될까\\N끝까지 보면 안다', events: [{ start: 0, end: 1.2, text: '처음 장면입니다' }, { start: 1.2, end: sec, text: '결국 이렇게 됩니다' }], plansTimeDomain: 'source' } }
-  const c = compileJobPlan({ jobId: 'job_gen', plan, sourceAsset: { sourceAssetId: 'src_raw_fx', blobPath: `source-collector/${src.sha256}.mp4`, sha256: src.sha256, duration: sec, width: 1280, height: 720 } as any })
+  const c = compileJobPlan({ jobId: 'job_gen', plan, sourceAsset: { sourceAssetId: 'src_raw_fx', blobPath: `source-collector/${src.sha256}.mp4`, sha256: src.sha256, duration: sec, width, height } as any })
   return { ...c.manifest, identity: c.identity }
 }
 // RENDER exactly (renderPayload, optionally executing a non-contract geometry), optional post-render tamper of the pixels

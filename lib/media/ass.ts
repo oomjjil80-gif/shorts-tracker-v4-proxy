@@ -2,7 +2,7 @@
 // libass does the Hangul shaping and line wrapping inside safe margins; the layout is measured again by QC.
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { COMMON_SHORTS_SCREEN_DNA } from './screenDnaContract.js'
+import { COMMON_SHORTS_SCREEN_DNA, CAPTION_WINDOW_ZONE, EFFECT_WINDOW_ZONE, type Rect } from './screenDnaContract.js'
 
 export const FONT_FAMILY = 'Noto Sans KR'
 export const FONTS_DIR = process.env.TRACKER_FONTS_DIR || join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'fonts')
@@ -11,7 +11,8 @@ export const CANVAS = { w: 1080, h: 1920 }
 export const SAFE = { left: 0.04, right: 0.04, top: 0.05, bottom: 0.86 }
 
 export type OverlayKind = 'headline' | 'subtitle' | 'effect' | 'callout'
-export type OverlayEvent = { kind: OverlayKind; text: string; start: number; end: number }
+// zone: the rectangle this event is laid out in when it is not its kind's band (captions / effects inside the visual window)
+export type OverlayEvent = { kind: OverlayKind; text: string; start: number; end: number; zone?: Rect }
 
 const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n))
 const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d)
@@ -84,11 +85,17 @@ export function captionLines(text: string, boxPx: number, fs: number): number {
   }, 0)
 }
 
+// Captions over the visual window: as large as fits in at most 2 lines across the safe width.
+export const WINDOW_CAPTION = { basePx: 78, minPx: 44, bottomGapPx: 40 }
+// Effect captions are punch words (퍽!): never smaller than this share of the canvas width.
+export const EFFECT_MIN_PCT = 12.5
+
 export type AssInput = {
   totalDuration: number
   wisdomLayout?: boolean
-  // Common Shorts Screen DNA text layout: 2-line headline in the top band, max-2-line captions in the bottom band, and
-  // nothing else (the visual window carries no text, so effect captions / callouts are not drawn).
+  // Common Shorts Screen DNA text layout: 2-line headline in the top band. Wisdom (pre-composed source) keeps its max-2-line
+  // captions in the bottom band; every other Short draws its captions over the lower part of the visual window and its
+  // effect captions (퍽!) large inside the window above them. Callouts are not drawn.
   screenDna?: boolean
   headline?: string
   subtitles?: Array<{ start: number; end: number; text: string }>
@@ -100,15 +107,17 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
   const { w, h } = CANVAS
   const total = input.totalDuration
   const wisdom = input.wisdomLayout === true || input.screenDna === true
+  const inWindow = input.screenDna === true && input.wisdomLayout !== true
+  const capZone = CAPTION_WINDOW_ZONE(), fxZone = EFFECT_WINDOW_ZONE()
   const marginX = Math.round(w * 0.08)
   const textWidth = w - marginX * 2
   const events: OverlayEvent[] = []
   const lines: string[] = []
-  const add = (layer: number, kind: OverlayKind, style: string, start: number, end: number, text: string, override = '', renderText = text) => {
+  const add = (layer: number, kind: OverlayKind, style: string, start: number, end: number, text: string, override = '', renderText = text, zone?: Rect) => {
     if (!text || !(end > start)) return
     const s = clamp(start, 0, total), e = clamp(end, 0, total)
     if (!(e > s)) return
-    events.push({ kind, text: text.replace(/\\N/g, ' '), start: s, end: e })
+    events.push({ kind, text: text.replace(/\\N/g, ' '), start: s, end: e, ...(zone ? { zone } : {}) })
     lines.push(`Dialogue: ${layer},${assTime(s)},${assTime(e)},${style},,0,0,0,,${override}${renderText}`)
   }
 
@@ -145,6 +154,14 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
     // hide subtitles underneath a callout that asks for it (split around the callout span)
     let pieces = [{ start: sub.start, end: sub.end }]
     for (const sp of suppress) pieces = pieces.flatMap((p) => (sp.end <= p.start || sp.start >= p.end ? [p] : [{ start: p.start, end: Math.max(p.start, sp.start) }, { start: Math.min(p.end, sp.end), end: p.end }].filter((q) => q.end - q.start > 0.05)))
+    if (inWindow) {
+      // large outlined caption anchored to the bottom of the visual window (over the picture, never in the black band)
+      let fs = WINDOW_CAPTION.basePx
+      while (fs > WINDOW_CAPTION.minPx && captionLines(text, textWidth, fs) > 2) fs -= 2
+      const pos = `{\\an2\\pos(${capZone.x + capZone.w / 2},${capZone.y + capZone.h - WINDOW_CAPTION.bottomGapPx})\\fs${fs}}`
+      for (const p of pieces) add(2, 'subtitle', 'WindowSub', p.start, p.end, text, pos, text, capZone)
+      continue
+    }
     let fs = fitFontSize(text, textWidth - 40, 60, wisdom ? 2 : 3, 42)
     // Screen DNA captions are at most 2 lines. fitFontSize estimates Hangul at 0.72em but this font advances 0.92em, so a
     // long caption can still wrap to 3+ lines; only then shrink using the real advances (captions that fit are untouched).
@@ -154,14 +171,18 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
   const styled = (kind: 'effect' | 'callout', e: Record<string, any>, defX: number, defY: number, defPct: number, layer: number) => {
     const text = sanitizeText(e.text)
     if (!text) return
-    const x = Math.round((clamp(num(e.xPct, defX), 8, 92) / 100) * w), y = Math.round((clamp(num(e.yPct, defY), 8, 78) / 100) * h)
-    const fs = fitFontSize(text, Math.min(textWidth, 2 * Math.min(x, w - x) - 24), Math.round((num(e.fontSizePct, defPct) / 100) * w), 1, 36)
+    const x = Math.round((clamp(num(e.xPct, defX), 8, 92) / 100) * w)
+    const fs = fitFontSize(text, Math.min(textWidth, 2 * Math.min(x, w - x) - 24), Math.round((Math.max(num(e.fontSizePct, defPct), wisdom && kind === 'effect' ? EFFECT_MIN_PCT : 0) / 100) * w), 1, 36)
+    // Screen DNA: an effect lives inside the visual window above the caption zone (\an5 = centred on pos; keep half a cell clear)
+    const zone = wisdom && kind === 'effect' ? fxZone : undefined
+    const half = Math.ceil(fs / 2) + 12
+    const y = zone ? Math.round(clamp(e.yPct == null ? zone.y + zone.h / 2 : (num(e.yPct, defY) / 100) * h, zone.y + half, zone.y + zone.h - half)) : Math.round((clamp(num(e.yPct, defY), 8, 78) / 100) * h)
     const rot = num(e.rotateDeg, 0)
     const pop = e.animation === 'none' ? '' : `\\fscx72\\fscy72\\t(0,140,\\fscx100\\fscy100)`
     const tags = `{\\an5\\pos(${x},${y})\\frz${-rot}\\fs${fs}\\c${assColor(e.color)}\\3c${assColor(e.strokeColor, '#111111')}\\bord${Math.max(4, Math.round(fs * 0.09))}\\shad0${pop}}`
-    add(layer, kind, 'Fx', num(e.start, 0), num(e.end, 0), text, tags)
+    add(layer, kind, 'Fx', num(e.start, 0), num(e.end, 0), text, tags, text, zone)
   }
-  // General/source-first Shorts may use brief grounded action SFX over the visual (e.g. 퍽! 퍽! 퍽!).
+  // Brief grounded action SFX over the visual, one event per real impact (e.g. 퍽! 퍽! 퍽! at three hit frames).
   for (const e of input.effects || []) styled('effect', e, 50, 58, 8.2, 3)
   for (const c of callouts) styled('callout', c, 48, 34, 7.6, 4)
 
@@ -174,6 +195,8 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
     `Style: WisdomHead,${FONT_FAMILY},78,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,0,0,8,${marginX},${marginX},${Math.round(h * 0.055)},1`,
     `Style: WisdomSub,${FONT_FAMILY},56,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,0,0,2,${marginX},${marginX},${Math.round(h * 0.055)},1`,
     `Style: Sub,${FONT_FAMILY},60,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,1,0,0,0,100,100,0,0,3,10,0,2,${marginX},${marginX},${Math.round(h * 0.22)},1`,
+    // window caption: white bold with a thick black outline + soft shadow (readable over any picture, no box)
+    `Style: WindowSub,${FONT_FAMILY},${WINDOW_CAPTION.basePx},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,7,3,2,${marginX},${marginX},0,1`,
     `Style: Fx,${FONT_FAMILY},76,&H00FFFFFF,&H000000FF,&H00111111,&H00000000,1,0,0,0,100,100,0,0,1,6,0,5,${marginX},${marginX},0,1`,
     '', '[Events]', 'Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text', ...lines, ''
   ].join('\n')

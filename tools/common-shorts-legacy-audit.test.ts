@@ -50,7 +50,7 @@ test('Golden replay: the pre-presentation manifest (no headline, <=2 captions) f
 
 test('Golden replay: re-planning the same story under Common Shorts passes the full content gate (no criteria loosened)', () => {
   const { a, s, rec } = goldenReplay()
-  assert.equal(rec.headline, '왜 바닥을 기어갈까?'); assert.equal((rec.effectCaptions || []).length, 0)
+  assert.equal(rec.headline, '왜 바닥을 기어갈까?'); assert.ok((rec.effectCaptions || []).length <= PRESENTATION_LIMITS.effects)
   const secs = totalSeconds(rec.beats); assert.ok(secs >= 15 && secs <= 22, `${secs}s`)
   const g = evaluateContentGate({ payload: payloadFor(a, rec), analysis: a, semantic: s, framing: EMBED })
   assert.equal(g.decision, 'PASS', JSON.stringify(g.reasons))
@@ -58,22 +58,22 @@ test('Golden replay: re-planning the same story under Common Shorts passes the f
 })
 
 // ---------------- presentation budget: only drawn cues ----------------
-test('cue budget: effect slots moved to drawn captions (same 6-message total, same 5 timed messages)', () => {
-  assert.deepEqual([PRESENTATION_LIMITS.effects, PRESENTATION_LIMITS.contexts, PRESENTATION_LIMITS.payoffs, PRESENTATION_LIMITS.eventsMax, PRESENTATION_LIMITS.totalMessages], [0, 4, 1, 5, 6])
+test('cue budget: captions keep the 6-message total; effect pops have their own budget on top', () => {
+  assert.deepEqual([PRESENTATION_LIMITS.effects, PRESENTATION_LIMITS.contexts, PRESENTATION_LIMITS.payoffs, PRESENTATION_LIMITS.eventsMax, PRESENTATION_LIMITS.totalMessages], [4, 4, 1, 5, 6])
   const cue = (kind: any, t: number): PlacedCue => ({ kind, start: t, end: t + 1, text: `${kind}${t}`, basis: 'b', outStart: t, srcStart: t, srcEnd: t + 1 })
   const { kept, dropped } = selectCues([cue('hook', 0), cue('context', 4), cue('context', 9), cue('context', 14), cue('context', 19), cue('payoff', 24), cue('effect', 7)], 28)
-  assert.deepEqual(kept.map((c) => c.kind), ['hook', 'context', 'context', 'context', 'context', 'payoff'])
-  assert.ok(dropped.some((d) => d.cue.kind === 'effect' && /no zone/.test(d.reason)))
+  assert.deepEqual(kept.map((c) => c.kind), ['hook', 'context', 'effect', 'context', 'context', 'context', 'payoff'])
+  assert.equal(dropped.length, 0)
 })
 
-test('content gate: rhythm and text count use drawn captions only; legacy effect/callout data never counts', () => {
+test('content gate: text count uses headline + captions; drawn effect pops count for rhythm; callouts never count', () => {
   const { a, s, rec } = goldenReplay()
   const p: any = payloadFor(a, rec)
   const withLegacy = { ...p, sourceEffectCaptions: [{ start: 1, end: 2, text: '슥' }, { start: 3, end: 4, text: '휙' }, { start: 5, end: 6, text: '쾅' }], sourceCallouts: [{ start: 1, end: 2, text: '멈춰!!' }] }
   const g = evaluateContentGate({ payload: withLegacy, analysis: a, semantic: s, framing: EMBED })
   assert.equal(status(g, 'content.presentation_grounded'), 'PASS'); assert.equal(status(g, 'content.presentation_rhythm'), 'PASS')
-  // rhythm is NOT rescued by undrawn effects
-  const sparse = { ...p, subtitleEvents: p.subtitleEvents.slice(-1), sourceEffectCaptions: [{ start: 2, end: 3, text: '슥' }, { start: 6, end: 7, text: '휙' }, { start: 10, end: 11, text: '쾅' }] }
+  // rhythm is NOT rescued by undrawn callouts
+  const sparse = { ...p, subtitleEvents: p.subtitleEvents.slice(-1), sourceEffectCaptions: [], sourceCallouts: [{ start: 2, end: 3, text: '슥' }, { start: 6, end: 7, text: '휙' }, { start: 10, end: 11, text: '쾅' }] }
   assert.equal(status(evaluateContentGate({ payload: sparse, analysis: a, semantic: s, framing: EMBED }), 'content.presentation_rhythm'), 'FAIL')
 })
 
@@ -88,11 +88,11 @@ test('content.headline_present judges the drawn headline: missing / non-Korean /
 })
 
 // ---------------- AI planner asks for what Common Shorts draws ----------------
-test('AI planner: prompt v12 asks for no effect cues and a two-word hook; a one-word hook is repaired, never shipped', async () => {
-  assert.equal(AI_PLANNER_PROMPT_VERSION, 'source-story-analysis/12')
+test('AI planner: prompt v13 asks for one effect per hit and a two-word hook; a one-word hook is repaired, never shipped', async () => {
+  assert.equal(AI_PLANNER_PROMPT_VERSION, 'source-story-analysis/13')
   const a = analysis(30, 'src_audit_000001')
   const prompt = storyPrompt(a)
-  assert.match(prompt, /Do NOT add kind="effect" cues/); assert.match(prompt, /AT LEAST TWO words/); assert.doesNotMatch(prompt, /Add 0–2 kind="effect"/)
+  assert.match(prompt, /ONE effect cue PER visible impact/); assert.match(prompt, /AT LEAST TWO words/); assert.doesNotMatch(prompt, /Do NOT add kind="effect"/)
   const base: any = {
     storyType: 'single_event', confidence: 0.9, causalStart: 1, setupRanges: [{ start: 1, end: 6 }], escalationRanges: [{ start: 6, end: 15 }], payoffRange: { start: 15, end: 19 }, recommendedEnd: 19.5,
     excludeRanges: [], hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.1, hookReason: '',
@@ -112,7 +112,8 @@ test('AI planner: prompt v12 asks for no effect cues and a two-word hook; a one-
 
 // ---------------- the drawn text format (pixels) ----------------
 const W = 1080
-const overlaysFor = (headline: string, subs: string[]) => buildAss({ totalDuration: 4, screenDna: true, headline, subtitles: subs.map((t, i) => ({ start: i, end: i + 1, text: t })) })
+// Wisdom band captions (General captions are drawn over the visual window: tools/source-first-window-captions.test.ts)
+const overlaysFor = (headline: string, subs: string[]) => buildAss({ totalDuration: 4, screenDna: true, wisdomLayout: true, headline, subtitles: subs.map((t, i) => ({ start: i, end: i + 1, text: t })) })
 const linesQc = (o: any) => textLinesCheck({ overlays: o } as any)
 
 test('screen_dna.text_lines: real two-line white/yellow headline and short captions PASS', async () => {
@@ -149,7 +150,7 @@ test('captions: a caption that would wrap to 3+ lines is shrunk until libass dra
 
 test('captions: the 2-line guard never changes a caption that already fits (Wisdom/General rendering unchanged)', () => {
   for (const t of ['첫 문장입니다', '나이가 들수록 사람을 줄여야 하는 이유가 있습니다', '갑자기 기어가기 시작', '쇼펜하우어는 고독을 두려워하지 말라고 말했습니다']) {
-    const withGuard = buildAss({ totalDuration: 2, screenDna: true, headline: '', subtitles: [{ start: 0, end: 1, text: t }] }).ass
+    const withGuard = buildAss({ totalDuration: 2, screenDna: true, wisdomLayout: true, headline: '', subtitles: [{ start: 0, end: 1, text: t }] }).ass
     const fs = Number(/\\fs(\d+)/.exec(withGuard.split('\n').find((l) => l.includes(',WisdomSub,'))!)![1])
     assert.ok(captionLines(t, W - 2 * Math.round(W * 0.08), fs) <= 2)
     assert.equal(fs, fitFontSize(t, W - 2 * Math.round(W * 0.08) - 40, 60, 2, 42), t) // the guard did not engage
@@ -159,7 +160,8 @@ test('captions: the 2-line guard never changes a caption that already fits (Wisd
   const p: any = payloadFor(a, rec)
   const built = assFromPayload({ ...p, totalDuration: totalSeconds(rec.beats) })
   assert.ok(built.events.some((e) => e.kind === 'headline' && e.start === 0))
-  assert.ok(!built.events.some((e) => e.kind === 'effect' || e.kind === 'callout'))
+  assert.ok(!built.events.some((e) => e.kind === 'callout'))
+  assert.ok(built.events.filter((e) => e.kind !== 'headline').every((e) => e.zone && e.zone.y >= 360 && e.zone.y + e.zone.h <= 1560)) // inside the visual window
 })
 
 test('black-picture checks look at the visual window: a black window under a bright headline is caught (was a false PASS)', async () => {
