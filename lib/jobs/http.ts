@@ -33,7 +33,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_decision', 'job_cancel'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && t.startsWith('job_')
 
@@ -103,7 +103,7 @@ export function createJobsHttp(deps: JobsDeps) {
       const workspaceId = workspaceOf(req)
       const input: any = req.method === 'GET' ? req.query || {} : req.body && typeof req.body === 'object' ? req.body : {}
       const taskType = String(input.taskType || '')
-      const expectedMethod = taskType === 'job_get' || taskType === 'job_preview' ? 'GET' : 'POST'
+      const expectedMethod = taskType === 'job_get' || taskType === 'job_preview' || taskType === 'job_package' ? 'GET' : 'POST'
       if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)
       if (req.method !== expectedMethod) throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires ${expectedMethod}`)
 
@@ -128,6 +128,20 @@ export function createJobsHttp(deps: JobsDeps) {
           previews.push({ variantId: v.variantId, label: v.label, durationSec: v.duration ?? null, qc: v.gate?.decision ?? null, qcReasons: v.gate?.reasons ?? [], contentQc: v.contentGate?.decision ?? null, contentQcReasons: v.contentGate?.reasons ?? [], referenceQc: v.referenceGate?.decision ?? null, referenceQcReasons: referenceReasons(v.referenceGate), referenceQcChecks: v.referenceGate?.checks ?? [], publishable: v.publishable === true, recommended: v.variantId === recommended, approved: !!job.approvedManifestHash && v.manifestHash === job.approvedManifestHash, url: signed.url, validUntil: signed.validUntil, posterUrl: sheet?.url ?? null })
         }
         return res.status(200).json({ ok: true, jobId: job.id, status: job.status, stage: job.stage, previews })
+      }
+
+      if (taskType === 'job_package') {
+        const id = need(String(req.query?.id || ''), 'id is required')
+        const job = await store.getJob(id, workspaceId)
+        if (!job) throw new JobError('NOT_FOUND', 'job not found')
+        const runs = await store.listStageRuns(job.id)
+        const pkg = latest(runs, 'PACKAGE')
+        const plan = latest(runs, 'PLAN')
+        if (!pkg?.outputRef) throw new JobError('NOT_FOUND', 'package not found')
+        const packageJson:any = await deps.blobs.getJson(pkg.outputRef)
+        const scriptRef = (plan?.result as any)?.scriptRef
+        const script:any = scriptRef ? await deps.blobs.getJson(scriptRef) : null
+        return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, script: script ? { title:script.title, hook:script.hook, ending:script.ending, beats:(script.beats||[]).map((b:any)=>({ narration:b.narration })) } : null })
       }
 
       if (taskType === 'job_get') {
