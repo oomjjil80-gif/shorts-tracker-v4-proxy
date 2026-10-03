@@ -92,6 +92,10 @@ export const EFFECT_MIN_PCT = 12.5
 
 // Wisdom band captions (short chunks, see wisdomCaptionEvents): \fs88 draws ~56px-tall Hangul, one line per chunk.
 export const WISDOM_CAPTION_PX = { base: 88, min: 60 }
+// Wisdom captions sit over the lower part of the visual window (like General), not in the bottom black band: white bold,
+// thick black outline + soft shadow (readable on any image brightness), narrower than the canvas so they never run under
+// the Shorts side buttons. Anchored to CAPTION_WINDOW_ZONE (Common Shorts Screen DNA), bottom gap as General.
+export const WISDOM_WINDOW_CAPTION = { basePx: 100, marginX: 120, outline: 7, shadow: 3 }
 
 export type AssInput = {
   totalDuration: number
@@ -111,6 +115,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
   const total = input.totalDuration
   const wisdom = input.wisdomLayout === true || input.screenDna === true
   const inWindow = input.screenDna === true && input.wisdomLayout !== true
+  const wisdomWindow = input.screenDna === true && input.wisdomLayout === true
   const capZone = CAPTION_WINDOW_ZONE(), fxZone = EFFECT_WINDOW_ZONE()
   const marginX = Math.round(w * 0.08)
   const textWidth = w - marginX * 2
@@ -165,6 +170,14 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
       for (const p of pieces) add(2, 'subtitle', 'WindowSub', p.start, p.end, text, pos, text, capZone)
       continue
     }
+    if (wisdomWindow) {
+      const width = w - 2 * WISDOM_WINDOW_CAPTION.marginX
+      let fs = fitFontSize(text, width - 40, WISDOM_WINDOW_CAPTION.basePx, 2, WISDOM_CAPTION_PX.min)
+      while (fs > CAPTION_MIN_PX && captionLines(text, width, fs) > 2) fs -= 2
+      const pos = `{\\an2\\pos(${capZone.x + capZone.w / 2},${capZone.y + capZone.h - WINDOW_CAPTION.bottomGapPx})\\fs${fs}}`
+      for (const p of pieces) add(2, 'subtitle', 'WisdomWindowSub', p.start, p.end, text, pos, text, capZone)
+      continue
+    }
     let fs = fitFontSize(text, textWidth - 40, wisdom ? WISDOM_CAPTION_PX.base : 60, wisdom ? 2 : 3, wisdom ? WISDOM_CAPTION_PX.min : 42)
     // Screen DNA captions are at most 2 lines. fitFontSize estimates Hangul at 0.72em but this font advances 0.92em, so a
     // long caption can still wrap to 3+ lines; only then shrink using the real advances (captions that fit are untouched).
@@ -200,6 +213,7 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
     `Style: Sub,${FONT_FAMILY},60,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,1,0,0,0,100,100,0,0,3,10,0,2,${marginX},${marginX},${Math.round(h * 0.22)},1`,
     // window caption: white bold with a thick black outline + soft shadow (readable over any picture, no box)
     `Style: WindowSub,${FONT_FAMILY},${WINDOW_CAPTION.basePx},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,7,3,2,${marginX},${marginX},0,1`,
+    `Style: WisdomWindowSub,${FONT_FAMILY},${WISDOM_WINDOW_CAPTION.basePx},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,${WISDOM_WINDOW_CAPTION.outline},${WISDOM_WINDOW_CAPTION.shadow},2,${WISDOM_WINDOW_CAPTION.marginX},${WISDOM_WINDOW_CAPTION.marginX},0,1`,
     `Style: Fx,${FONT_FAMILY},76,&H00FFFFFF,&H000000FF,&H00111111,&H00000000,1,0,0,0,100,100,0,0,1,6,0,5,${marginX},${marginX},0,1`,
     '', '[Events]', 'Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text', ...lines, ''
   ].join('\n')
