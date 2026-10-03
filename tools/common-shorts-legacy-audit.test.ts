@@ -8,7 +8,8 @@ import { validateStory, semanticFromStory } from '../lib/media/story.js'
 import { evaluateContentGate } from '../lib/media/contentGate.js'
 import { compileJobPlan } from '../lib/tracker-core/jobCompile.js'
 import { PRESENTATION_LIMITS, selectCues, type PlacedCue } from '../lib/media/presentation.js'
-import { buildAss, assFromPayload, captionLines, CAPTION_MIN_PX, fitFontSize, WISDOM_CAPTION_PX } from '../lib/media/ass.js'
+import { buildAss, assFromPayload, captionLines, CAPTION_MIN_PX, fitFontSize, WISDOM_CAPTION_PX, WISDOM_WINDOW_CAPTION } from '../lib/media/ass.js'
+const CAP_W = 1080 - 2 * WISDOM_WINDOW_CAPTION.marginX // Wisdom captions: lower visual window, narrower than the canvas
 import { textLinesCheck, textBandsCheck } from '../lib/media/screenDna.js'
 import { aiAnalyzeStory, AI_PLANNER_PROMPT_VERSION, storyPrompt } from '../lib/media/aiPlanner.js'
 import type { SourceFraming } from '../lib/media/framing.js'
@@ -129,7 +130,7 @@ test('screen_dna.text_lines: one-line headline, swapped colours or a 3-line capt
   const swapped = { ...ok, ass: ok.ass.replace('\\c&H00FFFFFF&', '\\c&H0000D7FF&').replace('\\N{\\c&H0000D7FF&}', '\\N{\\c&H00FFFFFF&}') }
   assert.equal((await linesQc(swapped)).status, 'FAIL')
   const three = overlaysFor('왜 바닥을 기어갈까?', ['첫째 줄'])
-  const forced = { ...three, ass: three.ass.replace(/(,WisdomSub,,0,0,0,,\{\\fs\d+\})첫째 줄/, '$1첫째 줄\\N둘째 줄\\N셋째 줄') }
+  const forced = { ...three, ass: three.ass.replace(/(,WisdomWindowSub,,0,0,0,,\{\\an2\\pos\(\d+,\d+\)\\fs\d+\})첫째 줄/, '$1첫째 줄\\N둘째 줄\\N셋째 줄') }
   assert.notEqual(forced.ass, three.ass)
   assert.equal((await linesQc(forced)).status, 'FAIL')
 })
@@ -138,10 +139,10 @@ test('captions: a caption that would wrap to 3+ lines is shrunk until libass dra
   // ~80 chars (Wisdom beats allow 90): at the 42px floor libass draws this in 3 lines
   const long = '오래 함께한 사람일수록 서로를 잘 안다고 믿지만 사실은 가장 많이 오해하고 있는 경우가 많습니다 그래서 거리를 두는 지혜가 필요합니다 결국 관계도'
   const o = overlaysFor('왜 사람을 줄여야 할까?', [long, '짧은 자막입니다'])
-  const dlg = o.ass.split('\n').filter((l) => l.includes(',WisdomSub,'))
+  const dlg = o.ass.split('\n').filter((l) => l.includes(',WisdomWindowSub,'))
   const fsLong = Number(/\\fs(\d+)/.exec(dlg[0])![1]), fsShort = Number(/\\fs(\d+)/.exec(dlg[1])![1])
-  assert.ok(fsLong < 42 && fsLong >= CAPTION_MIN_PX && captionLines(long, W - 2 * Math.round(W * 0.08), fsLong) <= 2, `fs ${fsLong}`)
-  assert.equal(fsShort, WISDOM_CAPTION_PX.base) // unchanged: the Wisdom base size for a caption that already fits
+  assert.ok(fsLong < 42 && fsLong >= CAPTION_MIN_PX && captionLines(long, CAP_W, fsLong) <= 2, `fs ${fsLong}`)
+  assert.equal(fsShort, WISDOM_WINDOW_CAPTION.basePx) // unchanged: the Wisdom base size for a caption that already fits
   const r = await linesQc(o)
   assert.equal(r.status, 'PASS', JSON.stringify(r.evidence))
   assert.ok((r.evidence as any).rows.filter((x: any) => x.kind === 'subtitle').every((x: any) => x.lines <= 2))
@@ -151,9 +152,9 @@ test('captions: a caption that would wrap to 3+ lines is shrunk until libass dra
 test('captions: the 2-line guard never changes a caption that already fits (Wisdom/General rendering unchanged)', () => {
   for (const t of ['첫 문장입니다', '나이가 들수록 사람을 줄여야 하는 이유가 있습니다', '갑자기 기어가기 시작', '쇼펜하우어는 고독을 두려워하지 말라고 말했습니다']) {
     const withGuard = buildAss({ totalDuration: 2, screenDna: true, wisdomLayout: true, headline: '', subtitles: [{ start: 0, end: 1, text: t }] }).ass
-    const fs = Number(/\\fs(\d+)/.exec(withGuard.split('\n').find((l) => l.includes(',WisdomSub,'))!)![1])
-    assert.ok(captionLines(t, W - 2 * Math.round(W * 0.08), fs) <= 2)
-    assert.equal(fs, fitFontSize(t, W - 2 * Math.round(W * 0.08) - 40, WISDOM_CAPTION_PX.base, 2, WISDOM_CAPTION_PX.min), t) // the guard did not engage
+    const fs = Number(/\\fs(\d+)/.exec(withGuard.split('\n').find((l) => l.includes(',WisdomWindowSub,'))!)![1])
+    assert.ok(captionLines(t, CAP_W, fs) <= 2)
+    assert.equal(fs, fitFontSize(t, CAP_W - 40, WISDOM_WINDOW_CAPTION.basePx, 2, WISDOM_CAPTION_PX.min), t) // the guard did not engage
   }
   // the Golden payload drawn as-is: headline over the whole edit, captions in the bottom band
   const { a, rec } = goldenReplay()

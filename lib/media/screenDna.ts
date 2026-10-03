@@ -327,9 +327,11 @@ export async function renderPreservesSourceCheck(i: ScreenDnaInput, cuts: Array<
       const [out] = await decodeGray(i.renderPath, t, 1, i.signal)
       const src = await decodeGray(i.sourceFile, srcT - 2 / 30, 5, i.signal)
       if (!out || !src.length) return st(id, 'UNKNOWN', { reason: `frames at ${t.toFixed(2)}s could not be decoded` })
+      // captions drawn over the visual window are not picture: mask their glyphs out of the comparison
+      const mask = i.overlays ? await glyphMaskAt(i.overlays.ass, t, i.signal) : undefined
       let best = { k: -1, m: Infinity }
-      src.forEach((f, k) => { const m = mad(out, f, y0, y1, 0, 0, 4); if (m < best.m) best = { k, m } })
-      const a = alignment(out, src[best.k], y0, y1)
+      src.forEach((f, k) => { const m = mad(out, f, y0, y1, 0, 0, 4, mask); if (m < best.m) best = { k, m } })
+      const a = alignment(out, src[best.k], y0, y1, mask)
       rows.push({ t: Number(t.toFixed(3)), sourceT: Number(srcT.toFixed(3)), ...a, ok: a.aligned && a.mad <= PIXEL.maxMad })
     }
     return st(id, rows.every((r) => r.ok) ? 'PASS' : 'FAIL', { method: 'output visual window vs source visual window (0px spatial alignment)', window: dna.center, thresholds: PIXEL, rows })

@@ -40,10 +40,12 @@ test('General: explanation captions sit at the bottom of the CENTER visual windo
   assert.ok(!ass.split('\n').some((l) => l.includes(',WisdomSub,')))
 })
 
-test('Wisdom (pre-composed) keeps its captions in the bottom band', () => {
+test('Wisdom (pre-composed) captions are drawn over the lower visual window too, never in the bottom band', () => {
   const { ass, events } = assFromPayload(payload('wisdom-v1'))
-  assert.equal(ass.split('\n').filter((l) => l.includes(',WisdomSub,')).length, 2)
-  assert.ok(events.filter((e) => e.kind === 'subtitle').every((e) => !e.zone))
+  const subs = ass.split('\n').filter((l) => l.includes(',WisdomWindowSub,'))
+  assert.equal(subs.length, 2)
+  for (const l of subs) { const p = posOf(l)!; assert.match(l, /\\an2/); assert.ok(p.y > DNA.center.y + DNA.center.h / 2 && p.y < DNA.bottom.y) }
+  assert.ok(events.filter((e) => e.kind === 'subtitle').every((e) => e.zone?.y === CAPTION_WINDOW_ZONE().y))
 })
 
 test('long caption shrinks to at most 2 lines; never below the minimum size', () => {
