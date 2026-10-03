@@ -333,3 +333,28 @@ test('AUTO_QC (General source_shorts) runs the same Common Screen DNA checks end
   assert.ok(!gate.checks.some((c: any) => c.id === 'visual.frame_utilization'))
   assert.equal(gate.decision, 'PASS', JSON.stringify(gate.reasons))
 })
+
+test('reference caption.layout: Common Shorts Screen DNA takes precedence (captions in the bottom band satisfy it)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { createMemoryBlobStore, putAddressed } = await import('../lib/jobs/blobs.js')
+  const { analyzeSourceFile } = await import('../lib/media/analyze.js')
+  const { createAutoQcExecutor } = await import('../worker/stages/autoQc.js')
+  const blobs: any = createMemoryBlobStore()
+  const g = gen
+  const manifestRef = (await putAddressed(blobs, 'manifests', g.manifest)).path
+  const renderRef = `renders/${g.out.sha256}.mp4`; await blobs.putBytes(renderRef, readFileSync(g.out.path), 'video/mp4')
+  const analysisRef = (await putAddressed(blobs, 'analysis', await analyzeSourceFile(g.src.path, { sourceAssetId: 'src_raw_fx', sha256: g.src.sha256 }))).path
+  const built = g.input.overlays
+  const runs: Record<string, any> = {
+    ANALYZE: { attempt: 1, outputRef: analysisRef, result: {} },
+    RENDER: { attempt: 1, result: { variants: [{ variantId: 'v1', label: '추천', manifestHash: g.manifest.manifestHash, manifestRef, renderRef, renderHash: g.out.sha256, duration: 2.4, overlayEvents: built.events, assSha256: fx.sha(built.ass), sourceFraming: { mode: 'full', crop: null, confidence: 0, sampleCount: 7, detector: 'luma-bands-v1' }, geometryReceipt: g.receipt }] } }
+  }
+  // the reference had its captions near the TOP of the frame; Screen DNA keeps them in the bottom band anyway
+  const profile: any = { schema: 'reference-profile/1', profileVersion: 1, referenceAssetIds: ['ref_x'], sourceAnalysisHashes: ['h'], constraints: [{ id: 'ref_x:caption.layout', axis: 'caption', value: { coverage: { x: 0.1, y: 0.1, width: 0.8, height: 0.08 } }, evidence: [], appliesTo: ['RENDER', 'QC'] }] }
+  const out: any = await createAutoQcExecutor(profile).run({ job: { id: 'job_gen', profile: 'source_shorts', planRev: 1, sourceAssetId: 'src_raw_fx' } as any, attempt: 1, blobs, previous: async (s: string) => runs[s] ?? null, signal: new AbortController().signal,
+    resolveSourceAsset: async () => ({ sourceAssetId: 'src_raw_fx', blobPath: 'x', sha256: g.src.sha256 }), resolveSourceFile: async () => ({ path: g.src.path, cleanup: async () => {} }) } as any)
+  const c = out.result.variants[0].referenceGate.checks.find((x: any) => x.featureId === 'ref_x:caption.layout')
+  assert.equal(c.status, 'PASS', JSON.stringify(c))
+  assert.equal(c.evidence.method, 'common-shorts-screen-dna-caption-band')
+  assert.equal(c.evidence.target.supersededBy, 'common-shorts-screen-dna/caption-band')
+})
