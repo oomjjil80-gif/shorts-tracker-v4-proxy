@@ -5,7 +5,7 @@ import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
 import { evaluateGate } from '../../lib/qc/gate.js'
 import { analyzeSourceFile, type SourceAnalysis } from '../../lib/media/analyze.js'
 import { runRenderQc } from '../../lib/media/qc.js'
-import { runScreenDnaQc } from '../../lib/media/screenDna.js'
+import { runScreenDnaQc, COMMON_SHORTS_SCREEN_DNA } from '../../lib/media/screenDna.js'
 import { assFromPayload } from '../../lib/media/ass.js'
 import { extractJpeg, probe, sceneScores, detectSilence } from '../../lib/media/ffmpeg.js'
 import { extractRenderPlan } from '../../lib/media/render.js'
@@ -14,7 +14,6 @@ import type { SemanticResult, StoryAnalysis } from '../../lib/media/story.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { evaluateReferenceConformance } from '../../lib/reference/qc.js'
 import type { ReferenceProfile, ReferenceAsset } from '../../lib/reference/contracts.js'
-import { detectCaptionRegions } from '../../lib/reference/serverPipeline.js'
 
 // AUTO_QC: measures every rendered file (not the plan): format, full decode, duration, black/freeze, first/last frame,
 // audio, segment order/trim (frame matching against the source), overlay count/visibility/safe-area and frame utilization.
@@ -144,19 +143,14 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               measurements[x.id]={measured:true,pass:actualOrientation===target.orientation&&delta<=tolerance,target:{orientation:target.orientation,aspectRatio:targetRatio},actual:{orientation:actualOrientation,aspectRatio:actualRatio},tolerance:{aspectRatio:tolerance},method:'ffmpeg-probe-output-geometric-style',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),width:outputInfo.width,height:outputInfo.height}}
             }
           }
+          // Common Shorts Screen DNA takes precedence over a reference caption.layout: captions always live in the fixed
+          // bottom band. The constraint is satisfied exactly when the DNA caption proof passes (all captions inside the
+          // bottom band, <= 2 lines), measured on this render; the reference's own caption position is recorded, not enforced.
           for(const x of jobReferenceProfile.constraints.filter((x:any)=>x.id.endsWith(':caption.layout')||x.id==='caption.layout')){
-            const target=(x.value as any)?.coverage
-            if(target&&Number(outputInfo.duration)>0){
-              try{
-                const renderAsset:any={schema:'reference-asset/1',referenceAssetId:'ref_'+sha256(bytes),kind:'video',sha256:sha256(bytes),bytes:bytes.length,contentType:'video/mp4',blobPath:'render-only',width:outputInfo.width,height:outputInfo.height,duration:Number(outputInfo.duration),createdAt:new Date(0).toISOString()}
-                const actualRegions=await detectCaptionRegions(renderPath,renderAsset)
-                if(actualRegions?.length){
-                  const avg=(k:'x'|'y'|'width'|'height')=>actualRegions.reduce((n,r)=>n+Number(r[k]),0)/actualRegions.length
-                  const actualCoverage={x:avg('x'),y:avg('y'),width:avg('width'),height:avg('height')}
-                  const targetCenterY=Number(target.y)+Number(target.height)/2,actualCenterY=actualCoverage.y+actualCoverage.height/2,tolerance=0.18
-                  measurements[x.id]={measured:true,pass:Math.abs(targetCenterY-actualCenterY)<=tolerance,target:{centerY:Number(targetCenterY.toFixed(3))},actual:{centerY:Number(actualCenterY.toFixed(3)),coverage:actualCoverage},tolerance:{normalizedY:tolerance},method:'reference-caption-vision-output-frame-regions',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes),regions:actualRegions.length}}
-                }
-              }catch{/* output caption vision failure remains UNKNOWN */}
+            const bands=gate.checks.find((c:any)=>c.id==='screen_dna.text_bands'), lines=gate.checks.find((c:any)=>c.id==='screen_dna.text_lines')
+            if(bands&&lines&&bands.status!=='UNKNOWN'&&lines.status!=='UNKNOWN'){
+              const band=COMMON_SHORTS_SCREEN_DNA.bottom
+              measurements[x.id]={measured:true,pass:bands.status==='PASS'&&lines.status==='PASS',target:{supersededBy:'common-shorts-screen-dna/caption-band',band:{y:band.y,h:band.h},referenceCoverage:(x.value as any)?.coverage??null},actual:{textBands:bands.status,textLines:lines.status},method:'common-shorts-screen-dna-caption-band',provenance:{source:'server-render-bytes',renderHash:v.renderHash,bytesHash:sha256(bytes)}}
             }
           }
           try{

@@ -241,3 +241,23 @@ export function toJobPlan(sourceAssetId: string, v: VariantSpec) {
     }
   }
 }
+
+// Common Shorts PLAN presentation contract — checked on the PLAN artifact itself, before anything is compiled/rendered.
+// A plan that cannot become a publishable Common Short (no validated story, no Korean 2-word headline, no explanation
+// for a 10s+ edit, screen left unattended) is known to fail content QC; recovery re-plans must not ship it downstream.
+export function planPresentationContract(v: VariantSpec | null | undefined, semantic: SemanticResult | null): { ok: boolean; reasons: string[] } {
+  const reasons: string[] = []
+  if (semantic?.status !== 'ok' || !semantic.story) reasons.push(`semantic story not usable (${semantic?.status ?? 'none'}${semantic?.reason ? `: ${semantic.reason}` : ''})`)
+  if (!v) return { ok: false, reasons: [...reasons, 'no recommended variant'] }
+  const hl = String(v.headline || '').trim()
+  if (!hl || !/[가-힣]/.test(hl)) reasons.push('no Korean headline')
+  else if (hl.split(/\s+/).filter(Boolean).length < 2) reasons.push(`headline "${hl}" has fewer than 2 words (cannot form the 2-line headline)`)
+  const p = v.presentation
+  if (!p) reasons.push('no presentation plan')
+  else {
+    if (!p.hookKept) reasons.push(`headline not kept: ${p.hookReason ?? 'unknown'}`)
+    if (!p.explanationPresent) reasons.push('no context/payoff caption for an edit that needs one')
+    if (!p.rhythm.ok) reasons.push(`caption rhythm: ${p.rhythm.maxGapSeconds}s gap (max ${p.rhythm.allowedMaxGap}s), ${p.rhythm.dynamicCueCount}/${p.rhythm.minDynamic} timed captions`)
+  }
+  return { ok: reasons.length === 0, reasons }
+}

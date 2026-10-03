@@ -116,7 +116,7 @@ test('PLAN stage: model failure keeps deterministic plan; success stores story +
   const ref = (await blobs.putJson('analysis/x.json', a)).path
   const sheet = (await blobs.putBytes('analysis/keyframes/x.jpg', JPEG, 'image/jpeg')).path
   const job: any = { id: 'job_1', sourceAssetId: a.sourceAssetId, planRev: 0 }
-  const previous = async () => ({ outputRef: ref, result: { keyframeSheetRef: sheet } }) as any
+  const previous = async (stage: string) => (stage === 'ANALYZE' ? { outputRef: ref, result: { keyframeSheetRef: sheet } } : null) as any // like store.getLatestSucceeded
   const failing = createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl: fakeFetch({ error: { message: 'down' } }, 500) } })
   const r1: any = await failing.run({ job, blobs, previous, signal: new AbortController().signal } as any)
   assert.equal(r1.result.provider, 'heuristic'); assert.equal(r1.result.semantic.status, 'failed'); assert.match(r1.result.fallback.reason, /provider 500/)
