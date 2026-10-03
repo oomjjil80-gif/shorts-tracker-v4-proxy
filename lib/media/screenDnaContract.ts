@@ -20,7 +20,7 @@ export const bandOf = (dna: ScreenDna, kind: string): Rect | null => (kind === '
 // Producer A — ASSET builds a pre-composed source per beat image (Wisdom). Byte-identical to the v1 filter.
 export function screenDnaSegmentFilter(dna: ScreenDna = COMMON_SHORTS_SCREEN_DNA, fps = 30): string {
   const c = dna.center
-  return `scale=${c.w}:${c.h}:force_original_aspect_ratio=increase,crop=${c.w}:${c.h},zoompan=z='min(zoom+0.00035,1.035)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${c.w}x${c.h}:fps=${fps},pad=${dna.canvas.w}:${dna.canvas.h}:${c.x}:${c.y}:black,format=yuv420p`
+  return `scale=${c.w}:${c.h}:force_original_aspect_ratio=increase,crop=${c.w}:${c.h},zoompan=z='min(zoom+0.0007,1.07)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${c.w}x${c.h}:fps=${fps},pad=${dna.canvas.w}:${dna.canvas.h}:${c.x}:${c.y}:black,format=yuv420p`
 }
 export function screenDnaSegmentArgv(imagePath: string, audioPath: string, durationSec: number, outPath: string, vf = screenDnaSegmentFilter()): string[] {
   return ['-y', '-loop', '1', '-i', imagePath, '-i', audioPath, '-t', String(durationSec), '-vf', vf, '-af', 'apad', '-r', '30', '-c:v', 'libx264', '-preset', 'veryfast', '-threads', '4', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-movflags', '+faststart', outPath]
