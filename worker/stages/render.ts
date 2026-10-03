@@ -6,6 +6,7 @@ import { probe } from '../../lib/media/ffmpeg.js'
 import { detectSourceFraming } from '../../lib/media/framing.js'
 import { renderPayload, UnsupportedManifestError } from '../../lib/media/render.js'
 import { StageError, type StageExecutor } from '../types.js'
+import { SHORTS_SCREEN_DNA, filterGraphSha256, renderVideoFilters, type RenderGeometryReceipt } from '../../lib/media/screenDna.js'
 
 type CompiledForRender = { variantId: string; label: string; manifestHash: string; manifestRef: string; gate: { decision: string }; identity: any[] }
 
@@ -30,7 +31,7 @@ export const renderExecutor: StageExecutor = {
   stage: 'RENDER',
   estimateUsd: () => 0,
   inputHash: (job) => sha256(`render|v2|${job.id}|${job.planRev}`),
-  async run({ job, blobs, previous, resolveSourceAsset, resolveSourceFile, signal }) {
+  async run({ job, attempt, blobs, previous, resolveSourceAsset, resolveSourceFile, signal }) {
     const compile = await previous('COMPILE')
     const compiled = compiledVariantsFromRun(compile)
     if (!compiled.length) throw new StageError('COMPILE_MISSING', 'RENDER requires a completed COMPILE stage')
@@ -60,7 +61,11 @@ export const renderExecutor: StageExecutor = {
         const renderHash = sha256(bytes)
         const stored = await blobs.putBytes(`renders/${renderHash}.mp4`, bytes, 'video/mp4')
         const rInfo = await probe(outPath)
-        out.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, manifestRef: v.manifestRef, renderRef: stored.path, renderHash, bytes: bytes.length, duration: rInfo.duration, overlayEvents: r.overlayEvents, assSha256: r.assPath ? sha256(r.ass) : null, sourceFraming })
+        // Screen DNA execution receipt: the exact graph this attempt ran, bound to its manifest, source and output bytes.
+        const geometryReceipt: RenderGeometryReceipt | null = manifest.payload?.editorialPlan?.profile === 'wisdom-v1'
+          ? { schema: 'screen-dna-receipt/1', stage: 'RENDER', jobId: job.id, attempt, contract: SHORTS_SCREEN_DNA, manifestHash: v.manifestHash, sourceSha256: String(asset.sha256 ?? ''), sourceWidth: info.width, sourceHeight: info.height, filterGraphSha256: filterGraphSha256(r.filterGraph), videoFilters: renderVideoFilters(r.filterGraph), renderHash }
+          : null
+        out.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, manifestRef: v.manifestRef, renderRef: stored.path, renderHash, bytes: bytes.length, duration: rInfo.duration, overlayEvents: r.overlayEvents, assSha256: r.assPath ? sha256(r.ass) : null, sourceFraming, geometryReceipt })
       }
       return { outputRef: out[0].renderRef, outputHash: out[0].renderHash, result: { variants: out, sourceFraming }, provider: 'ffmpeg', model: 'libx264+libass' }
     } finally { await rm(work, { recursive: true, force: true }); await file.cleanup() }

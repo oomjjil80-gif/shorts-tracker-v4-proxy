@@ -325,3 +325,25 @@ test('Startup hooks: RENDER recheck still works on its own and for a different j
   assert.ok(lines.some((l) => l.startsWith('ASSET_RECHECK_JOB_ID skipped:')))
   assert.ok(lines.includes(`RENDER_RECHECK_JOB_ID job=${job.id} -> queued RENDER`))
 })
+
+
+test('QC-only retry (QC_RECHECK) keeps source/manifest/render hashes and paid spend unchanged', async () => {
+  const { store, base } = await setup()
+  const { job } = await store.createJob({ ...base, profile: 'wisdom', sourceAssetId: 'src_gen_q', idempotencyKey: 'qc-only', planRef: 'briefs/b.json', budgetUsd: 5 })
+  const step = async (stages: any[], extra: any = {}) => {
+    await store.claimJob({ workerId: 'w', stages })
+    const { attempt } = await store.startStageRun({ jobId: job.id, workerId: 'w' })
+    return store.completeStage({ jobId: job.id, workerId: 'w', attempt, ...extra })
+  }
+  await step(['PLAN'], { costUsd: 0.05 }); await step(['ASSET'], { outputHash: 'a'.repeat(64), costUsd: 0.75, result: { source: { sha256: 's'.repeat(64) } } })
+  await step(['ANALYZE']); await step(['COMPILE'], { outputHash: 'm'.repeat(64) }); await step(['RENDER'], { outputHash: 'r'.repeat(64) })
+  const blocked = await step(['AUTO_QC'], { wait: 'QC_BLOCKED' })
+  const snap = async () => (await store.listStageRuns(job.id)).filter((r) => ['PLAN', 'ASSET', 'COMPILE', 'RENDER'].includes(r.stage)).map((r) => [r.stage, r.attempt, r.status, r.outputHash])
+  const before = await snap()
+  await store.recheckQc({ jobId: job.id })
+  await step(['AUTO_QC'], { costUsd: 0 })
+  assert.deepEqual(await snap(), before)
+  const after = await store.getJob(job.id, 'ws1')
+  assert.equal(after?.spentUsd, blocked.spentUsd)
+  assert.equal(after?.stage, 'DECISION')
+})
