@@ -1,4 +1,5 @@
-// Long-running Production Worker. Hosting is deliberately not decided here: any always-on Node process
+// Long-running Production Worker.
+// ops: redeploy trigger for Golden #110 Hosting is deliberately not decided here: any always-on Node process
 // (container/VM) with DATABASE_URL + BLOB_READ_WRITE_TOKEN can run `npm run worker`.
 import { hostname } from 'node:os'
 import { createPgDbFromEnv } from '../lib/jobs/db.js'
