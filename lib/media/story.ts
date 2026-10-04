@@ -61,6 +61,32 @@ const r2 = (n: number) => Math.round(n * 100) / 100
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 export const overlap = (a: Range, b: Range) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start))
 
+export const EFFECT_SNAP_MAX_SEC = 0.65
+export function snapEffectsToMotionPeaks(captions: StoryCaption[], a: SourceAnalysis): { captions: StoryCaption[]; warnings: string[] } {
+  const peaks = (a.motionPeaks || []).filter((p) => Number.isFinite(p.t) && p.t >= 0 && p.t < a.media.duration)
+  if (!peaks.length) return { captions, warnings: [] }
+  const used = new Set<number>(), warnings: string[] = []
+  const out = captions.map((c) => ({ ...c }))
+  const effects = out.map((c, i) => ({ c, i })).filter((x) => x.c.kind === 'effect').sort((x, y) => x.c.start - y.c.start)
+  for (const { c, i } of effects) {
+    let best = -1, distance = Infinity
+    peaks.forEach((p, k) => {
+      if (used.has(k)) return
+      const d = Math.abs(p.t - c.start)
+      if (d <= EFFECT_SNAP_MAX_SEC && d < distance) { best = k; distance = d }
+    })
+    if (best < 0) continue
+    const p = peaks[best]
+    const duration = Math.max(PRESENTATION_LIMITS.minEffectSec, c.end - c.start)
+    const end = r2(Math.min(a.media.duration, p.t + duration))
+    if (end - p.t <= 0.2) continue
+    used.add(best)
+    out[i] = { ...c, start: r2(p.t), end }
+    if (Math.abs(p.t - c.start) > 0.01) warnings.push(`effect "${c.text}" snapped ${c.start}s -> ${r2(p.t)}s using measured motion peak`)
+  }
+  return { captions: out, warnings }
+}
+
 // Strict validation of raw model output against the measured source. Returns a normalized story or the reasons it
 // cannot be trusted. Nothing is "repaired" into existence: out-of-range times are errors, not clamps.
 export function validateStory(raw: any, a: SourceAnalysis, meta: { model: string; promptVersion: string }): { story: StoryAnalysis | null; errors: string[]; warnings: string[] } {
@@ -92,7 +118,11 @@ export function validateStory(raw: any, a: SourceAnalysis, meta: { model: string
     if (!(raw.causalStart < payoff.start + eps)) errors.push('causalStart must precede the payoff')
     if (raw.recommendedEnd < payoff.end - 0.3) errors.push('recommendedEnd cuts the payoff off')
     if (raw.recommendedEnd > payoff.end + STORY_LIMITS.maxTailAfterPayoff + eps) errors.push(`recommendedEnd leaves more than ${STORY_LIMITS.maxTailAfterPayoff}s after the payoff`)
-    for (const x of excludes) if (overlap(x, payoff) > 0.3 * (payoff.end - payoff.start)) errors.push(`exclude ${x.reason} ${x.start}..${x.end} removes most of the payoff`)
+    for (const x of excludes) {
+      const hit = overlap(x, payoff)
+      if (x.reason === 'foreign_text' && hit > 0.03) errors.push(`foreign_text ${x.start}..${x.end} overlaps payoff; a publishable edit must choose a clean payoff or another story`)
+      else if (hit > 0.3 * (payoff.end - payoff.start)) errors.push(`exclude ${x.reason} ${x.start}..${x.end} removes most of the payoff`)
+    }
   }
   for (const r of [...setup, ...escalation]) if (payoff && r.start > payoff.end + eps) errors.push(`story range ${r.start}..${r.end} lies after the payoff`)
 
@@ -128,6 +158,14 @@ export function validateStory(raw: any, a: SourceAnalysis, meta: { model: string
     if (c.kind === 'payoff' && payoff && overlap(r, payoff) < 0.5 * (r.end - r.start)) { warnings.push(`minimalCaptions[${i}]: payoff caption outside payoff, dropped`); continue }
     captions.push({ kind: c.kind, start: r.start, end: r.end, text, basis })
   }
+
+  // Vision keyframes are intentionally coarse. Short impact words need frame-time timing, so use the model only to
+  // identify WHICH visible action is an impact, then snap that cue to the nearest measured ffmpeg motion peak.
+  // Each effect consumes a distinct peak: repeated hits become repeated, separately-timed pops.
+  const snapped = snapEffectsToMotionPeaks(captions, a)
+  captions.length = 0
+  captions.push(...snapped.captions)
+  warnings.push(...snapped.warnings)
 
   // Exactly one hook is kept (the earliest); the rest of the cues are bounded by a generous raw cap in chronological
   // priority order. The real budget is applied per edit in presentation.ts, never here.
