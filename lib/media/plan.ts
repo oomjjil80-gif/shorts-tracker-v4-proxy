@@ -168,7 +168,9 @@ export function storyMaxSeconds(story: StoryAnalysis | null): number {
 export function storyBeats(a: SourceAnalysis, story: StoryAnalysis): Beat[] {
   const window = subtractIntervals(a.usable, [{ start: 0, end: story.causalStart }, { start: story.recommendedEnd, end: a.media.duration + 1 }])
   const payoff = story.payoffRange
-  const excl = story.excludeRanges.flatMap((x) => subtractIntervals([x], [payoff]))
+  // A payoff is never allowed to "protect" prominent foreign text. If text overlaps the indispensable payoff,
+  // validateStory blocks the semantic answer; this branch is defense-in-depth for manually supplied/cached stories.
+  const excl = story.excludeRanges.flatMap((x) => x.reason === 'foreign_text' ? [x] : subtractIntervals([x], [payoff]))
   const storyRanges = [...story.setupRanges, ...story.escalationRanges, payoff]
   const dead = deadAirRuns(a).flatMap((d) => subtractIntervals([d], storyRanges))
   const kept = subtractIntervals(window, [...excl, ...dead])
