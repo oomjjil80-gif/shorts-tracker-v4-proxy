@@ -9,7 +9,7 @@ import { FONTS_DIR } from '../../lib/media/ass.js'
 import { openAiLongformImage, openAiWisdomTts } from '../../lib/generative/providers.js'
 import { openAiLongformPlan } from '../../lib/generative/longformPlanner.js'
 import {
-  LONGFORM_PROFILE_ID, LONGFORM, validateLongformScript, deterministicLongformScript, longformImagePrompt, ttsChunks, cardTimeline,
+  LONGFORM_PROFILE_ID, LONGFORM, validateLongformScript, allowedSeconds, cardErrors, sentencesOf, longformImagePrompt, ttsChunks, cardTimeline,
   longformCardsAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
 } from '../../lib/generative/longform.js'
 import { thumbnailArgv, thumbnailFigure, THUMB } from '../../lib/generative/wisdomThumbnail.js'
@@ -38,16 +38,18 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; plan?: typeo
       if (!isLongform(job)) throw new StageError('PROFILE_UNSUPPORTED', 'longform PLAN only handles wisdom_longform')
       const brief = (job.planRef ? await blobs.getJson(job.planRef) : null) as LongformBrief | null
       if (!brief || brief.schema !== 'generative-brief/1' || brief.profile !== 'wisdom_longform') throw new StageError('BRIEF_INVALID', 'invalid wisdom_longform brief')
-      let script: LongformScript | null = null, provider = 'deterministic', errors: string[] = []
-      if (apiKey) {
+      // ONE path and ONE gate: every script (first draft or repair) must pass validateLongformScript; there is no
+      // no-model fallback that could ship a shorter or unvalidated script.
+      if (!apiKey) throw new StageError('PROVIDER_DOWN', 'the longform script needs the planner (OPENAI_API_KEY)', true)
+      let script: LongformScript | null = null, provider = 'openai', errors: string[] = []
+      {
         // one free repair: the exact validation errors go back to the planner before any paid asset
         for (let attempt = 0; attempt < 2 && !script; attempt++) {
           const b = attempt ? { ...brief, text: `${brief.text}\n\n[REPAIR] The previous draft was rejected: ${errors.join(', ')}. Fix exactly these points.` } : brief
           try { const s = await plan(b, apiKey); s.figure = { ...s.figure, imagePrompt: thumbnailFigure(brief.text, s.figure?.imagePrompt) }; errors = validateLongformScript(s, brief); if (!errors.length) { script = s; provider = attempt ? 'openai-repair' : 'openai' } }
           catch (e: any) { errors = [String(e?.message || e)] }
         }
-      } else if (brief.kind === 'topic') throw new StageError('PROVIDER_DOWN', 'a longform script from a topic needs the planner (OPENAI_API_KEY)', true)
-      if (!script && brief.kind === 'text') { script = deterministicLongformScript(brief); script.figure.imagePrompt = thumbnailFigure(brief.text, script.figure.imagePrompt); provider = 'deterministic' }
+      }
       if (!script) throw new StageError('SCRIPT_INVALID', errors.join(','))
       const stored = await putAddressed(blobs, 'generative-scripts', script)
       return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: LONGFORM_PROFILE_ID, provider, scriptRef: stored.path, sentences: script.sections.reduce((n, s) => n + s.sentences.length, 0), validation: errors } }
@@ -95,21 +97,26 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
         await blobs.putJson(`generative-cache/image/${ik}.json`, { ref: rawRef, sha256: sha256(im.bytes), contentType: im.contentType, provider: im.provider, model: im.model })
         const imageRef = `generative-assets/images/${imgSha}.jpg`; await blobs.putBytes(imageRef, imgBytes, 'image/jpeg')
 
-        const parts: any[] = [], wavs: string[] = []
-        for (const [i, c] of chunks.entries()) {
-          if (signal.aborted) throw new Error('aborted')
-          const key = sha256('tts-v1|' + c.text)
-          let au: any = await cached('tts', key)
-          if (au) reused++; else { au = await tts(c.text, apiKey); generated++ }
-          const ah = sha256(au.bytes), ref = `generative-assets/audio/${ah}.mp3`
-          await blobs.putBytes(ref, au.bytes, au.contentType)
-          await blobs.putJson(`generative-cache/tts/${key}.json`, { ref, sha256: ah, contentType: au.contentType, provider: au.provider, model: au.model })
-          const mp3 = join(work, `c${i}.mp3`), wav = join(work, `c${i}.wav`)
-          await writeFile(mp3, au.bytes); await runOk(['-y', '-i', mp3, '-ar', '44100', '-ac', '2', wav], { signal })
-          const seconds = Number(Number((await probe(wav)).duration || 0).toFixed(3))
-          if (!(seconds > 0)) throw new StageError('TTS_INVALID', `narration chunk ${i + 1} has no audio`)
-          parts.push({ index: i, sentences: c.sentences, chars: [...c.text].length, ref, sha256: ah, seconds }); wavs.push(wav)
+        // one TTS call per sentence (4 at a time); results are placed by index, so order is exactly the script's
+        const parts: any[] = new Array(chunks.length), wavs: string[] = new Array(chunks.length)
+        let next = 0
+        const worker = async () => {
+          for (let i = next++; i < chunks.length; i = next++) {
+            if (signal.aborted) throw new Error('aborted')
+            const c = chunks[i], key = sha256('tts-v1|' + c.text)
+            let au: any = await cached('tts', key)
+            if (au) reused++; else { au = await tts(c.text, apiKey); generated++ }
+            const ah = sha256(au.bytes), ref = `generative-assets/audio/${ah}.mp3`
+            await blobs.putBytes(ref, au.bytes, au.contentType)
+            await blobs.putJson(`generative-cache/tts/${key}.json`, { ref, sha256: ah, contentType: au.contentType, provider: au.provider, model: au.model })
+            const mp3 = join(work, `c${i}.mp3`), wav = join(work, `c${i}.wav`)
+            await writeFile(mp3, au.bytes); await runOk(['-y', '-i', mp3, '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', wav], { signal })
+            const seconds = Number(Number((await probe(wav)).duration || 0).toFixed(3))
+            if (!(seconds > 0)) throw new StageError('TTS_INVALID', `narration sentence ${i + 1} has no audio`)
+            parts[i] = { index: i, sentences: c.sentences, chars: [...c.text].length, textSha256: sha256(c.text), ref, sha256: ah, seconds }; wavs[i] = wav
+          }
         }
+        await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, worker))
         // ONE continuous narration track: the chunks back to back, in order (no gap, no overlap, no music)
         const list = join(work, 'list.txt'); await writeFile(list, wavs.map((w) => `file '${w}'`).join('\n'))
         const narration = join(work, 'narration.m4a')
@@ -139,8 +146,18 @@ export const longformRenderExecutor: StageExecutor = {
     try {
       const image = join(work, 'image.jpg'), audio = join(work, 'narration.m4a'), assPath = join(work, 'cards.ass'), out = join(work, 'final.mp4'), thumbAss = join(work, 'thumb.ass'), thumb = join(work, 'thumbnail.jpg')
       await writeFile(image, img); await writeFile(audio, aud)
-      const timeline = cardTimeline(script, assets.chunks, assets.chunks.map((c: any) => c.seconds))
+      // contract on what is actually voiced and drawn: one narration chunk per sentence in order (no gap/repeat),
+      // every sentence a 2-3 line card with a coloured accent, total narration inside the allowed length
+      const brief: any = job.planRef ? await blobs.getJson(job.planRef) : null
+      let timeline
+      try { timeline = cardTimeline(script, assets.chunks, assets.chunks.map((c: any) => c.seconds)) } catch (e: any) { throw new StageError('LONGFORM_CONTRACT', String(e?.message || e)) }
+      const sents = sentencesOf(script)
+      const badCards = sents.flatMap((x, k) => cardErrors(x).map((c) => `card ${k + 1}: ${c}`))
+      const voiced = assets.chunks.reduce((n: number, c: any) => n + Number(c.seconds), 0), ok = brief ? allowedSeconds(brief) : null
+      const lengthBad = ok && (voiced < ok.min * 0.9 || voiced > ok.max * 1.1) ? [`narration ${Math.round(voiced)}s outside ${Math.round(ok.min)}-${Math.round(ok.max)}s`] : []
+      if (badCards.length || lengthBad.length) throw new StageError('LONGFORM_CONTRACT', [...lengthBad, ...badCards].slice(0, 20).join('; '))
       const { ass, cards } = longformCardsAss(script, timeline)
+      if (cards.length !== sents.length) throw new StageError('LONGFORM_CONTRACT', `${cards.length} cards drawn for ${sents.length} sentences`)
       await writeFile(assPath, ass, 'utf8')
       const seconds = Number((await probe(audio)).duration || assets.narration.seconds)
       const background = join(work, 'background.png')
@@ -175,6 +192,9 @@ export const longformPackageExecutor: StageExecutor = {
     const r = await previous('RENDER'), v = (r?.result as any)?.variants?.[0]
     const p = await previous('PLAN'), script = ((p?.result as any)?.scriptRef ? await blobs.getJson((p!.result as any).scriptRef) : null) as LongformScript | null
     if (!v || !script) throw new StageError('RENDER_MISSING', 'PACKAGE requires the longform RENDER and PLAN')
+    // a Longform job never completes without its upload text and thumbnail
+    if (!longformPackageMetadata(script)) throw new StageError('UPLOAD_PACKAGE_INVALID', 'upload text does not pass the upload rules')
+    if (!v.thumbnailRef || !(await blobs.getBytes(v.thumbnailRef))) throw new StageError('THUMBNAIL_MISSING', 'longform thumbnail is missing')
     const pkg = { schema: 'longform-package/1', profile: LONGFORM_PROFILE_ID, finalRenderRef: v.renderRef, renderHash: v.renderHash, thumbnailRef: v.thumbnailRef, durationSec: v.duration, aspectRatio: '16:9', publishable: true, ...(() => { const m = longformPackageMetadata(script); return { metadata: m, uploadReady: !!m } })(), thumbnailLines: script.thumbnail.lines }
     const stored = await putAddressed(blobs, 'packages', pkg)
     return { outputRef: stored.path, outputHash: sha256(stored.path), result: { packageRef: stored.path, finalRenderRef: v.renderRef, renderHash: v.renderHash, thumbnailRef: v.thumbnailRef, durationSec: v.duration, publishable: true } }

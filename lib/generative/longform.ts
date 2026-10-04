@@ -10,16 +10,19 @@ import { uploadMetadataErrors, uploadPackageText } from './uploadPackage.js'
 export const LONGFORM_PROFILE_ID = 'wisdom_longform'
 export const LONGFORM = {
   canvas: { w: 1920, h: 1080 }, thumb: { w: 1280, h: 720 }, fps: 30,
-  targetSeconds: { min: 60, max: 1800, default: 1500 },
-  // the text column: left 60% of the frame (figure lives in the right 40%)
-  text: { x: 100, maxWidth: 1050, basePx: 150, minPx: 84, maxLines: 3, maxLineChars: 14 },
+  // the Longform contract: 20-30 minutes. A `sample` brief (E2E verification only, never sent by the app) may be short.
+  targetSeconds: { min: 1200, max: 1800, default: 1500 }, sampleSeconds: { min: 30, max: 300 }, lengthTolerance: 0.15,
+  // the text column: left 60% of the frame (figure lives in the right 40%); every card is 2-3 lines with a coloured accent
+  text: { x: 100, maxWidth: 1050, basePx: 150, minPx: 84, minLines: 2, maxLines: 3, maxLineChars: 14 },
   ttsChunkChars: 1200,
   charsPerSecond: 6.2 // measured Korean narration pace of the OpenAI voice, used only to size the script
 } as const
 export const ACCENTS = { red: '#FF3B30', purple: '#B36BFF', green: '#4CFF7A', yellow: '#FFD60A', white: '#FFFFFF' } as const
+// card accents must be a real colour (white is the card's base colour, not an emphasis)
+export const CARD_ACCENTS = ['red', 'purple', 'green', 'yellow'] as const
 export type AccentColor = keyof typeof ACCENTS
 
-export type LongformBrief = { schema: 'generative-brief/1'; profile: 'wisdom_longform'; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number }
+export type LongformBrief = { schema: 'generative-brief/1'; profile: 'wisdom_longform'; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true }
 // one narration sentence and the card shown while it is spoken
 export type LongformSentence = { say: string; show: string[]; accent: string; color: AccentColor }
 export type LongformScript = {
@@ -36,15 +39,34 @@ export function normalizeLongformBrief(input: any): LongformBrief {
   if (kind !== 'topic' && kind !== 'text') throw new Error('input.kind must be topic or text')
   const text = String(input?.text || '').replace(/\s+/g, ' ').trim()
   if (text.length < 4 || text.length > 30000) throw new Error('input.text must be 4..30000 characters')
+  const sample = input?.sample === true, range = sample ? LONGFORM.sampleSeconds : LONGFORM.targetSeconds
   const targetSeconds = Number(input?.targetSeconds ?? LONGFORM.targetSeconds.default)
-  if (!Number.isFinite(targetSeconds) || targetSeconds < LONGFORM.targetSeconds.min || targetSeconds > LONGFORM.targetSeconds.max) throw new Error(`targetSeconds must be ${LONGFORM.targetSeconds.min}..${LONGFORM.targetSeconds.max} for wisdom_longform`)
-  return { schema: 'generative-brief/1', profile: 'wisdom_longform', kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds }
+  if (!Number.isFinite(targetSeconds) || targetSeconds < range.min || targetSeconds > range.max) throw new Error(`targetSeconds must be ${range.min}..${range.max} for wisdom_longform${sample ? ' sample' : ''}`)
+  return { schema: 'generative-brief/1', profile: 'wisdom_longform', kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds, ...(sample ? { sample: true as const } : {}) }
 }
 export const longformBriefHash = (b: LongformBrief) => createHash('sha256').update(canonicalize(b)).digest('hex')
 
 export const sentencesOf = (s: LongformScript) => s.sections.flatMap((x) => x.sentences)
 export const narrationOf = (s: LongformScript) => sentencesOf(s).map((x) => x.say.trim()).join(' ')
 export const estimatedSeconds = (s: LongformScript) => [...narrationOf(s)].length / LONGFORM.charsPerSecond
+// Allowed narration length for a brief: within ±15% of the target, and never outside 20-30 minutes unless a sample.
+export function allowedSeconds(brief: Pick<LongformBrief, 'targetSeconds' | 'sample'>): { min: number; max: number } {
+  const t = brief.targetSeconds, tol = LONGFORM.lengthTolerance
+  const min = t * (1 - tol), max = t * (1 + tol)
+  return brief.sample ? { min, max } : { min: Math.max(min, LONGFORM.targetSeconds.min), max: Math.min(max, LONGFORM.targetSeconds.max) }
+}
+// The card contract for one sentence (also re-checked at RENDER on what is actually drawn).
+export function cardErrors(x: any): string[] {
+  const e: string[] = []
+  const show = Array.isArray(x?.show) ? x.show.map((l: any) => String(l || '').trim()).filter(Boolean) : []
+  if (show.length < LONGFORM.text.minLines || show.length > LONGFORM.text.maxLines) e.push('show.lines')
+  if (show.some((l: string) => [...l].length > LONGFORM.text.maxLineChars)) e.push('show.too_wide')
+  const accent = String(x?.accent || '').trim()
+  if (!accent) e.push('accent.missing')
+  else if (!show.some((l: string) => l.includes(accent))) e.push('accent.not_in_show')
+  if (!(CARD_ACCENTS as readonly string[]).includes(x?.color)) e.push('color.not_accent')
+  return e
+}
 
 export function validateLongformScript(s: any, brief: LongformBrief): string[] {
   const e: string[] = []
@@ -65,20 +87,16 @@ export function validateLongformScript(s: any, brief: LongformBrief): string[] {
       const at = `sections[${i}].sentences[${j}]`
       if (!String(x?.say || '').trim()) e.push(`${at}.say`)
       if ([...String(x?.say || '')].length > LONGFORM.ttsChunkChars) e.push(`${at}.say.too_long`)
-      const show = Array.isArray(x?.show) ? x.show.map((l: any) => String(l || '').trim()).filter(Boolean) : []
-      if (show.length < 1 || show.length > LONGFORM.text.maxLines) e.push(`${at}.show.lines`)
-      if (show.some((l: string) => [...l].length > LONGFORM.text.maxLineChars + 4)) e.push(`${at}.show.too_wide`)
-      if (x?.accent && !show.join(' ').includes(String(x.accent))) e.push(`${at}.accent.not_in_show`)
-      if (!(x?.color in ACCENTS)) e.push(`${at}.color`)
+      e.push(...cardErrors(x).map((c) => `${at}.${c}`))
     }
   }
   if (!n) e.push('sentences')
   // upload text written for THIS video (never script copy / title words / fixed hashtags / generic comment)
   if (n && s?.metadata) e.push(...uploadMetadataErrors({ title: String(s.title || ''), ...s.metadata }, { narration: narrationOf(s as LongformScript), format: 'longform' }).map((x) => `upload.${x}`))
   else if (!s?.metadata) e.push('upload.missing')
-  if (!e.length) {
-    const est = estimatedSeconds(s as LongformScript)
-    if (est < brief.targetSeconds * 0.6 || est > brief.targetSeconds * 1.4) e.push(`length: ~${Math.round(est)}s for a ${brief.targetSeconds}s target`)
+  if (n) {
+    const est = estimatedSeconds(s as LongformScript), ok = allowedSeconds(brief)
+    if (est < ok.min || est > ok.max) e.push(`length: ~${Math.round(est)}s narration, allowed ${Math.round(ok.min)}-${Math.round(ok.max)}s`)
   }
   if (brief.profile !== 'wisdom_longform') e.push('profile')
   return e
@@ -95,31 +113,17 @@ export function longformImagePrompt(s: LongformScript): string {
   ].join(' ')
 }
 
-// ---------------- narration chunks (TTS input limits) and card timing ----------------
-// Consecutive sentences grouped into TTS calls of at most ttsChunkChars; order and text are preserved exactly.
-export function ttsChunks(s: LongformScript, max: number = LONGFORM.ttsChunkChars): Array<{ text: string; sentences: number[] }> {
-  const out: Array<{ text: string; sentences: number[] }> = []
-  sentencesOf(s).forEach((x, k) => {
-    const say = x.say.trim(), last = out[out.length - 1]
-    if (last && [...last.text].length + 1 + [...say].length <= max) { last.text += ' ' + say; last.sentences.push(k) }
-    else out.push({ text: say, sentences: [k] })
-  })
-  return out
+// ---------------- narration: one TTS call per sentence, card timing from the measured audio ----------------
+// Each sentence is synthesized on its own (order and text exactly as planned), so the start of every card is the real
+// start of that sentence in the narration track (cumulative measured audio), not a character-ratio estimate.
+export function ttsChunks(s: LongformScript): Array<{ text: string; sentences: number[] }> {
+  return sentencesOf(s).map((x, k) => ({ text: x.say.trim(), sentences: [k] }))
 }
-// Each sentence is on screen while it is spoken: a chunk's measured audio is shared by its sentences by length.
 export function cardTimeline(s: LongformScript, chunks: Array<{ sentences: number[] }>, chunkSeconds: number[]): Array<{ start: number; end: number; k: number }> {
-  const sents = sentencesOf(s), out: Array<{ start: number; end: number; k: number }> = []
+  const n = sentencesOf(s).length
+  if (chunks.length !== n || chunks.some((c, i) => c.sentences.length !== 1 || c.sentences[0] !== i)) throw new Error('narration chunks must be one per sentence, in order, without gaps or repeats')
   let clock = 0
-  chunks.forEach((c, i) => {
-    const dur = chunkSeconds[i], total = c.sentences.reduce((n, k) => n + [...sents[k].say].length, 0) || 1
-    let acc = 0
-    for (const k of c.sentences) {
-      const a = clock + dur * acc / total; acc += [...sents[k].say].length
-      out.push({ start: Number(a.toFixed(2)), end: Number((clock + dur * acc / total).toFixed(2)), k })
-    }
-    clock += dur
-  })
-  return out
+  return chunks.map((c, i) => { const start = clock; clock += chunkSeconds[i]; return { start: Number(start.toFixed(3)), end: Number(clock.toFixed(3)), k: c.sentences[0] } })
 }
 
 // ---------------- ASS: large left text cards (video) and the thumbnail ----------------
@@ -150,8 +154,8 @@ export function longformCardsAss(s: LongformScript, timeline: Array<{ start: num
     const x = sents[t.k], show = x.show.map((l) => l.trim()).filter(Boolean)
     if (!show.length || !(t.end > t.start)) continue
     const fs = cardFontSize(show)
-    // \an4 = left edge, vertically centred on the frame: the block sits in the dark left column
-    lines.push(`Dialogue: 1,${assTime(t.start)},${assTime(t.end)},Card,,0,0,0,,{\\an4\\pos(${LONGFORM.text.x},${LONGFORM.canvas.h / 2})\\fs${fs}\\fsp2\\fad(120,0)}${show.map((l) => colourLine(l, x.accent, x.color)).join('\\N')}`)
+    // \an4 = left edge, vertically centred on the frame: the block sits in the dark left column (hard cut, no fade)
+    lines.push(`Dialogue: 1,${assTime(t.start)},${assTime(t.end)},Card,,0,0,0,,{\\an4\\pos(${LONGFORM.text.x},${LONGFORM.canvas.h / 2})\\fs${fs}\\fsp2}${show.map((l) => colourLine(l, x.accent, x.color)).join('\\N')}`)
     cards.push({ start: t.start, end: t.end, lines: show, fs })
   }
   return { ass: [...lines, ''].join('\n'), cards }
@@ -181,29 +185,4 @@ export function longformPackageMetadata(s: LongformScript) {
   if (uploadMetadataErrors(m, { narration: narrationOf(s), format: 'longform' }).length) return null
   const t = uploadPackageText(m)
   return { title: t.title, description: t.descriptionWithHashtags, tags: t.tags, hashtags: t.hashtags, pinnedComment: t.pinnedComment }
-}
-
-// ---------------- deterministic script for a user-supplied text (no model) ----------------
-// Only for kind=text: every sentence of the user's own text is narrated in order; the card shows that sentence broken
-// into <=3 short lines and colours its longest word. A topic needs the model (a 20-30 minute script cannot be invented).
-export function deterministicLongformScript(brief: LongformBrief): LongformScript {
-  const sents = brief.text.split(/(?<=[.!?。！？])\s+/).map((x) => x.trim()).filter(Boolean)
-  const colors: AccentColor[] = ['red', 'purple', 'green', 'yellow']
-  const toLines = (t: string) => {
-    const words = t.replace(/[.!?。！？,]+$/g, '').split(/\s+/), out: string[] = []
-    for (const w of words) { const l = out[out.length - 1]; if (l && [...(l + ' ' + w)].length <= LONGFORM.text.maxLineChars) out[out.length - 1] = l + ' ' + w; else out.push(w) }
-    return out.length <= 3 ? out : [out.slice(0, out.length - 2).join(' '), ...out.slice(-2)].map((l) => l.slice(0, LONGFORM.text.maxLineChars + 4))
-  }
-  const sentences: LongformSentence[] = sents.map((say, k) => {
-    const show = toLines(say), accent = [...show.join(' ').split(/\s+/)].sort((a, b) => b.length - a.length)[0] || ''
-    return { say, show, accent, color: colors[k % colors.length] }
-  })
-  const title = sents[0]?.slice(0, 40) || brief.text.slice(0, 40)
-  return {
-    schema: 'wisdom-longform-script/1', title, hook: sents[0] || title,
-    figure: { name: 'sage', imagePrompt: 'a calm elderly East Asian sage in a dark simple robe, thoughtful expression' },
-    thumbnail: { lines: [{ text: '모르면', color: 'white' }, { text: '평생 후회할', color: 'red' }, { text: '한 가지', color: 'green' }] },
-    metadata: { description: title, tags: ['지혜', '인생', '철학', '명언'], hashtags: ['지혜', '인생', '철학'], pinnedComment: '오늘 이야기에서 가장 마음에 남은 문장은 무엇인가요?' },
-    sections: [{ id: 's1', sentences }]
-  }
 }
