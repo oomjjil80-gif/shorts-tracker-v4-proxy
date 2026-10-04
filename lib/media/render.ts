@@ -45,7 +45,7 @@ export function extractRenderPlan(payload: any): { cuts: RenderPlanCut[]; total:
 
 const escFilterPath = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
 
-export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boolean; assPath: string; fontsDir: string; hasOverlays: boolean; sourceFraming?: SourceFraming; wisdomLayout?: boolean; dna?: ScreenDna }): string {
+export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boolean; assPath: string; fontsDir: string; hasOverlays: boolean; sourceFraming?: SourceFraming; wisdomLayout?: boolean; dna?: ScreenDna; voiceoverInputIndex?: number; sourceMixVolume?: number; voiceMixVolume?: number }): string {
   const parts: string[] = []
   const embedded = o.sourceFraming?.crop ?? null
   const dna = o.dna ?? COMMON_SHORTS_SCREEN_DNA
@@ -64,14 +64,23 @@ export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boo
     if (o.sourceHasAudio && !c.mute) parts.push(`[${i}:a]asetpts=PTS-STARTPTS,aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${c.volume},${fade}[a${i}]`)
     else parts.push(`anullsrc=r=44100:cl=stereo,atrim=duration=${c.duration.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`)
   })
-  parts.push(`${cuts.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${cuts.length}:v=1:a=1[vc][aout]`)
+  const mixedVoice = Number.isInteger(o.voiceoverInputIndex)
+  parts.push(`${cuts.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${cuts.length}:v=1:a=1[vc][${mixedVoice ? 'asrc' : 'aout'}]`)
+  if (mixedVoice) {
+    const total = cuts.reduce((n, c) => n + c.duration, 0)
+    const sourceVol = Number.isFinite(o.sourceMixVolume) ? o.sourceMixVolume! : 0.24
+    const voiceVol = Number.isFinite(o.voiceMixVolume) ? o.voiceMixVolume! : 1
+    parts.push(`[asrc]volume=${sourceVol}[aduck]`)
+    parts.push(`[${o.voiceoverInputIndex}:a]asetpts=PTS-STARTPTS,aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${voiceVol},apad,atrim=duration=${total.toFixed(3)}[avo]`)
+    parts.push('[aduck][avo]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]')
+  }
   parts.push(o.hasOverlays ? `[vc]ass=filename='${escFilterPath(o.assPath)}':fontsdir='${escFilterPath(o.fontsDir)}'[vout]` : `[vc]null[vout]`)
   return parts.join(';\n')
 }
 
 export type RenderResult = { outPath: string; overlayEvents: OverlayEvent[]; assPath: string | null; ass: string; total: number; cuts: RenderPlanCut[]; sourceHasAudio: boolean; sourceFraming: SourceFraming | null; filterGraph: string }
 
-export async function renderPayload(payload: any, o: { sourceFile: string; sourceHasAudio: boolean; workDir: string; outPath: string; signal?: AbortSignal; fontsDir?: string; sourceFraming?: SourceFraming; dna?: ScreenDna }): Promise<RenderResult> {
+export async function renderPayload(payload: any, o: { sourceFile: string; sourceHasAudio: boolean; workDir: string; outPath: string; signal?: AbortSignal; fontsDir?: string; sourceFraming?: SourceFraming; dna?: ScreenDna; voiceoverFile?: string | null; sourceMixVolume?: number; voiceMixVolume?: number }): Promise<RenderResult> {
   const { cuts, total } = extractRenderPlan(payload)
   await mkdir(o.workDir, { recursive: true })
   const built = assFromPayload({ ...payload, totalDuration: total })
@@ -79,11 +88,13 @@ export async function renderPayload(payload: any, o: { sourceFile: string; sourc
   const assPath = join(o.workDir, 'overlay.ass')
   if (hasOverlays) await writeFile(assPath, built.ass, 'utf8')
   const graphPath = join(o.workDir, 'graph.txt')
-  const filterGraph = buildFilterGraph(cuts, { sourceHasAudio: o.sourceHasAudio, assPath, fontsDir: o.fontsDir ?? FONTS_DIR, hasOverlays, sourceFraming: o.sourceFraming, wisdomLayout: payload?.editorialPlan?.profile === 'wisdom-v1', dna: o.dna })
+  const voiceoverInputIndex = o.voiceoverFile ? cuts.length : undefined
+  const filterGraph = buildFilterGraph(cuts, { sourceHasAudio: o.sourceHasAudio, assPath, fontsDir: o.fontsDir ?? FONTS_DIR, hasOverlays, sourceFraming: o.sourceFraming, wisdomLayout: payload?.editorialPlan?.profile === 'wisdom-v1', dna: o.dna, voiceoverInputIndex, sourceMixVolume: o.sourceMixVolume, voiceMixVolume: o.voiceMixVolume })
   await writeFile(graphPath, filterGraph, 'utf8')
 
   const args = ['-y']
   for (const c of cuts) args.push('-ss', c.trimStart.toFixed(3), '-t', c.duration.toFixed(3), '-i', o.sourceFile)
+  if (o.voiceoverFile) args.push('-i', o.voiceoverFile)
   args.push('-filter_complex_script', graphPath, '-map', '[vout]', '-map', '[aout]',
     '-c:v', 'libx264', '-threads:v', String(VIDEO_ENCODER_THREADS), '-profile:v', 'high', '-level', '4.1', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', '19', '-maxrate', '14M', '-bufsize', '28M', '-r', String(OUTPUT.fps), '-g', '60', '-sc_threshold', '0',
     '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2',
