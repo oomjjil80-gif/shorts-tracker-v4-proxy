@@ -43,6 +43,8 @@ export const renderExecutor: StageExecutor = {
     const work = await mkdtemp(join(tmpdir(), 'tracker-render-'))
     try {
       const info = await probe(file.path)
+      if (!(Number(info.width) > 0 && Number(info.height) > 0)) throw new StageError('SOURCE_UNDECODABLE', 'source dimensions are missing')
+      const sourceSize = { width: Number(info.width), height: Number(info.height) }
       // Deterministic source normalization: if a nominally vertical upload contains the real picture inside persistent
       // black title/padding bands, remove those bands and use a blurred 9:16 fill. It is derived only from verified bytes.
       const baseFraming = await detectSourceFraming(file.path)
@@ -51,7 +53,7 @@ export const renderExecutor: StageExecutor = {
         if (signal.aborted) throw new Error('aborted')
         const manifest: any = await blobs.getJson(v.manifestRef)
         if (!manifest || manifest.manifestHash !== v.manifestHash) throw new StageError('MANIFEST_MISSING', `manifest blob not found or altered: ${v.manifestRef}`)
-        const sourceFraming = applyCleanEdgeCrop(baseFraming, { width: info.width, height: info.height }, manifest.payload?.sourceCleanEdgeCrop)
+        const sourceFraming = applyCleanEdgeCrop(baseFraming, sourceSize, manifest.payload?.sourceCleanEdgeCrop)
         for (const id of manifest.identity || []) if (id.sha256 && asset.sha256 && id.sha256 !== asset.sha256) throw new StageError('SOURCE_IDENTITY_MISMATCH', 'manifest source sha256 differs from the registry')
         const dir = join(work, v.variantId)
         const outPath = join(dir, 'final.mp4')
