@@ -49,8 +49,10 @@ const percentileRank = (values: number[]) => {
 export function computeMotionPeaks(scores: Array<{ t: number; score: number }>, max = 40, minGapSec = 0.18): MotionPeak[] {
   if (!scores.length) return []
   const ranked = scores.map((x) => ({ t: r3(x.t), score: r3(x.score) })).sort((a, b) => a.score - b.score)
-  const p80 = ranked[Math.floor((ranked.length - 1) * 0.8)]?.score ?? 0
-  const threshold = Math.max(0.04, p80)
+  const p65 = ranked[Math.floor((ranked.length - 1) * 0.65)]?.score ?? 0
+  // Keep a broad candidate set; semantic effect cues choose only the nearest peak. Too strict a percentile
+  // would erase a real second/third hit simply because another frame changed more strongly.
+  const threshold = Math.max(0.04, p65)
   const picked: MotionPeak[] = []
   for (const c of [...ranked].sort((a, b) => b.score - a.score || a.t - b.t)) {
     if (c.score < threshold) break
