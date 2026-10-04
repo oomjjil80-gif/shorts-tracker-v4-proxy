@@ -7,10 +7,10 @@ export const FFMPEG: string = (process.env.FFMPEG_PATH || (ffmpegPath as unknown
 
 export type RunResult = { code: number; stdout: Buffer; stderr: string }
 
-export function runFfmpeg(args: string[], opts: { signal?: AbortSignal; timeoutMs?: number; collectStdout?: boolean } = {}): Promise<RunResult> {
+export function runFfmpeg(args: string[], opts: { signal?: AbortSignal; timeoutMs?: number; collectStdout?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     if (!FFMPEG) return reject(new Error('ffmpeg binary not available'))
-    const p = spawn(FFMPEG, ['-hide_banner', '-nostdin', ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const p = spawn(FFMPEG, ['-hide_banner', '-nostdin', ...args], { stdio: ['ignore', 'pipe', 'pipe'], env: opts.env ? { ...process.env, ...opts.env } : process.env })
     const out: Buffer[] = []
     let err = ''
     let done = false
