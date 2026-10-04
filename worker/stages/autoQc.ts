@@ -51,7 +51,7 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
         const bytes = await blobs.getBytes(v.renderRef)
         // a missing/altered artifact is a FAIL of the whole variant, never a skipped check
         const dir = join(work, v.variantId)
-        let gate, contentGate: any = null, contactSheetRef: string | null = null, posterRef: string | null = null, outputInfo: any = null
+        let gate, contentGate: any = null, posterRef: string | null = null, outputInfo: any = null
         if (!manifest || !bytes) {
           gate = { decision: 'BLOCK', reasons: ['UNKNOWN: artifact.available'], counts: { pass: 0, fail: 0, unknown: 1, requiredPass: 0, requiredTotal: 1 }, checks: [{ id: 'artifact.available', required: true, status: 'UNKNOWN', evidence: { manifest: !!manifest, render: !!bytes } }] }
         } else {
@@ -117,7 +117,6 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
             await extractJpeg(renderPath, Math.min(1, (v.duration ?? 2) / 2), posterPath, 'scale=540:-2')
             const poster = await readFile(posterPath); posterRef = (await blobs.putBytes(`renders/${sha256(poster)}.jpg`, poster, 'image/jpeg')).path
           } catch { /* optional */ }
-          try { const sheet = await readFile(sheetPath); contactSheetRef = (await blobs.putBytes(`renders/${sha256(sheet)}.jpg`, sheet, 'image/jpeg')).path } catch { /* optional */ }
         }
         if (!contentGate) contentGate = evaluateGate([{ id: 'content.evaluated', required: true, status: 'UNKNOWN', evidence: { reason: 'render artifact unavailable' } }])
         await putAddressed(blobs, `qc/render/${v.renderHash}`, gate)
@@ -218,7 +217,7 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
         }
         const referenceGate = jobReferenceProfile ? evaluateReferenceConformance(jobReferenceProfile, { planReference: (planRun?.result as any)?.reference ?? null, measurements }) : null
         const publishable = gate.decision === 'PASS' && contentGate.decision === 'PASS' && (!referenceGate || referenceGate.decision === 'PASS')
-        results.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, renderRef: v.renderRef, renderHash: v.renderHash, duration: v.duration, contactSheetRef, posterRef, gate, contentGate, referenceGate, publishable })
+        results.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, renderRef: v.renderRef, renderHash: v.renderHash, duration: v.duration, contactSheetRef: null, posterRef, gate, contentGate, referenceGate, publishable })
       }
       for (const r of results) {
         if (r.gate.decision !== 'PASS') console.log(`[AUTO_QC] job=${job.id} variant=${r.variantId} technical=${JSON.stringify(r.gate.reasons)} failed=${JSON.stringify((r.gate as any).checks?.filter((x:any)=>x.status !== 'PASS') ?? [])}`)
