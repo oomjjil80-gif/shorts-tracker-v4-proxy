@@ -144,6 +144,11 @@ export const longformRenderExecutor: StageExecutor = {
     if (!img || !aud) throw new StageError('ASSET_BYTES_MISSING', 'longform image or narration bytes are missing')
     const work = await mkdtemp(join(tmpdir(), 'longform-render-'))
     try {
+      // libass uses Fontconfig even when fontsdir is supplied. Railway has no system Fontconfig config, so give this
+      // render a tiny self-contained config that scans only our bundled Korean font and writes cache only under /tmp.
+      const fontConfig = join(work, 'fonts.conf')
+      await writeFile(fontConfig, `<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "fonts.dtd"><fontconfig><dir>${FONTS_DIR}</dir><cachedir>${work}/font-cache</cachedir></fontconfig>`, 'utf8')
+      const ffmpegEnv = { FONTCONFIG_FILE: fontConfig, FONTCONFIG_PATH: work }
       const image = join(work, 'image.jpg'), audio = join(work, 'narration.m4a'), assPath = join(work, 'cards.ass'), out = join(work, 'final.mp4'), thumbAss = join(work, 'thumb.ass'), thumb = join(work, 'thumbnail.jpg')
       await writeFile(image, img); await writeFile(audio, aud)
       // contract on what is actually voiced and drawn: one narration chunk per sentence in order (no gap/repeat),
@@ -166,10 +171,10 @@ export const longformRenderExecutor: StageExecutor = {
       if (audioBad.length) throw new StageError('LONGFORM_CONTRACT', `narration audio: ${audioBad.join('; ')}`)
       const background = join(work, 'background.png')
       await runOk(longformBackgroundArgv({ image, out: background }), { signal })
-      await runOk(longformVideoArgv({ background, audio, ass: assPath, fontsDir: FONTS_DIR, out, seconds }), { signal, timeoutMs: 90 * 60_000 })
+      await runOk(longformVideoArgv({ background, audio, ass: assPath, fontsDir: FONTS_DIR, out, seconds }), { signal, timeoutMs: 90 * 60_000, env: ffmpegEnv })
       // click thumbnail: the same single image (figure RIGHT), the planner's re-written punch lines on the LEFT
       const t = thumbnailArgv({ image, lines: script.thumbnail.lines, assPath: thumbAss, fontsDir: FONTS_DIR, out: thumb })
-      await writeFile(thumbAss, t.ass, 'utf8'); await runOk(t.argv, { signal })
+      await writeFile(thumbAss, t.ass, 'utf8'); await runOk(t.argv, { signal, env: ffmpegEnv })
       // fatal-only output checks (broken file / wrong canvas / missing narration / wrong length)
       const info = await probe(out), tinfo = await probe(thumb)
       const problems = [
