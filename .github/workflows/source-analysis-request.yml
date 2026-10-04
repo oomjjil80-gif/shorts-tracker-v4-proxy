@@ -15,11 +15,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - name: Read request
         id: request
         shell: bash
         run: |
-          FILE=$(jq -r '[.head_commit.added[]?, .head_commit.modified[]?] | map(select(test("^analysis-requests/.*\\.json$"))) | last // empty' "$GITHUB_EVENT_PATH")
+          FILE=$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" -- 'analysis-requests/*.json' | tail -1)
           test -n "$FILE"
           test -f "$FILE"
           URL=$(jq -r '.sourceUrl' "$FILE")
