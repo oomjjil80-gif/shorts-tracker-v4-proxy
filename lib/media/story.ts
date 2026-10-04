@@ -64,7 +64,7 @@ export const overlap = (a: Range, b: Range) => Math.max(0, Math.min(a.end, b.end
 export const EFFECT_SNAP_MAX_SEC = 0.65
 export function snapEffectsToMotionPeaks(captions: StoryCaption[], a: SourceAnalysis): { captions: StoryCaption[]; warnings: string[] } {
   const peaks = (a.motionPeaks || []).filter((p) => Number.isFinite(p.t) && p.t >= 0 && p.t < a.media.duration)
-  if (!peaks.length) return { captions, warnings: [] }
+  if (!peaks.length) return { captions: captions.map((c) => ({ ...c })), warnings: [] }
   const used = new Set<number>(), warnings: string[] = []
   const out = captions.map((c) => ({ ...c }))
   const effects = out.map((c, i) => ({ c, i })).filter((x) => x.c.kind === 'effect').sort((x, y) => x.c.start - y.c.start)
