@@ -11,6 +11,10 @@ import { openAiWisdomPlan, applyVisualBible } from '../../lib/generative/planner
 import { evaluateWisdomSemanticQc } from '../../lib/generative/semanticQc.js'
 import { SHORTS_SCREEN_DNA, screenDnaSegmentArgv, screenDnaSegmentFilter, type AssetGeometryReceipt } from '../../lib/media/screenDna.js'
 
+export function wisdomCacheEntryIsCanonical(entry:any, ref:string, digest:string){
+ return !!entry&&entry.ref===ref&&(!entry.sha256||entry.sha256===digest)
+}
+
 export function wisdomHeadline(title:string){
  const t=String(title||'').trim().replace(/\s+/g,' ')
  if(!t)return ''
@@ -111,13 +115,24 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   for(const [i,b] of script.beats.entries()){
    if(signal.aborted)throw new Error('aborted')
    let {im,au}=cached[i]; const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256('tts-v1|'+b.narration)
+   const imageCacheHit=!!im, ttsCacheHit=!!au
    if(im)reused++;else{im=await image(b.imagePrompt,apiKey);generated++}
    if(au)reused++;else{au=await tts(b.narration,apiKey);generated++}
    const ih=sha256(im.bytes), ah=sha256(au.bytes)
    const ip=`generative-assets/images/${ih}.jpg`, ap=`generative-assets/audio/${ah}.mp3`
-   await blobs.putBytes(ip,im.bytes,im.contentType); await blobs.putBytes(ap,au.bytes,au.contentType); bytes+=im.bytes.length+au.bytes.length
-   await blobs.putJson('generative-cache/image/'+ik+'.json',{ref:ip,sha256:ih,contentType:im.contentType,provider:im.provider,model:im.model})
-   await blobs.putJson('generative-cache/tts/'+ak+'.json',{ref:ap,sha256:ah,contentType:au.contentType,provider:au.provider,model:au.model})
+   // Cache hits already point at durable Blob bytes. Do not issue another PUT/HEAD cycle for the same asset or cache JSON.
+   // If old metadata is inconsistent with the bytes we just read, repair it once into the canonical content-addressed path.
+   const imageCacheValid=imageCacheHit&&wisdomCacheEntryIsCanonical(im,ip,ih)
+   const ttsCacheValid=ttsCacheHit&&wisdomCacheEntryIsCanonical(au,ap,ah)
+   if(!imageCacheValid){
+    await blobs.putBytes(ip,im.bytes,im.contentType)
+    await blobs.putJson('generative-cache/image/'+ik+'.json',{ref:ip,sha256:ih,contentType:im.contentType,provider:im.provider,model:im.model})
+   }
+   if(!ttsCacheValid){
+    await blobs.putBytes(ap,au.bytes,au.contentType)
+    await blobs.putJson('generative-cache/tts/'+ak+'.json',{ref:ap,sha256:ah,contentType:au.contentType,provider:au.provider,model:au.model})
+   }
+   bytes+=im.bytes.length+au.bytes.length
    items.push({beatId:b.id,durationSec:b.durationSec,narration:b.narration,image:{status:'ready',ref:ip,sha256:ih,contentType:im.contentType,provider:im.provider,model:im.model},tts:{status:'ready',ref:ap,sha256:ah,contentType:au.contentType,provider:au.provider,model:au.model}})
   }
   const manifest={schema:'generative-assets/1',profile:'wisdom',scriptRef,items,...(anchoredBeatId?{namedThinkerAnchor:{beatId:anchoredBeatId,imagePrompt:script.beats[0].imagePrompt}}:{})}
