@@ -207,7 +207,7 @@ test('11. fail-closed: semantic invalid/failed => heuristic plan is never conten
   assert.ok(g.checks.some((c: any) => c.status === 'UNKNOWN'))
 })
 
-test('prompt version is bumped (cache + PLAN inputHash separate old and new prompt behaviour)', () => assert.equal(AI_PLANNER_PROMPT_VERSION, 'source-story-analysis/15'))
+test('prompt version is bumped (cache + PLAN inputHash separate old and new prompt behaviour)', () => assert.equal(AI_PLANNER_PROMPT_VERSION, 'source-story-analysis/16'))
 test('normalization does not turn explicit semantic uncertainty into PASS', async () => {
   const { r } = await run([{ body: { ...pointy, storyType: 'unclear', confidence: 0.3 } }])
   assert.equal(r.status, 'low_confidence')
