@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { sha256 } from '../../lib/jobs/blobs.js'
@@ -33,6 +33,10 @@ export const renderExecutor: StageExecutor = {
   inputHash: (job) => sha256(`render|v2|${job.id}|${job.planRev}`),
   async run({ job, attempt, blobs, previous, resolveSourceAsset, resolveSourceFile, signal }) {
     const compile = await previous('COMPILE')
+    const assetRun = await previous('ASSET')
+    const voiceoverRef = (assetRun?.result as any)?.voiceover === true ? String((assetRun?.result as any)?.voiceoverRef || '') : ''
+    const sourceMixVolume = Number((assetRun?.result as any)?.sourceVolume)
+    const voiceMixVolume = Number((assetRun?.result as any)?.voiceVolume)
     const compiled = compiledVariantsFromRun(compile)
     if (!compiled.length) throw new StageError('COMPILE_MISSING', 'RENDER requires a completed COMPILE stage')
     const todo = compiled.filter((v) => v.gate?.decision === 'PASS')
@@ -42,6 +46,14 @@ export const renderExecutor: StageExecutor = {
     const file = await resolveSourceFile(asset)
     const work = await mkdtemp(join(tmpdir(), 'tracker-render-'))
     try {
+      let voiceoverFile: string | null = null
+      if (voiceoverRef) {
+        if (!voiceoverRef.startsWith('source-shorts-assets/audio/')) throw new StageError('VOICEOVER_REF_INVALID', 'source Shorts voiceover ref is invalid')
+        const voiceBytes = await blobs.getBytes(voiceoverRef)
+        if (!voiceBytes) throw new StageError('VOICEOVER_MISSING', 'source Shorts voiceover bytes are missing')
+        voiceoverFile = join(work, 'voiceover.mp3')
+        await writeFile(voiceoverFile, voiceBytes)
+      }
       const info = await probe(file.path)
       if (!(Number(info.width) > 0 && Number(info.height) > 0)) throw new StageError('SOURCE_UNDECODABLE', 'source dimensions are missing')
       const sourceSize = { width: Number(info.width), height: Number(info.height) }
@@ -58,7 +70,7 @@ export const renderExecutor: StageExecutor = {
         const dir = join(work, v.variantId)
         const outPath = join(dir, 'final.mp4')
         let r
-        try { r = await renderPayload(manifest.payload, { sourceFile: file.path, sourceHasAudio: info.hasAudio, workDir: dir, outPath, signal, sourceFraming }) }
+        try { r = await renderPayload(manifest.payload, { sourceFile: file.path, sourceHasAudio: info.hasAudio, workDir: dir, outPath, signal, sourceFraming, voiceoverFile, sourceMixVolume, voiceMixVolume }) }
         catch (e: any) { throw e instanceof UnsupportedManifestError ? new StageError('MANIFEST_UNSUPPORTED', e.message) : e }
         const bytes = await readFile(outPath)
         const renderHash = sha256(bytes)
@@ -67,7 +79,7 @@ export const renderExecutor: StageExecutor = {
         // Screen DNA execution receipt: the exact graph this attempt ran, bound to its manifest, source and output bytes.
         // composer: who executed the Common Screen DNA geometry — ASSET (pre-composed source) or this RENDER (raw source).
         const geometryReceipt: RenderGeometryReceipt = { schema: 'screen-dna-receipt/1', stage: 'RENDER', jobId: job.id, attempt, contract: COMMON_SHORTS_SCREEN_DNA, composer: manifest.payload?.editorialPlan?.profile === 'wisdom-v1' ? 'asset' : 'render', manifestHash: v.manifestHash, sourceSha256: String(asset.sha256 ?? ''), sourceWidth: info.width, sourceHeight: info.height, filterGraphSha256: filterGraphSha256(r.filterGraph), videoFilters: renderVideoFilters(r.filterGraph), renderHash }
-        out.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, manifestRef: v.manifestRef, renderRef: stored.path, renderHash, bytes: bytes.length, duration: rInfo.duration, overlayEvents: r.overlayEvents, assSha256: r.assPath ? sha256(r.ass) : null, sourceFraming, geometryReceipt })
+        out.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, manifestRef: v.manifestRef, renderRef: stored.path, renderHash, bytes: bytes.length, duration: rInfo.duration, overlayEvents: r.overlayEvents, assSha256: r.assPath ? sha256(r.ass) : null, sourceFraming, geometryReceipt, voiceover: voiceoverFile ? { ref: voiceoverRef, sourceVolume: Number.isFinite(sourceMixVolume) ? sourceMixVolume : 0.24, voiceVolume: Number.isFinite(voiceMixVolume) ? voiceMixVolume : 1 } : null })
       }
       return { outputRef: out[0].renderRef, outputHash: out[0].renderHash, result: { variants: out, sourceFraming: out[0]?.sourceFraming ?? baseFraming }, provider: 'ffmpeg', model: 'libx264+libass' }
     } finally { await rm(work, { recursive: true, force: true }); await file.cleanup() }
