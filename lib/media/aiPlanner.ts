@@ -6,7 +6,7 @@ import { EXCLUDE_REASONS, OFFSTORY_REASONS, PACING_REASONS, STORY_LIMITS, STORY_
 import { planPresentation, PRESENTATION_LIMITS } from './presentation.js'
 import { storyBeats, totalSeconds } from './plan.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/14'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/15'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
 const captionBody = {
@@ -43,17 +43,20 @@ export function storyPrompt(a: SourceAnalysis): string {
   const signals = {
     durationSec: a.media.duration, hasAudio: a.media.hasAudio,
     scenes: a.scenes, usable: a.usable, black: a.ranges.black, frozen: a.ranges.freeze, silent: a.ranges.silent,
-    perSecond: a.timeline.map((s) => [s.t, s.visual, s.audioDb])
+    perSecond: a.timeline.map((s) => [s.t, s.visual, s.audioDb]), motionPeaks: a.motionPeaks ?? []
   }
   return [
     'You are the story editor and mobile presentation editor for vertical Korean YouTube Shorts cut from ONE source video. The image is a keyframe sheet; each tile is labeled with its SOURCE time in seconds.',
     'Describe the story structure and a small set of GROUNDED on-screen Korean presentation cues. ALL times are SOURCE seconds within the video duration. Every range MUST have end > start by at least 0.5 seconds: a single moment (the payoff, a caption) is a short WINDOW, never start == end.',
     'PRIMARY STORY RULE: choose the strongest self-contained viewer story, not the uploader\'s full source-file purpose. Human/animal action, reaction, relationship, humor, surprise or emotion normally outranks a later product explanation/demo when that human/animal arc already has its own payoff.',
     'EDITORIAL DNA: preserve the real event as curiosity -> development -> payoff. When visible action supports it, add a simple character/relationship/intention/misunderstanding angle that makes the moment funnier. Never force jokes onto a strong emotional story.',
+    'BENCHMARK BAR: write at the level of a top Korean source-first Shorts editor, not at the level of an AI explainer. The source must gain a point of view. If the picture already tells the fact, do not narrate that fact. Find the human/animal intention, relationship, misunderstanding, contrast, or emotional meaning that makes the same footage worth rewatching.',
+    'VOICE OF TEXT: short spoken Korean that a witty friend would actually say while watching. Avoid report-style phrases such as "합니다", "보이는데요", "상황입니다" unless the story genuinely needs factual context. A strong emotional source may stay restrained; a comic source should have character and timing rather than generic jokes.',
     'DUBBING/CAPTION RULE: explain as little as possible. Prefer short reactions, character lines, relationship cues or unexpected interpretations over describing visible action. The source video stays primary.',
     'ENDING RULE: protect the strongest payoff and end immediately after it. Do not explain or repeat the conclusion after the payoff.',
     'MANDATORY OPENING AUDIT: inspect the 0s tile and the first ~2 seconds before choosing causalStart. A Korean upload-ready Short must NOT begin on PROMINENT burned-in Chinese/English/Japanese/other foreign-language title cards, large captions, product labels, or other viewer-facing source text. Mark the actual span of that prominent opening text as foreign_text and/or intro_confusion, and place causalStart AFTER it disappears. Even a brief large foreign-language title flash at the first frame is not acceptable as the opening.',
-    'WHOLE-VIDEO FOREIGN-TEXT AUDIT: scan EVERY tile of the keyframe sheet, not only the opening. Burned-in Chinese (or other non-Korean) captions, title cards or labels often reappear in the middle or at the end. Report EACH such span as its own excludeRanges entry with reason foreign_text and its real start/end. A span inside the selected story that the story cannot lose must still be reported (it is then covered or masked at render, never silently kept).',
+    'WHOLE-VIDEO FOREIGN-TEXT AUDIT: scan EVERY tile of the keyframe sheet, not only the opening. Burned-in Chinese (or other non-Korean) captions, title cards or labels often reappear in the middle or at the end. Report EACH such span as its own excludeRanges entry with reason foreign_text and its real start/end.',
+    'ZERO-TOLERANCE FOREIGN TEXT: the final selected edit may not flash prominent foreign viewer-facing text even briefly. Do NOT shorten its exposure as a workaround. Exclude the whole contaminated span. If indispensable payoff footage itself contains prominent foreign text and there is no clean adjacent/repeated view, choose a different clean payoff/story or return storyType="unclear"; never silently keep it.',
     'FOREIGN-TEXT SCOPE: foreign_text means prominent viewer-facing text that competes with the Korean edit. Do NOT classify a tiny persistent CCTV timestamp/date, camera ID, channel watermark, corner logo, or other small technical metadata as foreign_text that removes footage. If such tiny metadata persists, mention it only in publishabilityWarnings.',
     'MANDATORY TAIL AUDIT: inspect the final ~35% of the keyframe sheet separately. If people/animals finish their action or leave and the source switches to a product/robot/device operating, cleaning, demonstrating features, returning to dock, showing branding/titles, or otherwise explaining the product, mark that complete tail product_demo and/or post_payoff through the file end.',
     'Do NOT treat a late product/device activation or feature demonstration as the payoff merely because it explains the joke. If a human/animal payoff and product resolution are both plausible, prefer the human/animal payoff. If uncertain, use storyType="unclear" or lower confidence.',
@@ -68,12 +71,12 @@ export function storyPrompt(a: SourceAnalysis): string {
     `  * Add 1–${PRESENTATION_LIMITS.contexts} kind="context" cues (<=${STORY_LIMITS.maxCaptionChars} chars), spaced across meaningful story changes. They are short explanatory captions, not transcript subtitles.`,
     '  * CAPTION WRITING RULE (context/payoff): NEVER restate what the viewer can already see (bad: "여자가 남자를 때린다", "아이가 기어간다"). Each caption must ADD something the picture alone does not give: context (who/why), curiosity (what happens next), the relationship between the people, the meaning of the moment, or the payoff\'s punch. If a caption adds none of these, leave it out. Write short spoken Korean (one breath, 1–2 short lines), like a friend commenting, not a narrator describing.',
     `  * Add optional kind="payoff" over the actual payoff (<=${STORY_LIMITS.maxCaptionChars} chars) when it sharpens the punchline.`,
-    `  * kind="effect" = a short sound-word (<=${STORY_LIMITS.maxEffectChars} chars, e.g. "퍽!", "쾅!", "철썩!") drawn large in the middle of the video. Add ONE effect cue PER visible impact/hit at its exact moment (start = the contact frame, end ~0.4–0.6s later): three separate hits = three separate "퍽!" cues with three different start times. Never merge repeated hits into one cue and never add an effect where nothing physically hits. At most ${PRESENTATION_LIMITS.effects} effects; they do not use the caption budget.`,
+    `  * kind="effect" = a short sound-word (<=${STORY_LIMITS.maxEffectChars} chars, e.g. "퍽!", "쾅!", "철썩!") drawn large in the middle of the video. Add ONE effect cue PER visible impact/hit at its exact moment: three separate hits = three separate "퍽!" cues with three different start times. Never merge repeated hits into one cue and never add an effect where nothing physically hits. At most ${PRESENTATION_LIMITS.effects} effects; they do not use the caption budget. The measured motionPeaks list contains precise source-frame change timestamps: when an impact is visible, anchor the cue start to the nearest matching motionPeak; use a different peak for each separate hit.`,
     '  * Every cue needs a visual basis explaining what on screen justifies the words. Avoid long sentences.',
     '  * Aim for a new timed context/payoff caption roughly every 3–5 seconds of active story so the mobile screen does not feel unattended, while allowing a purposeful quiet beat.',
     '- publishabilityWarnings: remaining issues such as tiny persistent timestamps/watermarks. Put tiny metadata here instead of excluding the story.',
     '- storyType + confidence: be honest; use unclear and low confidence if you cannot tell.',
-    'Measured signals (per second: [t, visualChange, audioDb]):', JSON.stringify(signals)
+    'Measured signals (per second plus precise motionPeaks):', JSON.stringify(signals)
   ].join('\n')
 }
 
@@ -260,7 +263,7 @@ export async function aiAnalyzeStory(a: SourceAnalysis, deps: StoryModelDeps): P
       'CORRECTION REQUIRED: your previous structured answer was not publishable/valid.',
       `Validation errors: ${assessed.errors.join('; ').slice(0, 1200)}`,
       previousForRepair ? `Previous JSON: ${JSON.stringify(previousForRepair).slice(0, 7000)}` : 'Previous response was not valid JSON.',
-      'Return the COMPLETE corrected JSON object. Keep every field of the previous answer that was not named in an error unchanged. Re-check image timestamps. openingHook is mandatory and must be valid Korean text within 1 second of causalStart. Every range/cue needs end > start with at least 0.5 seconds of duration (a moment is a window, never start == end). Keep prominent opening foreign title footage out, tiny CCTV metadata only as a warning, and keep additional context/payoff cues grounded in visible actions (no effect cues; they are never displayed).'
+      'Return the COMPLETE corrected JSON object. Keep every field of the previous answer that was not named in an error unchanged. Re-check image timestamps. openingHook is mandatory and must be valid Korean text within 1 second of causalStart. Every range/cue needs end > start with at least 0.5 seconds of duration (a moment is a window, never start == end). Keep ALL prominent foreign viewer-facing text out of the selected edit, including payoff footage; tiny CCTV metadata is only a warning. Keep context/payoff cues grounded in visible actions, and keep one separate effect cue per real visible impact when applicable.'
     ].join('\n')
     const second = await call('repair', repairPrompt, deps.repairTimeoutMs ?? STORY_TIMEOUTS.repairMs)
     if (second.error || !second.text) return out('invalid', `${assessed.errors.join('; ')}; repair failed: ${second.error || 'no text'}`.slice(0, 700), assessed.warnings)
