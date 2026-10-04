@@ -1,0 +1,76 @@
+{
+  "taskType": "job_create",
+  "profile": "source_shorts",
+  "sourceAssetId": "src_8208874306252_9ea9e8b5cf0140fd8e87112a074292f9",
+  "idempotencyKey": "general-shorts-aspen-toby-proof-v1",
+  "budgetUsd": 5,
+  "plan": {
+    "schema": "job-plan/1",
+    "profile": "source_shorts",
+    "sourceAssetId": "src_8208874306252_9ea9e8b5cf0140fd8e87112a074292f9",
+    "variantPlan": {
+      "profile": "aspen-toby-proof-v1",
+      "beats": [
+        {
+          "label": "hook",
+          "trimStart": 116,
+          "trimEnd": 119.5
+        },
+        {
+          "label": "return-1",
+          "trimStart": 94,
+          "trimEnd": 98
+        },
+        {
+          "label": "return-2",
+          "trimStart": 100,
+          "trimEnd": 104
+        },
+        {
+          "label": "reveal",
+          "trimStart": 108,
+          "trimEnd": 112.5
+        },
+        {
+          "label": "bond",
+          "trimStart": 124,
+          "trimEnd": 128
+        },
+        {
+          "label": "context",
+          "trimStart": 132,
+          "trimEnd": 136
+        },
+        {
+          "label": "payoff",
+          "trimStart": 136,
+          "trimEnd": 140
+        }
+      ],
+      "headline": "다른 개들은 안중에도 없던 이유",
+      "events": [
+        {
+          "start": 100.3,
+          "end": 103,
+          "text": "계속 다시 서로에게"
+        },
+        {
+          "start": 108.5,
+          "end": 111.5,
+          "text": "7개월 전 헤어진 친남매"
+        },
+        {
+          "start": 132.2,
+          "end": 135.3,
+          "text": "옛 이름으로 가족 확인"
+        }
+      ],
+      "plansTimeDomain": "source",
+      "voiceover": {
+        "text": "개가 이렇게 많은데, 이상하게 둘만 계속 서로에게 돌아옵니다. 둘은 일곱 달 전 헤어진 친남매였습니다. 서로 다른 가족에게 입양된 뒤 처음 다시 만난 날. 사람들은 확인이 필요했지만, 둘은 만나자마자 알아본 것처럼 보였습니다.",
+        "sourceVolume": 0.24,
+        "voiceVolume": 1
+      }
+    }
+  }
+}
