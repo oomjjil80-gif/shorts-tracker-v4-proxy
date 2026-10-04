@@ -181,17 +181,21 @@ test('one gate for every path: no model -> PROVIDER_DOWN; a 3-second script neve
 })
 
 test('B1: the FINAL voiced narration must be inside 20-30 minutes exactly (RENDER executor path); sample keeps its band', async () => {
-  const run = async (seconds: number, briefIn: any) => {
+  const run = async (seconds: number, briefIn: any, audio?: Buffer) => {
     const blobs: any = createMemoryBlobStore()
     const brief = await putAddressed(blobs, 'generative-briefs', normalizeLongformBrief(briefIn))
     const script = await putAddressed(blobs, 'generative-scripts', SAMPLE)
     const n = sentencesOf(SAMPLE).length
-    await blobs.putBytes('img/x.jpg', Buffer.from('not-an-image'), 'image/jpeg'); await blobs.putBytes('aud/x.m4a', Buffer.from('not-audio'), 'audio/mp4')
+    await blobs.putBytes('img/x.jpg', Buffer.from('not-an-image'), 'image/jpeg'); await blobs.putBytes('aud/x.m4a', audio ?? Buffer.from('not-audio'), 'audio/mp4')
     const assets = await putAddressed(blobs, 'generative-assets', { schema: 'longform-assets/1', scriptRef: script.path, image: { ref: 'img/x.jpg' }, narration: { ref: 'aud/x.m4a', seconds }, chunks: Array.from({ length: n }, (_, k) => ({ index: k, sentences: [k], seconds: seconds / n })) })
     try {
       await longformRenderExecutor.run({ job: { id: 'j', profile: 'wisdom_longform', planRef: brief.path }, blobs, signal: new AbortController().signal, previous: async () => ({ result: { assetSpecRef: assets.path } }) } as any)
       return 'rendered'
-    } catch (e: any) { return e.code === 'LONGFORM_CONTRACT' && /narration/.test(e.message) ? 'LENGTH_FAIL' : `past length gate (${e.code || 'error'})` }
+    } catch (e: any) {
+      if (e.code === 'LONGFORM_CONTRACT' && /^narration \d/.test(e.message)) return 'LENGTH_FAIL' // chunk-sum gate
+      if (e.code === 'LONGFORM_CONTRACT' && /^narration audio:/.test(e.message)) return 'AUDIO_FAIL' // probed audio-file gate
+      return `past length gates (${e.code || 'error'})`
+    }
   }
   const prod = { kind: 'topic', text: '나이 들수록 멀리해야 할 사람' }
   const rows: any = {}
@@ -202,6 +206,26 @@ test('B1: the FINAL voiced narration must be inside 20-30 minutes exactly (RENDE
   rows['sample 45'] = await run(45, sample); assert.notEqual(rows['sample 45'], 'LENGTH_FAIL')
   rows['sample 60'] = await run(60, sample); assert.equal(rows['sample 60'], 'LENGTH_FAIL')
   console.log('B1 ' + JSON.stringify(rows))
+  // B1-final: the probed duration of the actual narration file, same contract, no rounding/tolerance.
+  // The chunk sum is kept in range (1500s) so only the audio-file gate decides.
+  const wav = async (sec: number) => (await runOk(['-f', 'lavfi', '-i', 'anullsrc=r=8000:cl=mono', '-t', sec.toFixed(3), '-c:a', 'pcm_u8', '-f', 'wav', '-'])).stdout
+  const probed: any = {}
+  for (const [sec, expect] of [[1199.9, 'AUDIO_FAIL'], [1200.0, 'PASS'], [1500.0, 'PASS'], [1800.0, 'PASS'], [1800.13, 'AUDIO_FAIL'], [1800.1, 'AUDIO_FAIL']] as const) {
+    const audio = await wav(sec), d = await mkdtemp(join(tmpdir(), 'b1a-')); await writeFile(join(d, 'a.wav'), audio)
+    const measured = (await probe(join(d, 'a.wav'))).duration
+    const got = await run(1500, prod, audio)
+    probed[sec] = { probed: measured, result: got }
+    assert.equal(measured, sec, `probe reads ${sec}s exactly`)
+    if (expect === 'PASS') assert.ok(/^past length gates/.test(got), `${sec}s audio must pass: ${got}`)
+    else assert.equal(got, expect, `${sec}s audio must fail`)
+  }
+  // the chunk-sum gate still applies even when the audio file is in range
+  assert.equal(await run(1979, prod, await wav(1500)), 'LENGTH_FAIL')
+  // sample brief keeps its band on the audio file too (target 50s -> 42.5-57.5s)
+  const sample2 = { kind: 'topic', text: '만만하게 보이지 않는 사람들의 태도', targetSeconds: 50, sample: true }
+  probed['sample 45 audio'] = await run(45, sample2, await wav(45)); assert.ok(/^past length gates/.test(probed['sample 45 audio']))
+  probed['sample 57.6 audio'] = await run(45, sample2, await wav(57.6)); assert.equal(probed['sample 57.6 audio'], 'AUDIO_FAIL')
+  console.log('B1_AUDIO ' + JSON.stringify(probed))
 })
 
 test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 MP4 + thumbnail measured', async () => {
