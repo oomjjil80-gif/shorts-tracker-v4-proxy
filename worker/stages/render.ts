@@ -7,6 +7,7 @@ import { applyCleanEdgeCrop, detectSourceFraming } from '../../lib/media/framing
 import { renderPayload, UnsupportedManifestError } from '../../lib/media/render.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { COMMON_SHORTS_SCREEN_DNA, filterGraphSha256, renderVideoFilters, type RenderGeometryReceipt } from '../../lib/media/screenDna.js'
+import { resolveSourceShortsNarration } from './sourceNarration.js'
 
 type CompiledForRender = { variantId: string; label: string; manifestHash: string; manifestRef: string; gate: { decision: string }; identity: any[] }
 
@@ -33,14 +34,17 @@ export const renderExecutor: StageExecutor = {
   inputHash: (job) => sha256(`render|v2|${job.id}|${job.planRev}`),
   async run({ job, attempt, blobs, previous, resolveSourceAsset, resolveSourceFile, signal }) {
     const compile = await previous('COMPILE')
-    const assetRun = await previous('ASSET')
-    const voiceoverRef = (assetRun?.result as any)?.voiceover === true ? String((assetRun?.result as any)?.voiceoverRef || '') : ''
-    const sourceMixVolume = Number((assetRun?.result as any)?.sourceVolume)
-    const voiceMixVolume = Number((assetRun?.result as any)?.voiceVolume)
     const compiled = compiledVariantsFromRun(compile)
     if (!compiled.length) throw new StageError('COMPILE_MISSING', 'RENDER requires a completed COMPILE stage')
     const todo = compiled.filter((v) => v.gate?.decision === 'PASS')
     if (!todo.length) throw new StageError('NO_RENDERABLE_VARIANT', 'no variant passed the compile gate')
+
+    // Optional General Shorts narration is resolved here, after COMPILE has passed.
+    // This preserves the durable source_shorts stage contract and caches the paid TTS bytes before ffmpeg rendering.
+    const narration = await resolveSourceShortsNarration({ job, blobs, signal })
+    const voiceoverRef = narration?.ref || ''
+    const sourceMixVolume = narration?.sourceVolume
+    const voiceMixVolume = narration?.voiceVolume
 
     const asset = await resolveSourceAsset(job.sourceAssetId)
     const file = await resolveSourceFile(asset)
