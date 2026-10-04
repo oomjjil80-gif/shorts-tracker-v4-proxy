@@ -13,7 +13,7 @@
 import type { SourceAnalysis } from './analyze.js'
 import type { Interval } from './ffmpeg.js'
 import { subtractIntervals } from './analyze.js'
-import { overlap, type Range, type SemanticResult, type StoryAnalysis } from './story.js'
+import { CLEAN_EDGE_LIMITS, overlap, type CleanEdgeCrop, type Range, type SemanticResult, type StoryAnalysis } from './story.js'
 import { planPresentation, PRESENTATION_LIMITS, type PresentationReport } from './presentation.js'
 
 export type Beat = { label: string; trimStart: number; trimEnd: number }
@@ -24,6 +24,7 @@ export type VariantSpec = {
   presentation?: PresentationReport
   headline?: string; events?: Array<{ start: number; end: number; text: string }>
   effectCaptions?: Array<Record<string, unknown>>; callouts?: Array<Record<string, unknown>>
+  cleanEdgeCrop?: CleanEdgeCrop
 }
 
 export const PLAN_LIMITS = {
@@ -188,17 +189,18 @@ export function planVariants(a: SourceAnalysis, semantic: SemanticResult | null 
   const base = storyBeats(a, story)
   if (!base.length) throw new Error('story analysis left no usable footage')
   const variants: VariantSpec[] = []
-  variants.push({ id: 'v1', label: '추천 · 원인→결말', kind: 'chronological', rationale: 'causal story + grounded Korean presentation layer; off-story footage removed', beats: base, ...presentationFor(base, story) })
+  const clean = story.cleanEdgeCrop ? { cleanEdgeCrop: story.cleanEdgeCrop } : {}
+  variants.push({ id: 'v1', label: '추천 · 원인→결말', kind: 'chronological', rationale: 'causal story + grounded Korean presentation layer; off-story footage removed', beats: base, ...clean, ...presentationFor(base, story) })
 
   if (story.hookStrategy === 'preview' && story.previewRange) {
     const p = story.previewRange
     const beats = capLength([{ label: 'preview', trimStart: p.start, trimEnd: p.end }, ...base.map((b) => ({ ...b }))], a, storyMaxSeconds(story), [story.payoffRange, p])
-    if (beats[0]?.label === 'preview') variants.push({ id: 'v2', label: '결말 살짝 먼저', kind: 'preview', rationale: `preview hook: ${story.hookReason}`.slice(0, 200), beats, ...presentationFor(beats, story) })
+    if (beats[0]?.label === 'preview') variants.push({ id: 'v2', label: '결말 살짝 먼저', kind: 'preview', rationale: `preview hook: ${story.hookReason}`.slice(0, 200), beats, ...clean, ...presentationFor(beats, story) })
   }
 
   const core = subtractIntervals(base.map(asRange).flatMap((r) => [...story.setupRanges, ...story.escalationRanges, story.payoffRange].map((s) => ({ start: Math.max(r.start, s.start), end: Math.min(r.end, s.end) })).filter((x) => x.end > x.start)), [])
   const tight = rangesToBeats(core, 'core')
-  if (tight.length && totalSeconds(tight) >= PLAN_LIMITS.minOutputSeconds) variants.push({ id: 'v3', label: '핵심만 짧게', kind: 'tight', rationale: 'setup, escalation and payoff only with grounded presentation cues', beats: tight, ...presentationFor(tight, story) })
+  if (tight.length && totalSeconds(tight) >= PLAN_LIMITS.minOutputSeconds) variants.push({ id: 'v3', label: '핵심만 짧게', kind: 'tight', rationale: 'setup, escalation and payoff only with grounded presentation cues', beats: tight, ...clean, ...presentationFor(tight, story) })
 
   // The recommended edit is always kept (its report says what is missing). Alternatives are only offered when their own
   // presentation is complete: a preview-first or tight cut that loses the headline or leaves the screen unattended
@@ -230,6 +232,10 @@ export function validateVariant(v: VariantSpec, a: SourceAnalysis): string[] {
   for (const e of v.events || []) if (!e?.text || [...String(e.text)].length > 20 || !(e.end > e.start)) errors.push('invalid event')
   for (const e of v.effectCaptions || []) if (!e?.text || [...String(e.text)].length > 8 || !(Number(e.end) > Number(e.start))) errors.push('invalid effect caption')
   if (v.headline && [...String(v.headline)].length > 24) errors.push('headline too long')
+  if (v.cleanEdgeCrop) {
+    const { topPct, bottomPct, confidence, basis } = v.cleanEdgeCrop
+    if (![topPct, bottomPct, confidence].every(Number.isFinite) || topPct < 0 || bottomPct < 0 || topPct > CLEAN_EDGE_LIMITS.topMax || bottomPct > CLEAN_EDGE_LIMITS.bottomMax || topPct + bottomPct > CLEAN_EDGE_LIMITS.totalMax || confidence < CLEAN_EDGE_LIMITS.minConfidence || !String(basis || '').trim()) errors.push('invalid clean edge crop')
+  }
   return errors
 }
 
@@ -243,7 +249,8 @@ export function toJobPlan(sourceAssetId: string, v: VariantSpec) {
       ...(v.headline ? { headline: v.headline } : {}),
       ...(v.events?.length ? { events: v.events, plansTimeDomain: 'source' as const } : {}),
       ...(v.effectCaptions?.length ? { effectCaptions: v.effectCaptions, timeDomain: 'source' as const } : {}),
-      ...(v.callouts?.length ? { callouts: v.callouts, plansTimeDomain: 'source' as const } : {})
+      ...(v.callouts?.length ? { callouts: v.callouts, plansTimeDomain: 'source' as const } : {}),
+      ...(v.cleanEdgeCrop ? { cleanEdgeCrop: v.cleanEdgeCrop } : {})
     }
   }
 }

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { sha256 } from '../../lib/jobs/blobs.js'
 import { probe } from '../../lib/media/ffmpeg.js'
-import { detectSourceFraming } from '../../lib/media/framing.js'
+import { applyCleanEdgeCrop, detectSourceFraming } from '../../lib/media/framing.js'
 import { renderPayload, UnsupportedManifestError } from '../../lib/media/render.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { COMMON_SHORTS_SCREEN_DNA, filterGraphSha256, renderVideoFilters, type RenderGeometryReceipt } from '../../lib/media/screenDna.js'
@@ -43,14 +43,17 @@ export const renderExecutor: StageExecutor = {
     const work = await mkdtemp(join(tmpdir(), 'tracker-render-'))
     try {
       const info = await probe(file.path)
+      if (!(Number(info.width) > 0 && Number(info.height) > 0)) throw new StageError('SOURCE_UNDECODABLE', 'source dimensions are missing')
+      const sourceSize = { width: Number(info.width), height: Number(info.height) }
       // Deterministic source normalization: if a nominally vertical upload contains the real picture inside persistent
       // black title/padding bands, remove those bands and use a blurred 9:16 fill. It is derived only from verified bytes.
-      const sourceFraming = await detectSourceFraming(file.path)
+      const baseFraming = await detectSourceFraming(file.path)
       const out: any[] = []
       for (const v of todo) {
         if (signal.aborted) throw new Error('aborted')
         const manifest: any = await blobs.getJson(v.manifestRef)
         if (!manifest || manifest.manifestHash !== v.manifestHash) throw new StageError('MANIFEST_MISSING', `manifest blob not found or altered: ${v.manifestRef}`)
+        const sourceFraming = applyCleanEdgeCrop(baseFraming, sourceSize, manifest.payload?.sourceCleanEdgeCrop)
         for (const id of manifest.identity || []) if (id.sha256 && asset.sha256 && id.sha256 !== asset.sha256) throw new StageError('SOURCE_IDENTITY_MISMATCH', 'manifest source sha256 differs from the registry')
         const dir = join(work, v.variantId)
         const outPath = join(dir, 'final.mp4')
@@ -66,7 +69,7 @@ export const renderExecutor: StageExecutor = {
         const geometryReceipt: RenderGeometryReceipt = { schema: 'screen-dna-receipt/1', stage: 'RENDER', jobId: job.id, attempt, contract: COMMON_SHORTS_SCREEN_DNA, composer: manifest.payload?.editorialPlan?.profile === 'wisdom-v1' ? 'asset' : 'render', manifestHash: v.manifestHash, sourceSha256: String(asset.sha256 ?? ''), sourceWidth: info.width, sourceHeight: info.height, filterGraphSha256: filterGraphSha256(r.filterGraph), videoFilters: renderVideoFilters(r.filterGraph), renderHash }
         out.push({ variantId: v.variantId, label: v.label, manifestHash: v.manifestHash, manifestRef: v.manifestRef, renderRef: stored.path, renderHash, bytes: bytes.length, duration: rInfo.duration, overlayEvents: r.overlayEvents, assSha256: r.assPath ? sha256(r.ass) : null, sourceFraming, geometryReceipt })
       }
-      return { outputRef: out[0].renderRef, outputHash: out[0].renderHash, result: { variants: out, sourceFraming }, provider: 'ffmpeg', model: 'libx264+libass' }
+      return { outputRef: out[0].renderRef, outputHash: out[0].renderHash, result: { variants: out, sourceFraming: out[0]?.sourceFraming ?? baseFraming }, provider: 'ffmpeg', model: 'libx264+libass' }
     } finally { await rm(work, { recursive: true, force: true }); await file.cleanup() }
   }
 }

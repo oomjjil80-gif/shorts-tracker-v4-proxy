@@ -2,11 +2,11 @@ import { probe, runOk } from './ffmpeg.js'
 
 export type CropRect = { x: number; y: number; width: number; height: number }
 export type SourceFraming = {
-  mode: 'full' | 'embedded'
+  mode: 'full' | 'embedded' | 'clean_edge' | 'embedded_clean_edge'
   crop: CropRect | null
   confidence: number
   sampleCount: number
-  detector: 'luma-bands-v1'
+  detector: 'luma-bands-v1' | 'semantic-edge-v1'
 }
 export type CanvasFill = {
   topMeanLuma: number
@@ -44,6 +44,23 @@ function longestRun(mask: boolean[]): { start: number; end: number } | null {
 
 const evenDown = (n: number) => Math.max(0, Math.floor(n / 2) * 2)
 const evenUp = (n: number) => Math.ceil(n / 2) * 2
+
+export type CleanEdgeCrop = { topPct: number; bottomPct: number; confidence: number; basis?: string }
+export function applyCleanEdgeCrop(base: SourceFraming, info: { width: number; height: number }, clean: CleanEdgeCrop | null | undefined): SourceFraming {
+  if (!clean || !(clean.topPct > 0 || clean.bottomPct > 0)) return base
+  const src = base.crop ?? { x: 0, y: 0, width: evenDown(info.width), height: evenDown(info.height) }
+  const top = evenUp(src.height * clean.topPct)
+  const bottom = evenUp(src.height * clean.bottomPct)
+  const height = evenDown(src.height - top - bottom)
+  if (height < src.height * 0.68 || height < 2) throw new Error('clean edge crop would remove too much of the source')
+  return {
+    mode: base.crop ? 'embedded_clean_edge' : 'clean_edge',
+    crop: { x: src.x, y: src.y + top, width: src.width, height },
+    confidence: Math.round(Math.min(1, Math.max(0, clean.confidence)) * 1000) / 1000,
+    sampleCount: base.sampleCount,
+    detector: 'semantic-edge-v1'
+  }
+}
 
 // Detects a real picture embedded inside a nominally vertical file (e.g. landscape CCTV surrounded by
 // black padding and a title band). The largest persistent non-dark horizontal band wins, so a short text

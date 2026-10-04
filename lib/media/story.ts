@@ -29,6 +29,8 @@ export type ExcludeReason = (typeof EXCLUDE_REASONS)[number]
 export type Range = { start: number; end: number }
 export type StoryCaptionKind = 'hook' | 'context' | 'payoff' | 'effect'
 export type StoryCaption = { kind: StoryCaptionKind; start: number; end: number; text: string; basis: string }
+export type CleanEdgeCrop = { topPct: number; bottomPct: number; confidence: number; basis: string }
+export const CLEAN_EDGE_LIMITS = { topMax: 0.24, bottomMax: 0.24, totalMax: 0.32, minConfidence: 0.8 } as const
 
 export type StoryAnalysis = {
   schema: typeof STORY_SCHEMA
@@ -49,6 +51,7 @@ export type StoryAnalysis = {
   // context/payoff become timed explanation captions; effect becomes a short pop caption.
   minimalCaptions: StoryCaption[]
   publishabilityWarnings: string[]
+  cleanEdgeCrop?: CleanEdgeCrop | null
   model: string
   promptVersion: string
 }
@@ -107,6 +110,17 @@ export function validateStory(raw: any, a: SourceAnalysis, meta: { model: string
   const payoff = range(raw.payoffRange, 'payoffRange')
   const setup = (Array.isArray(raw.setupRanges) ? raw.setupRanges : []).map((x: any, i: number) => range(x, `setupRanges[${i}]`)).filter(Boolean) as Range[]
   const escalation = (Array.isArray(raw.escalationRanges) ? raw.escalationRanges : []).map((x: any, i: number) => range(x, `escalationRanges[${i}]`)).filter(Boolean) as Range[]
+  let cleanEdgeCrop: CleanEdgeCrop | null = null
+  if (raw.cleanEdgeCrop != null) {
+    const x = raw.cleanEdgeCrop
+    const top = Number(x?.topPct), bottom = Number(x?.bottomPct), confidence = Number(x?.confidence), basis = String(x?.basis ?? '').trim()
+    if (![top, bottom, confidence].every(Number.isFinite) || top < 0 || bottom < 0 || top > CLEAN_EDGE_LIMITS.topMax || bottom > CLEAN_EDGE_LIMITS.bottomMax || top + bottom > CLEAN_EDGE_LIMITS.totalMax) {
+      errors.push(`cleanEdgeCrop must stay within top<=${CLEAN_EDGE_LIMITS.topMax}, bottom<=${CLEAN_EDGE_LIMITS.bottomMax}, total<=${CLEAN_EDGE_LIMITS.totalMax}`)
+    } else if (!basis) errors.push('cleanEdgeCrop requires a visual basis')
+    else if (confidence < CLEAN_EDGE_LIMITS.minConfidence) warnings.push(`cleanEdgeCrop ignored: confidence ${confidence} < ${CLEAN_EDGE_LIMITS.minConfidence}`)
+    else if (top > 0 || bottom > 0) cleanEdgeCrop = { topPct: r2(top), bottomPct: r2(bottom), confidence: r2(confidence), basis: basis.slice(0, 240) }
+  }
+
   const excludes: Array<Range & { reason: ExcludeReason }> = []
   for (const [i, x] of (Array.isArray(raw.excludeRanges) ? raw.excludeRanges : []).entries()) {
     const r = range(x, `excludeRanges[${i}]`)
@@ -185,6 +199,7 @@ export function validateStory(raw: any, a: SourceAnalysis, meta: { model: string
       recommendedEnd: r2(Math.min(D, raw.recommendedEnd)), excludeRanges: excludes, hookStrategy, previewRange, hookConfidence: r2(hookConfidence),
       hookReason: String(raw.hookReason ?? '').slice(0, 300), minimalCaptions: captions,
       publishabilityWarnings: (Array.isArray(raw.publishabilityWarnings) ? raw.publishabilityWarnings : []).map((w: any) => String(w).slice(0, 200)).slice(0, 10),
+      cleanEdgeCrop,
       model: meta.model, promptVersion: meta.promptVersion
     },
     errors: [], warnings

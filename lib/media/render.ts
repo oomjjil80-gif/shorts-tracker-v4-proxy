@@ -47,7 +47,7 @@ const escFilterPath = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:
 
 export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boolean; assPath: string; fontsDir: string; hasOverlays: boolean; sourceFraming?: SourceFraming; wisdomLayout?: boolean; dna?: ScreenDna }): string {
   const parts: string[] = []
-  const embedded = o.sourceFraming?.mode === 'embedded' ? o.sourceFraming.crop : null
+  const embedded = o.sourceFraming?.crop ?? null
   const dna = o.dna ?? COMMON_SHORTS_SCREEN_DNA
   cuts.forEach((c, i) => {
     if (o.wisdomLayout) {
