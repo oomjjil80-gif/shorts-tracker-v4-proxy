@@ -18,6 +18,8 @@ import { createAutoQcExecutor } from './stages/autoQc.js'
 import { decisionExecutor, finalExecutor, packageExecutor } from './stages/finish.js'
 import type { ReferenceProfile } from '../lib/reference/contracts.js'
 import { generativePlanExecutor, createGenerativeAssetExecutor } from './stages/generative.js'
+import { withWisdomThumbnail } from './stages/wisdomThumbnail.js'
+import { withLongform, createLongformPlanExecutor, createLongformAssetExecutor, longformRenderExecutor, longformPackageExecutor } from './stages/longform.js'
 
 const workerId = process.env.WORKER_ID || `${hostname()}-${process.pid}`
 const pollMs = Number(process.env.WORKER_POLL_MS || 2000)
@@ -51,7 +53,9 @@ async function main() {
     }
   }
 
-  const executors = [analyzeExecutor, planRouter as any, generativeAssetExecutor, compileExecutor, renderExecutor, createAutoQcExecutor(null, jobReferenceProfile), decisionExecutor, finalExecutor, packageExecutor]
+  // wisdom_longform jobs are routed to their own executors; every other profile runs exactly the executors below
+  const executors = withLongform([analyzeExecutor, planRouter as any, generativeAssetExecutor, compileExecutor, renderExecutor, createAutoQcExecutor(null, jobReferenceProfile), decisionExecutor, finalExecutor, withWisdomThumbnail(packageExecutor, { apiKey: process.env.OPENAI_API_KEY })],
+    [createLongformPlanExecutor({ apiKey: process.env.OPENAI_API_KEY }), createLongformAssetExecutor({ apiKey: process.env.OPENAI_API_KEY }), longformRenderExecutor, longformPackageExecutor])
   const blobs = createVercelJobBlobStore()
   const verifyFinalJobId = String(process.env.FINAL_VERIFY_JOB_ID || '').trim()
   if (verifyFinalJobId) {

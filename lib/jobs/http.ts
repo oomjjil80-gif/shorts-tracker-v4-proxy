@@ -10,6 +10,7 @@ import { validateReferenceProfile, stableHash } from '../reference/contracts.js'
 import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
 import { buildReferenceProductionBrief } from '../reference/profile.js'
 import { normalizeGenerativeBrief, generativeBriefHash } from '../generative/contracts.js'
+import { normalizeLongformBrief, longformBriefHash, LONGFORM_PROFILE_ID } from '../generative/longform.js'
 
 // HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
 // (Hobby plan allows 12 functions). CORS is applied by the router. Domain logic stays in store/gate/pipeline.
@@ -141,7 +142,15 @@ export function createJobsHttp(deps: JobsDeps) {
         const packageJson:any = await deps.blobs.getJson(pkg.outputRef)
         const scriptRef = (plan?.result as any)?.scriptRef
         const script:any = scriptRef ? await deps.blobs.getJson(scriptRef) : null
-        return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, script: script ? { title:script.title, hook:script.hook, ending:script.ending, beats:(script.beats||[]).map((b:any)=>({ narration:b.narration })) } : null })
+        if (job.profile === LONGFORM_PROFILE_ID) {
+          // Longform: the server made the 16:9 thumbnail and the upload text; the phone only shows and copies them
+          const thumb = typeof packageJson?.thumbnailRef === 'string' && packageJson.thumbnailRef.startsWith('renders/') ? await deps.blobs.presign?.(packageJson.thumbnailRef) : null
+          const video = typeof packageJson?.finalRenderRef === 'string' && packageJson.finalRenderRef.startsWith('renders/') ? await deps.blobs.presign?.(packageJson.finalRenderRef) : null
+          return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, upload: packageJson?.metadata ?? null, thumbnailUrl: thumb?.url ?? null, videoUrl: video?.url ?? null, script: script ? { title:script.title, hook:script.hook } : null })
+        }
+        // Wisdom Shorts: server-made click thumbnail when PACKAGE produced one (older jobs have none)
+        const shortsThumb = typeof packageJson?.thumbnailRef === 'string' && packageJson.thumbnailRef.startsWith('renders/') ? await deps.blobs.presign?.(packageJson.thumbnailRef) : null
+        return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, upload: packageJson?.metadata?.title ? packageJson.metadata : null, thumbnailUrl: shortsThumb?.url ?? null, script: script ? { title:script.title, hook:script.hook, ending:script.ending, beats:(script.beats||[]).map((b:any)=>({ narration:b.narration })) } : null })
       }
 
       if (taskType === 'job_get') {
@@ -156,7 +165,8 @@ export function createJobsHttp(deps: JobsDeps) {
       if (taskType === 'job_create') {
         const profile = String(body.profile || '')
         need(PIPELINES[profile], `unknown profile: ${profile}`)
-        const generative = profile === 'wisdom'
+        const longform = profile === LONGFORM_PROFILE_ID
+        const generative = profile === 'wisdom' || longform
         let generativeBriefRef: string | null = null
         let generativeHash = ''
         let sourceAssetId: string
@@ -164,11 +174,11 @@ export function createJobsHttp(deps: JobsDeps) {
           need(body.plan === undefined, 'wisdom plan is server-owned')
           need(body.referenceAssetIds === undefined, 'Reference-conditioned synthesis belongs to P2.5; P2 wisdom does not accept references')
           let brief
-          try { brief = normalizeGenerativeBrief(body.input) } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
-          generativeHash = generativeBriefHash(brief)
+          try { brief = longform ? normalizeLongformBrief(body.input) : normalizeGenerativeBrief(body.input) } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
+          generativeHash = longform ? longformBriefHash(brief as any) : generativeBriefHash(brief as any)
           const storedBrief = await putAddressed(deps.blobs, 'generative-briefs', brief)
           generativeBriefRef = storedBrief.path
-          sourceAssetId = `src_gen_${generativeHash.slice(0,32)}`
+          sourceAssetId = `${longform ? 'src_genlf_' : 'src_gen_'}${generativeHash.slice(0,32)}`
         } else {
           sourceAssetId = matching(body.sourceAssetId, /^src_[A-Za-z0-9_]{8,120}$/, 'sourceAssetId is invalid')
         }
