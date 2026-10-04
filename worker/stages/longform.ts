@@ -15,6 +15,10 @@ import {
 import { thumbnailArgv, thumbnailFigure, THUMB } from '../../lib/generative/wisdomThumbnail.js'
 import { StageError, type StageExecutor } from '../types.js'
 
+export function longformCacheEntryIsCanonical(entry:any, ref:string, digest:string){
+  return !!entry&&entry.ref===ref&&(!entry.sha256||entry.sha256===digest)
+}
+
 const isLongform = (job: any) => job?.profile === LONGFORM_PROFILE_ID
 
 // Route a stage to the Longform executor for wisdom_longform jobs only; every other job runs the given executor as before.
@@ -82,7 +86,8 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       // paid calls only on a cache miss (an ASSET rerun reuses the image and every narration chunk)
       const ik = sha256('longform-image-v1|' + prompt)
       let im: any = await cached('image', ik), generated = 0, reused = 0
-      const needKey = !im || (await Promise.all(chunks.map((c) => cached('tts', sha256('tts-v1|' + c.text))))).some((x) => !x)
+      const ttsCached = await Promise.all(chunks.map((c) => cached('tts', sha256('tts-v1|' + c.text))))
+      const needKey = !im || ttsCached.some((x) => !x)
       if (needKey && !apiKey) throw new StageError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured', true)
       if (im) reused++; else { im = await image(prompt, apiKey); generated++ }
       const work = await mkdtemp(join(tmpdir(), 'longform-asset-'))
@@ -92,10 +97,15 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
         const final = join(work, 'image.jpg')
         if (side.side === 'left') await runOk(['-y', '-i', raw, '-vf', 'hflip', '-q:v', '2', final]); else await writeFile(final, im.bytes)
         const imgBytes = await readFile(final), imgSha = sha256(imgBytes)
-        const rawRef = `generative-assets/images/${sha256(im.bytes)}.jpg`
-        await blobs.putBytes(rawRef, im.bytes, im.contentType)
-        await blobs.putJson(`generative-cache/image/${ik}.json`, { ref: rawRef, sha256: sha256(im.bytes), contentType: im.contentType, provider: im.provider, model: im.model })
-        const imageRef = `generative-assets/images/${imgSha}.jpg`; await blobs.putBytes(imageRef, imgBytes, 'image/jpeg')
+        const rawSha = sha256(im.bytes), rawRef = `generative-assets/images/${rawSha}.jpg`
+        const imageCacheValid = longformCacheEntryIsCanonical(im, rawRef, rawSha)
+        if (!imageCacheValid) {
+          await blobs.putBytes(rawRef, im.bytes, im.contentType)
+          await blobs.putJson(`generative-cache/image/${ik}.json`, { ref: rawRef, sha256: rawSha, contentType: im.contentType, provider: im.provider, model: im.model })
+        }
+        const imageRef = `generative-assets/images/${imgSha}.jpg`
+        // If no mirror was needed, final bytes are already the cached raw image; do not write the same blob twice.
+        if (imageRef !== rawRef) await blobs.putBytes(imageRef, imgBytes, 'image/jpeg')
 
         // one TTS call per sentence (4 at a time); results are placed by index, so order is exactly the script's
         const parts: any[] = new Array(chunks.length), wavs: string[] = new Array(chunks.length)
@@ -104,11 +114,14 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
           for (let i = next++; i < chunks.length; i = next++) {
             if (signal.aborted) throw new Error('aborted')
             const c = chunks[i], key = sha256('tts-v1|' + c.text)
-            let au: any = await cached('tts', key)
+            let au: any = ttsCached[i]
             if (au) reused++; else { au = await tts(c.text, apiKey); generated++ }
             const ah = sha256(au.bytes), ref = `generative-assets/audio/${ah}.mp3`
-            await blobs.putBytes(ref, au.bytes, au.contentType)
-            await blobs.putJson(`generative-cache/tts/${key}.json`, { ref, sha256: ah, contentType: au.contentType, provider: au.provider, model: au.model })
+            const ttsCacheValid = longformCacheEntryIsCanonical(au, ref, ah)
+            if (!ttsCacheValid) {
+              await blobs.putBytes(ref, au.bytes, au.contentType)
+              await blobs.putJson(`generative-cache/tts/${key}.json`, { ref, sha256: ah, contentType: au.contentType, provider: au.provider, model: au.model })
+            }
             const mp3 = join(work, `c${i}.mp3`), wav = join(work, `c${i}.wav`)
             await writeFile(mp3, au.bytes); await runOk(['-y', '-i', mp3, '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', wav], { signal })
             const seconds = Number(Number((await probe(wav)).duration || 0).toFixed(3))
