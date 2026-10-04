@@ -28,16 +28,35 @@ jobs:
           test -n "$URL" && test "$URL" != "null"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
       - name: Collect with existing Production Collector
+        id: collect
+        continue-on-error: true
         shell: bash
         env:
           SOURCE_URL: ${{ steps.request.outputs.url }}
         run: |
           mkdir -p analysis-output
           jq -n --arg u "$SOURCE_URL" '{taskType:"source_collect",sourceUrl:$u}' > /tmp/request.json
-          curl --fail-with-body --retry 2 --max-time 180 -sS -H 'Content-Type: application/json' --data-binary @/tmp/request.json https://shorts-tracker-v4-proxy.vercel.app/api/story > analysis-output/collect.json
+          set +e
+          HTTP_STATUS=$(curl --retry 2 --max-time 180 -sS -o analysis-output/collect.json -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/request.json \
+            https://shorts-tracker-v4-proxy.vercel.app/api/story)
+          CURL_EXIT=$?
+          set -e
+          printf '%s\n' "$HTTP_STATUS" > analysis-output/http-status.txt
+          printf '%s\n' "$CURL_EXIT" > analysis-output/curl-exit.txt
+          if [ -s analysis-output/collect.json ]; then
+            jq . analysis-output/collect.json || cat analysis-output/collect.json
+          fi
+          test "$CURL_EXIT" -eq 0
+          case "$HTTP_STATUS" in 2??) ;; *) exit 22 ;; esac
           jq -e '.ok == true' analysis-output/collect.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: source-collection-${{ github.sha }}
           path: analysis-output/
           retention-days: 7
+      - name: Preserve collection failure after evidence upload
+        if: steps.collect.outcome == 'failure'
+        run: exit 1
