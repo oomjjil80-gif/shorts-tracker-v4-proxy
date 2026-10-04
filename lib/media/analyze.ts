@@ -6,6 +6,7 @@ export const SOURCE_ANALYSIS_SCHEMA = 'source-analysis/1'
 
 export type SecondSample = { t: number; visual: number; audioDb: number | null }
 export type Highlight = { start: number; end: number; score: number }
+export type MotionPeak = { t: number; score: number }
 export type SourceAnalysis = {
   schema: typeof SOURCE_ANALYSIS_SCHEMA
   sourceAssetId: string
@@ -16,6 +17,9 @@ export type SourceAnalysis = {
   ranges: { black: Interval[]; freeze: Interval[]; silent: Interval[] }
   audio: { silentRatio: number | null; intentionallySilent: boolean }
   highlights: Highlight[]
+  // Precise frame-time visual-change peaks. PLAN uses these only to snap onomatopoeia/effect cues (퍽/쾅)
+  // from coarse vision timestamps onto the actual visible action. Optional for backward-compatible cached analyses.
+  motionPeaks?: MotionPeak[]
   usable: Interval[]
   analyzer: { name: 'ffmpeg-signals'; version: 1 }
 }
@@ -40,6 +44,20 @@ export function subtractIntervals(base: Interval[], holes: Interval[]): Interval
 const percentileRank = (values: number[]) => {
   const sorted = [...values].sort((a, b) => a - b)
   return (v: number) => (sorted.length <= 1 ? 0 : sorted.filter((x) => x < v).length / (sorted.length - 1))
+}
+
+export function computeMotionPeaks(scores: Array<{ t: number; score: number }>, max = 40, minGapSec = 0.18): MotionPeak[] {
+  if (!scores.length) return []
+  const ranked = scores.map((x) => ({ t: r3(x.t), score: r3(x.score) })).sort((a, b) => a.score - b.score)
+  const p80 = ranked[Math.floor((ranked.length - 1) * 0.8)]?.score ?? 0
+  const threshold = Math.max(0.04, p80)
+  const picked: MotionPeak[] = []
+  for (const c of [...ranked].sort((a, b) => b.score - a.score || a.t - b.t)) {
+    if (c.score < threshold) break
+    if (picked.every((p) => Math.abs(p.t - c.t) >= minGapSec)) picked.push(c)
+    if (picked.length >= max) break
+  }
+  return picked.sort((a, b) => a.t - b.t)
 }
 
 export function computeHighlights(timeline: SecondSample[], windowSec = 2.5, max = 3): Highlight[] {
@@ -104,7 +122,7 @@ export async function analyzeSourceFile(file: string, meta: { sourceAssetId: str
     scenes, timeline,
     ranges: { black: black.map((b) => ({ start: r3(b.start), end: r3(b.end) })), freeze, silent: silent.map((b) => ({ start: r3(b.start), end: r3(b.end) })) },
     audio: { silentRatio: silentRatio === null ? null : r3(silentRatio), intentionallySilent: !info.hasAudio || (silentRatio ?? 0) > 0.95 },
-    highlights: computeHighlights(timeline), usable,
+    highlights: computeHighlights(timeline), motionPeaks: computeMotionPeaks(scores), usable,
     analyzer: { name: 'ffmpeg-signals', version: 1 }
   }
   if (opts.contactSheet && meta.contactSheetOut) await contactSheet(file, meta.contactSheetOut, { cols: 6, rows: 4, tileWidth: 180, duration })
