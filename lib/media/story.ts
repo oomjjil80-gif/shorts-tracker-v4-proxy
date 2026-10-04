@@ -51,7 +51,7 @@ export type StoryAnalysis = {
   // context/payoff become timed explanation captions; effect becomes a short pop caption.
   minimalCaptions: StoryCaption[]
   publishabilityWarnings: string[]
-  cleanEdgeCrop: CleanEdgeCrop | null
+  cleanEdgeCrop?: CleanEdgeCrop | null
   model: string
   promptVersion: string
 }
