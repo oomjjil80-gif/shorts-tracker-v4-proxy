@@ -136,3 +136,4 @@ test('PLAN stage: model failure keeps deterministic plan; success stores story +
   assert.equal(stored.variantPlan.plansTimeDomain, 'source'); assert.equal(stored.variantPlan.timeDomain, 'source') // timeDomain accompanies effect captions
   await assert.rejects(() => createPlanExecutor().run({ job, blobs, previous: async () => null, signal: new AbortController().signal } as any), /ANALYZE/)
 })
+// focused source-shorts regression probe: benchmark DNA

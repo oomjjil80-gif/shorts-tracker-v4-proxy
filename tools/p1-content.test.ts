@@ -184,3 +184,4 @@ test('10. GOLDEN regression: causal story, product tail removed, trend presentat
   assert.equal(oldGate.decision, 'BLOCK')
   for (const id of ['content.opening_understandable', 'content.chronology_coherent', 'content.no_post_payoff_tail', 'content.no_offstory_contamination', 'content.no_repeat_or_dead', 'content.length_fit']) assert.equal(status(oldGate, id), 'FAIL', id)
 })
+// focused source-shorts regression probe: benchmark DNA

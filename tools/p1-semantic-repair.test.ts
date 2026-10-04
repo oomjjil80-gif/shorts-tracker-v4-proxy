@@ -48,3 +48,4 @@ test('validated low numeric confidence is not retried; explicit unclear remains 
   assert.equal(calls, 1)
   assert.equal(r.status, 'low_confidence')
 })
+// focused source-shorts regression probe: benchmark DNA
