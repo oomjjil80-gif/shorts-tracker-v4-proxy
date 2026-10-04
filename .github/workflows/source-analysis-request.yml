@@ -19,8 +19,9 @@ jobs:
         id: request
         shell: bash
         run: |
-          FILE=$(find analysis-requests -maxdepth 1 -type f -name '*.json' | sort | tail -1)
+          FILE=$(git show --name-only --pretty='' "$GITHUB_SHA" -- 'analysis-requests/*.json' | tail -1)
           test -n "$FILE"
+          test -f "$FILE"
           URL=$(jq -r '.sourceUrl' "$FILE")
           test -n "$URL" && test "$URL" != "null"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
