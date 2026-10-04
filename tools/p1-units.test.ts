@@ -97,7 +97,7 @@ const JPEG = Buffer.from('fake-jpeg')
 test('semantic story model: required provider hook normalizes to StoryAnalysis; failures never fake PASS', async () => {
   const a = analysis()
   const good = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ model: 'gpt-x', output_text: JSON.stringify(okStory), usage: { total_tokens: 5 } }) })
-  assert.equal(good.status, 'ok', good.reason ?? ''); assert.equal(good.model, 'gpt-x'); assert.equal(good.story!.payoffRange.end, 19)
+  assert.equal(good.status, 'ok'); assert.equal(good.model, 'gpt-x'); assert.equal(good.story!.payoffRange.end, 19)
   assert.equal(good.story!.minimalCaptions.filter((c) => c.kind === 'hook').length, 1)
   assert.equal(good.story!.minimalCaptions[0].text, '왜 저러는 걸까?')
   assert.equal((await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: JPEG, fetchImpl: fakeFetch({ output_text: 'not json' }) })).status, 'invalid')
@@ -136,4 +136,3 @@ test('PLAN stage: model failure keeps deterministic plan; success stores story +
   assert.equal(stored.variantPlan.plansTimeDomain, 'source'); assert.equal(stored.variantPlan.timeDomain, 'source') // timeDomain accompanies effect captions
   await assert.rejects(() => createPlanExecutor().run({ job, blobs, previous: async () => null, signal: new AbortController().signal } as any), /ANALYZE/)
 })
-// focused source-shorts regression probe: benchmark DNA

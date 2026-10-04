@@ -102,4 +102,3 @@ test('benchmark prompt explicitly forbids explainer prose, foreign-text flashes,
   assert.match(p, /use a different peak for each separate hit/)
   assert.doesNotMatch(p, /no effect cues; they are never displayed/)
 })
-// focused source-shorts regression probe: benchmark DNA

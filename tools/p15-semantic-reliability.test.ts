@@ -226,4 +226,3 @@ test('validated single_event remains semantic ok when provider confidence is adv
   assert.ok(validatedUnclear.story, validatedUnclear.errors.join('; '))
   assert.equal(semanticFromStory(validatedUnclear.story!).status, 'low_confidence')
 })
-// focused source-shorts regression probe: benchmark DNA

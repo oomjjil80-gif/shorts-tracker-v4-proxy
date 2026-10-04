@@ -35,7 +35,7 @@ test('one invalid semantic answer is repaired once using the same evidence', asy
   }) as unknown as typeof fetch
   const r = await aiAnalyzeStory(a, { apiKey: 'k', model: 'm', keyframeJpeg: Buffer.from('jpg'), fetchImpl })
   assert.equal(calls, 2)
-  assert.equal(r.status, 'ok', r.reason ?? '')
+  assert.equal(r.status, 'ok')
   assert.equal(r.story!.causalStart, 1)
   assert.equal(r.story!.minimalCaptions[0].kind, 'hook')
   assert.equal((r.usage as any).attempts.length, 2)
@@ -48,4 +48,3 @@ test('validated low numeric confidence is not retried; explicit unclear remains 
   assert.equal(calls, 1)
   assert.equal(r.status, 'low_confidence')
 })
-// focused source-shorts regression probe: benchmark DNA

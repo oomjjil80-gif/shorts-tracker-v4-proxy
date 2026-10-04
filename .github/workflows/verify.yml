@@ -27,7 +27,18 @@ jobs:
           CHANGED="$(git diff --name-only HEAD^ HEAD)"
           NON_TEST="$(printf '%s\n' "$CHANGED" | grep -Ev '^(tools/.*\.test\.(ts|mjs)|\.github/workflows/verify\.yml)$' || true)"
           TESTS="$(printf '%s\n' "$CHANGED" | grep -E '^tools/.*\.test\.(ts|mjs)$' || true)"
-          WORKFLOW_ONLY="$(printf '%s\n' "$CHANGED" | grep -Ev '^\.github/workflows/verify\.yml$' || true)"
+          WORKFLOW_ONLY="$(printf '%s\n' "$CHANGED" | grep -Ev '^\.github/workflows/verify\.yml
+            echo "Running only changed tests:"
+            printf '%s\n' "$TESTS"
+            timeout 4m npx tsx --test $TESTS
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run full tests with hang protection
+        if: steps.focused.outputs.ran != 'true'
+        run: timeout 12m npm test
+ || true)"
           if [ -z "$WORKFLOW_ONLY" ]; then
             echo "Workflow-only change; previous code/test result remains authoritative."
             echo "ran=true" >> "$GITHUB_OUTPUT"

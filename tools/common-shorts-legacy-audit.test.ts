@@ -177,4 +177,3 @@ test('black-picture checks look at the visual window: a black window under a bri
   const src = (await import('node:fs')).readFileSync(new URL('../lib/media/qc.ts', import.meta.url), 'utf8')
   assert.match(src, /detectBlack\(i\.renderPath, \{ crop: WINDOW_CROP \}\)/); assert.match(src, /grayFrame\(i\.renderPath, t, 32, 36, WINDOW_CROP\)/)
 })
-// focused source-shorts regression probe: benchmark DNA
