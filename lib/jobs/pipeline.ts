@@ -2,7 +2,7 @@ import type { JobStage } from './types.js'
 
 // Minimal per-profile stage order (no generic workflow engine). ASSET is skipped for source_shorts.
 export const PIPELINES: Record<string, readonly JobStage[]> = {
-  source_shorts: ['ANALYZE', 'PLAN', 'ASSET', 'COMPILE', 'RENDER', 'AUTO_QC', 'DECISION', 'FINAL', 'PACKAGE'],
+  source_shorts: ['ANALYZE', 'PLAN', 'COMPILE', 'RENDER', 'AUTO_QC', 'DECISION', 'FINAL', 'PACKAGE'],
   wisdom: ['PLAN', 'ASSET', 'ANALYZE', 'COMPILE', 'RENDER', 'AUTO_QC', 'DECISION', 'FINAL', 'PACKAGE'],
   // 16:9 Wisdom Longform: one static image + narration + left key-phrase cards (worker/stages/longform.ts)
   wisdom_longform: ['PLAN', 'ASSET', 'RENDER', 'PACKAGE']
@@ -23,5 +23,5 @@ export function nextStage(profile: string, stage: JobStage): JobStage | null {
 
 export function firstStage(profile: string, hasPlan: boolean): JobStage {
   const p = pipelineFor(profile)
-  return profile === 'source_shorts' && hasPlan ? 'ASSET' : p[0]
+  return profile === 'source_shorts' && hasPlan ? 'COMPILE' : p[0]
 }
