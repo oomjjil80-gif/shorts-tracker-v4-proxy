@@ -10,6 +10,7 @@ import { runOnce } from '../worker/runJob.js'
 import { analyzeExecutor } from '../worker/stages/analyze.js'
 import { createPlanExecutor } from '../worker/stages/plan.js'
 import { compileExecutor } from '../worker/stages/compile.js'
+import { createSourceShortsNarrationAssetExecutor } from '../worker/stages/sourceNarration.js'
 import { renderExecutor } from '../worker/stages/render.js'
 import { autoQcExecutor } from '../worker/stages/autoQc.js'
 import { decisionExecutor, finalExecutor, packageExecutor } from '../worker/stages/finish.js'
@@ -23,7 +24,7 @@ await makeSyntheticSource(srcPath, { withBlack: false })
 const srcSha = sha256(readFileSync(srcPath))
 const asset = { sourceAssetId: 'src_p1_fixture_0001', blobPath: 'source-collector/p1/fixture.mp4', sha256: srcSha, duration: 12, width: 576, height: 1024 }
 
-async function setup(executors = [analyzeExecutor, createPlanExecutor(), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor]) {
+async function setup(executors = [analyzeExecutor, createPlanExecutor(), createSourceShortsNarrationAssetExecutor(), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor]) {
   const db = await createTestDb()
   const store = createJobStore(db)
   const blobs = createMemoryBlobStore()
@@ -52,12 +53,12 @@ test('P1 pipeline: source -> ANALYZE -> PLAN -> COMPILE -> RENDER -> AUTO_QC -> 
   const { job } = await store.createJob({ workspaceId: 'ws', profile: 'source_shorts', sourceAssetId: asset.sourceAssetId, idempotencyKey: 'idem-p1-0001', budgetUsd: 5 })
   assert.equal(job.stage, 'ANALYZE')
   const trail = await drive(job.id)
-  assert.deepEqual(trail, ['ANALYZE:completed', 'PLAN:completed', 'COMPILE:completed', 'RENDER:completed', 'AUTO_QC:completed', 'DECISION:waiting'])
+  assert.deepEqual(trail, ['ANALYZE:completed', 'PLAN:completed', 'ASSET:completed', 'COMPILE:completed', 'RENDER:completed', 'AUTO_QC:completed', 'DECISION:waiting'])
 
   const at = (await store.getJob(job.id))!
   assert.deepEqual([at.status, at.stage, at.waitReason], ['WAITING_USER', 'DECISION', 'DECISION'])
   const runs = await store.listStageRuns(job.id)
-  for (const stage of ['ANALYZE', 'PLAN', 'COMPILE', 'RENDER', 'AUTO_QC', 'DECISION']) assert.ok(runs.some((r) => r.stage === stage && r.status === 'SUCCEEDED'), `${stage} SUCCEEDED`)
+  for (const stage of ['ANALYZE', 'PLAN', 'ASSET', 'COMPILE', 'RENDER', 'AUTO_QC', 'DECISION']) assert.ok(runs.some((r) => r.stage === stage && r.status === 'SUCCEEDED'), `${stage} SUCCEEDED`)
 
   const analysis: any = await blobs.getJson((await store.getLatestSucceeded(job.id, 'ANALYZE'))!.outputRef!)
   assert.equal(analysis.schema, 'source-analysis/1'); assert.equal(analysis.sha256, srcSha)
@@ -118,7 +119,7 @@ test('DECISION -> FINAL -> PACKAGE: the chosen render is promoted as the same bl
 test('QC block: a corrupted render is never promoted (AUTO_QC blocks; decision without override is refused)', async () => {
   const { store, blobs } = await setup()
   const { job } = await store.createJob({ workspaceId: 'ws', profile: 'source_shorts', sourceAssetId: asset.sourceAssetId, idempotencyKey: 'idem-p1-0003', budgetUsd: 5 })
-  for (let n = 0; n < 4; n++) await runOnce({ store, blobs, executors: [analyzeExecutor, createPlanExecutor(), compileExecutor, renderExecutor], workerId: 'w1', resolveSourceAsset: async () => asset, resolveSourceFile: async () => ({ path: srcPath, cleanup: async () => {} }) } as any)
+  for (let n = 0; n < 5; n++) await runOnce({ store, blobs, executors: [analyzeExecutor, createPlanExecutor(), createSourceShortsNarrationAssetExecutor(), compileExecutor, renderExecutor], workerId: 'w1', resolveSourceAsset: async () => asset, resolveSourceFile: async () => ({ path: srcPath, cleanup: async () => {} }) } as any)
   for (const [k, v] of blobs.binaries) if (k.endsWith('.mp4')) blobs.binaries.set(k, v.subarray(0, Math.floor(v.length / 2)))
   const out = await runOnce({ store, blobs, executors: [autoQcExecutor], workerId: 'w1', resolveSourceAsset: async () => asset, resolveSourceFile: async () => ({ path: srcPath, cleanup: async () => {} }) })
   assert.equal(out.ran && out.outcome, 'waiting')
@@ -141,7 +142,7 @@ test('job_create without a plan starts at ANALYZE; job_get exposes a phone-sized
   await drive(j0.id)
   const g = await call('GET', { query: { taskType: 'job_get', id: j0.id } })
   assert.equal(g.json.job.status, 'WAITING_USER'); assert.equal(g.json.job.waitReason, 'DECISION')
-  assert.deepEqual(g.json.job.stages.map((s: any) => s.state), ['done', 'done', 'done', 'done', 'done', 'waiting', 'pending', 'pending'])
+  assert.deepEqual(g.json.job.stages.map((s: any) => s.state), ['done', 'done', 'done', 'done', 'done', 'done', 'waiting', 'pending', 'pending'])
   assert.ok(g.json.job.variants.length >= 1 && g.json.job.variants[0].recommended === true && g.json.job.variants[0].qc === 'PASS')
   const p = await call('GET', { query: { taskType: 'job_preview', id: j0.id } })
   assert.equal(p.status, 200)
@@ -163,10 +164,10 @@ test('with a semantic story model: grounded trend presentation + technical/conte
     ], publishabilityWarnings: []
   }
   const fetchImpl = (async () => ({ ok: true, status: 200, json: async () => ({ model: 'gpt-test', output_text: JSON.stringify(story) }) })) as unknown as typeof fetch
-  const { store, drive } = await setup([analyzeExecutor, createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl } }), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor])
+  const { store, drive } = await setup([analyzeExecutor, createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl } }), createSourceShortsNarrationAssetExecutor(), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor])
   const { job } = await store.createJob({ workspaceId: 'ws', profile: 'source_shorts', sourceAssetId: asset.sourceAssetId, idempotencyKey: 'idem-p1-sem1', budgetUsd: 5 })
   const trail = await drive(job.id)
-  assert.deepEqual(trail, ['ANALYZE:completed', 'PLAN:completed', 'COMPILE:completed', 'RENDER:completed', 'AUTO_QC:completed', 'DECISION:waiting'])
+  assert.deepEqual(trail, ['ANALYZE:completed', 'PLAN:completed', 'ASSET:completed', 'COMPILE:completed', 'RENDER:completed', 'AUTO_QC:completed', 'DECISION:waiting'])
   const analyzeRun = (await store.getLatestSucceeded(job.id, 'ANALYZE'))!
   assert.ok((analyzeRun.result as any).keyframeSheetRef, 'timestamped keyframe sheet produced for the model')
   const plan = (await store.getLatestSucceeded(job.id, 'PLAN'))!.result as any
