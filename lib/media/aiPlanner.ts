@@ -6,7 +6,7 @@ import { EXCLUDE_REASONS, OFFSTORY_REASONS, PACING_REASONS, STORY_LIMITS, STORY_
 import { planPresentation, PRESENTATION_LIMITS } from './presentation.js'
 import { storyBeats, totalSeconds } from './plan.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/15'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/16'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
 const captionBody = {
@@ -15,7 +15,7 @@ const captionBody = {
 }
 export const STORY_JSON_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['storyType', 'confidence', 'causalStart', 'setupRanges', 'escalationRanges', 'payoffRange', 'recommendedEnd', 'excludeRanges', 'hookStrategy', 'previewRange', 'hookConfidence', 'hookReason', 'openingHook', 'minimalCaptions', 'publishabilityWarnings'],
+  required: ['storyType', 'confidence', 'causalStart', 'setupRanges', 'escalationRanges', 'payoffRange', 'recommendedEnd', 'excludeRanges', 'hookStrategy', 'previewRange', 'hookConfidence', 'hookReason', 'openingHook', 'minimalCaptions', 'publishabilityWarnings', 'cleanEdgeCrop'],
   properties: {
     storyType: { type: 'string', enum: [...STORY_TYPES] },
     confidence: { type: 'number' },
@@ -35,7 +35,15 @@ export const STORY_JSON_SCHEMA = {
       type: 'array', minItems: 1, maxItems: 9,
       items: { type: 'object', additionalProperties: false, required: ['kind', 'start', 'end', 'text', 'basis'], properties: { kind: { type: 'string', enum: ['context', 'payoff', 'effect'] }, start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, basis: { type: 'string' } } }
     },
-    publishabilityWarnings: { type: 'array', items: { type: 'string' } }
+    publishabilityWarnings: { type: 'array', items: { type: 'string' } },
+    cleanEdgeCrop: {
+      anyOf: [
+        { type: 'null' },
+        { type: 'object', additionalProperties: false, required: ['topPct', 'bottomPct', 'confidence', 'basis'], properties: {
+          topPct: { type: 'number' }, bottomPct: { type: 'number' }, confidence: { type: 'number' }, basis: { type: 'string' }
+        } }
+      ]
+    }
   }
 }
 
@@ -56,7 +64,9 @@ export function storyPrompt(a: SourceAnalysis): string {
     'ENDING RULE: protect the strongest payoff and end immediately after it. Do not explain or repeat the conclusion after the payoff.',
     'MANDATORY OPENING AUDIT: inspect the 0s tile and the first ~2 seconds before choosing causalStart. A Korean upload-ready Short must NOT begin on PROMINENT burned-in Chinese/English/Japanese/other foreign-language title cards, large captions, product labels, or other viewer-facing source text. Mark the actual span of that prominent opening text as foreign_text and/or intro_confusion, and place causalStart AFTER it disappears. Even a brief large foreign-language title flash at the first frame is not acceptable as the opening.',
     'WHOLE-VIDEO FOREIGN-TEXT AUDIT: scan EVERY tile of the keyframe sheet, not only the opening. Burned-in Chinese (or other non-Korean) captions, title cards or labels often reappear in the middle or at the end. Report EACH such span as its own excludeRanges entry with reason foreign_text and its real start/end.',
-    'ZERO-TOLERANCE FOREIGN TEXT: the final selected edit may not flash prominent foreign viewer-facing text even briefly. Do NOT shorten its exposure as a workaround. Exclude the whole contaminated span. If indispensable payoff footage itself contains prominent foreign text and there is no clean adjacent/repeated view, choose a different clean payoff/story or return storyType="unclear"; never silently keep it.',
+    'ZERO-TOLERANCE FOREIGN TEXT: the final selected edit may not flash prominent foreign viewer-facing text even briefly. Do NOT shorten its exposure as a workaround. If the text is a persistent TOP/BOTTOM edge band, use cleanEdgeCrop only when a minimal crop removes it for the whole selected story without cutting the subject/action. Otherwise exclude the whole contaminated span. If indispensable payoff footage contains foreign text that cannot be removed safely, choose a different story or return storyType="unclear".',
+    'CLEAN EDGE CROP: cleanEdgeCrop is null unless the same prominent foreign text stays in a stable top or bottom edge band across the selected story. topPct/bottomPct are fractions of source height to remove (0.20 = 20%). Use the smallest crop that clears the text. Hard limits: top<=0.24, bottom<=0.24, total<=0.32. confidence must be >=0.80. If the crop would cut a face, hand, animal, vehicle action, payoff, or other story-critical content, return null instead.',
+    'If cleanEdgeCrop safely removes ALL persistent edge text, do NOT also mark that edge-only text as foreign_text excludeRanges; temporal excludes are only for contaminated footage that remains after the crop.',
     'FOREIGN-TEXT SCOPE: foreign_text means prominent viewer-facing text that competes with the Korean edit. Do NOT classify a tiny persistent CCTV timestamp/date, camera ID, channel watermark, corner logo, or other small technical metadata as foreign_text that removes footage. If such tiny metadata persists, mention it only in publishabilityWarnings.',
     'MANDATORY TAIL AUDIT: inspect the final ~35% of the keyframe sheet separately. If people/animals finish their action or leave and the source switches to a product/robot/device operating, cleaning, demonstrating features, returning to dock, showing branding/titles, or otherwise explaining the product, mark that complete tail product_demo and/or post_payoff through the file end.',
     'Do NOT treat a late product/device activation or feature demonstration as the payoff merely because it explains the joke. If a human/animal payoff and product resolution are both plausible, prefer the human/animal payoff. If uncertain, use storyType="unclear" or lower confidence.',
@@ -75,6 +85,7 @@ export function storyPrompt(a: SourceAnalysis): string {
     '  * Every cue needs a visual basis explaining what on screen justifies the words. Avoid long sentences.',
     '  * Aim for a new timed context/payoff caption roughly every 3–5 seconds of active story so the mobile screen does not feel unattended, while allowing a purposeful quiet beat.',
     '- publishabilityWarnings: remaining issues such as tiny persistent timestamps/watermarks. Put tiny metadata here instead of excluding the story.',
+    '- cleanEdgeCrop: null OR {topPct,bottomPct,confidence,basis}. This is a visual cleanup instruction, never a way to hide story content.',
     '- storyType + confidence: be honest; use unclear and low confidence if you cannot tell.',
     'Measured signals (per second plus precise motionPeaks):', JSON.stringify(signals)
   ].join('\n')
@@ -263,7 +274,7 @@ export async function aiAnalyzeStory(a: SourceAnalysis, deps: StoryModelDeps): P
       'CORRECTION REQUIRED: your previous structured answer was not publishable/valid.',
       `Validation errors: ${assessed.errors.join('; ').slice(0, 1200)}`,
       previousForRepair ? `Previous JSON: ${JSON.stringify(previousForRepair).slice(0, 7000)}` : 'Previous response was not valid JSON.',
-      'Return the COMPLETE corrected JSON object. Keep every field of the previous answer that was not named in an error unchanged. Re-check image timestamps. openingHook is mandatory and must be valid Korean text within 1 second of causalStart. Every range/cue needs end > start with at least 0.5 seconds of duration (a moment is a window, never start == end). Keep ALL prominent foreign viewer-facing text out of the selected edit, including payoff footage; tiny CCTV metadata is only a warning. Keep context/payoff cues grounded in visible actions, and keep one separate effect cue per real visible impact when applicable.'
+      'Return the COMPLETE corrected JSON object. Keep every field of the previous answer that was not named in an error unchanged. Re-check image timestamps. openingHook is mandatory and must be valid Korean text within 1 second of causalStart. Every range/cue needs end > start with at least 0.5 seconds of duration (a moment is a window, never start == end). Keep ALL prominent foreign viewer-facing text out of the selected edit, including payoff footage. A safe persistent edge band may use cleanEdgeCrop; never use a short temporal flash as a workaround. Tiny CCTV metadata is only a warning. Keep context/payoff cues grounded in visible actions, and keep one separate effect cue per real visible impact when applicable.'
     ].join('\n')
     const second = await call('repair', repairPrompt, deps.repairTimeoutMs ?? STORY_TIMEOUTS.repairMs)
     if (second.error || !second.text) return out('invalid', `${assessed.errors.join('; ')}; repair failed: ${second.error || 'no text'}`.slice(0, 700), assessed.warnings)
