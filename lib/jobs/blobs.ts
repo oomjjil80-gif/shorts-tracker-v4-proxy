@@ -40,13 +40,32 @@ export function createMemoryBlobStore(): JobBlobStore & { files: Map<string, str
 }
 
 // Private Vercel Blob, create-once (allowOverwrite:false). "already exists" is success: the path is content-addressed.
-export function createVercelJobBlobStore(deps?: { put?: any; get?: any }): JobBlobStore {
-  const lazy = async () => (deps?.put && deps?.get ? { put: deps.put, get: deps.get } : await import('@vercel/blob'))
+export function createVercelJobBlobStore(deps?: { put?: any; get?: any; head?: any; issueSignedToken?: any; presignUrl?: any }): JobBlobStore {
+  const lazy = async () => (deps?.put && deps?.get ? deps : await import('@vercel/blob'))
+  const exists = async (path: string): Promise<boolean> => {
+    const mod: any = await lazy()
+    if (typeof mod.head === 'function') {
+      try {
+        await mod.head(path)
+        return true
+      } catch (e: any) {
+        const detail = `${String(e?.name || '')} ${String(e?.code || '')} ${String(e?.message || e)}`
+        if (/BlobNotFound|not.?found|404/i.test(detail)) return false
+        throw e
+      }
+    }
+    const result: any = await mod.get(path, { access: 'private', useCache: false })
+    if (!result || result.statusCode === 404) return false
+    if (result.statusCode !== 200) throw new Error(`Blob existence check failed: ${result.statusCode}`)
+    try { await result.stream?.cancel?.() } catch {}
+    return true
+  }
   return {
     async putJson(path, value, opts) {
-      const { put } = await lazy()
       const body = JSON.stringify(value)
       const overwrite = opts?.overwrite === true
+      if (!overwrite && await exists(path)) return { path, sha256: sha256(body) }
+      const { put } = await lazy()
       try {
         await put(path, body, { access: 'private', addRandomSuffix: false, allowOverwrite: overwrite, contentType: 'application/json' })
       } catch (e: any) {
@@ -61,13 +80,15 @@ export function createVercelJobBlobStore(deps?: { put?: any; get?: any }): JobBl
       return JSON.parse(await new Response(result.stream).text())
     },
     async putBytes(path, bytes, contentType) {
+      const digest = sha256(bytes)
+      if (await exists(path)) return { path, sha256: digest, bytes: bytes.length }
       const { put } = await lazy()
       try {
         await put(path, bytes, { access: 'private', addRandomSuffix: false, allowOverwrite: false, contentType })
       } catch (e: any) {
         if (!/already exists|exists/i.test(String(e?.message || e))) throw e
       }
-      return { path, sha256: sha256(bytes), bytes: bytes.length }
+      return { path, sha256: digest, bytes: bytes.length }
     },
     async getBytes(path) {
       const { get } = await lazy()
@@ -76,7 +97,7 @@ export function createVercelJobBlobStore(deps?: { put?: any; get?: any }): JobBl
       return Buffer.from(await new Response(result.stream).arrayBuffer())
     },
     async presign(path, validForMs = 60 * 60 * 1000) {
-      const mod: any = deps?.put && deps?.get ? deps : await import('@vercel/blob')
+      const mod: any = await lazy()
       if (!mod.issueSignedToken || !mod.presignUrl) return null
       const token = await mod.issueSignedToken({ pathname: path, operations: ['get'] })
       const validUntil = Date.now() + validForMs
