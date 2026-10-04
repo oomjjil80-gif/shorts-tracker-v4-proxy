@@ -17,7 +17,7 @@ test('General Shorts narration is optional and makes no provider call when voice
   const blobs:any=createMemoryBlobStore()
   const stored=await putAddressed(blobs,'plans',{schema:'job-plan/1',profile:'source_shorts',sourceAssetId:'src_test_narration_0001',variantPlan:{beats:[{trimStart:10,trimEnd:14}]}})
   let calls=0
-  const r=await resolveSourceShortsNarration({job:job(stored.path),blobs,apiKey:'k',tts:async()=>{calls++;throw new Error('must not call')} as any})
+  const r=await resolveSourceShortsNarration({job:job(stored.path),blobs,apiKey:'k',tts:(async()=>{calls++;throw new Error('must not call')}) as any})
   assert.equal(r,null)
   assert.equal(calls,0)
 })
@@ -30,7 +30,7 @@ test('General Shorts narration generates once, caches bytes, and reuses the same
   }})
   const audio=await mp3(1.4)
   let calls=0
-  const tts=async()=>{calls++;return {bytes:audio,contentType:'audio/mpeg',provider:'test',model:'test-tts'}} as any
+  const tts=(async()=>{calls++;return {bytes:audio,contentType:'audio/mpeg',provider:'test',model:'test-tts'}}) as any
   const a=await resolveSourceShortsNarration({job:job(stored.path),blobs,apiKey:'k',tts})
   const b=await resolveSourceShortsNarration({job:job(stored.path),blobs,apiKey:'k',tts})
   assert.ok(a&&b)
