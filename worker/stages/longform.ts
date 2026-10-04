@@ -9,7 +9,7 @@ import { FONTS_DIR } from '../../lib/media/ass.js'
 import { openAiLongformImage, openAiWisdomTts } from '../../lib/generative/providers.js'
 import { openAiLongformPlan } from '../../lib/generative/longformPlanner.js'
 import {
-  LONGFORM_PROFILE_ID, LONGFORM, validateLongformScript, allowedSeconds, cardErrors, sentencesOf, longformImagePrompt, ttsChunks, cardTimeline,
+  LONGFORM_PROFILE_ID, LONGFORM, validateLongformScript, voicedLengthErrors, cardErrors, sentencesOf, longformImagePrompt, ttsChunks, cardTimeline,
   longformCardsAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
 } from '../../lib/generative/longform.js'
 import { thumbnailArgv, thumbnailFigure, THUMB } from '../../lib/generative/wisdomThumbnail.js'
@@ -153,8 +153,9 @@ export const longformRenderExecutor: StageExecutor = {
       try { timeline = cardTimeline(script, assets.chunks, assets.chunks.map((c: any) => c.seconds)) } catch (e: any) { throw new StageError('LONGFORM_CONTRACT', String(e?.message || e)) }
       const sents = sentencesOf(script)
       const badCards = sents.flatMap((x, k) => cardErrors(x).map((c) => `card ${k + 1}: ${c}`))
-      const voiced = assets.chunks.reduce((n: number, c: any) => n + Number(c.seconds), 0), ok = brief ? allowedSeconds(brief) : null
-      const lengthBad = ok && (voiced < ok.min * 0.9 || voiced > ok.max * 1.1) ? [`narration ${Math.round(voiced)}s outside ${Math.round(ok.min)}-${Math.round(ok.max)}s`] : []
+      if (!brief) throw new StageError('BRIEF_MISSING', 'RENDER needs the longform brief to check the narration length')
+      const voiced = assets.chunks.reduce((n: number, c: any) => n + Number(c.seconds), 0)
+      const lengthBad = voicedLengthErrors(voiced, brief)
       if (badCards.length || lengthBad.length) throw new StageError('LONGFORM_CONTRACT', [...lengthBad, ...badCards].slice(0, 20).join('; '))
       const { ass, cards } = longformCardsAss(script, timeline)
       if (cards.length !== sents.length) throw new StageError('LONGFORM_CONTRACT', `${cards.length} cards drawn for ${sents.length} sentences`)

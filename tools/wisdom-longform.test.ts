@@ -180,6 +180,30 @@ test('one gate for every path: no model -> PROVIDER_DOWN; a 3-second script neve
   await assert.rejects(() => longformPackageExecutor.run({ job, blobs, signal: new AbortController().signal, previous: async (st: string) => st === 'RENDER' ? { result: { variants: [{ renderRef: 'renders/a.mp4', thumbnailRef: 'renders/t.jpg' }] } } : { result: { scriptRef: bad.path } } } as any), (e: any) => e.code === 'UPLOAD_PACKAGE_INVALID')
 })
 
+test('B1: the FINAL voiced narration must be inside 20-30 minutes exactly (RENDER executor path); sample keeps its band', async () => {
+  const run = async (seconds: number, briefIn: any) => {
+    const blobs: any = createMemoryBlobStore()
+    const brief = await putAddressed(blobs, 'generative-briefs', normalizeLongformBrief(briefIn))
+    const script = await putAddressed(blobs, 'generative-scripts', SAMPLE)
+    const n = sentencesOf(SAMPLE).length
+    await blobs.putBytes('img/x.jpg', Buffer.from('not-an-image'), 'image/jpeg'); await blobs.putBytes('aud/x.m4a', Buffer.from('not-audio'), 'audio/mp4')
+    const assets = await putAddressed(blobs, 'generative-assets', { schema: 'longform-assets/1', scriptRef: script.path, image: { ref: 'img/x.jpg' }, narration: { ref: 'aud/x.m4a', seconds }, chunks: Array.from({ length: n }, (_, k) => ({ index: k, sentences: [k], seconds: seconds / n })) })
+    try {
+      await longformRenderExecutor.run({ job: { id: 'j', profile: 'wisdom_longform', planRef: brief.path }, blobs, signal: new AbortController().signal, previous: async () => ({ result: { assetSpecRef: assets.path } }) } as any)
+      return 'rendered'
+    } catch (e: any) { return e.code === 'LONGFORM_CONTRACT' && /narration/.test(e.message) ? 'LENGTH_FAIL' : `past length gate (${e.code || 'error'})` }
+  }
+  const prod = { kind: 'topic', text: '나이 들수록 멀리해야 할 사람' }
+  const rows: any = {}
+  for (const sec of [1081, 1170, 1860, 1979, 1199.9, 1800.1]) { rows[sec] = await run(sec, prod); assert.equal(rows[sec], 'LENGTH_FAIL', `${sec}s must fail`) }
+  for (const sec of [1200, 1500, 1800]) { rows[sec] = await run(sec, prod); assert.notEqual(rows[sec], 'LENGTH_FAIL', `${sec}s must pass the length gate`) }
+  // explicit sample brief: its own band (target 50s -> 42.5-57.5s), unchanged
+  const sample = { kind: 'topic', text: '만만하게 보이지 않는 사람들의 태도', targetSeconds: 50, sample: true }
+  rows['sample 45'] = await run(45, sample); assert.notEqual(rows['sample 45'], 'LENGTH_FAIL')
+  rows['sample 60'] = await run(60, sample); assert.equal(rows['sample 60'], 'LENGTH_FAIL')
+  console.log('B1 ' + JSON.stringify(rows))
+})
+
 test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 MP4 + thumbnail measured', async () => {
   const d = await mkdtemp(join(tmpdir(), 'longform-e2e-'))
   const db = await createTestDb(), store = createJobStore(db), blobs = createMemoryBlobStore()

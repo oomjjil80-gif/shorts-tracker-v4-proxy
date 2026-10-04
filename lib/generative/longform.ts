@@ -55,6 +55,15 @@ export function allowedSeconds(brief: Pick<LongformBrief, 'targetSeconds' | 'sam
   const min = t * (1 - tol), max = t * (1 + tol)
   return brief.sample ? { min, max } : { min: Math.max(min, LONGFORM.targetSeconds.min), max: Math.min(max, LONGFORM.targetSeconds.max) }
 }
+// The FINAL voiced narration (measured audio) must be inside the contract itself: 20-30 minutes for production, no
+// extra tolerance. Only an explicit sample brief keeps its own band (the script band). Not the script estimate gate.
+export function voicedSecondsAllowed(brief: Pick<LongformBrief, 'targetSeconds' | 'sample'>): { min: number; max: number } {
+  return brief.sample ? allowedSeconds(brief) : { min: LONGFORM.targetSeconds.min, max: LONGFORM.targetSeconds.max }
+}
+export function voicedLengthErrors(seconds: number, brief: Pick<LongformBrief, 'targetSeconds' | 'sample'>): string[] {
+  const ok = voicedSecondsAllowed(brief)
+  return seconds >= ok.min && seconds <= ok.max ? [] : [`narration ${seconds.toFixed(1)}s outside ${ok.min}-${ok.max}s`]
+}
 // The card contract for one sentence (also re-checked at RENDER on what is actually drawn).
 export function cardErrors(x: any): string[] {
   const e: string[] = []
