@@ -6,8 +6,9 @@ import { PIPELINES, firstStage } from '../lib/jobs/pipeline.js'
 
 test('P2 wisdom has an explicit generative pipeline with ASSET before COMPILE',()=>{
  assert.deepEqual(PIPELINES.wisdom,['PLAN','ASSET','ANALYZE','COMPILE','RENDER','AUTO_QC','DECISION','FINAL','PACKAGE'])
- assert.ok(!PIPELINES.source_shorts.includes('ASSET'))
+ assert.ok(PIPELINES.source_shorts.includes('ASSET'))
  assert.equal(firstStage('wisdom',true),'PLAN') // stored brief is not a client-supplied render plan
+ assert.equal(firstStage('source_shorts',true),'ASSET') // client plan may carry optional default narration
 })
 test('P2 wisdom topic/text brief is normalized, bounded and stable',()=>{
  const a=normalizeGenerativeBrief({kind:'topic',text:'  오늘을 후회 없이 사는 법  ',targetSeconds:55})
