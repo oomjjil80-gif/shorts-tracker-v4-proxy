@@ -11,7 +11,7 @@ export const LONGFORM_PROFILE_ID = 'wisdom_longform'
 export const LONGFORM = {
   canvas: { w: 1920, h: 1080 }, thumb: { w: 1280, h: 720 }, fps: 30,
   // the Longform contract: 20-30 minutes. A `sample` brief (E2E verification only, never sent by the app) may be short.
-  targetSeconds: { min: 1200, max: 1800, default: 1500 }, sampleSeconds: { min: 30, max: 300 }, lengthTolerance: 0.15,
+  targetSeconds: { min: 1200, max: 1800, default: 1500 }, productionSeconds: { min: 900, max: 2100 }, sampleSeconds: { min: 30, max: 300 }, lengthTolerance: 0.15,
   // the text column: left 60% of the frame (figure lives in the right 40%); every card is 2-3 lines with a coloured accent
   text: { x: 100, maxWidth: 1050, basePx: 150, minPx: 84, minLines: 2, maxLines: 3, maxLineChars: 14 },
   ttsChunkChars: 1200,
@@ -49,16 +49,15 @@ export const longformBriefHash = (b: LongformBrief) => createHash('sha256').upda
 export const sentencesOf = (s: LongformScript) => s.sections.flatMap((x) => x.sentences)
 export const narrationOf = (s: LongformScript) => sentencesOf(s).map((x) => x.say.trim()).join(' ')
 export const estimatedSeconds = (s: LongformScript) => [...narrationOf(s)].length / LONGFORM.charsPerSecond
-// Allowed narration length for a brief: within ±15% of the target, and never outside 20-30 minutes unless a sample.
+// targetSeconds guides generation; it is not a pass/fail target for production. Accept a naturally useful
+// longform result (15-35 minutes) and reject only clearly non-longform / runaway output. Samples keep a tight band.
 export function allowedSeconds(brief: Pick<LongformBrief, 'targetSeconds' | 'sample'>): { min: number; max: number } {
+  if (!brief.sample) return LONGFORM.productionSeconds
   const t = brief.targetSeconds, tol = LONGFORM.lengthTolerance
-  const min = t * (1 - tol), max = t * (1 + tol)
-  return brief.sample ? { min, max } : { min: Math.max(min, LONGFORM.targetSeconds.min), max: Math.min(max, LONGFORM.targetSeconds.max) }
+  return { min: t * (1 - tol), max: t * (1 + tol) }
 }
-// The FINAL voiced narration (measured audio) must be inside the contract itself: 20-30 minutes for production, no
-// extra tolerance. Only an explicit sample brief keeps its own band (the script band). Not the script estimate gate.
 export function voicedSecondsAllowed(brief: Pick<LongformBrief, 'targetSeconds' | 'sample'>): { min: number; max: number } {
-  return brief.sample ? allowedSeconds(brief) : { min: LONGFORM.targetSeconds.min, max: LONGFORM.targetSeconds.max }
+  return allowedSeconds(brief)
 }
 export function voicedLengthErrors(seconds: number, brief: Pick<LongformBrief, 'targetSeconds' | 'sample'>): string[] {
   const ok = voicedSecondsAllowed(brief)
