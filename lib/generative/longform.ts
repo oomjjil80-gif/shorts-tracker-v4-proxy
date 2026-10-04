@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto'
 import { canonicalize } from '../tracker-core/renderManifest.js'
 import { FONT_FAMILY, assTime, headAdvanceEm } from '../media/ass.js'
+import { VIDEO_ENCODER_THREADS } from '../media/render.js'
 import { thumbnailCopyErrors } from './wisdomThumbnail.js'
 import { uploadMetadataErrors, uploadPackageText } from './uploadPackage.js'
 
@@ -183,7 +184,9 @@ export function longformVideoArgv(o: { background: string; audio: string; ass: s
   return ['-y', '-loop', '1', '-framerate', String(LONGFORM.fps), '-i', o.background, '-i', o.audio,
     '-vf', `ass=filename='${e(o.ass)}':fontsdir='${e(o.fontsDir)}',format=yuv420p`,
     '-map', '0:v', '-map', '1:a', '-t', o.seconds.toFixed(3),
-    '-c:v', 'libx264', '-tune', 'stillimage', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', String(LONGFORM.fps), '-g', String(LONGFORM.fps * 4),
+    // bounded like the Shorts renderer: libx264 auto-threads scale with the HOST cpu count (60 on Railway), ~4x the
+    // memory of a 1080p encode, and the worker's ffmpeg was killed at frame 0 (reported as exit 1)
+    '-c:v', 'libx264', '-threads:v', String(VIDEO_ENCODER_THREADS), '-tune', 'stillimage', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', String(LONGFORM.fps), '-g', String(LONGFORM.fps * 4),
     '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2', '-movflags', '+faststart', o.out]
 }
 // ---------------- upload package text ----------------

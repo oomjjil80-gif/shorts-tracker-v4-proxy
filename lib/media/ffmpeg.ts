@@ -5,7 +5,7 @@ import ffmpegPath from 'ffmpeg-static'
 
 export const FFMPEG: string = (process.env.FFMPEG_PATH || (ffmpegPath as unknown as string)) as string
 
-export type RunResult = { code: number; stdout: Buffer; stderr: string }
+export type RunResult = { code: number; stdout: Buffer; stderr: string; signal?: string | null }
 
 export function runFfmpeg(args: string[], opts: { signal?: AbortSignal; timeoutMs?: number; collectStdout?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
@@ -17,17 +17,17 @@ export function runFfmpeg(args: string[], opts: { signal?: AbortSignal; timeoutM
     const timer = opts.timeoutMs ? setTimeout(() => { p.kill('SIGKILL'); finish(new Error(`ffmpeg timed out after ${opts.timeoutMs}ms`)) }, opts.timeoutMs) : null
     const onAbort = () => { p.kill('SIGKILL'); finish(new Error('ffmpeg aborted')) }
     opts.signal?.addEventListener('abort', onAbort, { once: true })
-    function finish(e?: Error, code?: number) {
+    function finish(e?: Error, code?: number, signal?: string | null) {
       if (done) return
       done = true
       if (timer) clearTimeout(timer)
       opts.signal?.removeEventListener('abort', onAbort)
-      if (e) reject(e); else resolve({ code: code ?? 0, stdout: Buffer.concat(out), stderr: err })
+      if (e) reject(e); else resolve({ code: code ?? 0, stdout: Buffer.concat(out), stderr: err, signal: signal ?? null })
     }
     p.stdout.on('data', (d: Buffer) => { if (opts.collectStdout !== false) out.push(d) })
     p.stderr.on('data', (d: Buffer) => { err += d.toString('utf8'); if (err.length > 4_000_000) err = err.slice(-2_000_000) })
     p.on('error', (e) => finish(e))
-    p.on('close', (code) => finish(undefined, code ?? 1))
+    p.on('close', (code, signal) => finish(undefined, code ?? 1, signal))
   })
 }
 
@@ -37,8 +37,10 @@ export async function runOk(args: string[], opts?: Parameters<typeof runFfmpeg>[
     const lines = r.stderr.split('\n').filter(Boolean)
     const bad = lines.filter((l) => /error|invalid|unable|no such|cannot|failed|unrecogni|not found|out of memory|resource temporarily unavailable|pthread_create/i.test(l))
     const tail = lines.slice(-12)
-    const evidence = [...bad.slice(-6), ...tail].filter((v, i, a) => a.indexOf(v) === i).slice(-12)
-    throw new Error(`ffmpeg exit ${r.code}: ${evidence.join(' | ')}`)
+    // keep the error lines AND the tail (the old final slice(-12) kept only the tail and dropped the error lines)
+    const evidence = [...bad.slice(-6), ...tail.slice(-6)].filter((v, i, a) => a.indexOf(v) === i)
+    // a process killed by a signal (e.g. the kernel OOM killer) has no exit code: say so instead of "exit 1"
+    throw new Error(`ffmpeg ${r.signal ? `killed by ${r.signal}` : `exit ${r.code}`}: ${evidence.join(' | ')}`)
   }
   return r
 }
