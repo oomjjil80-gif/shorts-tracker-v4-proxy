@@ -1,4 +1,4 @@
-import { get, put } from '@vercel/blob'
+import { get, put } from '../objectStorage.js'
 import { randomUUID } from 'node:crypto'
 import { writeFile, unlink } from 'node:fs/promises'
 import { getReferenceAsset } from './ingest.js'
