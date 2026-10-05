@@ -121,6 +121,23 @@ export function normalizeProviderStory(raw: any, durationSec?: number): { story:
   const D = fin(durationSec) ? durationSec : Infinity
   const x: any = { ...raw }
 
+  // Presentation text may contain harmless formatting characters from the model
+  // (newlines/tabs/braces). Normalize those deterministically before strict
+  // validation so a semantically valid story is not rejected for typography.
+  const cleanText = (value: unknown) => String(value ?? '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[{}]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (x.openingHook && typeof x.openingHook === 'object') {
+    x.openingHook = { ...x.openingHook, text: cleanText(x.openingHook.text) }
+  }
+  if (Array.isArray(x.minimalCaptions)) {
+    x.minimalCaptions = x.minimalCaptions.map((cue: any) =>
+      cue && typeof cue === 'object' ? { ...cue, text: cleanText(cue.text) } : cue
+    )
+  }
+
   // payoffRange first: caption normalization below depends on it.
   const p = x.payoffRange
   if (degenerate(p) && p.start >= 0 && p.start < D && fin(x.recommendedEnd)) {
