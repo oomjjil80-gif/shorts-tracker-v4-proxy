@@ -15,6 +15,7 @@ async function main() {
 
   const h:any=await head(path)
   if(!h || h.pathname!==path) throw new Error('HEAD did not return the object')
+  if(Number(h.size)!==Buffer.byteLength(body)) throw new Error(`HEAD size mismatch: ${h.size} != ${Buffer.byteLength(body)}`)
   console.log('[R2_SMOKE] HEAD PASS', JSON.stringify({size:h.size,contentType:h.contentType||null}))
 
   const g:any=await get(path,{access:'private',useCache:false})
