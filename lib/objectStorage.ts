@@ -129,11 +129,23 @@ async function r2Head(path: string) {
   const res = await signedFetch('HEAD', path)
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`R2 HEAD failed (${res.status})`)
+  let sizeHeader = res.headers.get('content-length')
+  let contentType = res.headers.get('content-type') || undefined
+  let etag = res.headers.get('etag') || undefined
+
+  // R2 can return 0/omit Content-Length on HEAD. LIST includes the
+  // authoritative object Size, so use that without downloading the object.
+  if (sizeHeader === null || Number(sizeHeader) === 0) {
+    const page = await r2List({ prefix: path, limit: 1 })
+    const exact = page.blobs.find((blob) => blob.pathname === path)
+    if (exact) sizeHeader = String(exact.size)
+  }
+
   return {
     pathname: path,
-    size: Number(res.headers.get('content-length') || 0),
-    contentType: res.headers.get('content-type') || undefined,
-    etag: res.headers.get('etag') || undefined,
+    size: Number(sizeHeader || 0),
+    contentType,
+    etag,
   }
 }
 
@@ -147,8 +159,15 @@ async function r2List(opts: ListOpts = {}) {
   const res = await signedFetch('GET', '', { query })
   if (!res.ok) throw new Error(`R2 LIST failed (${res.status}): ${await res.text()}`)
   const xml = await res.text()
-  const blobs = [...xml.matchAll(/<Contents>[\s\S]*?<Key>([\s\S]*?)<\/Key>[\s\S]*?<\/Contents>/g)]
-    .map((m) => ({ pathname: xmlDecode(m[1]) }))
+  const blobs = [...xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)]
+    .map((m) => {
+      const block = m[1]
+      const key = block.match(/<Key>([\s\S]*?)<\/Key>/)?.[1]
+      if (!key) return null
+      const rawSize = block.match(/<Size>(\d+)<\/Size>/)?.[1]
+      return { pathname: xmlDecode(key), size: Number(rawSize || 0) }
+    })
+    .filter((blob): blob is { pathname: string; size: number } => blob !== null)
   const hasMore = /<IsTruncated>true<\/IsTruncated>/.test(xml)
   const cursorMatch = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/)
   return { blobs, hasMore, cursor: cursorMatch ? xmlDecode(cursorMatch[1]) : null }
