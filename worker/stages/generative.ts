@@ -10,10 +10,8 @@ import { openAiWisdomImage, openAiWisdomTts } from '../../lib/generative/provide
 import { openAiWisdomPlan, applyVisualBible } from '../../lib/generative/planner.js'
 import { evaluateWisdomSemanticQc } from '../../lib/generative/semanticQc.js'
 import { SHORTS_SCREEN_DNA, screenDnaSegmentArgv, screenDnaSegmentFilter, type AssetGeometryReceipt } from '../../lib/media/screenDna.js'
+import { cacheEntryIsCanonical } from '../../lib/generative/cache.js'
 
-export function wisdomCacheEntryIsCanonical(entry:any, ref:string, digest:string){
- return !!entry&&entry.ref===ref&&(!entry.sha256||entry.sha256===digest)
-}
 
 export function wisdomHeadline(title:string){
  const t=String(title||'').trim().replace(/\s+/g,' ')
@@ -122,8 +120,8 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    const ip=`generative-assets/images/${ih}.jpg`, ap=`generative-assets/audio/${ah}.mp3`
    // Cache hits already point at durable Blob bytes. Do not issue another PUT/HEAD cycle for the same asset or cache JSON.
    // If old metadata is inconsistent with the bytes we just read, repair it once into the canonical content-addressed path.
-   const imageCacheValid=imageCacheHit&&wisdomCacheEntryIsCanonical(im,ip,ih)
-   const ttsCacheValid=ttsCacheHit&&wisdomCacheEntryIsCanonical(au,ap,ah)
+   const imageCacheValid=imageCacheHit&&cacheEntryIsCanonical(im,ip,ih)
+   const ttsCacheValid=ttsCacheHit&&cacheEntryIsCanonical(au,ap,ah)
    if(!imageCacheValid){
     await blobs.putBytes(ip,im.bytes,im.contentType)
     await blobs.putJson('generative-cache/image/'+ik+'.json',{ref:ip,sha256:ih,contentType:im.contentType,provider:im.provider,model:im.model})

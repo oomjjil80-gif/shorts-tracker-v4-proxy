@@ -14,10 +14,8 @@ import {
 } from '../../lib/generative/longform.js'
 import { thumbnailArgv, thumbnailFigure, THUMB } from '../../lib/generative/wisdomThumbnail.js'
 import { StageError, type StageExecutor } from '../types.js'
+import { cacheEntryIsCanonical } from '../../lib/generative/cache.js'
 
-export function longformCacheEntryIsCanonical(entry:any, ref:string, digest:string){
-  return !!entry&&entry.ref===ref&&(!entry.sha256||entry.sha256===digest)
-}
 
 const isLongform = (job: any) => job?.profile === LONGFORM_PROFILE_ID
 
@@ -98,7 +96,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
         if (side.side === 'left') await runOk(['-y', '-i', raw, '-vf', 'hflip', '-q:v', '2', final]); else await writeFile(final, im.bytes)
         const imgBytes = await readFile(final), imgSha = sha256(imgBytes)
         const rawSha = sha256(im.bytes), rawRef = `generative-assets/images/${rawSha}.jpg`
-        const imageCacheValid = longformCacheEntryIsCanonical(im, rawRef, rawSha)
+        const imageCacheValid = cacheEntryIsCanonical(im, rawRef, rawSha)
         if (!imageCacheValid) {
           await blobs.putBytes(rawRef, im.bytes, im.contentType)
           await blobs.putJson(`generative-cache/image/${ik}.json`, { ref: rawRef, sha256: rawSha, contentType: im.contentType, provider: im.provider, model: im.model })
@@ -117,7 +115,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
             let au: any = ttsCached[i]
             if (au) reused++; else { au = await tts(c.text, apiKey); generated++ }
             const ah = sha256(au.bytes), ref = `generative-assets/audio/${ah}.mp3`
-            const ttsCacheValid = longformCacheEntryIsCanonical(au, ref, ah)
+            const ttsCacheValid = cacheEntryIsCanonical(au, ref, ah)
             if (!ttsCacheValid) {
               await blobs.putBytes(ref, au.bytes, au.contentType)
               await blobs.putJson(`generative-cache/tts/${key}.json`, { ref, sha256: ah, contentType: au.contentType, provider: au.provider, model: au.model })
