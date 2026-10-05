@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
+import { sha256 } from '../../lib/jobs/blobs.js'
 import { evaluateGate } from '../../lib/qc/gate.js'
 import { analyzeSourceFile, type SourceAnalysis } from '../../lib/media/analyze.js'
 import { runRenderQc } from '../../lib/media/qc.js'
@@ -119,8 +119,6 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
           } catch { /* optional */ }
         }
         if (!contentGate) contentGate = evaluateGate([{ id: 'content.evaluated', required: true, status: 'UNKNOWN', evidence: { reason: 'render artifact unavailable' } }])
-        await putAddressed(blobs, `qc/render/${v.renderHash}`, gate)
-        await putAddressed(blobs, `qc/content/${v.renderHash}`, contentGate)
         // "Upload as-is" requires BOTH gates. Technical PASS alone is not publishable.
         const jobReferenceProfile = resolveReferenceProfile ? await resolveReferenceProfile(job, blobs) : referenceProfile
         const measurements: Record<string, unknown> = {}
