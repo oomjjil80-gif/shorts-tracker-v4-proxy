@@ -14,10 +14,12 @@ import {
 } from '../../lib/generative/longform.js'
 import { thumbnailArgv, thumbnailFigure, THUMB } from '../../lib/generative/wisdomThumbnail.js'
 import { StageError, type StageExecutor } from '../types.js'
+import { profileFeatures, needFeatures, type FeatureResolver } from '../modules/features.js'
 import { cacheEntryIsCanonical } from '../../lib/generative/cache.js'
 
 
 const isLongform = (job: any) => job?.profile === LONGFORM_PROFILE_ID
+const featuresOf = (deps: { features?: FeatureResolver }, job: any) => (deps.features ?? profileFeatures)(job)
 
 // Route a stage to the Longform executor for wisdom_longform jobs only; every other job runs the given executor as before.
 export function withLongform(executors: StageExecutor[], longform: StageExecutor[]): StageExecutor[] {
@@ -69,13 +71,15 @@ export async function subjectSide(imagePath: string): Promise<{ left: number; ri
   return { left: Number(left.toFixed(1)), right: Number(right.toFixed(1)), side: left > right * 1.1 ? 'left' : 'right' }
 }
 
-export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiWisdomTts } = {}): StageExecutor {
+// Feature modules: IMAGE (deps.image, ONE image) and TTS (deps.tts, one call per sentence); both are required.
+export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiWisdomTts; features?: FeatureResolver } = {}): StageExecutor {
   const image = deps.image ?? openAiLongformImage, tts = deps.tts ?? openAiWisdomTts, apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? ''
   return {
     stage: 'ASSET', estimateUsd: () => 1.0,
     inputHash: (job) => sha256(`longform-asset|${job.id}|${job.planRev}|wisdom_longform/1`),
     async run({ job, blobs, previous, signal }) {
       if (!isLongform(job)) throw new StageError('PROFILE_UNSUPPORTED', 'longform ASSET only handles wisdom_longform')
+      needFeatures(featuresOf(deps, job), ['IMAGE', 'TTS'], 'Longform ASSET')
       const p = await previous('PLAN'), scriptRef = (p?.result as any)?.scriptRef
       const script = (scriptRef ? await blobs.getJson(scriptRef) : null) as LongformScript | null
       if (!script || script.schema !== 'wisdom-longform-script/1') throw new StageError('SCRIPT_MISSING', 'ASSET requires the longform PLAN script')
@@ -143,11 +147,15 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
   }
 }
 
-export const longformRenderExecutor: StageExecutor = {
+// Feature modules inside this stage: CAPTION (sentence cards, required: LOCK) -> LONGFORM_RENDER -> THUMBNAIL -> QC
+// (fatal output checks). THUMBNAIL/QC are skipped only when the profile does not select them.
+export const createLongformRenderExecutor = (deps: { features?: FeatureResolver } = {}): StageExecutor => ({
   stage: 'RENDER', estimateUsd: () => 0,
   inputHash: (job) => sha256(`longform-render|${job.id}|${job.planRev}|wisdom_longform/1`),
   async run({ job, blobs, previous, signal }) {
     if (!isLongform(job)) throw new StageError('PROFILE_UNSUPPORTED', 'longform RENDER only handles wisdom_longform')
+    const features = featuresOf(deps, job); needFeatures(features, ['LONGFORM_RENDER', 'CAPTION'], 'Longform RENDER')
+    const withThumbnail = features.has('THUMBNAIL'), withQc = features.has('QC')
     const a = await previous('ASSET'), assets: any = (a?.result as any)?.assetSpecRef ? await blobs.getJson((a!.result as any).assetSpecRef) : null
     const script = (assets?.scriptRef ? await blobs.getJson(assets.scriptRef) : null) as LongformScript | null
     if (!assets || !script) throw new StageError('ASSET_MISSING', 'RENDER requires the longform ASSET manifest')
@@ -184,25 +192,29 @@ export const longformRenderExecutor: StageExecutor = {
       await runOk(longformBackgroundArgv({ image, out: background }), { signal })
       await runOk(longformVideoArgv({ background, audio, ass: assPath, fontsDir: FONTS_DIR, out, seconds }), { signal, timeoutMs: 90 * 60_000, env: ffmpegEnv })
       // click thumbnail: the same single image (figure RIGHT), the planner's re-written punch lines on the LEFT
-      const t = thumbnailArgv({ image, lines: script.thumbnail.lines, assPath: thumbAss, fontsDir: FONTS_DIR, out: thumb })
-      await writeFile(thumbAss, t.ass, 'utf8'); await runOk(t.argv, { signal, env: ffmpegEnv })
+      if (withThumbnail) {
+        const t = thumbnailArgv({ image, lines: script.thumbnail.lines, assPath: thumbAss, fontsDir: FONTS_DIR, out: thumb })
+        await writeFile(thumbAss, t.ass, 'utf8'); await runOk(t.argv, { signal, env: ffmpegEnv })
+      }
       // fatal-only output checks (broken file / wrong canvas / missing narration / wrong length)
-      const info = await probe(out), tinfo = await probe(thumb)
-      const problems = [
+      const info = await probe(out), tinfo = withThumbnail ? await probe(thumb) : null
+      const problems = !withQc ? [] : [
         ...(info.width !== LONGFORM.canvas.w || info.height !== LONGFORM.canvas.h ? [`video ${info.width}x${info.height}`] : []),
         ...(!info.hasAudio ? ['no narration audio'] : []),
         ...(Math.abs(Number(info.duration || 0) - seconds) > 1.5 ? [`duration ${info.duration} vs narration ${seconds}`] : []),
-        ...(tinfo.width !== THUMB.w || tinfo.height !== THUMB.h ? [`thumbnail ${tinfo.width}x${tinfo.height}`] : [])
+        ...(tinfo && (tinfo.width !== THUMB.w || tinfo.height !== THUMB.h) ? [`thumbnail ${tinfo.width}x${tinfo.height}`] : [])
       ]
       if (problems.length) throw new StageError('LONGFORM_OUTPUT_INVALID', problems.join('; '))
       const bytes = await readFile(out), renderHash = sha256(bytes)
       const stored = await blobs.putBytes(`renders/${renderHash}.mp4`, bytes, 'video/mp4')
-      const tb = await readFile(thumb), thumbStored = await blobs.putBytes(`renders/${sha256(tb)}.jpg`, tb, 'image/jpeg')
-      const v = { variantId: 'v1', label: '롱폼', manifestHash: renderHash, renderRef: stored.path, renderHash, bytes: bytes.length, duration: info.duration, posterRef: thumbStored.path, thumbnailRef: thumbStored.path, gate: { decision: 'PASS', reasons: [], checks: [] }, publishable: true }
-      return { outputRef: stored.path, outputHash: renderHash, result: { variants: [v], cards: cards.length, imageRef: assets.image.ref, thumbnailRef: thumbStored.path, canvas: `${info.width}x${info.height}`, durationSec: info.duration }, provider: 'ffmpeg', model: 'libx264+libass' }
+      const tb = withThumbnail ? await readFile(thumb) : null, thumbStored = tb ? await blobs.putBytes(`renders/${sha256(tb)}.jpg`, tb, 'image/jpeg') : null
+      const thumbRef = thumbStored ? thumbStored.path : null
+      const v = { variantId: 'v1', label: '롱폼', manifestHash: renderHash, renderRef: stored.path, renderHash, bytes: bytes.length, duration: info.duration, posterRef: thumbRef, thumbnailRef: thumbRef, gate: { decision: 'PASS', reasons: [], checks: [] }, publishable: true }
+      return { outputRef: stored.path, outputHash: renderHash, result: { variants: [v], cards: cards.length, imageRef: assets.image.ref, thumbnailRef: thumbRef, canvas: `${info.width}x${info.height}`, durationSec: info.duration }, provider: 'ffmpeg', model: 'libx264+libass' }
     } finally { await rm(work, { recursive: true, force: true }) }
   }
-}
+})
+export const longformRenderExecutor: StageExecutor = createLongformRenderExecutor()
 
 export const longformPackageExecutor: StageExecutor = {
   stage: 'PACKAGE', estimateUsd: () => 0,
