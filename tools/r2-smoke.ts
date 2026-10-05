@@ -24,7 +24,7 @@ async function main() {
   if(text!==body) throw new Error('GET body mismatch')
   console.log('[R2_SMOKE] GET PASS', JSON.stringify({bytes:text.length}))
 
-  const page:any=await list({prefix:'smoke/r2-',limit:20})
+  const page:any=await list({prefix:path,limit:1})
   if(!page?.blobs?.some((x:any)=>x.pathname===path)) throw new Error('LIST did not include the object')
   console.log('[R2_SMOKE] LIST PASS', JSON.stringify({count:page.blobs.length}))
 
