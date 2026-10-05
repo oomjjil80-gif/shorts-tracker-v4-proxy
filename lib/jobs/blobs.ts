@@ -47,11 +47,11 @@ export function createVercelJobBlobStore(deps?: { put?: any; get?: any; head?: a
     const mod: any = await lazy()
     if (typeof mod.head === 'function') {
       try {
-        await mod.head(path)
-        return true
+        const found = await mod.head(path)
+        return Boolean(found)
       } catch (e: any) {
         const detail = `${String(e?.name || '')} ${String(e?.code || '')} ${String(e?.message || e)}`
-        if (/BlobNotFound|not.?found|404/i.test(detail)) return false
+        if (/BlobNotFound|not.?found|does not exist|404/i.test(detail)) return false
         throw e
       }
     }
