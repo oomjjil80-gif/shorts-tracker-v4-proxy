@@ -1,17 +1,11 @@
 import type { JobStage } from './types.js'
+import { PROFILES, getProfile } from './profiles.js'
 
-// Minimal per-profile stage order (no generic workflow engine). ASSET is skipped for source_shorts.
-export const PIPELINES: Record<string, readonly JobStage[]> = {
-  source_shorts: ['ANALYZE', 'PLAN', 'COMPILE', 'RENDER', 'AUTO_QC', 'DECISION', 'FINAL', 'PACKAGE'],
-  wisdom: ['PLAN', 'ASSET', 'ANALYZE', 'COMPILE', 'RENDER', 'AUTO_QC', 'DECISION', 'FINAL', 'PACKAGE'],
-  // 16:9 Wisdom Longform: one static image + narration + left key-phrase cards (worker/stages/longform.ts)
-  wisdom_longform: ['PLAN', 'ASSET', 'RENDER', 'PACKAGE']
-}
+// Minimal per-profile stage order (no generic workflow engine), declared once in ./profiles.ts.
+export const PIPELINES: Record<string, readonly JobStage[]> = Object.fromEntries(Object.values(PROFILES).map((p) => [p.id, p.stages]))
 
 export function pipelineFor(profile: string): readonly JobStage[] {
-  const p = PIPELINES[profile]
-  if (!p) throw new Error(`unknown job profile: ${profile}`)
-  return p
+  return getProfile(profile).stages
 }
 
 export function nextStage(profile: string, stage: JobStage): JobStage | null {
@@ -22,6 +16,6 @@ export function nextStage(profile: string, stage: JobStage): JobStage | null {
 }
 
 export function firstStage(profile: string, hasPlan: boolean): JobStage {
-  const p = pipelineFor(profile)
-  return profile === 'source_shorts' && hasPlan ? 'COMPILE' : p[0]
+  const p = getProfile(profile)
+  return hasPlan && p.resumeWithPlanAt ? p.resumeWithPlanAt : p.stages[0]
 }

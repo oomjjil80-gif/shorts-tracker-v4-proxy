@@ -5,12 +5,13 @@ import { createPgDbFromEnv } from './db.js'
 import { createJobStore, type JobStore } from './store.js'
 import { createVercelJobBlobStore, putAddressed, type JobBlobStore } from './blobs.js'
 import { PIPELINES } from './pipeline.js'
+import { isProfileId, getProfile, profileOf } from './profiles.js'
 import { JobError, type Job, type StageRun } from './types.js'
 import { validateReferenceProfile, stableHash } from '../reference/contracts.js'
 import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
 import { buildReferenceProductionBrief } from '../reference/profile.js'
 import { normalizeGenerativeBrief, generativeBriefHash } from '../generative/contracts.js'
-import { normalizeLongformBrief, longformBriefHash, LONGFORM_PROFILE_ID } from '../generative/longform.js'
+import { normalizeLongformBrief, longformBriefHash } from '../generative/longform.js'
 
 // HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
 // (Hobby plan allows 12 functions). CORS is applied by the router. Domain logic stays in store/gate/pipeline.
@@ -142,7 +143,7 @@ export function createJobsHttp(deps: JobsDeps) {
         const packageJson:any = await deps.blobs.getJson(pkg.outputRef)
         const scriptRef = (plan?.result as any)?.scriptRef
         const script:any = scriptRef ? await deps.blobs.getJson(scriptRef) : null
-        if (job.profile === LONGFORM_PROFILE_ID) {
+        if (profileOf(job.profile)?.packageView === 'longform') {
           // Longform: the server made the 16:9 thumbnail and the upload text; the phone only shows and copies them
           const thumb = typeof packageJson?.thumbnailRef === 'string' && packageJson.thumbnailRef.startsWith('renders/') ? await deps.blobs.presign?.(packageJson.thumbnailRef) : null
           const video = typeof packageJson?.finalRenderRef === 'string' && packageJson.finalRenderRef.startsWith('renders/') ? await deps.blobs.presign?.(packageJson.finalRenderRef) : null
@@ -164,9 +165,9 @@ export function createJobsHttp(deps: JobsDeps) {
 
       if (taskType === 'job_create') {
         const profile = String(body.profile || '')
-        need(PIPELINES[profile], `unknown profile: ${profile}`)
-        const longform = profile === LONGFORM_PROFILE_ID
-        const generative = profile === 'wisdom' || longform
+        need(isProfileId(profile), `unknown profile: ${profile}`)
+        const longform = getProfile(profile).input === 'longform_brief'
+        const generative = getProfile(profile).input !== 'source_asset'
         let generativeBriefRef: string | null = null
         let generativeHash = ''
         let sourceAssetId: string
