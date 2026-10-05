@@ -22,6 +22,7 @@ export type VariantSpec = {
   kind?: 'chronological' | 'preview' | 'tight'
   // What the presentation layer kept/dropped for THIS edit (recorded in the PLAN result; never part of job-plan/1)
   presentation?: PresentationReport
+  voiceoverText?: string
   headline?: string; events?: Array<{ start: number; end: number; text: string }>
   effectCaptions?: Array<Record<string, unknown>>; callouts?: Array<Record<string, unknown>>
   cleanEdgeCrop?: CleanEdgeCrop
@@ -140,7 +141,7 @@ const EFFECT_SLOTS = [{ xPct: 40, yPct: 42 }, { xPct: 60, yPct: 36 }, { xPct: 50
 // hook => persistent top headline; context/payoff => timed explanation captions; effect => short pop text.
 // Cues are placed on the edit (clipped to the beat that contains them), then selected by priority under the screen
 // budget (hook first, never dropped), so nothing is lost by list order or by an arbitrary trim.
-export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<VariantSpec, 'headline' | 'events' | 'effectCaptions' | 'presentation'> {
+export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<VariantSpec, 'headline' | 'events' | 'effectCaptions' | 'presentation' | 'voiceoverText'> {
   const { placed, report } = planPresentation(beats, story.minimalCaptions, { pinHook: (beats as any)[0]?.label === 'preview' })
   const hook = placed.find((c) => c.kind === 'hook')
   const events = placed.filter((c) => c.kind === 'context' || c.kind === 'payoff').map((c) => ({ start: c.srcStart, end: c.srcEnd, text: c.text }))
@@ -150,10 +151,19 @@ export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<Varia
     start: c.srcStart, end: idx + 1 < fx.length && fx[idx + 1].srcStart > c.srcStart ? Math.min(c.srcEnd, fx[idx + 1].srcStart) : c.srcEnd,
     text: c.text, ...EFFECT_SLOTS[idx % EFFECT_SLOTS.length], fontSizePct: 13, animation: 'pop'
   }))
+  const spokenCues = placed.filter((c) => c.kind === 'context' || c.kind === 'payoff').map((c) => c.text.trim()).filter(Boolean)
+  const maxVoiceChars = Math.max(16, Math.min(180, Math.floor(totalSeconds(beats) * 4.8)))
+  let voiceoverText = ''
+  for (const text of spokenCues) {
+    const next = voiceoverText ? voiceoverText + ' ' + text : text
+    if ([...next].length > maxVoiceChars) break
+    voiceoverText = next
+  }
   return {
     ...(hook ? { headline: hook.text } : {}),
     ...(events.length ? { events } : {}),
     ...(effectCaptions.length ? { effectCaptions } : {}),
+    ...(voiceoverText ? { voiceoverText } : {}),
     presentation: report
   }
 }
@@ -247,6 +257,7 @@ export function toJobPlan(sourceAssetId: string, v: VariantSpec) {
       profile: v.id,
       beats: v.beats.map((b) => ({ label: b.label, trimStart: b.trimStart, trimEnd: b.trimEnd })),
       ...(v.headline ? { headline: v.headline } : {}),
+      ...(v.voiceoverText ? { voiceover: { text: v.voiceoverText, sourceVolume: 0.28, voiceVolume: 1 } } : {}),
       ...(v.events?.length ? { events: v.events, plansTimeDomain: 'source' as const } : {}),
       ...(v.effectCaptions?.length ? { effectCaptions: v.effectCaptions, timeDomain: 'source' as const } : {}),
       ...(v.callouts?.length ? { callouts: v.callouts, plansTimeDomain: 'source' as const } : {}),
