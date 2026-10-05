@@ -95,7 +95,9 @@ export function storyPrompt(a: SourceAnalysis): string {
 // must never eat into it). signal: stage abort (lease lost / cancel) propagates into whichever call is in flight.
 export type StoryModelDeps = { apiKey: string; model: string; fetchImpl?: typeof fetch; keyframeJpeg?: Buffer | null; timeoutMs?: number; repairTimeoutMs?: number; signal?: AbortSignal }
 export const STORY_TIMEOUTS = { firstMs: 90_000, repairMs: 60_000 }
-export type StoryModelResult = SemanticResult & { model: string; usage: unknown; warnings: string[]; calls?: number }
+// Exactly what happened to the semantic call, so a fallback is never ambiguous in logs / stage results.
+export type SemanticOutcome = 'AI_OK' | 'AI_LOW_CONFIDENCE' | 'AI_INPUT_MISSING' | 'AI_REQUEST_FAILED' | 'AI_PARSE_FAILED' | 'AI_SCHEMA_FAILED' | 'AI_REPAIR_FAILED'
+export type StoryModelResult = SemanticResult & { model: string; usage: unknown; warnings: string[]; calls?: number; outcome: SemanticOutcome }
 
 type Assessed = { story: any | null; errors: string[]; warnings: string[] }
 
@@ -221,8 +223,8 @@ export async function aiAnalyzeStory(a: SourceAnalysis, deps: StoryModelDeps): P
   const f = deps.fetchImpl ?? fetch
   let model = deps.model, usage: unknown = null, calls = 0
   const usages: unknown[] = []
-  const out = (status: SemanticResult['status'], reason: string, warnings: string[] = []): StoryModelResult => ({ status, reason, story: null, model, usage, warnings, calls })
-  if (!deps.keyframeJpeg) return out('failed', 'no keyframe sheet: a story cannot be judged from numbers alone')
+  const out = (status: SemanticResult['status'], reason: string, outcome: SemanticOutcome, warnings: string[] = []): StoryModelResult => ({ status, reason, story: null, model, usage, warnings, calls, outcome })
+  if (!deps.keyframeJpeg) return out('failed', 'no keyframe sheet: a story cannot be judged from numbers alone', 'AI_INPUT_MISSING')
 
   // One controller + timer PER call, cleaned up in finally. They are never shared.
   const call = async (phase: 'first' | 'repair', promptText: string, timeoutMs: number): Promise<{ text?: string; error?: string }> => {
@@ -260,7 +262,7 @@ export async function aiAnalyzeStory(a: SourceAnalysis, deps: StoryModelDeps): P
 
   const basePrompt = storyPrompt(a)
   const first = await call('first', basePrompt, deps.timeoutMs ?? STORY_TIMEOUTS.firstMs)
-  if (first.error || !first.text) return out('failed', first.error || 'provider returned no text')
+  if (first.error || !first.text) return out('failed', first.error || 'provider returned no text', 'AI_REQUEST_FAILED')
   const firstParsed = parse(first.text)
   let assessed: Assessed
   let previousForRepair: any = null
@@ -277,12 +279,13 @@ export async function aiAnalyzeStory(a: SourceAnalysis, deps: StoryModelDeps): P
       'Return the COMPLETE corrected JSON object. Keep every field of the previous answer that was not named in an error unchanged. Re-check image timestamps. openingHook is mandatory and must be valid Korean text within 1 second of causalStart. Every range/cue needs end > start with at least 0.5 seconds of duration (a moment is a window, never start == end). Keep ALL prominent foreign viewer-facing text out of the selected edit, including payoff footage. A safe persistent edge band may use cleanEdgeCrop; never use a short temporal flash as a workaround. Tiny CCTV metadata is only a warning. Keep context/payoff cues grounded in visible actions, and keep one separate effect cue per real visible impact when applicable.'
     ].join('\n')
     const second = await call('repair', repairPrompt, deps.repairTimeoutMs ?? STORY_TIMEOUTS.repairMs)
-    if (second.error || !second.text) return out('invalid', `${assessed.errors.join('; ')}; repair failed: ${second.error || 'no text'}`.slice(0, 700), assessed.warnings)
+    if (second.error || !second.text) return out('invalid', `${assessed.errors.join('; ')}; repair failed: ${second.error || 'no text'}`.slice(0, 700), 'AI_REPAIR_FAILED', assessed.warnings)
     const secondParsed = parse(second.text)
-    if (secondParsed.error) return out('invalid', `${assessed.errors.join('; ')}; repair: ${secondParsed.error}`.slice(0, 700), assessed.warnings)
+    if (secondParsed.error) return out('invalid', `${assessed.errors.join('; ')}; repair: ${secondParsed.error}`.slice(0, 700), 'AI_PARSE_FAILED', assessed.warnings)
     assessed = assessStory(secondParsed.parsed, a, model)
-    if (!assessed.story) return out('invalid', assessed.errors.join('; ').slice(0, 700), assessed.warnings)
+    if (!assessed.story) return out('invalid', assessed.errors.join('; ').slice(0, 700), 'AI_SCHEMA_FAILED', assessed.warnings)
   }
 
-  return { ...semanticFromStory(assessed.story), model, usage, warnings: assessed.warnings, calls }
+  const final = semanticFromStory(assessed.story)
+  return { ...final, model, usage, warnings: assessed.warnings, calls, outcome: final.status === 'ok' ? 'AI_OK' : 'AI_LOW_CONFIDENCE' }
 }

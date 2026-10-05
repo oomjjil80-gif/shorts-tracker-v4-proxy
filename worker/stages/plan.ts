@@ -1,8 +1,8 @@
 import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
 import { canonicalize } from '../../lib/tracker-core/renderManifest.js'
 import type { SourceAnalysis } from '../../lib/media/analyze.js'
-import { aiAnalyzeStory, AI_PLANNER_PROMPT_VERSION } from '../../lib/media/aiPlanner.js'
-import { planVariants, toJobPlan, validateVariant } from '../../lib/media/plan.js'
+import { aiAnalyzeStory, AI_PLANNER_PROMPT_VERSION, type SemanticOutcome } from '../../lib/media/aiPlanner.js'
+import { planPresentationContract, planVariants, toJobPlan, validateVariant } from '../../lib/media/plan.js'
 import { semanticFromStory, type SemanticResult, type StoryAnalysis } from '../../lib/media/story.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { applyReferencePlanConstraints } from '../../lib/reference/planBridge.js'
@@ -25,8 +25,12 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
       if (!analysis || analysis.schema !== 'source-analysis/1') throw new StageError('ANALYSIS_INVALID', 'analysis blob missing or wrong schema')
       if (analysis.sourceAssetId !== job.sourceAssetId) throw new StageError('ANALYSIS_MISMATCH', 'analysis belongs to a different source')
 
+      // A PLAN that already succeeded once for this job means this run is a RECOVERY re-plan (PLAN_RECHECK): its only
+      // purpose is a semantic, presentation-complete plan, so it fails closed instead of shipping a heuristic plan.
+      const recovery = !!(await previous('PLAN'))
       let semantic: SemanticResult = { status: 'unavailable', reason: 'no semantic model configured', story: null }
       let provider = 'heuristic', model = 'deterministic@2', usage: unknown = null, warnings: string[] = [], aiCalls = 0
+      let outcome: SemanticOutcome | 'AI_NOT_CONFIGURED' = 'AI_NOT_CONFIGURED', cached = false, calledModel: string | null = null
       if (options.openAi) {
         const sheetRef = (prev.result as any)?.keyframeSheetRef as string | undefined
         const sheet = sheetRef ? await blobs.getBytes(sheetRef) : null
@@ -41,11 +45,11 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
         if (hitOk) {
           semantic = semanticFromStory(hitStory!)
           warnings = ['semantic answer reused from cache (0 model calls)']; aiCalls = 0
-          provider = 'openai'; model = hit!.model || options.openAi.model
+          provider = 'openai'; model = hit!.model || options.openAi.model; outcome = 'AI_OK'; cached = true; calledModel = model
         } else {
           const r = await aiAnalyzeStory(analysis, { ...options.openAi, keyframeJpeg: sheet, signal })
           semantic = { status: r.status, reason: r.reason, story: r.story }
-          usage = r.usage; warnings = r.warnings; aiCalls = r.calls ?? 0
+          usage = r.usage; warnings = r.warnings; aiCalls = r.calls ?? 0; outcome = r.outcome; calledModel = r.model || options.openAi.model
           if (r.status === 'ok') {
             provider = 'openai'; model = r.model
             await blobs.putJson(cachePath, { story: r.story, model: r.model }).catch(() => { /* cache is an optimisation only */ })
@@ -65,7 +69,10 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
         hookStrategy: semantic.story.hookStrategy,
         previewRange: semantic.story.previewRange
       } : null
-      console.info(`[plan] job=${job.id} semantic=${semantic.status} provider=${provider} story=${JSON.stringify(storySummary)}`)
+      // One line answers "why heuristic?": the outcome class, whether the AI was actually called, and its reason.
+      // (no key, no prompt — only the classification, model, call count, reason and story summary)
+      const fallback = semantic.status === 'ok' ? 'none' : 'heuristic'
+      console.info(`[plan] job=${job.id} semantic_status=${outcome} semantic=${semantic.status} provider_called=${options.openAi ? 'openai' : 'none'} model=${calledModel ?? 'none'} calls=${aiCalls}${cached ? ' cached=true' : ''} fallback=${fallback} confidence=${semantic.story?.confidence ?? 'n/a'} storyType=${semantic.story?.storyType ?? 'n/a'} recovery=${recovery} reason=${JSON.stringify(String(semantic.reason ?? '').slice(0, 300))} story=${JSON.stringify(storySummary)}`)
 
       // A low-confidence semantic read is still useful for lightweight Shorts presentation (headline/context/effects).
       // Do not throw that information away and produce a blank video; QC remains advisory for these presentation cues.
@@ -81,6 +88,15 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
       if (bad.length) throw new StageError('PLAN_INVALID', bad.join('; '))
       if (!variants.length) throw new StageError('PLAN_EMPTY', 'planner produced no variants')
 
+      // PLAN quality gate: the recommended plan's Common Shorts presentation contract, decided HERE (not in AUTO_QC).
+      const planContract = planPresentationContract(variants[0], semantic)
+      if (recovery && !planContract.ok) {
+        const diagnostic = { semanticStatus: outcome, semantic: semantic.status, providerCalled: options.openAi ? 'openai' : 'none', model: calledModel, calls: aiCalls, confidence: semantic.story?.confidence ?? null, storyType: semantic.story?.storyType ?? null, reason: semantic.reason ?? null, contract: planContract.reasons }
+        console.info(`[plan] job=${job.id} RECOVERY_BLOCKED semantic_status=${outcome} contract=${JSON.stringify(planContract.reasons)}`)
+        // a transient provider failure may be retried by the stage policy; an explicit low-confidence / invalid answer is final
+        throw new StageError('SEMANTIC_RECOVERY_BLOCKED', `re-plan requires a validated semantic, presentation-complete plan; got ${outcome}: ${planContract.reasons.join('; ')}`.slice(0, 900), outcome === 'AI_REQUEST_FAILED', diagnostic)
+      }
+
       const stored = []
       for (const v of variants) {
         const s = await putAddressed(blobs, 'plans', toJobPlan(job.sourceAssetId, v))
@@ -90,7 +106,8 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
         outputRef: stored[0].planRef, outputHash: sha256(stored.map((s) => s.planRef).join('|')), planRef: stored[0].planRef,
         result: {
           variants: stored, provider, model, promptVersion: options.openAi ? AI_PLANNER_PROMPT_VERSION : null,
-          semantic: { status: semantic.status, reason: semantic.reason, storyRef, storySummary, warnings, aiCalls },
+          semantic: { status: semantic.status, outcome, calledModel, reason: semantic.reason, storyRef, storySummary, warnings, aiCalls, cached },
+          recovery, planContract,
           reference: referencePlan ? { profileVersion: referenceProfile!.profileVersion, applied: referencePlan.applied, unknown: referencePlan.unknown, notes: referencePlan.notes, changes: referencePlan.changes } : null,
           // kept for older readers: why the model was not used
           fallback: semantic.status === 'ok' ? null : { reason: `${semantic.status}: ${semantic.reason ?? ''}`.slice(0, 300) }

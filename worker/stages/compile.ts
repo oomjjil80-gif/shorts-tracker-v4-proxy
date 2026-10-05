@@ -73,6 +73,9 @@ export const compileExecutor: StageExecutor = {
 
     // Variants come from PLAN only while that PLAN output is still the job's current plan (a revision resets this).
     const planRun = await previous('PLAN')
+    // PLAN quality gate at COMPILE entry: a recovery plan that did not meet the presentation contract never compiles
+    const pr: any = planRun?.result
+    if (pr?.recovery === true && pr?.planContract?.ok !== true) throw new StageError('PLAN_CONTRACT_NOT_MET', `recovery plan is not presentation-complete: ${(pr?.planContract?.reasons || ['contract not recorded']).join('; ')}`.slice(0, 600))
     const assetRun = job.profile === 'wisdom' ? await previous('ASSET') : null
     const timedPlanRef = (assetRun?.result as any)?.timedPlanRef as string | undefined
     const planned = (planRun?.result as any)?.variants as Array<{ variantId: string; label: string; planRef: string }> | undefined

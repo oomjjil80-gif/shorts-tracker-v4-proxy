@@ -151,7 +151,7 @@ const planHarness = async () => {
   const blobs = createMemoryBlobStore()
   const ref = (await blobs.putJson('analysis/x.json', a)).path
   const sheet = (await blobs.putBytes('analysis/keyframes/x.jpg', JPEG, 'image/jpeg')).path
-  const previous = async () => ({ outputRef: ref, result: { keyframeSheetRef: sheet } }) as any
+  const previous = async (stage: string) => (stage === 'ANALYZE' ? { outputRef: ref, result: { keyframeSheetRef: sheet } } : null) as any // like store.getLatestSucceeded
   const job = (id: string): any => ({ id, sourceAssetId: a.sourceAssetId, planRev: 0, referenceProfileRef: null })
   return { blobs, previous, job }
 }
