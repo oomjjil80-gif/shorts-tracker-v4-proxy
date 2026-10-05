@@ -12,8 +12,11 @@ import { openAiWisdomPublishKit, thumbnailArgv, thumbnailCopyErrors, thumbnailFi
 import { uploadMetadataErrors, uploadPackageText } from '../../lib/generative/uploadPackage.js'
 import { subjectSide } from './longform.js'
 import type { StageExecutor } from '../types.js'
+import { profileFeatures, type FeatureResolver } from '../modules/features.js'
 
-export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string; kit?: typeof openAiWisdomPublishKit; image?: typeof openAiLongformImage } = {}): StageExecutor {
+// THUMBNAIL is a feature module: when the profile does not select it, no thumbnail image/render is made and the
+// thumbnail copy is not checked or repaired. The upload text is PACKAGE's and is made either way (same kit call).
+export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string; kit?: typeof openAiWisdomPublishKit; image?: typeof openAiLongformImage; features?: FeatureResolver } = {}): StageExecutor {
   const apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? '', kit = deps.kit ?? openAiWisdomPublishKit, image = deps.image ?? openAiLongformImage
   return {
     ...pkg,
@@ -22,6 +25,7 @@ export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string;
       const res = await pkg.run(ctx)
       if (ctx.job.profile !== 'wisdom' || !apiKey) return res
       const { job, blobs, previous } = ctx
+      const thumbnail = (deps.features ?? profileFeatures)(job).has('THUMBNAIL')
       const work = await mkdtemp(join(tmpdir(), 'wisdom-kit-'))
       const extra: Record<string, unknown> = {}, notes: Record<string, string> = {}
       try {
@@ -31,14 +35,14 @@ export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string;
         const bible: any = pr.visualBibleRef ? await blobs.getJson(pr.visualBibleRef) : null
         const brief: any = job.planRef ? await blobs.getJson(job.planRef) : null
         const topic = String(brief?.text || script.title || ''), narration = (script.beats || []).map((b: any) => b.narration).join(' ')
-        const check = (k: any) => ({ copy: thumbnailCopyErrors(k.lines, script.title), upload: uploadMetadataErrors(k.metadata || ({} as any), { narration, format: 'shorts' }) })
+        const check = (k: any) => ({ copy: thumbnail ? thumbnailCopyErrors(k.lines, script.title) : [], upload: uploadMetadataErrors(k.metadata || ({} as any), { narration, format: 'shorts' }) })
         let made = await kit({ topic, title: script.title, hook: script.hook, narration }, apiKey), errs = check(made)
         if (errs.copy.length || errs.upload.length) {
           made = await kit({ topic, title: script.title, hook: script.hook, narration, repair: [...errs.copy.map((x) => 'thumbnail ' + x), ...errs.upload] }, apiKey); errs = check(made)
         }
         if (!errs.upload.length) { const t = uploadPackageText(made.metadata); extra.metadata = { title: t.title, description: t.descriptionWithHashtags, tags: t.tags, hashtags: t.hashtags, pinnedComment: t.pinnedComment } }
         else notes.uploadError = 'upload text: ' + errs.upload.join(',')
-        if (!errs.copy.length) {
+        if (thumbnail && !errs.copy.length) {
           try {
             const style = bible ? ` Style matching the video: ${bible.style}; palette ${bible.palette}; lighting ${bible.lighting}.` : ''
             const prompt = figureRightPrompt(thumbnailFigure(topic, made.figure)) + style
@@ -54,7 +58,7 @@ export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string;
             const tb = await readFile(out), stored = await blobs.putBytes(`renders/${sha256(tb)}.jpg`, tb, 'image/jpeg')
             extra.thumbnailRef = stored.path; extra.thumbnailLines = made.lines
           } catch (e: any) { notes.thumbnailError = String(e?.message || e).slice(0, 300) }
-        } else notes.thumbnailError = 'thumbnail copy: ' + errs.copy.join(',')
+        } else if (thumbnail) notes.thumbnailError = 'thumbnail copy: ' + errs.copy.join(',')
       } catch (e: any) { notes.kitError = String(e?.message || e).slice(0, 300) }
       finally { await rm(work, { recursive: true, force: true }) }
       if (!Object.keys(extra).length) return { ...res, result: { ...(res.result as any), ...notes } }

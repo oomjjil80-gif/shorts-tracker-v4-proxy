@@ -11,6 +11,7 @@ import { openAiWisdomPlan, applyVisualBible } from '../../lib/generative/planner
 import { evaluateWisdomSemanticQc } from '../../lib/generative/semanticQc.js'
 import { SHORTS_SCREEN_DNA, screenDnaSegmentArgv, screenDnaSegmentFilter, type AssetGeometryReceipt } from '../../lib/media/screenDna.js'
 import { cacheEntryIsCanonical } from '../../lib/generative/cache.js'
+import { profileFeatures, needFeatures, type FeatureResolver } from '../modules/features.js'
 
 
 export function wisdomHeadline(title:string){
@@ -24,8 +25,9 @@ export function wisdomHeadline(title:string){
  return t.slice(0,i).trim()+'\\N'+t.slice(i).trim()
 }
 
-export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof openAiWisdomPlan}={}):StageExecutor {
- const apiKey=deps.apiKey??process.env.OPENAI_API_KEY??'', aiPlan=deps.plan??openAiWisdomPlan
+// CAPTION feature: the plan's caption events are made only when the profile selects CAPTION (otherwise events=[]).
+export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof openAiWisdomPlan;features?:FeatureResolver;captions?:typeof wisdomCaptionEvents}={}):StageExecutor {
+ const apiKey=deps.apiKey??process.env.OPENAI_API_KEY??'', aiPlan=deps.plan??openAiWisdomPlan, captions=deps.captions??wisdomCaptionEvents
  return {
  stage:'PLAN', estimateUsd:()=>0.05,
  inputHash:(job)=>sha256(`gen-plan|${job.profile}|${job.planRef}|wisdom/1`),
@@ -67,10 +69,10 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   const stored=await putAddressed(blobs,'generative-scripts',script)
   const bibleStored=visualBible?await putAddressed(blobs,'visual-bibles',visualBible):null
   let clock=0
-  const captionEvents:any[]=[]
+  const captionEvents:any[]=[], withCaption=(deps.features??profileFeatures)(job).has('CAPTION')
   for(const b of script.beats){
    const start=Number(clock.toFixed(2));clock+=Number(b.durationSec);const end=Number(clock.toFixed(2))
-   captionEvents.push(...wisdomCaptionEvents(b.narration,start,end))
+   if(withCaption)captionEvents.push(...captions(b.narration,start,end))
   }
   const headline=wisdomHeadline(script.title)
   const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}],headline,events:captionEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
@@ -80,13 +82,16 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
 }}
 export const generativePlanExecutor=createGenerativePlanExecutor()
 
-export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeof openAiWisdomImage; tts?:typeof openAiWisdomTts}={}):StageExecutor {
+// Feature modules inside this stage: IMAGE (deps.image) and TTS (deps.tts), both needed to compose the beats, and
+// CAPTION (the timed caption events). A feature the profile does not select is never called.
+export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeof openAiWisdomImage; tts?:typeof openAiWisdomTts; features?:FeatureResolver}={}):StageExecutor {
  const image=deps.image??openAiWisdomImage, tts=deps.tts??openAiWisdomTts, apiKey=deps.apiKey??process.env.OPENAI_API_KEY??''
  return {
  stage:'ASSET', estimateUsd:()=>0.75,
  inputHash:(job)=>sha256(`gen-asset|${job.id}|${job.planRev}|wisdom/2`),
  async run({job,attempt,blobs,previous,signal}){
   if(job.profile!=='wisdom')throw new StageError('PROFILE_UNSUPPORTED','generative ASSET only handles wisdom')
+  const features=(deps.features??profileFeatures)(job); needFeatures(features,['IMAGE','TTS'],'Wisdom ASSET')
   if(!apiKey)throw new StageError('PROVIDER_DOWN','OPENAI_API_KEY is not configured',true)
   const p=await previous('PLAN'); const scriptRef=(p?.result as any)?.scriptRef; if(!scriptRef)throw new StageError('SCRIPT_MISSING','ASSET requires PLAN script')
   const planned:any=await blobs.getJson(scriptRef); if(!planned||planned.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
@@ -163,7 +168,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
     const start=Number(timedClock.toFixed(2))
     const rawEnd=i===items.length-1?actualTotal:(plannedTotal>0?actualTotal*((timedClock+Number(x.durationSec||0))/plannedTotal):actualTotal)
     const end=Number(Math.min(actualTotal,Math.max(start,rawEnd)).toFixed(2));timedClock=end
-    timedEvents.push(...wisdomCaptionEvents(x.narration,start,end))
+    if(features.has('CAPTION'))timedEvents.push(...wisdomCaptionEvents(x.narration,start,end))
    }
    const timedTotal=actualTotal
    const timedManifest={...manifest,items,actualDurationSec:actualTotal}

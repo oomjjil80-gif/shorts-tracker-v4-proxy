@@ -8,6 +8,9 @@ import { renderPayload, UnsupportedManifestError } from '../../lib/media/render.
 import { StageError, type StageExecutor } from '../types.js'
 import { COMMON_SHORTS_SCREEN_DNA, filterGraphSha256, renderVideoFilters, type RenderGeometryReceipt } from '../../lib/media/screenDna.js'
 import { resolveSourceShortsNarration } from './sourceNarration.js'
+import { profileFeatures, type FeatureResolver } from '../modules/features.js'
+import type { assFromPayload } from '../../lib/media/ass.js'
+import type { openAiTts } from '../../lib/generative/providers.js'
 
 type CompiledForRender = { variantId: string; label: string; manifestHash: string; manifestRef: string; gate: { decision: string }; identity: any[] }
 
@@ -28,7 +31,10 @@ export function compiledVariantsFromRun(compile: any): CompiledForRender[] {
 
 // RENDER: each compile-PASS variant is rendered ONCE at final quality (1080x1920 H.264/AAC MP4, faststart) straight
 // from its immutable RenderManifest + the Registry-verified source file. Choosing a variant later promotes that same file.
-export const renderExecutor: StageExecutor = {
+// Feature modules inside this stage, in order: TTS (General Shorts narration) -> CAPTION (overlay) -> SOUND (source audio +
+// narration mix only) -> RENDER. SOUND is the only consumer of the narration, so without SOUND no TTS is called.
+export type RenderDeps = { features?: FeatureResolver; narration?: typeof resolveSourceShortsNarration; tts?: typeof openAiTts; apiKey?: string; caption?: typeof assFromPayload }
+export const createRenderExecutor = (deps: RenderDeps = {}): StageExecutor => ({
   stage: 'RENDER',
   estimateUsd: () => 0,
   inputHash: (job) => sha256(`render|v2|${job.id}|${job.planRev}`),
@@ -41,7 +47,8 @@ export const renderExecutor: StageExecutor = {
 
     // Optional General Shorts narration is resolved here, after COMPILE has passed.
     // This preserves the durable source_shorts stage contract and caches the paid TTS bytes before ffmpeg rendering.
-    const narration = await resolveSourceShortsNarration({ job, blobs, signal })
+    const features = (deps.features ?? profileFeatures)(job)
+    const narration = features.has('SOUND') && features.has('TTS') ? await (deps.narration ?? resolveSourceShortsNarration)({ job, blobs, signal, ...(deps.tts ? { tts: deps.tts } : {}), ...(deps.apiKey ? { apiKey: deps.apiKey } : {}) }) : null
     const voiceoverRef = narration?.ref || ''
     const sourceMixVolume = narration?.sourceVolume
     const voiceMixVolume = narration?.voiceVolume
@@ -74,7 +81,7 @@ export const renderExecutor: StageExecutor = {
         const dir = join(work, v.variantId)
         const outPath = join(dir, 'final.mp4')
         let r
-        try { r = await renderPayload(manifest.payload, { sourceFile: file.path, sourceHasAudio: info.hasAudio, workDir: dir, outPath, signal, sourceFraming, voiceoverFile, sourceMixVolume, voiceMixVolume }) }
+        try { r = await renderPayload(manifest.payload, { sourceFile: file.path, sourceHasAudio: info.hasAudio, workDir: dir, outPath, signal, sourceFraming, voiceoverFile, sourceMixVolume, voiceMixVolume, ...(features.has('CAPTION') ? (deps.caption ? { caption: deps.caption } : {}) : { caption: null }) }) }
         catch (e: any) { throw e instanceof UnsupportedManifestError ? new StageError('MANIFEST_UNSUPPORTED', e.message) : e }
         const bytes = await readFile(outPath)
         const renderHash = sha256(bytes)
@@ -88,4 +95,5 @@ export const renderExecutor: StageExecutor = {
       return { outputRef: out[0].renderRef, outputHash: out[0].renderHash, result: { variants: out, sourceFraming: out[0]?.sourceFraming ?? baseFraming }, provider: 'ffmpeg', model: 'libx264+libass' }
     } finally { await rm(work, { recursive: true, force: true }); await file.cleanup() }
   }
-}
+})
+export const renderExecutor: StageExecutor = createRenderExecutor()

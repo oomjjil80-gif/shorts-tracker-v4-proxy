@@ -27,6 +27,9 @@ export type ContentGateInput = {
   analysis: SourceAnalysis
   semantic: SemanticResult | null
   framing: SourceFraming | null | undefined
+  // drawn overlay: undefined = build it from the manifest (existing callers); null = the CAPTION feature is not selected
+  // (nothing is built; the caption-only judgements are recorded as disabled and do not block); an object = use it
+  overlays?: { events: Array<{ kind: string; text: string; start: number; end: number }> } | null
 }
 
 type Seg = Range & { outStart: number }
@@ -159,20 +162,25 @@ export function evaluateContentGate(i: ContentGateInput): GateResult {
   }
 
   // 9. presentation rhythm: headline is persistent, but timed explanation/effect changes must keep the mobile screen alive.
-  {
+  const captionOff = i.overlays === null
+  const disabled = (id: string): CheckResult => ({ id, required: true, status: 'PASS', evidence: { captionFeature: 'disabled' } })
+  // the rhythm is measured only on timed captions/effect captions, i.e. the CAPTION feature
+  if (captionOff) checks.push(disabled('content.presentation_rhythm'))
+  else {
     const r = rhythmReport(dynamicCueStarts(i.payload, total), total)
     checks.push(verdict('content.presentation_rhythm', r.ok, { dynamicCueCount: r.dynamicCueCount, minDynamic: r.minDynamic, cueStarts: r.cueStarts, maxGapSeconds: r.maxGapSeconds, allowedMaxGap: r.allowedMaxGap, worstGap: r.worstGap }))
   }
 
   // 9b. a hook alone is not an explanation: an edit of 10s+ needs at least one timed context/payoff caption, and a
   // headline that is present in the manifest must span the edit from its first frame (it is what the viewer reads first).
-  {
+  if (captionOff) checks.push(disabled('content.explanation_present'), disabled('content.headline_present'))
+  else {
     const subs = (i.payload?.subtitleEvents || []).filter((e: any) => String(e?.text || '').trim())
     const need = total >= PRESENTATION_LIMITS.explanationMinTotalSec
     checks.push(verdict('content.explanation_present', !need || subs.length >= 1, { totalSeconds: r2(total), timedExplanationCaptions: subs.length, requiredFrom: PRESENTATION_LIMITS.explanationMinTotalSec }))
     // judged on what is actually drawn: the overlay builder must emit the headline over the whole edit (top band)
     const hl = String(i.payload?.editorialPlan?.headline || '').trim()
-    const drawn = assFromPayload({ ...i.payload, totalDuration: total }).events.find((e) => e.kind === 'headline') ?? null
+    const drawn = (i.overlays ?? assFromPayload({ ...i.payload, totalDuration: total })).events.find((e) => e.kind === 'headline') ?? null
     const spans = !!drawn && drawn.start <= 0.05 && drawn.end >= total - 0.05
     checks.push(verdict('content.headline_present', !!hl && /[가-힣]/.test(hl) && !!drawn && /[가-힣]/.test(drawn.text) && spans, { headline: hl, drawn: drawn ? { text: drawn.text, start: drawn.start, end: drawn.end } : null, total: r2(total) }))
   }

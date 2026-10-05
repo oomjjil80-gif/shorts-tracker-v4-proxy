@@ -85,6 +85,9 @@ async function overlayFor(built: { ass: string; events: OverlayEvent[] }, k: num
 export type RenderQcInput = {
   renderPath: string; expectedRenderHash: string; payload: any; sourceFile: string; analysis: SourceAnalysis
   render: { overlayEvents: OverlayEvent[]; assSha256: string | null }
+  // expected overlay: undefined = build it from the manifest (existing callers); null = the CAPTION feature is not
+  // selected (nothing is built: the caption-only checks pass as disabled); an object = use exactly that overlay
+  overlays?: { ass: string; events: OverlayEvent[] } | null
   sourceFraming?: SourceFraming | null
   workDir: string; contactSheetOut?: string
 }
@@ -97,6 +100,8 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
   const metrics: Record<string, unknown> = {}
   const plan = (() => { try { return extractRenderPlan(i.payload) } catch { return null } })()
   const total = plan?.total ?? Number(i.payload?.totalDuration)
+  const captionOff = i.overlays === null
+  const expectedOverlays = () => i.overlays ?? assFromPayload({ ...i.payload, totalDuration: total })
   const to = { timeoutMs: 180_000 }
   let info: Awaited<ReturnType<typeof probe>> | null = null
   const getInfo = async () => (info ??= await probe(i.renderPath))
@@ -197,14 +202,16 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       return ok(rows.every((r) => r.ok), { window: win, sourceRegion: srcRect, rows })
     }, { timeoutMs: 240_000 }),
     () => runCheck('overlay.matches_manifest', true, async () => {
-      const expected = assFromPayload({ ...i.payload, totalDuration: total })
+      if (captionOff) return ok(!(i.render.overlayEvents || []).length && i.render.assSha256 === null, { captionFeature: 'disabled', expectedCount: 0, renderedCount: (i.render.overlayEvents || []).length })
+      const expected = expectedOverlays()
       const key = (e: OverlayEvent) => `${e.kind}|${e.text}|${e.start.toFixed(2)}|${e.end.toFixed(2)}`
       const a = expected.events.map(key).sort(), b = (i.render.overlayEvents || []).map(key).sort()
       const assHash = expected.events.length ? sha256(expected.ass) : null
       return ok(JSON.stringify(a) === JSON.stringify(b) && assHash === i.render.assSha256, { expectedCount: a.length, renderedCount: b.length })
     }, to),
     () => runCheck('overlay.safe_area_no_clipping', i.payload?.editorialPlan?.profile !== 'wisdom-v1', async () => {
-      const built = assFromPayload({ ...i.payload, totalDuration: total })
+      if (captionOff) return pass({ captionFeature: 'disabled', overlays: 0 })
+      const built = expectedOverlays()
       if (!built.events.length) return pass({ overlays: 0 })
       const rows: unknown[] = []
       let allOk = true
@@ -227,7 +234,8 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
     }, { timeoutMs: 240_000 }),
     // Two messages on screen at the same moment must not overlap (headline vs effect, effect vs subtitle, ...).
     () => runCheck('overlay.no_collision', true, async () => {
-      const built = assFromPayload({ ...i.payload, totalDuration: total })
+      if (captionOff) return pass({ captionFeature: 'disabled', events: 0 })
+      const built = expectedOverlays()
       const evs = built.events.slice(0, 12)
       const boxes = await Promise.all(evs.map((_, k) => overlayFor(built, k, total, i.workDir).then((r) => r.box)))
       const hits: unknown[] = []
@@ -242,7 +250,8 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
     // overlay paints as bright text fill have to be bright in the output frame too.
     () => runCheck('overlay.visible_in_output', true, async () => {
       if (!plan) throw new Error('manifest not renderable')
-      const built = assFromPayload({ ...i.payload, totalDuration: total })
+      if (captionOff) return pass({ captionFeature: 'disabled', overlays: 0 })
+      const built = expectedOverlays()
       if (!built.events.length) return pass({ overlays: 0 })
       const rows: unknown[] = []
       for (const [k, ev] of built.events.slice(0, 8).entries()) {

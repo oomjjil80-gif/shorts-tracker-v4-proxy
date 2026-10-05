@@ -334,3 +334,58 @@ test('AUTO_QC (General source_shorts) runs the same Common Screen DNA checks end
   assert.ok(!gate.checks.some((c: any) => c.id === 'visual.frame_utilization'))
   assert.equal(gate.decision, 'PASS', JSON.stringify(gate.reasons))
 })
+
+test('AUTO_QC with CAPTION not selected (real path): 0 caption builds anywhere, non-caption QC runs, nothing blocks on captions', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { createMemoryBlobStore, putAddressed } = await import('../lib/jobs/blobs.js')
+  const { analyzeSourceFile } = await import('../lib/media/analyze.js')
+  const { renderPayload } = await import('../lib/media/render.js')
+  const { createAutoQcExecutor } = await import('../worker/stages/autoQc.js')
+  const { PROFILES } = await import('../lib/jobs/profiles.js')
+  const d = fx.dir()
+  const src = await fx.generalSource(d, 'bright')
+  const manifest = fx.generalManifest(src)
+  // RENDER with CAPTION not selected: a real caption-free output
+  const outPath = join(d, 'nocap.mp4')
+  const r = await renderPayload(manifest.payload, { sourceFile: src.path, sourceHasAudio: true, workDir: join(d, 'nc'), outPath, caption: null })
+  assert.equal(r.overlayEvents.length, 0)
+  const bytes = readFileSync(outPath), renderHash = fx.sha(bytes)
+  const receipt = { schema: 'screen-dna-receipt/1', stage: 'RENDER', jobId: 'job_gen', attempt: 1, contract: COMMON_SHORTS_SCREEN_DNA, composer: 'render', manifestHash: manifest.manifestHash, sourceSha256: src.sha256, sourceWidth: 1280, sourceHeight: 720, filterGraphSha256: filterGraphSha256(r.filterGraph), videoFilters: renderVideoFilters(r.filterGraph), renderHash }
+  // tripwire: the stored manifest makes ANY caption build throw (so a hidden assFromPayload call anywhere in QC —
+  // render QC, Screen DNA or the content gate — would surface as an UNKNOWN check)
+  const poisoned = { ...manifest, payload: { ...manifest.payload, subtitleEvents: 'POISON' } }
+  assert.throws(() => assFromPayload({ ...poisoned.payload, totalDuration: 2.4 }))
+  const blobs: any = createMemoryBlobStore()
+  const manifestRef = (await putAddressed(blobs, 'manifests', poisoned)).path
+  const renderRef = `renders/${renderHash}.mp4`; await blobs.putBytes(renderRef, bytes, 'video/mp4')
+  const analysisRef = (await putAddressed(blobs, 'analysis', await analyzeSourceFile(src.path, { sourceAssetId: 'src_raw_fx', sha256: src.sha256 }))).path
+  const runs: Record<string, any> = {
+    ANALYZE: { attempt: 1, outputRef: analysisRef, result: {} },
+    RENDER: { attempt: 1, result: { variants: [{ variantId: 'v1', label: '추천', manifestHash: manifest.manifestHash, manifestRef, renderRef, renderHash, duration: 2.4, overlayEvents: r.overlayEvents, assSha256: null, sourceFraming: { mode: 'full', crop: null, confidence: 0, sampleCount: 7, detector: 'luma-bands-v1' }, geometryReceipt: receipt }] } }
+  }
+  let builds = 0
+  const captions = (p: any) => { builds++; return assFromPayload(p) }
+  const run = (features: any) => createAutoQcExecutor(null, undefined, { captions, features }).run({ job: { id: 'job_gen', profile: 'source_shorts', planRev: 1, sourceAssetId: 'src_raw_fx' } as any, attempt: 1, blobs, previous: async (s: string) => runs[s] ?? null, signal: new AbortController().signal,
+    resolveSourceAsset: async () => ({ sourceAssetId: 'src_raw_fx', blobPath: 'x', sha256: src.sha256 }), resolveSourceFile: async () => ({ path: src.path, cleanup: async () => {} }) } as any) as any
+  const off: any = await run(() => new Set(PROFILES.source_shorts.features.filter((f) => f !== 'CAPTION')))
+  const v = off.result.variants[0], checks = v.gate.checks
+  assert.equal(builds, 0)
+  assert.deepEqual(checks.filter((c: any) => c.status === 'UNKNOWN').map((c: any) => c.id), [], 'no UNKNOWN: no hidden caption build tripped the poison')
+  assert.equal(status(checks, 'overlay.matches_manifest'), 'PASS')
+  for (const id of ['overlay.safe_area_no_clipping', 'overlay.no_collision', 'overlay.visible_in_output']) {
+    const c = checks.find((x: any) => x.id === id); assert.equal(c.status, 'PASS', id); assert.equal(c.evidence.captionFeature, 'disabled', id)
+  }
+  for (const id of ['screen_dna.output_identity', 'screen_dna.geometry_contract', 'screen_dna.source_geometry', 'screen_dna.render_preserves_source', 'wisdom.screen_dna_layout', 'timeline.segment_order_and_trim']) assert.equal(status(checks, id), 'PASS', `${id}: ${JSON.stringify(checks.find((c: any) => c.id === id))}`)
+  assert.ok(!checks.some((c: any) => c.id === 'screen_dna.text_bands' || c.id === 'screen_dna.text_lines'), 'text-only Screen DNA checks are not run')
+  assert.equal(v.gate.decision, 'PASS', JSON.stringify(v.gate.reasons))
+  const content = v.contentGate.checks
+  assert.ok(!content.some((c: any) => c.id === 'content.evaluated'), 'content gate ran (a caption build would have thrown)')
+  for (const id of ['content.explanation_present', 'content.headline_present', 'content.presentation_rhythm']) {
+    const c = content.find((x: any) => x.id === id); assert.equal(c.status, 'PASS', id); assert.equal(c.evidence.captionFeature, 'disabled', id)
+  }
+  // control: with CAPTION selected the same poisoned manifest IS rebuilt (once) and trips — the tripwire works
+  const on: any = await run(() => new Set(PROFILES.source_shorts.features))
+  assert.ok(builds >= 1) // the failed build is retried by Screen DNA's existing fallback; either way it trips
+  assert.ok(on.result.variants[0].gate.checks.some((c: any) => c.status === 'UNKNOWN' || c.status === 'FAIL'))
+})

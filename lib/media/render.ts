@@ -80,10 +80,11 @@ export function buildFilterGraph(cuts: RenderPlanCut[], o: { sourceHasAudio: boo
 
 export type RenderResult = { outPath: string; overlayEvents: OverlayEvent[]; assPath: string | null; ass: string; total: number; cuts: RenderPlanCut[]; sourceHasAudio: boolean; sourceFraming: SourceFraming | null; filterGraph: string }
 
-export async function renderPayload(payload: any, o: { sourceFile: string; sourceHasAudio: boolean; workDir: string; outPath: string; signal?: AbortSignal; fontsDir?: string; sourceFraming?: SourceFraming; dna?: ScreenDna; voiceoverFile?: string | null; sourceMixVolume?: number; voiceMixVolume?: number }): Promise<RenderResult> {
+// caption: the CAPTION feature (headline + caption overlay). Omitted = the standard one; null = not selected (no overlay).
+export async function renderPayload(payload: any, o: { sourceFile: string; sourceHasAudio: boolean; workDir: string; outPath: string; signal?: AbortSignal; fontsDir?: string; sourceFraming?: SourceFraming; dna?: ScreenDna; voiceoverFile?: string | null; sourceMixVolume?: number; voiceMixVolume?: number; caption?: typeof assFromPayload | null }): Promise<RenderResult> {
   const { cuts, total } = extractRenderPlan(payload)
   await mkdir(o.workDir, { recursive: true })
-  const built = assFromPayload({ ...payload, totalDuration: total })
+  const built: { events: OverlayEvent[]; ass: string } = o.caption === null ? { events: [], ass: '' } : (o.caption ?? assFromPayload)({ ...payload, totalDuration: total })
   const hasOverlays = built.events.length > 0
   const assPath = join(o.workDir, 'overlay.ass')
   if (hasOverlays) await writeFile(assPath, built.ass, 'utf8')

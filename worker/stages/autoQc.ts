@@ -15,15 +15,19 @@ import { StageError, type StageExecutor } from '../types.js'
 import { evaluateReferenceConformance } from '../../lib/reference/qc.js'
 import type { ReferenceProfile, ReferenceAsset } from '../../lib/reference/contracts.js'
 import { detectCaptionRegions } from '../../lib/reference/serverPipeline.js'
+import { profileFeatures, type FeatureResolver } from '../modules/features.js'
 
 // AUTO_QC: measures every rendered file (not the plan): format, full decode, duration, black/freeze, first/last frame,
 // audio, segment order/trim (frame matching against the source), overlay count/visibility/safe-area and frame utilization.
 // The job advances to DECISION only if at least one variant passes EVERY required check; otherwise QC_BLOCKED.
-export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null = null, resolveReferenceProfile?: (job:any, blobs:any)=>Promise<ReferenceProfile|null>): StageExecutor { return {
+// CAPTION feature: the overlay evidence is rebuilt from the manifest only when the profile selects CAPTION; without it
+// the render has no overlay, so QC checks exactly that (empty overlay evidence) and never regenerates captions.
+export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null = null, resolveReferenceProfile?: (job:any, blobs:any)=>Promise<ReferenceProfile|null>, deps: { features?: FeatureResolver; captions?: typeof assFromPayload } = {}): StageExecutor { return {
   stage: 'AUTO_QC',
   estimateUsd: () => 0,
   inputHash: (job) => sha256(`auto-qc|v2|${job.id}|${job.planRev}|${job.referenceProfileRef ?? 'no-reference'}`),
   async run({ job, blobs, previous, resolveSourceAsset, resolveSourceFile, signal }) {
+    const captionEnabled = (deps.features ?? profileFeatures)(job).has('CAPTION')
     const render = await previous('RENDER')
     const rendered = ((render?.result as any)?.variants || []) as any[]
     if (!rendered.length) throw new StageError('RENDER_MISSING', 'AUTO_QC requires a completed RENDER stage')
@@ -59,7 +63,10 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
           await writeFile(renderPath, bytes)
           outputInfo = await probe(renderPath)
           const sheetPath = join(work, `${v.variantId}.jpg`)
-          const qc = await runRenderQc({ renderPath, expectedRenderHash: v.renderHash, payload: manifest.payload, sourceFile: file.path, analysis, render: { overlayEvents: v.overlayEvents || [], assSha256: v.assSha256 ?? null }, sourceFraming: v.sourceFraming ?? null, workDir: dir, contactSheetOut: sheetPath })
+          // Overlay evidence decided ONCE: CAPTION selected -> the existing caption builder (undefined if the manifest is not
+          // renderable, so each check reports that as before); not selected -> null (no caption is ever rebuilt by QC).
+          const overlays = !captionEnabled ? null : (() => { try { return (deps.captions ?? assFromPayload)({ ...manifest.payload, totalDuration: extractRenderPlan(manifest.payload).total }) } catch { return undefined } })()
+          const qc = await runRenderQc({ renderPath, expectedRenderHash: v.renderHash, payload: manifest.payload, sourceFile: file.path, analysis, render: { overlayEvents: v.overlayEvents || [], assSha256: v.assSha256 ?? null }, sourceFraming: v.sourceFraming ?? null, workDir: dir, contactSheetOut: sheetPath, overlays })
 
           // Every 9:16 Short uses the Common Shorts Screen DNA (lib/media/screenDnaContract.ts). The geometry is proven from
           // the executor's receipt AND the actual pixels; picture brightness is never used to locate the bands. The composer
@@ -75,7 +82,7 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               renderPath, renderBytesSha256: sha256(bytes), output: { width: outputInfo?.width ?? null, height: outputInfo?.height ?? null },
               variant: { manifestHash: v.manifestHash, renderHash: v.renderHash, geometryReceipt: v.geometryReceipt ?? null },
               manifest, renderRun: render ? { attempt: render.attempt } : null, assetRun: assetRun ? { attempt: assetRun.attempt, result: assetRun.result } : null,
-              assetManifest, getBytes: (ref) => blobs.getBytes(ref), overlays: assFromPayload({ ...manifest.payload, totalDuration: plan.total }), signal
+              assetManifest, getBytes: (ref) => blobs.getBytes(ref), overlays: overlays === undefined ? (deps.captions ?? assFromPayload)({ ...manifest.payload, totalDuration: plan.total }) : overlays, signal
             }, plan.cuts))
           } catch (e: any) {
             if (!checks.some((c) => c.id === 'wisdom.screen_dna_layout')) checks.push({ id: 'wisdom.screen_dna_layout', required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } })
@@ -108,7 +115,7 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
                 {id:'wisdom.ending',required:true,status:(planRun?.result as any)?.semanticQc?.ending?'PASS':'FAIL',evidence:(planRun?.result as any)?.semanticQc},
                 {id:'wisdom.non_repetitive',required:true,status:(planRun?.result as any)?.semanticQc?.nonRepetitive?'PASS':'FAIL',evidence:(planRun?.result as any)?.semanticQc}
               ])
-            } else contentGate = evaluateContentGate({ payload: manifest.payload, analysis, semantic, framing: v.sourceFraming ?? null })
+            } else contentGate = evaluateContentGate({ payload: manifest.payload, analysis, semantic, framing: v.sourceFraming ?? null, overlays })
           }
           catch (e: any) { contentGate = evaluateGate([{ id: 'content.evaluated', required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } }]) }
 
