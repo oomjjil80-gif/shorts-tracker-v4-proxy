@@ -22,13 +22,10 @@ export const analyzeExecutor: StageExecutor = {
     const work = await mkdtemp(join(tmpdir(), 'tracker-analyze-'))
     try {
       if (signal.aborted) throw new Error('aborted')
-      const sheetPath = join(work, 'contact.jpg')
       let analysis
-      try { analysis = await analyzeSourceFile(file.path, { sourceAssetId: asset.sourceAssetId, sha256: asset.sha256 ?? null, contactSheetOut: sheetPath }, { contactSheet: true }) }
+      try { analysis = await analyzeSourceFile(file.path, { sourceAssetId: asset.sourceAssetId, sha256: asset.sha256 ?? null }) }
       catch (e: any) { throw new StageError('SOURCE_UNDECODABLE', String(e?.message || e)) }
       if (!analysis.usable.length) throw new StageError('SOURCE_NOT_USABLE', 'no usable (non-black) range in the source')
-      let contactSheetRef: string | null = null
-      try { const bytes = await readFile(sheetPath); contactSheetRef = (await blobs.putBytes(`analysis/contact/${sha256(bytes)}.jpg`, bytes, 'image/jpeg')).path } catch { /* optional artifact */ }
       // Timestamped keyframe sheet for the semantic story review in PLAN (a story cannot be judged from numbers alone).
       let keyframeSheetRef: string | null = null
       try {
@@ -39,7 +36,7 @@ export const analyzeExecutor: StageExecutor = {
       const stored = await putAddressed(blobs, 'analysis', analysis)
       return {
         outputRef: stored.path, outputHash: sha256(canonicalize(analysis)),
-        result: { analysisRef: stored.path, contactSheetRef, keyframeSheetRef, summary: { duration: analysis.media.duration, scenes: analysis.scenes.length, highlights: analysis.highlights.length, usableSeconds: analysis.usable.reduce((s, r) => s + r.end - r.start, 0), hasAudio: analysis.media.hasAudio } },
+        result: { analysisRef: stored.path, contactSheetRef: null, keyframeSheetRef, summary: { duration: analysis.media.duration, scenes: analysis.scenes.length, highlights: analysis.highlights.length, usableSeconds: analysis.usable.reduce((s, r) => s + r.end - r.start, 0), hasAudio: analysis.media.hasAudio } },
         provider: 'ffmpeg', model: `${analysis.analyzer.name}@${analysis.analyzer.version}`
       }
     } finally { await rm(work, { recursive: true, force: true }); await file.cleanup() }
