@@ -334,3 +334,34 @@ test('AUTO_QC (General source_shorts) runs the same Common Screen DNA checks end
   assert.ok(!gate.checks.some((c: any) => c.id === 'visual.frame_utilization'))
   assert.equal(gate.decision, 'PASS', JSON.stringify(gate.reasons))
 })
+
+test('AUTO_QC with CAPTION not selected: 0 caption regenerations, QC still runs on the empty overlay; production selection unchanged', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { createMemoryBlobStore, putAddressed } = await import('../lib/jobs/blobs.js')
+  const { analyzeSourceFile } = await import('../lib/media/analyze.js')
+  const { createAutoQcExecutor } = await import('../worker/stages/autoQc.js')
+  const { PROFILES } = await import('../lib/jobs/profiles.js')
+  const blobs: any = createMemoryBlobStore()
+  const g = gen
+  const manifestRef = (await putAddressed(blobs, 'manifests', g.manifest)).path
+  const renderRef = `renders/${g.out.sha256}.mp4`; await blobs.putBytes(renderRef, readFileSync(g.out.path), 'video/mp4')
+  const analysisRef = (await putAddressed(blobs, 'analysis', await analyzeSourceFile(g.src.path, { sourceAssetId: 'src_raw_fx', sha256: g.src.sha256 }))).path
+  const built = g.input.overlays
+  const runs: Record<string, any> = {
+    ANALYZE: { attempt: 1, outputRef: analysisRef, result: {} },
+    RENDER: { attempt: 1, result: { variants: [{ variantId: 'v1', label: '추천', manifestHash: g.manifest.manifestHash, manifestRef, renderRef, renderHash: g.out.sha256, duration: 2.4, overlayEvents: built.events, assSha256: fx.sha(built.ass), sourceFraming: { mode: 'full', crop: null, confidence: 0, sampleCount: 7, detector: 'luma-bands-v1' }, geometryReceipt: g.receipt }] } }
+  }
+  let captions = 0
+  const spy = (p: any) => { captions++; return assFromPayload(p) }
+  const run = (features?: any) => createAutoQcExecutor(null, undefined, { captions: spy, ...(features ? { features } : {}) }).run({ job: { id: 'job_gen', profile: 'source_shorts', planRev: 1, sourceAssetId: 'src_raw_fx' } as any, attempt: 1, blobs, previous: async (s: string) => runs[s] ?? null, signal: new AbortController().signal,
+    resolveSourceAsset: async () => ({ sourceAssetId: 'src_raw_fx', blobPath: 'x', sha256: g.src.sha256 }), resolveSourceFile: async () => ({ path: g.src.path, cleanup: async () => {} }) } as any) as any
+  // production (CAPTION selected): the overlay evidence is built once per variant, exactly as before; gate unchanged
+  const prod = await run()
+  assert.equal(captions, 1); assert.equal(prod.result.variants[0].gate.decision, 'PASS')
+  // CAPTION not selected: no caption regeneration; QC still runs every check against the empty overlay evidence
+  captions = 0
+  const noCap = await run(() => new Set(PROFILES.source_shorts.features.filter((f) => f !== 'CAPTION')))
+  assert.equal(captions, 0)
+  const ids = (o: any) => o.result.variants[0].gate.checks.map((c: any) => c.id).sort()
+  assert.deepEqual(ids(noCap), ids(prod))
+})

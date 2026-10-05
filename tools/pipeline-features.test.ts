@@ -12,7 +12,9 @@ import { runOk } from '../lib/media/ffmpeg.js'
 import { assFromPayload } from '../lib/media/ass.js'
 import { featureListErrors, profileFeatures } from '../worker/modules/features.js'
 import { createModuleRegistry, stageExecutorsFor, profileErrors, type ExistingExecutors } from '../worker/modules/registry.js'
-import { createGenerativeAssetExecutor } from '../worker/stages/generative.js'
+import { createGenerativeAssetExecutor, createGenerativePlanExecutor } from '../worker/stages/generative.js'
+import { wisdomCaptionEvents } from '../lib/generative/wisdom.js'
+import { normalizeGenerativeBrief } from '../lib/generative/contracts.js'
 import { createLongformAssetExecutor } from '../worker/stages/longform.js'
 import { createRenderExecutor } from '../worker/stages/render.js'
 import { withWisdomThumbnail } from '../worker/stages/wisdomThumbnail.js'
@@ -191,4 +193,37 @@ test('THUMBNAIL excluded: 0 thumbnail image/render calls, upload text still made
   calls.kit = 0
   const prod: any = await run(profileFeatures)
   assert.equal(calls.kit, 2); assert.match(String(prod.result.thumbnailError), /thumbnail copy/)
+})
+
+// ---------- Astra blockers on #146 ----------
+test('CAPTION excluded in Wisdom PLAN: 0 wisdomCaptionEvents calls, events=[]; production plan byte-identical', async () => {
+  const blobs: any = createMemoryBlobStore()
+  // the planner fixture of tools/p2-planner.test.ts (a script that passes validation and semantic QC)
+  const brief = await putAddressed(blobs, 'generative-briefs', normalizeGenerativeBrief({ kind: 'text', text: '관계는 숫자보다 깊이가 중요합니다.', targetSeconds: 40 }))
+  const beats = Array.from({ length: 4 }, (_, i) => ({ id: `b${i + 1}`, narration: [`관계의 숫자보다 마음의 깊이를 보세요.`, `많은 관계는 때로 마음을 지치게 합니다.`, `하지만 중요한 건 서로를 편안하게 하는 깊이입니다.`, `관계는 숫자보다 깊이가 오래 남습니다.`][i], visualGoal: `goal ${i + 1}`, imagePrompt: `scene ${i + 1}`, durationSec: 10 }))
+  const script: any = { schema: 'wisdom-script/1', title: '관계의 깊이', hook: '많은 사람이 꼭 필요할까요?', beats, ending: '편안한 몇 사람이면 충분합니다.', totalSeconds: 40 }
+  const bible: any = { schema: 'wisdom-visual-bible/1', style: 'editorial watercolor', palette: 'warm muted', lighting: 'soft', composition: 'single focus', characterPolicy: 'consistent recurring person', negative: 'text, watermark, clutter' }
+  let n = 0
+  const captions: typeof wisdomCaptionEvents = (...a) => { n++; return wisdomCaptionEvents(...a) }
+  const run = (deps: any) => createGenerativePlanExecutor({ apiKey: 'test', plan: async () => ({ script: JSON.parse(JSON.stringify(script)), visualBible: bible }), ...deps }).run({ job: { id: 'p', profile: 'wisdom', planRef: brief.path, sourceAssetId: 'src_gen_p' }, blobs, previous: async () => null, signal: new AbortController().signal } as any) as any
+  const plain = await run({})
+  const prod = await run({ captions })
+  assert.ok(n > 0); assert.equal(prod.outputHash, plain.outputHash) // production: same plan blob as before
+  assert.ok(((await blobs.getJson(prod.planRef)) as any).variantPlan.events.length > 0)
+  n = 0
+  const noCap = await run({ captions, features: without('wisdom', 'CAPTION') })
+  assert.equal(n, 0)
+  assert.deepEqual(((await blobs.getJson(noCap.planRef)) as any).variantPlan.events, [])
+})
+
+test('MODULE_CONFIG contract: wiring errors from stageExecutorsFor carry code MODULE_CONFIG, retryable false', () => {
+  const isConfig = (e: any) => e?.code === 'MODULE_CONFIG' && e?.retryable === false && /profile\/module wiring is invalid/.test(e.message)
+  const { ['wisdom.plan']: _gone, ...missingModule } = registry
+  const cases: [string, () => unknown][] = [
+    ['IMAGE missing', () => stageExecutorsFor(registry, [testProfile('wisdom', ['PLAN', 'TTS', 'ANALYZE', 'CAPTION', 'RENDER', 'QC', 'THUMBNAIL', 'PACKAGE'])])],
+    ['TTS missing', () => stageExecutorsFor(registry, [testProfile('wisdom_longform', ['PLAN', 'IMAGE', 'CAPTION', 'LONGFORM_RENDER', 'THUMBNAIL', 'QC', 'PACKAGE'])])],
+    ['wrong feature order', () => stageExecutorsFor(registry, [testProfile('source_shorts', ['ANALYZE', 'PLAN', 'SOUND', 'TTS', 'CAPTION', 'RENDER', 'QC', 'PACKAGE'])])],
+    ['module missing', () => stageExecutorsFor(missingModule)]
+  ]
+  for (const [name, fn] of cases) assert.throws(fn, isConfig, name)
 })

@@ -15,11 +15,14 @@ import { StageError, type StageExecutor } from '../types.js'
 import { evaluateReferenceConformance } from '../../lib/reference/qc.js'
 import type { ReferenceProfile, ReferenceAsset } from '../../lib/reference/contracts.js'
 import { detectCaptionRegions } from '../../lib/reference/serverPipeline.js'
+import { profileFeatures, type FeatureResolver } from '../modules/features.js'
 
 // AUTO_QC: measures every rendered file (not the plan): format, full decode, duration, black/freeze, first/last frame,
 // audio, segment order/trim (frame matching against the source), overlay count/visibility/safe-area and frame utilization.
 // The job advances to DECISION only if at least one variant passes EVERY required check; otherwise QC_BLOCKED.
-export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null = null, resolveReferenceProfile?: (job:any, blobs:any)=>Promise<ReferenceProfile|null>): StageExecutor { return {
+// CAPTION feature: the overlay evidence is rebuilt from the manifest only when the profile selects CAPTION; without it
+// the render has no overlay, so QC checks exactly that (empty overlay evidence) and never regenerates captions.
+export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null = null, resolveReferenceProfile?: (job:any, blobs:any)=>Promise<ReferenceProfile|null>, deps: { features?: FeatureResolver; captions?: typeof assFromPayload } = {}): StageExecutor { return {
   stage: 'AUTO_QC',
   estimateUsd: () => 0,
   inputHash: (job) => sha256(`auto-qc|v2|${job.id}|${job.planRev}|${job.referenceProfileRef ?? 'no-reference'}`),
@@ -75,7 +78,7 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
               renderPath, renderBytesSha256: sha256(bytes), output: { width: outputInfo?.width ?? null, height: outputInfo?.height ?? null },
               variant: { manifestHash: v.manifestHash, renderHash: v.renderHash, geometryReceipt: v.geometryReceipt ?? null },
               manifest, renderRun: render ? { attempt: render.attempt } : null, assetRun: assetRun ? { attempt: assetRun.attempt, result: assetRun.result } : null,
-              assetManifest, getBytes: (ref) => blobs.getBytes(ref), overlays: assFromPayload({ ...manifest.payload, totalDuration: plan.total }), signal
+              assetManifest, getBytes: (ref) => blobs.getBytes(ref), overlays: (deps.features ?? profileFeatures)(job).has('CAPTION') ? (deps.captions ?? assFromPayload)({ ...manifest.payload, totalDuration: plan.total }) : { ass: '', events: [] }, signal
             }, plan.cuts))
           } catch (e: any) {
             if (!checks.some((c) => c.id === 'wisdom.screen_dna_layout')) checks.push({ id: 'wisdom.screen_dna_layout', required: true, status: 'UNKNOWN', evidence: { error: String(e?.message || e) } })

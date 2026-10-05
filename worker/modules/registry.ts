@@ -2,7 +2,7 @@
 // each stage executor just looks up the job's Profile (lib/jobs/profiles.ts) and calls that module.
 import { JOB_STAGES, type Job, type JobStage } from '../../lib/jobs/types.js'
 import { PROFILES, getProfile, type ProfileSpec } from '../../lib/jobs/profiles.js'
-import type { StageExecutor } from '../types.js'
+import { StageError, type StageExecutor } from '../types.js'
 import { adapt, type PipelineModule } from './contract.js'
 import { featureListErrors } from './features.js'
 
@@ -62,7 +62,7 @@ export function profileErrors(registry: ModuleRegistry, profiles: readonly Profi
 // One executor per stage (same stage set and order as before), routing each job to its Profile's module.
 export function stageExecutorsFor(registry: ModuleRegistry, profiles: readonly ProfileSpec[] = Object.values(PROFILES)): StageExecutor[] {
   const errors = profileErrors(registry, profiles)
-  if (errors.length) throw new Error(`profile/module wiring is invalid: ${errors.join('; ')}`)
+  if (errors.length) throw new StageError('MODULE_CONFIG', `profile/module wiring is invalid: ${errors.join('; ')}`, false)
   const moduleFor = (job: Job, stage: JobStage): PipelineModule => {
     const id = getProfile(job.profile).modules[stage]
     if (!id) throw new Error(`stage ${stage} is not part of profile ${job.profile}`)

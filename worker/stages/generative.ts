@@ -25,8 +25,9 @@ export function wisdomHeadline(title:string){
  return t.slice(0,i).trim()+'\\N'+t.slice(i).trim()
 }
 
-export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof openAiWisdomPlan}={}):StageExecutor {
- const apiKey=deps.apiKey??process.env.OPENAI_API_KEY??'', aiPlan=deps.plan??openAiWisdomPlan
+// CAPTION feature: the plan's caption events are made only when the profile selects CAPTION (otherwise events=[]).
+export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof openAiWisdomPlan;features?:FeatureResolver;captions?:typeof wisdomCaptionEvents}={}):StageExecutor {
+ const apiKey=deps.apiKey??process.env.OPENAI_API_KEY??'', aiPlan=deps.plan??openAiWisdomPlan, captions=deps.captions??wisdomCaptionEvents
  return {
  stage:'PLAN', estimateUsd:()=>0.05,
  inputHash:(job)=>sha256(`gen-plan|${job.profile}|${job.planRef}|wisdom/1`),
@@ -68,10 +69,10 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   const stored=await putAddressed(blobs,'generative-scripts',script)
   const bibleStored=visualBible?await putAddressed(blobs,'visual-bibles',visualBible):null
   let clock=0
-  const captionEvents:any[]=[]
+  const captionEvents:any[]=[], withCaption=(deps.features??profileFeatures)(job).has('CAPTION')
   for(const b of script.beats){
    const start=Number(clock.toFixed(2));clock+=Number(b.durationSec);const end=Number(clock.toFixed(2))
-   captionEvents.push(...wisdomCaptionEvents(b.narration,start,end))
+   if(withCaption)captionEvents.push(...captions(b.narration,start,end))
   }
   const headline=wisdomHeadline(script.title)
   const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}],headline,events:captionEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
