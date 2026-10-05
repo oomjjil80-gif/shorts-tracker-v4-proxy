@@ -85,7 +85,7 @@ const api='/api/story';
 const LS_SOURCE='tracker.continuity.source.v1';
 const LS_JOB='tracker.continuity.job.v1';
 const LS_KEY='tracker.continuity.workspace.v1';
-let pollTimer=null, currentSource=null, currentJobId=null;
+let pollTimer=null, currentSource=null, currentJobId=null, previewRenderKey='';
 
 function randomHex(n=24){const b=new Uint8Array(n);crypto.getRandomValues(b);return Array.from(b,x=>x.toString(16).padStart(2,'0')).join('')}
 function workspaceKey(){let k=localStorage.getItem(LS_KEY);if(!k){k=randomHex();localStorage.setItem(LS_KEY,k)}return k}
@@ -124,14 +124,17 @@ $('make').onclick=async()=>{
   try{
     const nonce=randomHex(12);
     const d=await post({taskType:'job_create',profile:'source_shorts',sourceAssetId:currentSource.sourceAssetId,idempotencyKey:'continuity-'+currentSource.sourceAssetId.slice(-20)+'-'+nonce},true);
-    currentJobId=d.job.id;localStorage.setItem(LS_JOB,currentJobId);$('jobCard').classList.remove('hidden');await refreshJob();startPoll();
+    currentJobId=d.job.id;localStorage.setItem(LS_JOB,currentJobId);$('jobCard').classList.remove('hidden');previewRenderKey='';startPoll();await refreshJob();
   }catch(e){status($('collectStatus'),'제작 시작 실패: '+e.message,false)}
   finally{$('make').disabled=false;$('make').textContent='이 소스로 새 영상 만들기'}
 };
 function startPoll(){clearInterval(pollTimer);pollTimer=setInterval(refreshJob,4000)}
 async function loadPreviews(job){
   try{
-    const d=await getJob(job.id,'job_preview');const previews=d.previews||[];$('variants').innerHTML='';
+    const d=await getJob(job.id,'job_preview');const previews=d.previews||[];
+    const nextKey=JSON.stringify(previews.map(p=>[p.variantId,p.qc,!!p.publishable,!!p.approved,!!p.recommended]));
+    if(nextKey===previewRenderKey)return;
+    previewRenderKey=nextKey;$('variants').innerHTML='';
     for(const p of previews){
       const box=document.createElement('div');box.className='variant';
       const name=document.createElement('div');name.textContent=p.label||p.variantId;name.style.fontWeight='800';box.appendChild(name);
@@ -146,7 +149,7 @@ async function loadPreviews(job){
 }
 async function choose(job,variantId){
   const v=(job.variants||[]).find(x=>x.id===variantId);if(!v?.manifestHash)return;
-  try{await post({taskType:'job_decision',jobId:job.id,manifestHash:v.manifestHash},true);await refreshJob()}catch(e){$('jobDetail').textContent='선택 실패: '+e.message}
+  try{await post({taskType:'job_decision',jobId:job.id,manifestHash:v.manifestHash},true);previewRenderKey='';startPoll();await refreshJob()}catch(e){$('jobDetail').textContent='선택 실패: '+e.message}
 }
 async function loadFinal(job){
   try{
@@ -164,14 +167,14 @@ async function refreshJob(){
     const d=await getJob(currentJobId);const j=d.job;$('jobCard').classList.remove('hidden');
     $('jobState').textContent=j.status==='COMPLETE'?'완성':j.status==='FAILED'?'실패':j.status==='WAITING_USER'?'선택 대기':'제작 중 · '+j.stage;
     $('jobDetail').textContent=(j.error?j.error+'\n':'')+'현재 단계: '+j.stage+(j.waitReason?' · '+j.waitReason:'');
-    if(j.status==='WAITING_USER'&&j.waitReason==='DECISION')await loadPreviews(j);
-    if(j.status==='COMPLETE'){clearInterval(pollTimer);await loadFinal(j)}
+    if(j.status==='WAITING_USER'&&j.waitReason==='DECISION'){await loadPreviews(j);clearInterval(pollTimer);pollTimer=null}
+    if(j.status==='COMPLETE'){clearInterval(pollTimer);pollTimer=null;await loadFinal(j)}
     if(j.status==='FAILED'||j.status==='CANCELLED')clearInterval(pollTimer);
   }catch(e){$('jobDetail').textContent='상태 확인 실패: '+e.message}
 }
 health();
 try{const s=JSON.parse(localStorage.getItem(LS_SOURCE)||'null');if(s?.sourceAssetId)showSource(s)}catch{}
-currentJobId=localStorage.getItem(LS_JOB)||null;if(currentJobId){$('jobCard').classList.remove('hidden');refreshJob();startPoll()}
+currentJobId=localStorage.getItem(LS_JOB)||null;if(currentJobId){$('jobCard').classList.remove('hidden');startPoll();refreshJob()}
 </script></body></html>`
 
 app.get('/', (_req, res) => {
