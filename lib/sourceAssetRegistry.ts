@@ -57,7 +57,7 @@ export async function listSourceAssets(options: { limit?: unknown; cursor?: unkn
   const cursor = options.cursor === undefined ? undefined : String(options.cursor)
   if (cursor && cursor.length > 2048) throw Object.assign(new Error('Invalid cursor'), { status: 400 })
   const page = await deps.list({ prefix: prefix(deps.env), limit, ...(cursor ? { cursor } : {}) })
-  const sources = await Promise.all(page.blobs.map(blob => {
+  const sources = await Promise.all(page.blobs.map((blob: { pathname: string }) => {
     const id = blob.pathname.slice(prefix(deps.env).length).replace(/\.json$/, '')
     return getSourceAsset(id, deps)
   }))
