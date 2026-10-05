@@ -136,7 +136,7 @@ async function r2Head(path: string) {
   // Some R2 responses omit Content-Length on HEAD. Probe only response headers
   // with GET and cancel the body immediately so metadata checks stay correct
   // without downloading the object.
-  if (sizeHeader === null) {
+  if (sizeHeader === null || Number(sizeHeader) === 0) {
     const probe = await signedFetch('GET', path)
     if (probe.status === 404) return null
     if (!probe.ok) throw new Error(`R2 metadata probe failed (${probe.status})`)
