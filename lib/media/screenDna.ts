@@ -447,8 +447,9 @@ export async function runScreenDnaQc(i: ScreenDnaInput, cuts: Array<{ start: num
     await geometryContractCheck(i),
     render ? await windowGeometryCheck(i, cuts) : await sourceGeometryCheck(i),
     render ? await windowPreservesCheck(i, cuts) : await renderPreservesSourceCheck(i, cuts),
-    await textBandsCheck(i),
-    await textLinesCheck(i)
+    // text-only checks: not run when the CAPTION feature is not selected (overlays === null); the aggregate below is
+    // then derived from the geometry checks that actually ran
+    ...(i.overlays === null ? [] : [await textBandsCheck(i), await textLinesCheck(i)])
   ]
   const status = checks.some((c) => c.status === 'FAIL') ? 'FAIL' : checks.every((c) => c.status === 'PASS') ? 'PASS' : 'UNKNOWN'
   // Aggregate kept under the historical id; it is derived ONLY from the checks above (no pixel-brightness framing).
