@@ -30,6 +30,7 @@
     "api:railway": "tsx server/railwayApi.ts",
     "db:migrate": "tsx tools/migrate.ts",
     "sync-core": "node tools/sync-tracker-core.mjs",
-    "start": "npm run worker"
+    "start": "npm run worker",
+    "r2:smoke": "tsx tools/r2-smoke.ts"
   }
 }
