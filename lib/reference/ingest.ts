@@ -1,4 +1,4 @@
-import { get, put } from '@vercel/blob'
+import { get, put } from '../objectStorage.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { writeFile, unlink } from 'node:fs/promises'
 import { probe } from '../media/ffmpeg.js'
