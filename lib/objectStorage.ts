@@ -129,11 +129,28 @@ async function r2Head(path: string) {
   const res = await signedFetch('HEAD', path)
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`R2 HEAD failed (${res.status})`)
+  let sizeHeader = res.headers.get('content-length')
+  let contentType = res.headers.get('content-type') || undefined
+  let etag = res.headers.get('etag') || undefined
+
+  // Some R2 responses omit Content-Length on HEAD. Probe only response headers
+  // with GET and cancel the body immediately so metadata checks stay correct
+  // without downloading the object.
+  if (sizeHeader === null) {
+    const probe = await signedFetch('GET', path)
+    if (probe.status === 404) return null
+    if (!probe.ok) throw new Error(`R2 metadata probe failed (${probe.status})`)
+    sizeHeader = probe.headers.get('content-length')
+    contentType ||= probe.headers.get('content-type') || undefined
+    etag ||= probe.headers.get('etag') || undefined
+    try { await probe.body?.cancel() } catch {}
+  }
+
   return {
     pathname: path,
-    size: Number(res.headers.get('content-length') || 0),
-    contentType: res.headers.get('content-type') || undefined,
-    etag: res.headers.get('etag') || undefined,
+    size: Number(sizeHeader || 0),
+    contentType,
+    etag,
   }
 }
 
