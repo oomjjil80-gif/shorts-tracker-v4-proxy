@@ -97,6 +97,11 @@ async function signedFetch(
   })
 }
 
+function isNotFoundError(error: any) {
+  const detail = `${String(error?.name || '')} ${String(error?.code || '')} ${String(error?.message || error || '')}`
+  return /BlobNotFound|not.?found|does not exist|404/i.test(detail)
+}
+
 function xmlDecode(value: string) {
   return value
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
@@ -208,7 +213,12 @@ export async function get(path: string, opts: GetOpts = {}) {
     const value = await r2Get(path)
     if (value) return value
   }
-  return (vercelBlob as any).get(path, opts)
+  try {
+    return await (vercelBlob as any).get(path, opts)
+  } catch (error: any) {
+    if (isNotFoundError(error)) return null
+    throw error
+  }
 }
 
 export async function head(path: string) {
@@ -216,7 +226,12 @@ export async function head(path: string) {
     const value = await r2Head(path)
     if (value) return value
   }
-  return (vercelBlob as any).head(path)
+  try {
+    return await (vercelBlob as any).head(path)
+  } catch (error: any) {
+    if (isNotFoundError(error)) return null
+    throw error
+  }
 }
 
 export async function list(opts: ListOpts = {}) {
