@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { storageBackend } from '../lib/objectStorage.js'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -21,10 +22,14 @@ export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
   if (req.method !== 'GET') return res.status(405).json({ ok: false, error: 'Method not allowed' })
-  const configured = Boolean(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID)
+  const backend = storageBackend()
+  const configured = backend === 'r2'
+    ? Boolean(process.env.R2_ENDPOINT && process.env.R2_BUCKET && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY)
+    : Boolean(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID)
   return res.status(configured ? 200 : 503).json({
     ok: configured,
-    provider: 'Vercel Blob',
+    provider: backend === 'r2' ? 'Cloudflare R2' : 'Vercel Blob',
+    backend,
     access: 'private',
     configured
   })
