@@ -50,7 +50,6 @@ async function compileOne(ctx: Pick<StageContext, 'job' | 'blobs'>, sourceAsset:
   const gate = await runGate(checks)
   const stored = await putAddressed(blobs, 'manifests', { schema: manifest.schema, manifestHash: manifest.manifestHash, compilerVersion: manifest.compilerVersion, identity, payload: manifest.payload })
   // manifestHash (content of the manifest) is the identity; the blob path is only its storage address.
-  await putAddressed(blobs, `qc/compile/${manifest.manifestHash}`, gate)
   return { variantId, label, planRef, manifestHash: manifest.manifestHash, manifestRef: stored.path, identity, gate, totalDuration: manifest.payload.totalDuration }
 }
 
