@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { put, get } from '@vercel/blob'
+import { put, get } from '../../lib/objectStorage.js'
 import { createHash, randomUUID } from 'node:crypto'
 
 function setCors(req: Request, res: Response) {
