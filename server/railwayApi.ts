@@ -139,7 +139,14 @@ async function loadPreviews(job){
       const box=document.createElement('div');box.className='variant';
       const name=document.createElement('div');name.textContent=p.label||p.variantId;name.style.fontWeight='800';box.appendChild(name);
       if(p.url){const v=document.createElement('video');v.controls=true;v.playsInline=true;v.src=p.url;box.appendChild(v)}
-      const q=document.createElement('div');q.className='muted';q.textContent='QC '+(p.qc||'-')+(p.publishable?' · 게시 가능':'');box.appendChild(q);
+      const q=document.createElement('div');q.className='muted';
+      const parts=['기술 QC '+(p.qc||'-'),'콘텐츠 QC '+(p.contentQc||'-')];
+      if(p.referenceQc)parts.push('레퍼런스 QC '+p.referenceQc);
+      parts.push(p.publishable?'게시 가능':'게시 불가');
+      q.textContent=parts.join(' · ');box.appendChild(q);
+      if(!p.publishable&&Array.isArray(p.contentQcReasons)&&p.contentQcReasons.length){
+        const why=document.createElement('div');why.className='muted bad';why.textContent='콘텐츠 차단: '+p.contentQcReasons.join(' / ');box.appendChild(why)
+      }
       if(job.status==='WAITING_USER'&&job.waitReason==='DECISION'&&p.publishable){
         const b=document.createElement('button');b.textContent='이 영상으로 선택';b.onclick=()=>choose(job,p.variantId);box.appendChild(b)
       }
