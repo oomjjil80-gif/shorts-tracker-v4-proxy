@@ -133,17 +133,12 @@ async function r2Head(path: string) {
   let contentType = res.headers.get('content-type') || undefined
   let etag = res.headers.get('etag') || undefined
 
-  // Some R2 responses omit Content-Length on HEAD. Probe only response headers
-  // with GET and cancel the body immediately so metadata checks stay correct
-  // without downloading the object.
+  // R2 can return 0/omit Content-Length on HEAD. LIST includes the
+  // authoritative object Size, so use that without downloading the object.
   if (sizeHeader === null || Number(sizeHeader) === 0) {
-    const probe = await signedFetch('GET', path)
-    if (probe.status === 404) return null
-    if (!probe.ok) throw new Error(`R2 metadata probe failed (${probe.status})`)
-    sizeHeader = probe.headers.get('content-length')
-    contentType ||= probe.headers.get('content-type') || undefined
-    etag ||= probe.headers.get('etag') || undefined
-    try { await probe.body?.cancel() } catch {}
+    const page = await r2List({ prefix: path, limit: 1 })
+    const exact = page.blobs.find((blob) => blob.pathname === path)
+    if (exact) sizeHeader = String(exact.size)
   }
 
   return {
@@ -164,8 +159,15 @@ async function r2List(opts: ListOpts = {}) {
   const res = await signedFetch('GET', '', { query })
   if (!res.ok) throw new Error(`R2 LIST failed (${res.status}): ${await res.text()}`)
   const xml = await res.text()
-  const blobs = [...xml.matchAll(/<Contents>[\s\S]*?<Key>([\s\S]*?)<\/Key>[\s\S]*?<\/Contents>/g)]
-    .map((m) => ({ pathname: xmlDecode(m[1]) }))
+  const blobs = [...xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)]
+    .map((m) => {
+      const block = m[1]
+      const key = block.match(/<Key>([\s\S]*?)<\/Key>/)?.[1]
+      if (!key) return null
+      const rawSize = block.match(/<Size>(\d+)<\/Size>/)?.[1]
+      return { pathname: xmlDecode(key), size: Number(rawSize || 0) }
+    })
+    .filter((blob): blob is { pathname: string; size: number } => blob !== null)
   const hasMore = /<IsTruncated>true<\/IsTruncated>/.test(xml)
   const cursorMatch = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/)
   return { blobs, hasMore, cursor: cursorMatch ? xmlDecode(cursorMatch[1]) : null }
