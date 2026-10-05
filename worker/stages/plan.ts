@@ -2,7 +2,7 @@ import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
 import { canonicalize } from '../../lib/tracker-core/renderManifest.js'
 import type { SourceAnalysis } from '../../lib/media/analyze.js'
 import { aiAnalyzeStory, AI_PLANNER_PROMPT_VERSION } from '../../lib/media/aiPlanner.js'
-import { planVariants, toJobPlan, validateVariant } from '../../lib/media/plan.js'
+import { planVariants, presentationComplete, toJobPlan, validateVariant } from '../../lib/media/plan.js'
 import { semanticFromStory, type SemanticResult, type StoryAnalysis } from '../../lib/media/story.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { applyReferencePlanConstraints } from '../../lib/reference/planBridge.js'
@@ -52,6 +52,10 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
           }
         }
       }
+      if (job.profile === 'source_shorts' && semantic.status !== 'ok') {
+        throw new StageError('STORY_NOT_PUBLISHABLE', `semantic story analysis did not produce a publishable edit: ${semantic.status}: ${semantic.reason || 'unknown reason'}`, false)
+      }
+
       const storyRef = semantic.story ? (await putAddressed(blobs, 'stories', semantic.story)).path : null
       const storySummary = semantic.story ? {
         storyType: semantic.story.storyType,
@@ -65,7 +69,7 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
         hookStrategy: semantic.story.hookStrategy,
         previewRange: semantic.story.previewRange
       } : null
-      console.info(`[plan] job=${job.id} semantic=${semantic.status} provider=${provider} story=${JSON.stringify(storySummary)}`)
+      console.info(`[plan] job=${job.id} semantic=${semantic.status} provider=${provider} reason=${JSON.stringify(semantic.reason)} story=${JSON.stringify(storySummary)}`)
 
       // A low-confidence semantic read is still useful for lightweight Shorts presentation (headline/context/effects).
       // Do not throw that information away and produce a blank video; QC remains advisory for these presentation cues.
@@ -75,6 +79,11 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
       let variants
       try { variants = planVariants(analysis, semanticForPlan) }
       catch (e: any) { throw new StageError('PLAN_EMPTY', String(e?.message || e)) }
+      if (job.profile === 'source_shorts') {
+        const lead = variants[0]
+        if (!lead || !presentationComplete(lead)) throw new StageError('PLAN_PRESENTATION_INCOMPLETE', 'source Shorts requires a grounded headline, timed context/payoff captions, and acceptable presentation rhythm', false)
+        if (!lead.voiceoverText) throw new StageError('PLAN_NARRATION_MISSING', 'source Shorts requires grounded narration text derived from the selected story', false)
+      }
       const referenceProfile = options.resolveReferenceProfile ? await options.resolveReferenceProfile(job, blobs) : (options.referenceProfile ?? null)
       const referencePlan = referenceProfile ? applyReferencePlanConstraints(variants, referenceProfile.constraints) : null
       const bad = variants.flatMap((v) => validateVariant(v, analysis).map((m) => `${v.id}: ${m}`))
