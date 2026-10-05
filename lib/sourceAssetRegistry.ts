@@ -1,4 +1,4 @@
-import { get, list, put } from '@vercel/blob'
+import { get, list, put } from './objectStorage.js'
 import { randomUUID } from 'node:crypto'
 
 export type SourceAssetInput = {
