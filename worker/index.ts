@@ -19,7 +19,8 @@ import { decisionExecutor, finalExecutor, packageExecutor } from './stages/finis
 import type { ReferenceProfile } from '../lib/reference/contracts.js'
 import { generativePlanExecutor, createGenerativeAssetExecutor } from './stages/generative.js'
 import { withWisdomThumbnail } from './stages/wisdomThumbnail.js'
-import { withLongform, createLongformPlanExecutor, createLongformAssetExecutor, longformRenderExecutor, longformPackageExecutor } from './stages/longform.js'
+import { createModuleRegistry, stageExecutorsFor } from './modules/registry.js'
+import { createLongformPlanExecutor, createLongformAssetExecutor, longformRenderExecutor, longformPackageExecutor } from './stages/longform.js'
 
 const workerId = process.env.WORKER_ID || `${hostname()}-${process.pid}`
 const pollMs = Number(process.env.WORKER_POLL_MS || 2000)
@@ -36,12 +37,19 @@ async function jobReferenceProfile(job:any, blobs:any): Promise<ReferenceProfile
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 async function main() {
+  // Profile -> module wiring (lib/jobs/profiles.ts + worker/modules/registry.ts) is checked before anything runs.
+  const apiKey = process.env.OPENAI_API_KEY
+  const executors = stageExecutorsFor(createModuleRegistry({
+    analyze: analyzeExecutor, sourcePlan: createPlanExecutor({ openAi, resolveReferenceProfile: jobReferenceProfile }),
+    wisdomPlan: generativePlanExecutor, wisdomAsset: createGenerativeAssetExecutor({ apiKey }),
+    compile: compileExecutor, render: renderExecutor, autoQc: createAutoQcExecutor(null, jobReferenceProfile),
+    decision: decisionExecutor, final: finalExecutor, shortsPackage: withWisdomThumbnail(packageExecutor, { apiKey }),
+    longformPlan: createLongformPlanExecutor({ apiKey }), longformAsset: createLongformAssetExecutor({ apiKey }),
+    longformRender: longformRenderExecutor, longformPackage: longformPackageExecutor
+  }))
   const db = await createPgDbFromEnv()
   const store = createJobStore(db)
   const assetRerunJobIds = await runStartupRechecks(store, process.env, (line) => console.log(`[worker ${workerId}] ${line}`))
-  const sourcePlanExecutor = createPlanExecutor({ openAi, resolveReferenceProfile: jobReferenceProfile })
-  const planRouter = { ...sourcePlanExecutor, run: (ctx:any) => ctx.job.profile === 'wisdom' ? generativePlanExecutor.run(ctx) : sourcePlanExecutor.run(ctx), inputHash: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.inputHash(job) : sourcePlanExecutor.inputHash(job), estimateUsd: (job:any) => job.profile === 'wisdom' ? generativePlanExecutor.estimateUsd(job) : sourcePlanExecutor.estimateUsd(job) }
-  const generativeAssetExecutor = createGenerativeAssetExecutor({ apiKey: process.env.OPENAI_API_KEY })
   const decisionJobId = String(process.env.DECISION_RECOMMENDED_JOB_ID || '').trim()
   if (decisionJobId && assetRerunJobIds.has(decisionJobId)) console.log(`[worker ${workerId}] DECISION_RECOMMENDED_JOB_ID skipped: SUPERSEDED_BY_PLAN_OR_ASSET_RECHECK job=${decisionJobId}`)
   else if (decisionJobId) {
@@ -53,9 +61,6 @@ async function main() {
     }
   }
 
-  // wisdom_longform jobs are routed to their own executors; every other profile runs exactly the executors below
-  const executors = withLongform([analyzeExecutor, planRouter as any, generativeAssetExecutor, compileExecutor, renderExecutor, createAutoQcExecutor(null, jobReferenceProfile), decisionExecutor, finalExecutor, withWisdomThumbnail(packageExecutor, { apiKey: process.env.OPENAI_API_KEY })],
-    [createLongformPlanExecutor({ apiKey: process.env.OPENAI_API_KEY }), createLongformAssetExecutor({ apiKey: process.env.OPENAI_API_KEY }), longformRenderExecutor, longformPackageExecutor])
   const blobs = createVercelJobBlobStore()
   const verifyFinalJobId = String(process.env.FINAL_VERIFY_JOB_ID || '').trim()
   if (verifyFinalJobId) {
