@@ -1,6 +1,7 @@
 import type { LongformBrief, LongformSentence } from './longform.js'
 import { ACCENTS, sectionPlan } from './longform.js'
 import { UPLOAD_METADATA_RULES } from './uploadPackage.js'
+import { classifyOpenAiError, fragmentLine, FACT_RULES, type ResearchBundle, type ResearchFragment } from './longformResearch.js'
 
 // The Longform script is written in small, separately stored steps so a 60-120+ minute script never depends on one
 // giant model response: (1) the outline (title, hook, figure, thumbnail, one heading + points per section),
@@ -15,8 +16,9 @@ export type LongformOutline = {
 export type LongformSectionDraft = { sentences: LongformSentence[] }
 export type LongformMetadataDraft = { title: string; description: string; tags: string[]; hashtags: string[]; pinnedComment: string }
 export type LongformPlanner = {
-  outline: (brief: LongformBrief, sections: number, apiKey: string, repair?: string[]) => Promise<LongformOutline>
-  section: (i: { brief: LongformBrief; outline: LongformOutline; index: number; previousTail: string[]; targetChars: number; repair?: string[] }, apiKey: string) => Promise<LongformSectionDraft>
+  // research (when present): the outline sees every fragment as one short line + the section map; a section sees only its own fragments
+  outline: (brief: LongformBrief, sections: number, apiKey: string, repair?: string[], research?: ResearchBundle | null) => Promise<LongformOutline>
+  section: (i: { brief: LongformBrief; outline: LongformOutline; index: number; previousTail: string[]; targetChars: number; repair?: string[]; fragments?: ResearchFragment[] }, apiKey: string) => Promise<LongformSectionDraft>
   metadata: (i: { brief: LongformBrief; title: string; headings: string[]; narration: string; repair?: string[] }, apiKey: string) => Promise<LongformMetadataDraft>
 }
 
@@ -29,14 +31,14 @@ const repairNote = (r?: string[]) => (r?.length ? `\n\n[REPAIR] The previous dra
 async function respond(apiKey: string, name: string, schema: any, instructions: string, input: string, f: typeof fetch = fetch, model = process.env.OPENAI_PLAN_MODEL || 'gpt-6-luna'): Promise<any> {
   if (!apiKey) throw new Error('OPENAI_API_KEY missing')
   const res = await f('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model, instructions, input, text: { format: { type: 'json_schema', name, strict: true, schema } } }) })
-  if (!res.ok) throw new Error(`OpenAI longform ${name} HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`)
+  if (!res.ok) { const e = classifyOpenAiError(res.status, await res.text().catch(() => '')); e.message = `OpenAI longform ${name}: ${e.message}`; throw e } // billing/auth errors carry stop=true
   const j: any = await res.json(); const raw = j.output_text ?? j.output?.flatMap((x: any) => x.content ?? []).find((x: any) => x.type === 'output_text')?.text
   if (!raw) throw new Error(`OpenAI longform ${name} returned no output_text`)
   return JSON.parse(raw)
 }
 
 export const openAiLongformPlanner = (f: typeof fetch = fetch): LongformPlanner => ({
-  async outline(brief, sections, apiKey, repair) {
+  async outline(brief, sections, apiKey, repair, research) {
     const schema = { type: 'object', additionalProperties: false, required: ['title', 'hook', 'figure', 'thumbnail', 'sections'], properties: {
       title: str, hook: str,
       figure: { type: 'object', additionalProperties: false, required: ['name', 'imagePrompt'], properties: { name: str, imagePrompt: str } },
@@ -47,11 +49,13 @@ export const openAiLongformPlanner = (f: typeof fetch = fetch): LongformPlanner 
       `You plan a Korean wisdom/life-lesson LONGFORM YouTube talk of about ${Math.round(brief.targetSeconds / 60)} minutes. ${VOICE}`,
       `Write ONLY the outline: a strong title and spoken hook, and exactly ${sections} sections in order (opening, development with concrete everyday examples, a clear turn, a memorable ending). Each section: a short heading and 2-5 points it will develop. Sections must not repeat each other.`,
       'figure.imagePrompt: the ONE representative person for the whole video. If the topic names a person (e.g. the Buddha, a philosopher), it is THAT person, depicted recognizably; never replace a named figure. Describe only the person, clothing and mood; composition is added later.',
-      'thumbnail.lines: 2-3 separate meaning units (<=8 Korean characters each, spaces not counted) that make a viewer NEED to click. NEVER the title or a trimmed title. Colour by meaning: the key word/phrase red, purple or green; not every line the same colour.'
+      'thumbnail.lines: 2-3 separate meaning units (<=8 Korean characters each, spaces not counted) that make a viewer NEED to click. NEVER the title or a trimmed title. Colour by meaning: the key word/phrase red, purple or green; not every line the same colour.',
+      ...(research?.fragments.length ? [`Research material follows. Section N is built on the fragments the section map gives it (teaching -> short story/parable -> a real modern situation -> interpretation -> bridge to the next section); each section's heading and points must come from ITS fragments, so no two sections tell the same lesson in different words. ${FACT_RULES}`] : [])
     ].join('\n')
-    return respond(apiKey, 'wisdom_longform_outline', schema, instructions, `Input kind: ${brief.kind}\nTopic or source: ${brief.text}${repairNote(repair)}`, f)
+    const material = research?.fragments.length ? `\n\nResearch fragments:\n${research.fragments.map((x) => fragmentLine(x, false)).join('\n')}\n\nSection map:\n${research.sectionMap.map((m) => `${m.section}. ${m.fragmentIds.join(', ')} — ${m.purpose}`).join('\n')}` : ''
+    return respond(apiKey, 'wisdom_longform_outline', schema, instructions, `Input kind: ${brief.kind}\nTopic or source: ${brief.text}${material}${repairNote(repair)}`, f)
   },
-  async section({ brief, outline, index, previousTail, targetChars, repair }, apiKey) {
+  async section({ brief, outline, index, previousTail, targetChars, repair, fragments }, apiKey) {
     const schema = { type: 'object', additionalProperties: false, required: ['sentences'], properties: { sentences: { type: 'array', minItems: 1, items: { type: 'object', additionalProperties: false, required: ['say', 'show', 'accent', 'color'], properties: { say: str, show: { type: 'array', minItems: 2, maxItems: 3, items: str }, accent: str, color: { type: 'string', enum: CARD_COLORS } } } } } }
     const sec = outline.sections[index], last = index === outline.sections.length - 1
     const instructions = [
@@ -59,9 +63,10 @@ export const openAiLongformPlanner = (f: typeof fetch = fetch): LongformPlanner 
       `This is section ${index + 1} of ${outline.sections.length}. Its narration ("say" fields joined) should be about ${targetChars} Korean characters.`,
       index === 0 ? `Open with this hook, spoken naturally: "${outline.hook}".` : 'Continue naturally from the previous section (do not greet again, do not repeat earlier points).',
       last ? 'This is the LAST section: bring the talk to a calm, memorable close.' : 'Do not conclude the whole talk here.',
-      CARD_RULES
+      CARD_RULES,
+      ...(fragments?.length ? [`Build this section on ITS research fragments below: the teaching, then the story or parable told concretely, then a real modern situation, then what it means, then a bridge to the next section. ${FACT_RULES}`] : [])
     ].join('\n')
-    const input = [`Topic or source: ${brief.text}`, `All sections: ${outline.sections.map((s, k) => `${k + 1}. ${s.heading}`).join(' / ')}`, `THIS section: ${sec.heading} — ${sec.points.join('; ')}`, previousTail.length ? `The previous section ended with: ${previousTail.join(' ')}` : ''].filter(Boolean).join('\n')
+    const input = [`Topic or source: ${brief.text}`, `All sections: ${outline.sections.map((s, k) => `${k + 1}. ${s.heading}`).join(' / ')}`, `THIS section: ${sec.heading} — ${sec.points.join('; ')}`, fragments?.length ? `Research fragments for THIS section:\n${fragments.map((x) => fragmentLine(x, true)).join('\n')}` : '', previousTail.length ? `The previous section ended with: ${previousTail.join(' ')}` : ''].filter(Boolean).join('\n')
     return respond(apiKey, 'wisdom_longform_section', schema, instructions, input + repairNote(repair), f)
   },
   async metadata({ brief, title, headings, narration, repair }, apiKey) {
