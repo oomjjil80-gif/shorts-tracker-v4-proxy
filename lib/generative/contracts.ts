@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { canonicalize } from '../tracker-core/renderManifest.js'
+import { resolveCreativeProfile, type CreativeProfile } from './creativeProfile.js'
 
 export type GenerativeInputKind = 'topic' | 'text'
 export type GenerativeBrief = {
@@ -10,6 +11,7 @@ export type GenerativeBrief = {
   language: 'ko'
   aspectRatio: '9:16'
   targetSeconds: number
+  creative?: CreativeProfile
 }
 export type WisdomProfile = {
   schema: 'generative-profile/1'
@@ -32,6 +34,8 @@ export function normalizeGenerativeBrief(input:any): GenerativeBrief {
   if(text.length<4||text.length>12000) throw new Error('input.text must be 4..12000 characters')
   const targetSeconds=Number(input?.targetSeconds??55)
   if(!Number.isFinite(targetSeconds)||targetSeconds<35||targetSeconds>75) throw new Error('targetSeconds must be 35..75 for wisdom')
-  return {schema:'generative-brief/1',profile:'wisdom',kind,text,language:'ko',aspectRatio:'9:16',targetSeconds}
+  // Creative Settings (voice/tone/speed/picture style): AUTO keeps the Wisdom Shorts house voice and its own style
+  const creative=resolveCreativeProfile('wisdom',input,text)
+  return {schema:'generative-brief/1',profile:'wisdom',kind,text,language:'ko',aspectRatio:'9:16',targetSeconds,creative}
 }
 export function generativeBriefHash(b:GenerativeBrief){return createHash('sha256').update(canonicalize(b)).digest('hex')}

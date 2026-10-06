@@ -12,6 +12,8 @@ import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
 import { buildReferenceProductionBrief } from '../reference/profile.js'
 import { normalizeGenerativeBrief, generativeBriefHash } from '../generative/contracts.js'
 import { normalizeLongformBrief, longformBriefHash } from '../generative/longform.js'
+import { createVoicePreview, PreviewError } from '../generative/voicePreview.js'
+import { openAiTts } from '../generative/providers.js'
 
 // HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
 // (Hobby plan allows 12 functions). CORS is applied by the router. Domain logic stays in store/gate/pipeline.
@@ -27,6 +29,7 @@ export type JobsDeps = {
   blobs: JobBlobStore
   sourceExists?: (sourceAssetId: string) => Promise<boolean>
   analyzeReference?: typeof analyzeRegisteredReference
+  voicePreview?: (input: any) => Promise<{ playbackUrl: string; validUntil: number; cache: 'HIT' | 'MISS' }>
 }
 
 function workspaceOf(req: Request): string {
@@ -37,11 +40,14 @@ function workspaceOf(req: Request): string {
 
 export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
-export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && t.startsWith('job_')
+// Longform voice preview: a short cached sample of the chosen voice (POST; no database)
+export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
+export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (t.startsWith('job_') || t === VOICE_PREVIEW_TASK)
 
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
-  JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503
+  JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503,
+  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502
 }
 
 const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
@@ -99,12 +105,18 @@ function need<T>(cond: T, message: string): NonNullable<T> {
 }
 
 export function createJobsHttp(deps: JobsDeps) {
+  const voicePreview = deps.voicePreview ?? createVoicePreview({ blobs: deps.blobs, tts: (t, k, p) => openAiTts(t, k, p) })
   return async function handler(req: Request, res: Response) {
     res.setHeader('Cache-Control', 'private, no-store')
     try {
       const workspaceId = workspaceOf(req)
       const input: any = req.method === 'GET' ? req.query || {} : req.body && typeof req.body === 'object' ? req.body : {}
       const taskType = String(input.taskType || '')
+      if (taskType === VOICE_PREVIEW_TASK) {
+        if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
+        try { const r = await voicePreview(input); return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache }) }
+        catch (e: any) { if (e instanceof PreviewError) throw new JobError(e.code as any, e.message); throw e }
+      }
       const expectedMethod = taskType === 'job_get' || taskType === 'job_preview' || taskType === 'job_package' ? 'GET' : 'POST'
       if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)
       if (req.method !== expectedMethod) throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires ${expectedMethod}`)
@@ -175,7 +187,7 @@ export function createJobsHttp(deps: JobsDeps) {
           need(body.plan === undefined, 'wisdom plan is server-owned')
           need(body.referenceAssetIds === undefined, 'Reference-conditioned synthesis belongs to P2.5; P2 wisdom does not accept references')
           let brief
-          try { brief = longform ? normalizeLongformBrief(body.input) : normalizeGenerativeBrief(body.input) } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
+          try { brief = longform ? normalizeLongformBrief(body.input, profile as any) : normalizeGenerativeBrief(body.input) } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
           generativeHash = longform ? longformBriefHash(brief as any) : generativeBriefHash(brief as any)
           const storedBrief = await putAddressed(deps.blobs, 'generative-briefs', brief)
           generativeBriefRef = storedBrief.path

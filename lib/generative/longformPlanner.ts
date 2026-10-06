@@ -22,13 +22,13 @@ export type LongformPlanner = {
   metadata: (i: { brief: LongformBrief; title: string; headings: string[]; narration: string; repair?: string[] }, apiKey: string) => Promise<LongformMetadataDraft>
 }
 
-const str = { type: 'string' }
-const CARD_COLORS = ['red', 'purple', 'green', 'yellow']
-const CARD_RULES = 'Each sentence object: "say" = exactly what is spoken (one or two natural sentences). "show" = the KEY phrase of that moment for the screen, EXACTLY 2 or 3 short lines (each <=14 Korean characters including spaces), condensed, never the full sentence and never a single line. "accent" = the exact word or phrase that appears inside one "show" line and carries the meaning (it is coloured); REQUIRED on every card. "color" = one of red, purple, green, yellow (never white). Vary colors; never colour a whole card.'
+export const str = { type: 'string' }
+export const CARD_COLORS = ['red', 'purple', 'green', 'yellow']
+export const CARD_RULES = 'Each sentence object: "say" = exactly what is spoken (one or two natural sentences). "show" = the KEY phrase of that moment for the screen, EXACTLY 2 or 3 short lines (each <=14 Korean characters including spaces), condensed, never the full sentence and never a single line. "accent" = the exact word or phrase that appears inside one "show" line and carries the meaning (it is coloured); REQUIRED on every card. "color" = one of red, purple, green, yellow (never white). Vary colors; never colour a whole card.'
 const VOICE = 'Calm, warm, clear spoken Korean for a long YouTube talk; no stage directions, no headings read aloud.'
-const repairNote = (r?: string[]) => (r?.length ? `\n\n[REPAIR] The previous draft was rejected: ${r.join(', ')}. Fix exactly these points.` : '')
+export const repairNote = (r?: string[]) => (r?.length ? `\n\n[REPAIR] The previous draft was rejected: ${r.join(', ')}. Fix exactly these points.` : '')
 
-async function respond(apiKey: string, name: string, schema: any, instructions: string, input: string, f: typeof fetch = fetch, model = process.env.OPENAI_PLAN_MODEL || 'gpt-6-luna'): Promise<any> {
+export async function respond(apiKey: string, name: string, schema: any, instructions: string, input: string, f: typeof fetch = fetch, model = process.env.OPENAI_PLAN_MODEL || 'gpt-6-luna'): Promise<any> {
   if (!apiKey) throw new Error('OPENAI_API_KEY missing')
   const res = await f('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model, instructions, input, text: { format: { type: 'json_schema', name, strict: true, schema } } }) })
   if (!res.ok) { const e = classifyOpenAiError(res.status, await res.text().catch(() => '')); e.message = `OpenAI longform ${name}: ${e.message}`; throw e } // billing/auth errors carry stop=true

@@ -75,7 +75,7 @@ test('Job API on R2: a 60-minute female-middle wisdom_longform job is accepted; 
     assert.match(planRef, /^generative-briefs\/[0-9a-f]{64}\.json$/)
     assert.ok(s.r2.some((r) => r.method === 'PUT' && r.key === planRef), 'brief PUT to R2')
     const brief: any = await blobs.getJson(planRef) // read back from R2
-    assert.equal(brief.targetSeconds, 3600); assert.equal(brief.voice.key, 'female-middle'); assert.equal(brief.voice.profileId, 'ko-lf-female-middle-v1')
+    assert.equal(brief.targetSeconds, 3600); assert.equal(brief.creative.resolved.voiceProfile, 'female-middle'); assert.equal(brief.creative.resolved.voiceProfileId, 'ko-lf-female-middle-calm-1.0-v2'); assert.deepEqual([brief.creative.resolved.voiceTone, brief.creative.resolved.voiceSpeed], ['calm', 1])
     assert.ok(s.r2.some((r) => r.method === 'GET' && r.key === planRef))
     const signed = await blobs.presign!(planRef)
     assert.ok(signed && signed.url.startsWith(`${R2}/${BUCKET}/generative-briefs/`) && /X-Amz-Signature=/.test(signed.url), signed?.url)
@@ -132,4 +132,22 @@ test('without R2 configured (e.g. the Vercel backend) the store falls back to Ve
     Object.assign(process.env, ENV)
     assert.equal(storageBackend(), 'r2')
   } finally { for (const k of Object.keys(ENV)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k] } }
+})
+
+test('voice preview on R2: MISS stores voice-preview/<sha>.mp3 privately on R2 and returns an R2 presigned URL; HIT makes 0 TTS calls', async () => {
+  const s = installStorage()
+  try {
+    const { createVoicePreview } = await import('../lib/generative/voicePreview.js')
+    const blobs = createVercelJobBlobStore(); let tts = 0
+    const handler = createJobsHttp({ getStore: async () => { throw new Error('no database for a preview') }, blobs, voicePreview: createVoicePreview({ blobs, tts: async () => { tts++; return { bytes: Buffer.from('ID3fake-mp3'), contentType: 'audio/mpeg' } }, apiKey: () => 'k', log: () => {} }) })
+    const call = () => new Promise<any>((resolve) => { let status = 0; handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32) }, query: {}, body: { taskType: 'longform_voice_preview', voiceProfile: 'female-middle', voiceTone: 'neutral', voiceSpeed: 1 } } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { resolve({ status, ...b }); return this }, end() { return this } } as any) })
+    const a = await call()
+    assert.equal(a.status, 200); assert.equal(a.cache, 'MISS'); assert.equal(tts, 1)
+    const put = s.r2.find((r) => r.method === 'PUT' && /^voice-preview\/[0-9a-f]{64}\.mp3$/.test(r.key))
+    assert.ok(put, 'preview audio PUT to R2')
+    assert.ok(a.playbackUrl.startsWith(`${R2}/${BUCKET}/voice-preview/`) && /X-Amz-Signature=/.test(a.playbackUrl), a.playbackUrl)
+    const b = await call()
+    assert.equal(b.cache, 'HIT'); assert.equal(tts, 1)
+    assert.deepEqual(s.vercelWrites(), [])
+  } finally { s.restore() }
 })
