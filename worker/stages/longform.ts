@@ -159,6 +159,7 @@ export async function subjectSide(imagePath: string): Promise<{ left: number; ri
 // The narration voice is the brief's Voice Profile (lib/generative/voiceProfile.ts) and is part of every TTS cache key.
 // Long runs: only cache METADATA is read up front (audio bytes are loaded per sentence), each sentence becomes a small
 // mono WAV (exact measured length; ~1/4 of the old stereo temp size), and the concat timeout scales with the length.
+export const LONGFORM_LOUDNORM = 'loudnorm=I=-17:TP=-1.5:LRA=11'
 export const longformConcatTimeoutMs = (seconds: number) => Math.max(15 * 60_000, Math.round(seconds * 250) + 10 * 60_000)
 export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver } = {}): StageExecutor {
   const image = deps.image ?? openAiLongformImage, tts = deps.tts ?? openAiTts, apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? ''
@@ -228,11 +229,17 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
         const list = join(work, 'list.txt'); await writeFile(list, wavs.map((w) => `file '${w}'`).join('\n'))
         const narration = join(work, 'narration.m4a')
         const totalSeconds = Number(parts.reduce((s, x) => s + x.seconds, 0).toFixed(3))
-        await runOk(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2', narration], { signal, timeoutMs: longformConcatTimeoutMs(totalSeconds) })
+        // loudness is levelled ONCE on the whole track (never per sentence): about -17 LUFS, true peak <= -1.5 dBTP, so the
+        // talk is easy to hear on a phone without clipping. loudnorm keeps every sample in place, so the measured chunk
+        // timing (the cards) is unchanged; it only rounds the end up to its 100 ms frame (<= 0.1 s of trailing silence). The
+        // encoded track is probed again: that duration is the narration's length, and it must match the sentences.
+        await runOk(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-af', LONGFORM_LOUDNORM, '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2', narration], { signal, timeoutMs: longformConcatTimeoutMs(totalSeconds) })
+        const narrationSeconds = Number(Number((await probe(narration)).duration || 0).toFixed(3))
+        if (!(narrationSeconds >= totalSeconds - 0.05 && narrationSeconds <= totalSeconds + 0.15)) throw new StageError('NARRATION_TIMING', `narration ${narrationSeconds}s != sentences ${totalSeconds}s`)
         // a 2-hour narration is ~150 MB: hashed and uploaded as a stream, never read whole into memory
         const nsha = await sha256File(narration), narrationRef = `generative-assets/audio/${nsha}.m4a`
         await blobs.putFile(narrationRef, narration, 'audio/mp4')
-        const manifest = { schema: 'longform-assets/1', profile: LONGFORM_PROFILE_ID, scriptRef, voiceProfileId: voice.id, image: { ref: imageRef, sha256: imgSha, prompt, subjectSide: side, mirrored: side.side === 'left' }, narration: { ref: narrationRef, sha256: nsha, seconds: totalSeconds }, chunks: parts }
+        const manifest = { schema: 'longform-assets/1', profile: LONGFORM_PROFILE_ID, scriptRef, voiceProfileId: voice.id, image: { ref: imageRef, sha256: imgSha, prompt, subjectSide: side, mirrored: side.side === 'left' }, narration: { ref: narrationRef, sha256: nsha, seconds: narrationSeconds, loudness: LONGFORM_LOUDNORM }, chunks: parts }
         const stored = await putAddressed(blobs, 'generative-assets', manifest)
         return { outputRef: stored.path, outputHash: stored.sha256, result: { assetSpecRef: stored.path, images: 1, chunks: parts.length, totalSeconds, voiceProfileId: voice.id, generated, reused }, provider: 'openai', model: 'gpt-image-1-mini+gpt-4o-mini-tts' }
       } finally { await rm(work, { recursive: true, force: true }) }

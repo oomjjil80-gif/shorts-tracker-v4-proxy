@@ -8,7 +8,7 @@ import { VIDEO_ENCODER_THREADS } from '../media/render.js'
 import { thumbnailCopyErrors } from './wisdomThumbnail.js'
 import { uploadMetadataErrors, uploadPackageText } from './uploadPackage.js'
 import { thinkerFor } from './wisdom.js'
-import { resolveLongformVoice, type LongformVoiceChoice, type LongformVoiceKey } from './voiceProfile.js'
+import { resolveLongformVoice, type LongformVoiceChoice, type LongformVoiceKey, type LongformVoiceSelection } from './voiceProfile.js'
 
 export const LONGFORM_PROFILE_ID = 'wisdom_longform'
 export const LONGFORM = {
@@ -27,7 +27,7 @@ export const ACCENTS = { red: '#FF3B30', purple: '#B36BFF', green: '#4CFF7A', ye
 export const CARD_ACCENTS = ['red', 'purple', 'green', 'yellow'] as const
 export type AccentColor = keyof typeof ACCENTS
 
-export type LongformBrief = { schema: 'generative-brief/1'; profile: 'wisdom_longform'; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; voice?: { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
+export type LongformBrief = { schema: 'generative-brief/1'; profile: 'wisdom_longform'; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; voice?: LongformVoiceSelection | { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
 // one narration sentence and the card shown while it is spoken
 export type LongformSentence = { say: string; show: string[]; accent: string; color: AccentColor }
 export type LongformScript = {
@@ -48,7 +48,7 @@ export function normalizeLongformBrief(input: any): LongformBrief {
   // any running time the user picks (no min/max); only a non-number, zero or negative value is refused
   const targetSeconds = Number(input?.targetSeconds ?? LONGFORM.targetSeconds.default)
   if (!Number.isFinite(targetSeconds) || targetSeconds <= 0) throw new Error('targetSeconds must be a positive number of seconds')
-  const voice = resolveLongformVoice(input?.voiceProfile, text)
+  const voice = resolveLongformVoice(input?.voiceProfile, text, input?.voiceTone, input?.voiceSpeed)
   return { schema: 'generative-brief/1', profile: 'wisdom_longform', kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds: Math.round(targetSeconds), ...(sample ? { sample: true as const } : {}), voice }
 }
 export const longformBriefHash = (b: LongformBrief) => createHash('sha256').update(canonicalize(b)).digest('hex')

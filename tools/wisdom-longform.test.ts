@@ -319,6 +319,7 @@ test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 M
 // ======================= running time / Voice Profile / long-run stability =======================
 import { sectionPlan, longformFigure, BUDDHA_FIGURE, longformImagePrompt } from '../lib/generative/longform.js'
 import { LONGFORM_PLANNER_VERSION, longformRenderTimeoutMs, longformConcatTimeoutMs } from '../worker/stages/longform.js'
+import { resolveLongformRuntimeVoice } from '../lib/generative/voiceProfile.js'
 import { DEFAULT_VOICE_PROFILE, LONGFORM_VOICE_PROFILES, resolveLongformVoice, recommendLongformVoice, longformVoiceProfile, ttsCacheIdentity } from '../lib/generative/voiceProfile.js'
 import { openAiTts, openAiWisdomTts } from '../lib/generative/providers.js'
 import { thumbnailFigure } from '../lib/generative/wisdomThumbnail.js'
@@ -391,12 +392,13 @@ test('T7: the female-middle Voice Profile reaches the real TTS provider request 
   const fakeFetch: any = async (_u: string, init: any) => { bodies.push(JSON.parse(init.body)); return new Response(new Uint8Array(tone), { status: 200 }) }
   const img = await standInImage(fx.d)
   const out: any = await createLongformAssetExecutor({ apiKey: 'k', image: async () => ({ bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' }), tts: (t, k, p) => openAiTts(t, k, p, fakeFetch) }).run(fx.ctx())
-  const want = LONGFORM_VOICE_PROFILES['female-middle']
+  // a new job: the female-middle voice with the default tone (calm) and speed (1.0)
+  const want = resolveLongformRuntimeVoice({ voiceKey: 'female-middle', tone: 'calm', speed: 1 })
   assert.equal(bodies.length, sentencesOf(SAMPLE).length)
   for (const b of bodies) { assert.equal(b.voice, want.voice); assert.equal(b.instructions, want.instructions); assert.equal(b.model, want.model); assert.equal(b.speed, want.speed) }
-  assert.match(want.instructions, /40~50대 한국 여성/)
-  assert.equal(out.result.voiceProfileId, 'ko-lf-female-middle-v1')
-  assert.equal(((await fx.blobs.getJson(out.result.assetSpecRef)) as any).voiceProfileId, 'ko-lf-female-middle-v1')
+  assert.match(want.instructions, /^40~50대 한국 여성.*차분한 호흡으로 읽어주세요\.$/)
+  assert.equal(out.result.voiceProfileId, 'ko-lf-female-middle-calm-1.0-v2')
+  assert.equal(((await fx.blobs.getJson(out.result.assetSpecRef)) as any).voiceProfileId, 'ko-lf-female-middle-calm-1.0-v2')
 })
 
 test('T8 + T13: TTS cache is per Voice Profile; an ASSET retry reuses the ONE image and every narration chunk', async () => {
@@ -411,7 +413,7 @@ test('T8 + T13: TTS cache is per Voice Profile; an ASSET retry reuses the ONE im
   // the same script with ANOTHER voice never reuses the female-middle audio
   const other = await putAddressed(fx.blobs, 'generative-briefs', normalizeLongformBrief({ kind: 'topic', text: '부처님이 말하는 마음 다스리는 법', targetSeconds: 3600, voiceProfile: 'male-senior' }))
   await createLongformAssetExecutor(deps).run(fx.ctx(fx.blobs, other.path))
-  assert.equal(calls.tts.length, 2 * n); assert.ok(calls.tts.slice(n).every((id) => id === 'ko-lf-male-senior-v1'))
+  assert.equal(calls.tts.length, 2 * n); assert.ok(calls.tts.slice(n).every((id) => id === 'ko-lf-male-senior-calm-1.0-v2'))
   assert.equal(calls.image, 1) // the image is not voice-dependent: still reused
   const text = sentencesOf(SAMPLE)[0].say
   assert.notEqual(ttsCacheIdentity(LONGFORM_VOICE_PROFILES['female-middle'], text), ttsCacheIdentity(LONGFORM_VOICE_PROFILES['male-senior'], text))
@@ -435,8 +437,8 @@ test('Voice Profile choices: UI keys only (provider values live in voiceProfile.
   assert.equal(recommendLongformVoice('부처님이 말하는 마음 다스리는 법'), 'male-senior')
   assert.equal(recommendLongformVoice('쇼펜하우어의 인생론'), 'male-middle')
   assert.equal(recommendLongformVoice('지친 마음을 위로하는 말'), 'female-middle')
-  assert.deepEqual(resolveLongformVoice('auto', '부처님 말씀'), { choice: 'auto', key: 'male-senior', profileId: 'ko-lf-male-senior-v1' })
-  assert.deepEqual(resolveLongformVoice('female-middle', '부처님 말씀'), { choice: 'female-middle', key: 'female-middle', profileId: 'ko-lf-female-middle-v1' })
+  assert.deepEqual(resolveLongformVoice('auto', '부처님 말씀'), { choice: 'auto', key: 'male-senior', profileId: 'ko-lf-male-senior-calm-1.0-v2', tone: 'calm', speed: 1 })
+  assert.deepEqual(resolveLongformVoice('female-middle', '부처님 말씀'), { choice: 'female-middle', key: 'female-middle', profileId: 'ko-lf-female-middle-calm-1.0-v2', tone: 'calm', speed: 1 })
   assert.throws(() => resolveLongformVoice('marin', 'x')) // provider values are not accepted from the client
 })
 
@@ -449,7 +451,8 @@ test('T11 + T12: figure right / text left kept; the card k starts exactly where 
   const tl = cardTimeline(SAMPLE, m.chunks, m.chunks.map((c: any) => c.seconds))
   let acc = 0
   tl.forEach((t, i) => { assert.equal(t.start, Number(acc.toFixed(3))); acc += m.chunks[i].seconds })
-  assert.ok(Math.abs(acc - m.narration.seconds) < 0.01)
+  // the levelled track (loudnorm) is probed again: same length, at most its last 100 ms frame of silence added
+  assert.ok(m.narration.seconds >= acc - 0.01 && m.narration.seconds <= acc + 0.11, `${m.narration.seconds} vs ${acc}`)
   const { ass } = longformCardsAss(SAMPLE, tl)
   assert.match(ass, /\\an4\\pos\(100,540\)/); assert.doesNotMatch(ass, /\\fad|\\move|\\t\(/)
 })
@@ -558,4 +561,41 @@ test('cost guard: credit_balance_exhausted / quota stop the job at once (no retr
   planner.outline = async () => { calls.outline = (calls.outline || 0) + 1; throw Object.assign(new Error('OpenAI billing stop (HTTP 429): insufficient_quota'), { stop: true, code: 'insufficient_quota' }) }
   await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: ok.research, log: () => {}, planner }).run(ctx), (e: any) => e.code === 'PROVIDER_BILLING' && e.retryable === false)
   assert.equal(calls.outline, 1)
+})
+
+test('LOUDNESS: the narration is levelled ONCE to about -17 LUFS (true peak <= -1.5 dBTP); every sentence still starts where its card does (+-0.03 s)', async () => {
+  const fx = await assetFixture('female-middle'), img = await standInImage(fx.d)
+  // quiet TTS (about -30 LUFS), like the soft OpenAI voice that made the last 58-minute talk too quiet
+  const quiet = async (text: string) => {
+    const n = [...text].length, sec = (n / LONGFORM.charsPerSecond) * (0.6 + 0.8 * ((n * 7) % 5) / 4)
+    const r = await runOk(['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono:d=0.25', '-f', 'lavfi', '-i', `sine=f=${200 + (n % 7) * 40}:d=${sec.toFixed(2)}`, '-filter_complex', '[0][1]concat=n=2:v=0:a=1,volume=0.03', '-c:a', 'libmp3lame', '-f', 'mp3', '-'])
+    return { bytes: r.stdout, contentType: 'audio/mpeg', provider: 'standin', model: 'tone' }
+  }
+  const out: any = await createLongformAssetExecutor({ apiKey: 'k', image: async () => ({ bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' }), tts: quiet as any }).run(fx.ctx())
+  const m: any = await fx.blobs.getJson(out.result.assetSpecRef)
+  assert.equal(m.narration.loudness, 'loudnorm=I=-17:TP=-1.5:LRA=11')
+  const file = join(fx.d, 'narration.m4a'); await (await import('node:fs/promises')).writeFile(file, await fx.blobs.getBytes(m.narration.ref))
+  const { spawnSync } = await import('node:child_process')
+  const meter = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', file, '-af', 'ebur128=peak=true', '-f', 'null', '-'], { encoding: 'utf8' }).stderr
+  const summary = meter.slice(meter.lastIndexOf('Summary:'))
+  const lufs = Number(/I:\s+(-?[\d.]+) LUFS/.exec(summary)![1]), peak = Number(/Peak:\s+(-?[\d.]+) dBFS/.exec(summary)![1])
+  assert.ok(lufs >= -18.5 && lufs <= -15.5, `integrated loudness ${lufs} LUFS`)
+  assert.ok(peak <= -1.0, `true peak ${peak} dBTP (no clipping)`)
+  // sentence onsets in the levelled track vs the card timeline: card k start + where the voice starts inside sentence k's
+  // own TTS audio (measured on that sentence alone), so loudnorm may not move any sentence by more than 0.03 s
+  const firstSound = (f: string) => Number(/silence_end: ([\d.]+)/.exec(spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', f, '-af', 'silencedetect=n=-90dB:d=0.15', '-f', 'null', '-'], { encoding: 'utf8' }).stderr)?.[1] ?? 0)
+  const sd = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', file, '-af', 'silencedetect=n=-90dB:d=0.15', '-f', 'null', '-'], { encoding: 'utf8' }).stderr
+  const onsets = [...sd.matchAll(/silence_end: ([\d.]+)/g)].map((x) => Number(x[1]))
+  const tl = cardTimeline(SAMPLE, m.chunks, m.chunks.map((c: any) => c.seconds))
+  assert.equal(onsets.length, tl.length)
+  for (const [i, t] of tl.entries()) {
+    const own = join(fx.d, `s${i}.mp3`); await (await import('node:fs/promises')).writeFile(own, await fx.blobs.getBytes(m.chunks[i].ref))
+    const want = t.start + firstSound(own)
+    assert.ok(Math.abs(onsets[i] - want) <= 0.03, `sentence ${i + 1}: voice ${onsets[i]} vs card ${want}`)
+  }
+  const sum = m.chunks.reduce((s: number, c: any) => s + c.seconds, 0)
+  assert.ok(m.narration.seconds >= sum - 0.01 && m.narration.seconds <= sum + 0.11)
+  // the level is applied once, on the whole track: never per sentence
+  const src = (await import('node:fs')).readFileSync(new URL('../worker/stages/longform.ts', import.meta.url), 'utf8')
+  assert.equal(src.match(/LONGFORM_LOUDNORM/g)!.length, 3) // defined, applied at the one concat, recorded in the manifest
 })
