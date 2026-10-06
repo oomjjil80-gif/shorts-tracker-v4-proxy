@@ -3,7 +3,7 @@ import type { JobStage } from './types.js'
 // One table for every production Profile: its stage order, the module that runs each stage (id in
 // worker/modules/registry.ts, which adapts the existing executors) and the few job-level facts that used to be
 // `profile === ...` checks elsewhere. No workflow engine: stages still run one at a time in this fixed order.
-export type ProfileId = 'source_shorts' | 'wisdom' | 'wisdom_longform'
+export type ProfileId = 'source_shorts' | 'wisdom' | 'wisdom_longform' | 'senior_longform'
 // Production features a Profile selects, in order (worker/modules/features.ts checks the order and what each needs).
 // A feature that is not selected is never called. Job stages are unchanged: features run inside the existing stages.
 export type FeatureId = 'PLAN' | 'ANALYZE' | 'IMAGE' | 'TTS' | 'CAPTION' | 'SOUND' | 'RENDER' | 'LONGFORM_RENDER' | 'QC' | 'THUMBNAIL' | 'PACKAGE'
@@ -44,6 +44,14 @@ export const PROFILES: Readonly<Record<ProfileId, ProfileSpec>> = {
     id: 'wisdom_longform', input: 'longform_brief', provides: ['brief'], packageView: 'longform',
     stages: ['PLAN', 'ASSET', 'RENDER', 'PACKAGE'],
     // ONE image, 16:9, sentence cards, length gate, no BGM/SFX; QC stays inside RENDER (no AUTO_QC stage)
+    features: ['PLAN', 'IMAGE', 'TTS', 'CAPTION', 'LONGFORM_RENDER', 'THUMBNAIL', 'QC', 'PACKAGE'],
+    modules: { PLAN: 'longform.plan', ASSET: 'longform.asset', RENDER: 'longform.render', PACKAGE: 'longform.package' }
+  },
+  // 16:9 Senior Longform: the SAME Longform engine and modules in its story "scenes" mode (six acts, a picture per visual
+  // scene in one style with a Character Bible, bottom subtitle cards, gentle motion); see LONGFORM_MODES
+  senior_longform: {
+    id: 'senior_longform', input: 'longform_brief', provides: ['brief'], packageView: 'longform',
+    stages: ['PLAN', 'ASSET', 'RENDER', 'PACKAGE'],
     features: ['PLAN', 'IMAGE', 'TTS', 'CAPTION', 'LONGFORM_RENDER', 'THUMBNAIL', 'QC', 'PACKAGE'],
     modules: { PLAN: 'longform.plan', ASSET: 'longform.asset', RENDER: 'longform.render', PACKAGE: 'longform.package' }
   }

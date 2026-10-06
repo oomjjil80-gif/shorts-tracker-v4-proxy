@@ -75,7 +75,7 @@ test('Job API on R2: a 60-minute female-middle wisdom_longform job is accepted; 
     assert.match(planRef, /^generative-briefs\/[0-9a-f]{64}\.json$/)
     assert.ok(s.r2.some((r) => r.method === 'PUT' && r.key === planRef), 'brief PUT to R2')
     const brief: any = await blobs.getJson(planRef) // read back from R2
-    assert.equal(brief.targetSeconds, 3600); assert.equal(brief.voice.key, 'female-middle'); assert.equal(brief.voice.profileId, 'ko-lf-female-middle-calm-1.0-v2'); assert.deepEqual([brief.voice.tone, brief.voice.speed], ['calm', 1])
+    assert.equal(brief.targetSeconds, 3600); assert.equal(brief.creative.resolved.voiceProfile, 'female-middle'); assert.equal(brief.creative.resolved.voiceProfileId, 'ko-lf-female-middle-calm-1.0-v2'); assert.deepEqual([brief.creative.resolved.voiceTone, brief.creative.resolved.voiceSpeed], ['calm', 1])
     assert.ok(s.r2.some((r) => r.method === 'GET' && r.key === planRef))
     const signed = await blobs.presign!(planRef)
     assert.ok(signed && signed.url.startsWith(`${R2}/${BUCKET}/generative-briefs/`) && /X-Amz-Signature=/.test(signed.url), signed?.url)

@@ -68,6 +68,7 @@ const TONE_INSTRUCTIONS: Readonly<Record<LongformVoiceTone, string>> = {
   neutral: '자연스럽고 또렷한 한국어 말투로, 과장 없이 편안하게 읽어주세요.',
   bright: '조금 더 밝고 생기 있게, 친근하고 자연스러운 리듬으로 읽어주세요. 광고처럼 과장하지 마세요.'
 }
+export const toneInstruction = (t: LongformVoiceTone) => TONE_INSTRUCTIONS[t]
 export function parseLongformTone(v: unknown): LongformVoiceTone {
   const t = String(v ?? DEFAULT_LONGFORM_TONE)
   if (!(LONGFORM_VOICE_TONES as readonly string[]).includes(t)) throw new Error(`voiceTone must be one of ${LONGFORM_VOICE_TONES.join(', ')}`)
@@ -85,23 +86,6 @@ export function resolveLongformRuntimeVoice(o: { voiceKey: LongformVoiceKey; ton
   const base = LONGFORM_VOICE_PROFILES[o.voiceKey]
   if (!base) throw new Error(`unknown Longform voice ${o.voiceKey}`)
   return { ...base, id: `ko-lf-${o.voiceKey}-${o.tone}-${o.speed.toFixed(1)}-v2`, instructions: `${base.instructions} ${TONE_INSTRUCTIONS[o.tone]}`, speed: o.speed }
-}
-export type LongformVoiceSelection = { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string; tone: LongformVoiceTone; speed: LongformVoiceSpeed }
-export function resolveLongformVoice(choice: unknown, topic: string, tone?: unknown, speed?: unknown): LongformVoiceSelection {
-  const c = String(choice ?? 'auto') as LongformVoiceChoice
-  if (!(LONGFORM_VOICE_CHOICES as readonly string[]).includes(c)) throw new Error(`voiceProfile must be one of ${LONGFORM_VOICE_CHOICES.join(', ')}`)
-  // 'auto' picks the voice from the topic; the tone and speed are always the user's
-  const key = c === 'auto' ? recommendLongformVoice(topic) : c
-  const t = parseLongformTone(tone), sp = parseLongformSpeed(speed)
-  return { choice: c, key, profileId: resolveLongformRuntimeVoice({ voiceKey: key, tone: t, speed: sp }).id, tone: t, speed: sp }
-}
-// The voice a Longform brief narrates with. A brief without `voice` (created before selection existed) keeps the default;
-// a brief with a voice but no tone/speed (created before tone/speed existed) keeps that profile exactly (and its cache).
-export function longformVoiceProfile(brief: { voice?: { key?: string; tone?: string; speed?: number } } | null | undefined): VoiceProfile {
-  const v = brief?.voice, key = v?.key as LongformVoiceKey | undefined
-  if (!key || !LONGFORM_VOICE_PROFILES[key]) return DEFAULT_VOICE_PROFILE
-  if (v?.tone === undefined || v?.speed === undefined) return LONGFORM_VOICE_PROFILES[key]
-  return resolveLongformRuntimeVoice({ voiceKey: key, tone: parseLongformTone(v.tone), speed: parseLongformSpeed(v.speed) })
 }
 // TTS cache identity: the voice is part of the key, so another voice never reuses this audio. The default voice keeps
 // the original key so existing Longform caches stay valid.

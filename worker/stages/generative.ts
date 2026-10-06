@@ -6,8 +6,10 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runOk, probe } from '../../lib/media/ffmpeg.js'
-import { openAiWisdomImage, openAiWisdomTts } from '../../lib/generative/providers.js'
-import { openAiWisdomPlan, applyVisualBible } from '../../lib/generative/planner.js'
+import { openAiWisdomImage, openAiTts } from '../../lib/generative/providers.js'
+import { openAiWisdomPlan, applyVisualBible, styledVisualBible } from '../../lib/generative/planner.js'
+import { briefVoice, creativeStyleOverride } from '../../lib/generative/creativeProfile.js'
+import { ttsCacheIdentity } from '../../lib/generative/voiceProfile.js'
 import { evaluateWisdomSemanticQc } from '../../lib/generative/semanticQc.js'
 import { SHORTS_SCREEN_DNA, screenDnaSegmentArgv, screenDnaSegmentFilter, type AssetGeometryReceipt } from '../../lib/media/screenDna.js'
 import { cacheEntryIsCanonical } from '../../lib/generative/cache.js'
@@ -48,10 +50,12 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
    }
   }
   if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom')throw new StageError('BRIEF_INVALID','invalid wisdom brief')
+  // the picture style resolved at job_create: AUTO keeps the planner's own Wisdom style (the prompts as before)
+  const styleOverride=creativeStyleOverride(brief.creative)
   let script:any, visualBible:any=null, provider='deterministic', fallbackReason:string|undefined
   if(apiKey){try{
    const made=await aiPlan(brief,apiKey)
-   const candidate=anchorNamedThinkerVisual(applyVisualBible(made.script,made.visualBible),String(brief.text||'')).script
+   const candidate=anchorNamedThinkerVisual(applyVisualBible(made.script,styledVisualBible(made.visualBible,styleOverride)),String(brief.text||'')).script
    const candidateErrors=validateWisdomScript(candidate,brief)
    if(candidateErrors.length)throw new Error('AI script validation: '+candidateErrors.join(','))
    script=candidate;visualBible=made.visualBible;provider='openai'
@@ -66,7 +70,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
    try{
     const repairBrief={...brief,text:`${brief.text}\n\n[MANDATORY REPAIR] Previous draft failed semantic QC: ${semanticQc.reasons.join(', ')}. Rewrite the whole script once. Preserve the topic, but make every failed dimension explicit. If "turn" failed, include a clear mid-script reversal such as "하지만 핵심은 단순히 사람 수를 줄이는 것이 아니다" followed by the deeper insight and payoff. Do not mention this repair instruction in narration.`}
     const repaired=await aiPlan(repairBrief,apiKey)
-    const repairedCandidate=anchorNamedThinkerVisual(applyVisualBible(repaired.script,repaired.visualBible),String(brief.text||'')).script
+    const repairedCandidate=anchorNamedThinkerVisual(applyVisualBible(repaired.script,styledVisualBible(repaired.visualBible,styleOverride)),String(brief.text||'')).script
     const repairedErrors=validateWisdomScript(repairedCandidate,brief)
     if(!repairedErrors.length){
      const repairedQc=evaluateWisdomSemanticQc(String(brief.text||''),repairedCandidate)
@@ -89,15 +93,15 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   const headline=wisdomHeadline(script.title,String(brief.text||''))
   const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}],headline,events:captionEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
   const planStored=await putAddressed(blobs,'plans',plan)
-  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,briefRef,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,audioPolicy:{bgm:'off',sfx:'off'},semanticQcRef:semanticQcStored.path,semanticQc,beats:script.beats.length,totalSeconds:script.totalSeconds,targetSeconds:brief.targetSeconds}}
+  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,briefRef,creative:brief.creative??null,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,audioPolicy:{bgm:'off',sfx:'off'},semanticQcRef:semanticQcStored.path,semanticQc,beats:script.beats.length,totalSeconds:script.totalSeconds,targetSeconds:brief.targetSeconds}}
  }
 }}
 export const generativePlanExecutor=createGenerativePlanExecutor()
 
 // Feature modules inside this stage: IMAGE (deps.image) and TTS (deps.tts), both needed to compose the beats, and
 // CAPTION (the timed caption events). A feature the profile does not select is never called.
-export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeof openAiWisdomImage; tts?:typeof openAiWisdomTts; features?:FeatureResolver}={}):StageExecutor {
- const image=deps.image??openAiWisdomImage, tts=deps.tts??openAiWisdomTts, apiKey=deps.apiKey??process.env.OPENAI_API_KEY??''
+export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeof openAiWisdomImage; tts?:typeof openAiTts; features?:FeatureResolver}={}):StageExecutor {
+ const image=deps.image??openAiWisdomImage, tts=deps.tts??openAiTts, apiKey=deps.apiKey??process.env.OPENAI_API_KEY??''
  return {
  stage:'ASSET', estimateUsd:()=>0.75,
  inputHash:(job)=>sha256(`gen-asset|${job.id}|${job.planRev}|wisdom/2`),
@@ -108,6 +112,9 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   const p=await previous('PLAN'); const scriptRef=(p?.result as any)?.scriptRef; if(!scriptRef)throw new StageError('SCRIPT_MISSING','ASSET requires PLAN script')
   const planned:any=await blobs.getJson(scriptRef); if(!planned||planned.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
   const prior=await previous('ASSET')
+  // the narration voice resolved at job_create (AUTO = the Wisdom Shorts house voice, request and cache key as before)
+  const planBriefRef=String((p?.result as any)?.briefRef||'')
+  const voice=briefVoice(planBriefRef?await blobs.getJson(planBriefRef).catch(()=>null) as any:null,'wisdom')
   // New PLANs already contain identity locks. For legacy already-paid ASSET reruns, preserve the
   // old paid prompts except the one deterministic named-thinker anchor so an upgrade never silently re-buys media.
   const opening=[planned.title,planned.hook,...(planned.beats||[]).slice(0,2).map((b:any)=>b?.narration)].join(' ')
@@ -120,7 +127,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   const items:any[]=[]; let bytes=0, generated=0, reused=0
   const cached:Array<{im:any,au:any}>=[]
   for(const b of script.beats){
-   const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256('tts-v1|'+b.narration)
+   const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256(ttsCacheIdentity(voice,b.narration))
    let im:any=null, au:any=null
    try{const m:any=await blobs.getJson('generative-cache/image/'+ik+'.json');const z=m?.ref?await blobs.getBytes(m.ref):null;if(z)im={...m,bytes:z}}catch{}
    try{const m:any=await blobs.getJson('generative-cache/tts/'+ak+'.json');const z=m?.ref?await blobs.getBytes(m.ref):null;if(z)au={...m,bytes:z}}catch{}
@@ -140,10 +147,10 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   }
   for(const [i,b] of script.beats.entries()){
    if(signal.aborted)throw new Error('aborted')
-   let {im,au}=cached[i]; const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256('tts-v1|'+b.narration)
+   let {im,au}=cached[i]; const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256(ttsCacheIdentity(voice,b.narration))
    const imageCacheHit=!!im, ttsCacheHit=!!au
    if(im)reused++;else{im=await image(b.imagePrompt,apiKey);generated++}
-   if(au)reused++;else{au=await tts(b.narration,apiKey);generated++}
+   if(au)reused++;else{au=await tts(b.narration,apiKey,voice);generated++}
    const ih=sha256(im.bytes), ah=sha256(au.bytes)
    const ip=`generative-assets/images/${ih}.jpg`, ap=`generative-assets/audio/${ah}.mp3`
    // Cache hits already point at durable Blob bytes. Do not issue another PUT/HEAD cycle for the same asset or cache JSON.

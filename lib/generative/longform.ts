@@ -8,9 +8,20 @@ import { VIDEO_ENCODER_THREADS } from '../media/render.js'
 import { thumbnailCopyErrors } from './wisdomThumbnail.js'
 import { uploadMetadataErrors, uploadPackageText } from './uploadPackage.js'
 import { thinkerFor } from './wisdom.js'
-import { resolveLongformVoice, type LongformVoiceChoice, type LongformVoiceKey, type LongformVoiceSelection } from './voiceProfile.js'
+import { type LongformVoiceChoice, type LongformVoiceKey } from './voiceProfile.js'
+import { resolveCreativeProfile, type CreativeProfile } from './creativeProfile.js'
+import { composeImagePrompt, type VisualStyleProfile } from './visualStyle.js'
+import { characterBibleErrors, seniorActErrors, SENIOR } from './seniorLongform.js'
 
 export const LONGFORM_PROFILE_ID = 'wisdom_longform'
+// One Longform engine, two image modes: Wisdom Longform holds ONE picture (figure right, cards left); Senior Longform
+// tells a story over scene pictures (subtitle cards at the bottom). Research is the wisdom-source step (Wisdom only).
+export const LONGFORM_MODES = {
+  wisdom_longform: { images: 'single', script: 'wisdom-longform-script/1', research: true, cards: 'left' },
+  senior_longform: { images: 'scenes', script: 'senior-longform-script/1', research: false, cards: 'bottom' }
+} as const
+export const isLongformProfile = (p: unknown): p is keyof typeof LONGFORM_MODES => typeof p === 'string' && Object.prototype.hasOwnProperty.call(LONGFORM_MODES, p)
+export const longformMode = (p: unknown) => (isLongformProfile(p) ? LONGFORM_MODES[p] : LONGFORM_MODES.wisdom_longform)
 export const LONGFORM = {
   canvas: { w: 1920, h: 1080 }, thumb: { w: 1280, h: 720 }, fps: 30,
   // targetSeconds only sizes the script the planner writes; it is never a pass/fail condition on the result.
@@ -27,7 +38,10 @@ export const ACCENTS = { red: '#FF3B30', purple: '#B36BFF', green: '#4CFF7A', ye
 export const CARD_ACCENTS = ['red', 'purple', 'green', 'yellow'] as const
 export type AccentColor = keyof typeof ACCENTS
 
-export type LongformBrief = { schema: 'generative-brief/1'; profile: 'wisdom_longform'; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; voice?: LongformVoiceSelection | { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
+// Longform briefs: Wisdom Longform (one image) and Senior Longform (story scenes) share the engine. `creative` holds the
+// requested + resolved voice/style; `voice` only exists on briefs made before Creative Settings (kept as they were).
+export type LongformProfileId = 'wisdom_longform' | 'senior_longform'
+export type LongformBrief = { schema: 'generative-brief/1'; profile: LongformProfileId; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; creative?: CreativeProfile; voice?: { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
 // one narration sentence and the card shown while it is spoken
 export type LongformSentence = { say: string; show: string[]; accent: string; color: AccentColor }
 export type LongformScript = {
@@ -39,7 +53,7 @@ export type LongformScript = {
   sections: Array<{ id: string; sentences: LongformSentence[] }>
 }
 
-export function normalizeLongformBrief(input: any): LongformBrief {
+export function normalizeLongformBrief(input: any, profile: LongformProfileId = 'wisdom_longform'): LongformBrief {
   const kind = String(input?.kind || '')
   if (kind !== 'topic' && kind !== 'text') throw new Error('input.kind must be topic or text')
   const text = String(input?.text || '').replace(/\s+/g, ' ').trim()
@@ -48,8 +62,8 @@ export function normalizeLongformBrief(input: any): LongformBrief {
   // any running time the user picks (no min/max); only a non-number, zero or negative value is refused
   const targetSeconds = Number(input?.targetSeconds ?? LONGFORM.targetSeconds.default)
   if (!Number.isFinite(targetSeconds) || targetSeconds <= 0) throw new Error('targetSeconds must be a positive number of seconds')
-  const voice = resolveLongformVoice(input?.voiceProfile, text, input?.voiceTone, input?.voiceSpeed)
-  return { schema: 'generative-brief/1', profile: 'wisdom_longform', kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds: Math.round(targetSeconds), ...(sample ? { sample: true as const } : {}), voice }
+  const creative = resolveCreativeProfile(profile, input, text)
+  return { schema: 'generative-brief/1', profile, kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds: Math.round(targetSeconds), ...(sample ? { sample: true as const } : {}), creative }
 }
 export const longformBriefHash = (b: LongformBrief) => createHash('sha256').update(canonicalize(b)).digest('hex')
 
@@ -86,8 +100,8 @@ export function cardErrors(x: any): string[] {
 }
 
 export function validateLongformScript(s: any, brief: LongformBrief): string[] {
-  const e: string[] = []
-  if (s?.schema !== 'wisdom-longform-script/1') e.push('schema')
+  const e: string[] = [], mode = longformMode(brief.profile)
+  if (s?.schema !== mode.script) e.push('schema')
   for (const k of ['title', 'hook']) if (!String(s?.[k] || '').trim()) e.push(k)
   if (!String(s?.figure?.imagePrompt || '').trim()) e.push('figure.imagePrompt')
   const tl = s?.thumbnail?.lines
@@ -111,12 +125,23 @@ export function validateLongformScript(s: any, brief: LongformBrief): string[] {
   // upload text written for THIS video (never script copy / title words / fixed hashtags / generic comment)
   if (n && s?.metadata) e.push(...uploadMetadataErrors({ title: String(s.title || ''), ...s.metadata }, { narration: narrationOf(s as LongformScript), format: 'longform' }).map((x) => `upload.${x}`))
   else if (!s?.metadata) e.push('upload.missing')
-  if (brief.profile !== 'wisdom_longform') e.push('profile')
+  if (!isLongformProfile(brief.profile)) e.push('profile')
+  if (mode.images === 'scenes') {
+    e.push(...characterBibleErrors(s?.characters))
+    const ids = new Set<string>((Array.isArray(s?.characters) ? s.characters : []).map((c: any) => String(c?.id)))
+    for (const [i, sec] of sections.entries()) e.push(...seniorActErrors(sec, ids).map((x) => `sections[${i}].${x}`))
+  }
   return e
 }
 
 // ---------------- image: ONE representative image, composition forced at prompt time ----------------
-export function longformImagePrompt(s: LongformScript): string {
+// A picture style the user picked (other than the native painterly one) replaces only the style line; the 16:9
+// figure-right / dark-left composition stays mandatory.
+export function longformImagePrompt(s: LongformScript, style?: VisualStyleProfile | null): string {
+  if (style) return composeImagePrompt({
+    content: `Wide 16:9 still for a Korean wisdom video. Subject: ${s.figure.imagePrompt}`, style,
+    composition: 'MANDATORY: the person in the RIGHT third of the frame (right 35-40%), turned slightly toward the left, never in the center; the LEFT 60% is broad, very dark, simple negative space with no objects, kept clean for large text added later.'
+  })
   return [
     `Wide 16:9 cinematic still for a Korean wisdom video. Subject: ${s.figure.imagePrompt}.`,
     'COMPOSITION (mandatory): the person stands or sits in the RIGHT third of the frame (right 35-40%), turned slightly toward the left;',
@@ -161,14 +186,19 @@ const header = (w: number, h: number, outline: number, shadow: number) => [
   `Style: Card,${FONT_FAMILY},${LONGFORM.text.basePx},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,${outline},${shadow},4,0,0,0,1`,
   '', '[Events]', 'Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text'
 ]
-export function longformCardsAss(s: LongformScript, timeline: Array<{ start: number; end: number; k: number }>): { ass: string; cards: Array<{ start: number; end: number; lines: string[]; fs: number }> } {
+// cards 'left' (Wisdom Longform): the block in the dark left column; 'bottom' (Senior Longform): centred subtitle lines
+// at the bottom over the full-frame scene picture. Same card contract and the same hard cuts either way.
+export function longformCardsAss(s: LongformScript, timeline: Array<{ start: number; end: number; k: number }>, placement: 'left' | 'bottom' = 'left'): { ass: string; cards: Array<{ start: number; end: number; lines: string[]; fs: number }> } {
   const sents = sentencesOf(s), lines = header(LONGFORM.canvas.w, LONGFORM.canvas.h, 7, 4), cards: Array<{ start: number; end: number; lines: string[]; fs: number }> = []
+  const B = SENIOR.text
   for (const t of timeline) {
     const x = sents[t.k], show = x.show.map((l) => l.trim()).filter(Boolean)
     if (!show.length || !(t.end > t.start)) continue
-    const fs = cardFontSize(show)
-    // \an4 = left edge, vertically centred on the frame: the block sits in the dark left column (hard cut, no fade)
-    lines.push(`Dialogue: 1,${assTime(t.start)},${assTime(t.end)},Card,,0,0,0,,{\\an4\\pos(${LONGFORM.text.x},${LONGFORM.canvas.h / 2})\\fs${fs}\\fsp2}${show.map((l) => colourLine(l, x.accent, x.color)).join('\\N')}`)
+    const fs = placement === 'bottom' ? cardFontSize(show, B.maxWidth, B.basePx, B.minPx) : cardFontSize(show)
+    // \an4 = left edge, vertically centred on the frame: the block sits in the dark left column (hard cut, no fade);
+    // \an2 = bottom centre for the story subtitles
+    const pos = placement === 'bottom' ? `\\an2\\pos(${B.x},${LONGFORM.canvas.h - B.bottom})` : `\\an4\\pos(${LONGFORM.text.x},${LONGFORM.canvas.h / 2})`
+    lines.push(`Dialogue: 1,${assTime(t.start)},${assTime(t.end)},Card,,0,0,0,,{${pos}\\fs${fs}\\fsp2}${show.map((l) => colourLine(l, x.accent, x.color)).join('\\N')}`)
     cards.push({ start: t.start, end: t.end, lines: show, fs })
   }
   return { ass: [...lines, ''].join('\n'), cards }

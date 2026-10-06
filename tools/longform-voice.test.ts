@@ -5,8 +5,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   LONGFORM_VOICE_CHOICES, LONGFORM_VOICE_PROFILES, LONGFORM_VOICE_TONES, LONGFORM_VOICE_SPEEDS, DEFAULT_VOICE_PROFILE,
-  resolveLongformVoice, resolveLongformRuntimeVoice, longformVoiceProfile, ttsCacheIdentity, recommendLongformVoice
+  resolveLongformRuntimeVoice, ttsCacheIdentity, recommendLongformVoice
 } from '../lib/generative/voiceProfile.js'
+import { resolveCreativeProfile, briefVoice } from '../lib/generative/creativeProfile.js'
+// the Longform voice through the common Creative resolver, in the shape these tests compare
+const resolveLongformVoice = (choice: any, topic: string, voiceTone?: any, voiceSpeed?: any) => { const r = resolveCreativeProfile('wisdom_longform', { voiceProfile: choice, voiceTone, voiceSpeed }, topic); return { choice: r.requested.voiceProfile, key: r.resolved.voiceProfile, profileId: r.resolved.voiceProfileId, tone: r.resolved.voiceTone, speed: r.resolved.voiceSpeed } }
+const longformVoiceProfile = (brief: any) => briefVoice(brief, 'wisdom_longform')
 import { normalizeLongformBrief } from '../lib/generative/longform.js'
 import { openAiTts, openAiWisdomTts } from '../lib/generative/providers.js'
 import { createVoicePreview, voicePreviewPath, previewVoice, VOICE_PREVIEW_TEXT } from '../lib/generative/voicePreview.js'
@@ -26,7 +30,7 @@ test('1-2: 7 voice choices resolve; auto keeps the topic rule while tone/speed s
   assert.deepEqual([...LONGFORM_VOICE_CHOICES], ['auto', 'male-young', 'male-middle', 'male-senior', 'female-young', 'female-middle', 'female-senior'])
   for (const c of LONGFORM_VOICE_CHOICES) {
     const r = resolveLongformVoice(c, BUDDHA)
-    assert.ok(LONGFORM_VOICE_PROFILES[r.key]); assert.equal(r.tone, 'calm'); assert.equal(r.speed, 1)
+    assert.ok(LONGFORM_VOICE_PROFILES[r.key as Exclude<typeof r.key, "house">]); assert.equal(r.tone, 'calm'); assert.equal(r.speed, 1)
   }
   assert.equal(recommendLongformVoice(BUDDHA), 'male-senior')
   assert.deepEqual(resolveLongformVoice('auto', BUDDHA, 'calm', 0.9), { choice: 'auto', key: 'male-senior', profileId: 'ko-lf-male-senior-calm-0.9-v2', tone: 'calm', speed: 0.9 })
@@ -71,9 +75,10 @@ test('9: legacy jobs keep their voice and cache keys; new job input keeps voiceP
   assert.equal(ttsCacheIdentity(DEFAULT_VOICE_PROFILE, '문장'), 'tts-v1|문장')
   // a new brief carries the three choices; defaults are calm / 1.0
   const b = normalizeLongformBrief({ kind: 'topic', text: BUDDHA, targetSeconds: 3600, voiceProfile: 'female-young', voiceTone: 'bright', voiceSpeed: 1.1 })
-  assert.deepEqual(b.voice, { choice: 'female-young', key: 'female-young', profileId: 'ko-lf-female-young-bright-1.1-v2', tone: 'bright', speed: 1.1 })
+  assert.deepEqual(b.creative!.requested, { voiceProfile: 'female-young', voiceTone: 'bright', voiceSpeed: 1.1, visualStyleProfile: 'auto' })
+  assert.deepEqual(b.creative!.resolved, { voiceProfile: 'female-young', voiceTone: 'bright', voiceSpeed: 1.1, voiceProfileId: 'ko-lf-female-young-bright-1.1-v2', visualStyleProfile: 'wisdom-painterly' })
   assert.equal(longformVoiceProfile(b).id, 'ko-lf-female-young-bright-1.1-v2'); assert.equal(longformVoiceProfile(b).speed, 1.1)
-  assert.deepEqual(normalizeLongformBrief({ kind: 'topic', text: BUDDHA, targetSeconds: 3600 }).voice, { choice: 'auto', key: 'male-senior', profileId: 'ko-lf-male-senior-calm-1.0-v2', tone: 'calm', speed: 1 })
+  assert.deepEqual(normalizeLongformBrief({ kind: 'topic', text: BUDDHA, targetSeconds: 3600 }).creative!.resolved, { voiceProfile: 'male-senior', voiceTone: 'calm', voiceSpeed: 1, voiceProfileId: 'ko-lf-male-senior-calm-1.0-v2', visualStyleProfile: 'wisdom-painterly' })
   // through job_create: stored in the brief unchanged
   const db = await createTestDb(), store = createJobStore(db), blobs: any = createMemoryBlobStore()
   const r = await http(createJobsHttp({ getStore: async () => store, blobs, sourceExists: async () => true, voicePreview: async () => { throw new Error('unused') } }),
@@ -81,7 +86,7 @@ test('9: legacy jobs keep their voice and cache keys; new job input keeps voiceP
   assert.equal(r.status, 201, JSON.stringify(r.json))
   const job: any = await store.getJob(r.json.job.id, r.json.job.workspaceId) ?? r.json.job
   const brief: any = await blobs.getJson(job.planRef)
-  assert.deepEqual(brief.voice, { choice: 'auto', key: 'male-senior', profileId: 'ko-lf-male-senior-calm-0.9-v2', tone: 'calm', speed: 0.9 })
+  assert.deepEqual(brief.creative.resolved, { voiceProfile: 'male-senior', voiceTone: 'calm', voiceSpeed: 0.9, voiceProfileId: 'ko-lf-male-senior-calm-0.9-v2', visualStyleProfile: 'wisdom-painterly' })
   const bad = await http(createJobsHttp({ getStore: async () => store, blobs, sourceExists: async () => true }), { taskType: 'job_create', profile: 'wisdom_longform', idempotencyKey: 'lf-voice-tone-0002', budgetUsd: 5, input: { kind: 'topic', text: BUDDHA, targetSeconds: 3600, voiceSpeed: 1.3, aspectRatio: '16:9' } })
   assert.equal(bad.status, 400)
   // Wisdom Shorts TTS request is byte-for-byte the same as before

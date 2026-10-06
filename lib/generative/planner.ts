@@ -1,5 +1,6 @@
 import type { GenerativeBrief } from './contracts.js'
 import type { WisdomScript } from './wisdom.js'
+import type { VisualStyleProfile } from './visualStyle.js'
 
 export type WisdomVisualBible={schema:'wisdom-visual-bible/1',style:string,palette:string,lighting:string,composition:string,characterPolicy:string,negative:string}
 
@@ -22,6 +23,11 @@ export async function openAiWisdomPlan(brief:GenerativeBrief,apiKey:string,model
  return JSON.parse(raw)
 }
 
+// A picture style the user picked replaces the planner's own style line and adds its negatives (the Screen DNA framing,
+// character policy and scene stay); without one the bible is used exactly as planned.
+export function styledVisualBible(b:WisdomVisualBible,style:VisualStyleProfile|null):WisdomVisualBible{
+ return style?{...b,style:style.promptPrefix,negative:`${b.negative}, ${style.negativePrompt}`}:b
+}
 export function applyVisualBible(script:WisdomScript,b:WisdomVisualBible):WisdomScript{
  return {...script,beats:script.beats.map(x=>({...x,imagePrompt:`${b.style}. Palette: ${b.palette}. Lighting: ${b.lighting}. Composition: center-safe for a 1080x1200 middle visual window; keep key faces and subjects inside the central area with breathing room. Character policy: ${b.characterPolicy}. Scene goal: ${x.visualGoal}. Scene: ${x.imagePrompt}. Avoid: ${b.negative}. no readable text, no watermark`}))}
 }

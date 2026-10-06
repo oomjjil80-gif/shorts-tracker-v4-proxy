@@ -13,7 +13,7 @@ import { createMemoryBlobStore } from '../lib/jobs/blobs.js'
 import { createJobsHttp } from '../lib/jobs/http.js'
 import { runOnce } from '../worker/runJob.js'
 import { runOk, probe } from '../lib/media/ffmpeg.js'
-import { withLongform, createLongformPlanExecutor, createLongformAssetExecutor, longformRenderExecutor, longformPackageExecutor } from '../worker/stages/longform.js'
+import { withLongform, createLongformPlanExecutor, createLongformAssetExecutor, longformRenderExecutor, createLongformRenderExecutor, longformPackageExecutor } from '../worker/stages/longform.js'
 import { PIPELINES } from '../lib/jobs/pipeline.js'
 import { uploadMetadataErrors } from '../lib/generative/uploadPackage.js'
 import { standInPortrait, measureThumbnail, assertThumbnail } from './thumbnailMeasure.js'
@@ -320,7 +320,11 @@ test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 M
 import { sectionPlan, longformFigure, BUDDHA_FIGURE, longformImagePrompt } from '../lib/generative/longform.js'
 import { LONGFORM_PLANNER_VERSION, longformRenderTimeoutMs, longformConcatTimeoutMs } from '../worker/stages/longform.js'
 import { resolveLongformRuntimeVoice } from '../lib/generative/voiceProfile.js'
-import { DEFAULT_VOICE_PROFILE, LONGFORM_VOICE_PROFILES, resolveLongformVoice, recommendLongformVoice, longformVoiceProfile, ttsCacheIdentity } from '../lib/generative/voiceProfile.js'
+import { resolveCreativeProfile, briefVoice } from '../lib/generative/creativeProfile.js'
+// the Longform voice through the common Creative resolver, in the shape these tests compare
+const resolveLongformVoice = (choice: any, topic: string, voiceTone?: any, voiceSpeed?: any) => { const r = resolveCreativeProfile('wisdom_longform', { voiceProfile: choice, voiceTone, voiceSpeed }, topic); return { choice: r.requested.voiceProfile, key: r.resolved.voiceProfile, profileId: r.resolved.voiceProfileId, tone: r.resolved.voiceTone, speed: r.resolved.voiceSpeed } }
+const longformVoiceProfile = (brief: any) => briefVoice(brief, 'wisdom_longform')
+import { DEFAULT_VOICE_PROFILE, LONGFORM_VOICE_PROFILES, recommendLongformVoice, ttsCacheIdentity } from '../lib/generative/voiceProfile.js'
 import { openAiTts, openAiWisdomTts } from '../lib/generative/providers.js'
 import { thumbnailFigure } from '../lib/generative/wisdomThumbnail.js'
 import { createHash } from 'node:crypto'
@@ -355,7 +359,7 @@ for (const minutes of [25, 60, 120]) test(`T${minutes === 25 ? 1 : minutes === 6
   assert.equal(status, 201, JSON.stringify(json))
   const job = await store.getJob(json.job.id, json.job.workspaceId ?? undefined as any) ?? json.job
   const brief: any = await blobs.getJson(job.planRef ?? json.job.planRef)
-  assert.equal(brief.targetSeconds, minutes * 60); assert.equal(brief.voice.key, 'female-middle')
+  assert.equal(brief.targetSeconds, minutes * 60); assert.equal(brief.creative.resolved.voiceProfile, 'female-middle')
   // PLAN sizes the script from it: section count and per-section length
   const seen: any[] = [], calls: Record<string, number> = {}
   const planner: any = longPlanner(calls)
@@ -426,9 +430,15 @@ test('T9: Wisdom Shorts voice and cache identity are unchanged; legacy Longform 
   assert.deepEqual({ voice: bodies[0].voice, instructions: bodies[0].instructions, speed: bodies[0].speed, model: bodies[0].model }, { voice: 'marin', instructions: '한국어로 차분하고 따뜻하게, 과장하지 말고 또렷하게 읽어주세요.', speed: 1, model: 'gpt-4o-mini-tts' })
   assert.equal(ttsCacheIdentity(DEFAULT_VOICE_PROFILE, '문장'), 'tts-v1|문장') // the Shorts/legacy cache key format
   assert.equal(longformVoiceProfile({} as any), DEFAULT_VOICE_PROFILE)
-  // the Wisdom Shorts ASSET still synthesizes with openAiWisdomTts and the tts-v1 key (source unchanged)
+  // the Wisdom Shorts ASSET narrates with the voice resolved at job_create: AUTO (and a brief from before Creative
+  // Settings) is the house voice itself -> the same request as openAiWisdomTts and the same tts-v1 key
+  const { normalizeGenerativeBrief } = await import('../lib/generative/contracts.js')
+  for (const brief of [normalizeGenerativeBrief({ kind: 'topic', text: '나이 들수록 말을 아끼는 이유', targetSeconds: 40 }), {}]) {
+    const v = briefVoice(brief as any, 'wisdom')
+    assert.equal(v, DEFAULT_VOICE_PROFILE); assert.equal(ttsCacheIdentity(v, '문장'), 'tts-v1|문장')
+  }
   const gen = (await import('node:fs')).readFileSync(new URL('../worker/stages/generative.ts', import.meta.url), 'utf8')
-  assert.match(gen, /tts=deps\.tts\?\?openAiWisdomTts/); assert.match(gen, /sha256\('tts-v1\|'\+b\.narration\)/)
+  assert.match(gen, /ak=sha256\(ttsCacheIdentity\(voice,b\.narration\)\)/); assert.match(gen, /au=await tts\(b\.narration,apiKey,voice\)/)
 })
 
 test('Voice Profile choices: UI keys only (provider values live in voiceProfile.ts); auto picks ONE profile from the topic', () => {
@@ -600,4 +610,139 @@ test('LOUDNESS: the narration is levelled ONCE to about -17 LUFS (true peak <= -
   // the level is applied once, on the whole track: never per sentence
   const src = (await import('node:fs')).readFileSync(new URL('../worker/stages/longform.ts', import.meta.url), 'utf8')
   assert.equal(src.match(/LONGFORM_LOUDNORM/g)!.length, 3) // defined, applied at the one concat, recorded in the manifest
+})
+
+// ======================= SENIOR LONGFORM: the same engine in its story "scenes" mode =======================
+import { LONGFORM_MODES, longformMode } from '../lib/generative/longform.js'
+import { mergeSameScenes, seniorActErrors, seniorScenePlan, seniorScenes, sceneRuns, characterLine, sceneMotion, SENIOR } from '../lib/generative/seniorLongform.js'
+import { VISUAL_STYLE_PROFILES } from '../lib/generative/visualStyle.js'
+
+const FAMILY = '어머니가 마지막으로 차려준 밥상'
+const CAST = [
+  { id: 'mother', name: '김순자', role: '어머니', gender: 'female', age: '75', face: 'kind wrinkled face, small gentle eyes', hair: 'short permed grey hair', build: 'small', outfit: 'lavender cardigan over a floral blouse', colors: 'lavender, cream' },
+  { id: 'son', name: '박민수', role: '아들', gender: 'male', age: '48', face: 'tired square face', hair: 'short black hair', build: 'medium', outfit: 'navy work jacket', colors: 'navy, grey' }
+]
+const PLACES = ['시골집 마루', '재래시장', '병원 대기실', '버스 정류장', '작은 국밥집', '아파트 거실', '논두렁 길']
+// 6 acts x 4-5 scenes (27 pictures); act 1 also lists the SAME scene twice in a row (same place/time/people/action)
+const actScenes = (a: number) => {
+  const sc = Array.from({ length: a % 2 === 0 ? 5 : 4 }, (_, j) => ({ id: `a${a + 1}s${j + 1}`, place: PLACES[(a + j) % 7], time: j % 2 ? '저녁' : '아침', characters: j % 3 === 0 ? ['mother'] : ['mother', 'son'], action: `action ${a + 1}-${j + 1}`, mood: 'warm', visual: `visual ${a + 1}-${j + 1}` }))
+  return a === 0 ? [sc[0], { ...sc[0], id: 'a1dup' }, ...sc.slice(1)] : sc
+}
+function seniorPlanner(calls: Record<string, number> = {}) {
+  const base = sentencesOf(SAMPLE)
+  return {
+    outline: async (_b: any, n: number) => { calls.outline = (calls.outline || 0) + 1; return { title: SAMPLE.title, hook: SAMPLE.hook, figure: { name: '김순자', imagePrompt: 'an elderly Korean mother' }, thumbnail: SAMPLE.thumbnail, characters: CAST, sections: Array.from({ length: n }, (_, i) => ({ id: `a${i + 1}`, heading: `act ${i + 1}`, points: ['a', 'b'], scenes: actScenes(i) })) } },
+    section: async (i: any) => { calls.section = (calls.section || 0) + 1; return { sentences: i.outline.sections[i.index].scenes.map((sc: any, k: number) => ({ ...base[k % base.length], say: `${base[k % base.length].say} (${i.index + 1}-${k + 1})`, scene: sc.id })) } },
+    metadata: async () => ({ title: SAMPLE.title, ...SAMPLE.metadata })
+  }
+}
+// a scene picture stand-in: its own colour (hue from the scene's place in the story) with a white grid, so the
+// rendered frame tells which scene is on screen and whether the picture moves
+async function scenePicture(d: string, prompt: string) {
+  const m = /visual (\d+)-(\d+)/.exec(prompt)!, idx = (Number(m[1]) - 1) * 5 + Number(m[2]) - 1
+  const hue = (idx * 360) / 30, l = idx % 2 ? 0.35 : 0.6, c = (1 - Math.abs(2 * l - 1)) * 0.75, x = c * (1 - Math.abs(((hue / 60) % 2) - 1)), k = l - c / 2
+  const [r, g, b] = (hue < 60 ? [c, x, 0] : hue < 120 ? [x, c, 0] : hue < 180 ? [0, c, x] : hue < 240 ? [0, x, c] : hue < 300 ? [x, 0, c] : [c, 0, x]).map((v) => Math.round((v + k) * 255))
+  const f = join(d, `p${idx}.jpg`)
+  await runOk(['-y', '-f', 'lavfi', '-i', `color=c=0x${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}:s=1536x1024,drawgrid=w=128:h=128:t=8:c=white@0.8`, '-frames:v', '1', '-q:v', '3', f])
+  return { bytes: await (await import('node:fs/promises')).readFile(f), contentType: 'image/jpeg', provider: 'standin', model: 'scene', rgb: [r, g, b] }
+}
+const shortTts = async () => { const r = await runOk(['-f', 'lavfi', '-i', 'sine=f=330:d=0.8', '-af', 'volume=0.4', '-c:a', 'libmp3lame', '-f', 'mp3', '-']); return { bytes: r.stdout, contentType: 'audio/mpeg', provider: 'standin', model: 'tone' } }
+async function seniorJob(input: any = {}) {
+  const blobs: any = createMemoryBlobStore()
+  const brief = normalizeLongformBrief({ kind: 'topic', text: FAMILY, targetSeconds: 3600, ...input }, 'senior_longform')
+  const stored = await putAddressed(blobs, 'generative-briefs', brief)
+  const job = { id: 'senior1', profile: 'senior_longform', planRev: 1, planRef: stored.path }
+  const runs: Record<string, any> = {}
+  const ctx = () => ({ job, blobs, previous: async (s: string) => runs[s] ?? null, signal: new AbortController().signal } as any)
+  return { blobs, brief, job, runs, ctx }
+}
+
+test('SENIOR 17-21: Wisdom Longform keeps its single-image mode; Senior is the scenes mode: 6 acts, ~24-30 pictures, watercolor by default', async () => {
+  assert.deepEqual([LONGFORM_MODES.wisdom_longform.images, LONGFORM_MODES.senior_longform.images], ['single', 'scenes'])
+  assert.equal(longformMode('wisdom_longform').research, true); assert.equal(longformMode('senior_longform').research, false)
+  assert.deepEqual(seniorScenePlan(3600), { acts: 6, scenesPerAct: { min: 4, max: 5 }, charsPerAct: 3720 })
+  const { ctx, runs, brief } = await seniorJob()
+  assert.equal(brief.creative!.resolved.visualStyleProfile, 'senior-warm-watercolor')
+  const calls: Record<string, number> = {}, research: any[] = []
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: async (...a: any[]) => { research.push(a); throw new Error('no research for a story') }, log: () => {}, planner: seniorPlanner(calls) as any }).run(ctx())
+  runs.PLAN = out
+  assert.equal(research.length, 0, 'a Senior story is not researched')
+  assert.deepEqual([calls.outline, calls.section], [1, 6])
+  const script: any = await ctx().blobs.getJson(out.result.scriptRef)
+  assert.equal(script.schema, 'senior-longform-script/1'); assert.equal(script.sections.length, 6)
+  const pics = seniorScenes(script)
+  assert.equal(pics.length, 27); assert.ok(pics.length >= 24 && pics.length <= 30)
+  assert.equal(out.result.scenes, 27); assert.deepEqual(out.result.creative.resolved.visualStyleProfile, 'senior-warm-watercolor')
+  // the repeated scene was merged: its sentence is told over the first scene's picture
+  assert.ok(!pics.some((s: any) => s.id === 'a1dup')); assert.deepEqual(script.sections[0].sentences.slice(0, 2).map((x: any) => x.scene), ['a1s1', 'a1s1'])
+})
+
+test('SENIOR 22: a new picture only when place/time/people/action change; scenes are used in order', () => {
+  const sc = (id: string, o: any = {}) => ({ id, place: '부엌', time: '아침', characters: ['mother'], action: '밥을 짓는다', mood: 'warm', visual: 'v', ...o })
+  const say = (scene: string) => ({ say: '문장', show: ['가', '나'], accent: '가', color: 'red' as const, scene })
+  const m = mergeSameScenes({ scenes: [sc('s1'), sc('s2'), sc('s3', { place: '마당' }), sc('s4', { place: '마당', action: '빨래를 넌다' }), sc('s5', { place: '마당', action: '빨래를 넌다', characters: ['mother', 'son'] })], sentences: ['s1', 's1', 's2', 's3', 's4', 's5'].map(say) })
+  assert.deepEqual(m.scenes.map((s) => s.id), ['s1', 's3', 's4', 's5']) // same place/time/people/action = one picture
+  assert.deepEqual(m.sentences.map((x) => x.scene), ['s1', 's1', 's1', 's3', 's4', 's5'])
+  const ids = new Set(['mother', 'son'])
+  assert.deepEqual(seniorActErrors({ scenes: [sc('s1'), sc('s2', { place: '마당' })], sentences: [say('s1'), say('s2')] }, ids), [])
+  assert.match(seniorActErrors({ scenes: [sc('s1'), sc('s2', { place: '마당' })], sentences: [say('s2'), say('s1')] }, ids).join(';'), /out_of_order/)
+  assert.match(seniorActErrors({ scenes: [sc('s1'), sc('s2', { place: '마당' })], sentences: [say('s1')] }, ids).join(';'), /scene s2 has no sentence/)
+  assert.match(seniorActErrors({ scenes: [sc('s1', { characters: ['ghost'] })], sentences: [say('s1')] }, ids).join(';'), /characters.unknown:ghost/)
+})
+
+test('SENIOR 18 + 23-25 + REAL RENDER: one picture per scene in ONE style with the Character Bible; common voice; each scene on screen for its narration with gentle motion', async () => {
+  const { ctx, runs, brief, blobs } = await seniorJob({ voiceProfile: 'auto', voiceTone: 'calm', voiceSpeed: 0.9 })
+  runs.PLAN = await createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: seniorPlanner() as any }).run(ctx())
+  const d = await mkdtemp(join(tmpdir(), 'senior-'))
+  const prompts: string[] = [], voices: string[] = [], colors = new Map<string, number[]>()
+  const deps = { apiKey: 'k', image: async (p: string) => { prompts.push(p); const x = await scenePicture(d, p); return x }, tts: async (_t: string, _k: string, v: any) => { voices.push(v.id); return shortTts() } }
+  runs.ASSET = await createLongformAssetExecutor(deps as any).run(ctx())
+  const m: any = await blobs.getJson(runs.ASSET.result.assetSpecRef)
+  // 18: one picture per scene (27), not one per sentence (28)
+  assert.equal(prompts.length, 27); assert.equal(m.images.length, 27); assert.equal(m.chunks.length, 28)
+  // the one style everywhere, the same Character Bible line for the same person in every picture
+  const wc = VISUAL_STYLE_PROFILES['senior-warm-watercolor']
+  assert.ok(prompts.every((p) => p.includes(wc.promptPrefix) && p.includes(wc.negativePrompt)))
+  const motherLine = characterLine(CAST[0] as any), sonLine = characterLine(CAST[1] as any)
+  assert.ok(prompts.every((p) => p.includes(motherLine)), 'the mother looks the same in every scene')
+  assert.equal(prompts.filter((p) => p.includes(sonLine)).length, seniorScenes((await blobs.getJson(runs.PLAN.result.scriptRef)) as any).filter((s: any) => s.characters.includes('son')).length)
+  // 25: the voice is the one resolved at job_create (auto -> 어머니 topic -> female-senior, calm, 0.9)
+  assert.equal(brief.creative!.resolved.voiceProfileId, 'ko-lf-female-senior-calm-0.9-v2')
+  assert.ok(voices.length === 28 && voices.every((v) => v === 'ko-lf-female-senior-calm-0.9-v2'))
+  // an ASSET retry pays for nothing; another style is another set of pictures (other cache keys)
+  prompts.length = 0; voices.length = 0
+  await createLongformAssetExecutor(deps as any).run(ctx())
+  assert.deepEqual([prompts.length, voices.length], [0, 0])
+  const other = await seniorJob({ visualStyleProfile: 'realistic-documentary' })
+  other.runs.PLAN = runs.PLAN; Object.assign(other.blobs.files, blobs.files)
+  for (const [k, v] of blobs.files) other.blobs.files.set(k, v); for (const [k, v] of blobs.binaries) other.blobs.binaries.set(k, v)
+  await createLongformAssetExecutor(deps as any).run(other.ctx())
+  assert.equal(prompts.length, 27); assert.ok(prompts.every((p) => p.includes(VISUAL_STYLE_PROFILES['realistic-documentary'].promptPrefix) && !p.includes(wc.promptPrefix)))
+  // REAL RENDER: 16:9, the length of the narration, every scene on screen while its sentences are told
+  const r: any = await createLongformRenderExecutor({ features: () => new Set(['LONGFORM_RENDER', 'CAPTION', 'QC']) as any }).run(ctx())
+  assert.equal(r.result.scenePictures, 27); assert.equal(r.result.canvas, '1920x1080')
+  const file = join(d, 'senior.mp4'); await (await import('node:fs/promises')).writeFile(file, await blobs.getBytes(r.result.variants[0].renderRef))
+  const info = await probe(file)
+  assert.ok(Math.abs(Number(info.duration) - m.narration.seconds) < 0.5, `${info.duration} vs ${m.narration.seconds}`)
+  const script: any = await blobs.getJson(runs.PLAN.result.scriptRef)
+  const tl = cardTimeline(script, m.chunks, m.chunks.map((c: any) => c.seconds)), spans = sceneRuns(script, tl)
+  assert.equal(spans.length, 27)
+  const frame = async (t: number) => (await runOk(['-ss', t.toFixed(3), '-i', file, '-frames:v', '1', '-vf', 'crop=900:500:510:180,scale=90:50', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])).stdout
+  const mean = (b: Buffer) => [0, 1, 2].map((c) => { let s = 0; for (let i = c; i < b.length; i += 3) s += b[i]; return s / (b.length / 3) })
+  const own = await Promise.all(m.images.map(async (x: any) => { const f = join(d, `own-${x.sceneId}.jpg`); await (await import('node:fs/promises')).writeFile(f, await blobs.getBytes(x.ref)); return mean((await runOk(['-i', f, '-vf', 'scale=90:60', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])).stdout) }))
+  const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+  for (const [i, s] of spans.entries()) {
+    const got = mean(await frame((s.start + s.end) / 2)), want = m.images.findIndex((x: any) => x.sceneId === s.sceneId)
+    const nearest = own.map((o, j) => [dist(o, got), j]).sort((a, b) => a[0] - b[0])[0][1]
+    assert.equal(nearest, want, `scene ${i + 1} (${s.sceneId}) on screen at ${((s.start + s.end) / 2).toFixed(2)}s`)
+  }
+  // gentle motion: a panning scene moves, a still scene does not
+  const diff = (a: Buffer, b: Buffer) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length }
+  const pan = spans.findIndex((_, i) => sceneMotion(i) === 'pan-right'), still = spans.findIndex((_, i) => sceneMotion(i) === 'still')
+  const moved = diff(await frame(spans[pan].start + 0.1), await frame(spans[pan].end - 0.1)), held = diff(await frame(spans[still].start + 0.1), await frame(spans[still].end - 0.1))
+  assert.ok(moved > 3 && held < 1.5, `pan ${moved.toFixed(2)} vs still ${held.toFixed(2)}`)
+  // subtitles at the bottom over the picture (Wisdom keeps its left column)
+  assert.match(longformCardsAss(script, tl, 'bottom').ass, /\\an2\\pos\(960,1010\)/)
+  assert.match(longformCardsAss(SAMPLE, cardTimeline(SAMPLE, ttsChunks(SAMPLE), ttsChunks(SAMPLE).map(() => 1))).ass, /\\an4\\pos\(100,540\)/)
+  assert.equal(SENIOR.acts, 6)
 })
