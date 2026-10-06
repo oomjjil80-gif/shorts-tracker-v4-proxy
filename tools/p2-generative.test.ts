@@ -49,12 +49,12 @@ test('P2 wisdom rejects narration that exceeds the locked profile limit',()=>{
  assert.ok(validateWisdomScript(s,b).includes('beats[0].narration.too_long'))
 })
 
-test('P2 wisdom rejects scripts materially away from requested duration',()=>{
+test('P2 wisdom treats requested duration as editorial guidance, not a quality gate',()=>{
  const b=normalizeGenerativeBrief({kind:'topic',text:'좋은 인간관계를 오래 유지하는 법',targetSeconds:40})
  const s=deterministicWisdomDraft(b)
  s.beats.forEach(x=>x.durationSec=12)
  s.totalSeconds=s.beats.reduce((n,x)=>n+x.durationSec,0)
- assert.ok(validateWisdomScript(s,b).includes('targetSeconds.mismatch'))
+ assert.equal(validateWisdomScript(s,b).includes('targetSeconds.mismatch'),false)
 })
 
 test('P2 wisdom Screen DNA v1 locks black bands, central visual window and motion',async()=>{
