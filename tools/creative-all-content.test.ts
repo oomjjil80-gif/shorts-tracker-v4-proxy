@@ -51,6 +51,13 @@ test('creative_resolve: the browser asks the server (keys in, resolved profile o
   assert.deepEqual(r.json.creative.resolved, { voiceProfile: 'female-middle', voiceTone: 'neutral', voiceSpeed: 1.1, voiceProfileId: 'ko-lf-female-middle-neutral-1.1-v2', visualStyleProfile: 'realistic-documentary' })
   assert.deepEqual([r.json.creative.content, r.json.creative.family, r.json.creative.format], ['economy_shorts', 'economy', 'shorts'])
   assert.doesNotMatch(JSON.stringify(r.json), /marin|cedar|onyx|nova|sage|"ash"|promptPrefix|Watercolor|documentary-style/) // keys only
+  // economy AUTO keeps its own (native) look: nothing is added to a hand-copied prompt either
+  assert.equal(r.json.styleWrap, null)
+  const yasa = await http(handler, { taskType: 'creative_resolve', family: 'yasa', format: 'longform', topic: '조선 왕실' })
+  assert.ok(yasa.json.styleWrap.head.includes(VISUAL_STYLE_PROFILES['historical-dramatic'].promptPrefix) && yasa.json.styleWrap.tail.includes(VISUAL_STYLE_PROFILES['historical-dramatic'].negativePrompt))
+  assert.equal(withVisualStyle('P', VISUAL_STYLE_PROFILES['historical-dramatic']), [yasa.json.styleWrap.head, '', 'P', '', yasa.json.styleWrap.tail].join('\n')) // the same text as /api/image
+  const econWater = await http(handler, { taskType: 'creative_resolve', family: 'economy', format: 'shorts', visualStyleProfile: 'senior-warm-watercolor' })
+  assert.ok(econWater.json.styleWrap.head.includes('senior-warm-watercolor'))
   for (const bad of [{ family: 'horror', format: 'shorts' }, { family: 'yasa', format: 'shorts', voiceSpeed: 1.3 }, { family: 'yasa', format: 'shorts', visualStyleProfile: 'anime' }]) assert.equal((await http(handler, { taskType: 'creative_resolve', ...bad })).status, 400)
 })
 

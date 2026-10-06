@@ -113,15 +113,20 @@ export function imageStyleFor(creative: any): VisualStyleProfile | null {
 }
 // Visual Style Profile = the base art style (medium, brushwork, light); the channel/episode bible and the CUT scene
 // that follow keep their roles (characters, brand, composition, recurring rules, what this CUT shows). Neither is dropped.
+// The text around a prompt for a style (also handed to the browser for prompts the user copies to Gemini by hand, kept
+// in memory there and never stored): the style block before, the style negatives after.
+export function visualStyleWrap(style: VisualStyleProfile | null): { head: string; tail: string } | null {
+  if (!style) return null
+  return {
+    head: [
+      `[VISUAL STYLE PROFILE — BASE ART STYLE: ${style.id}]`,
+      `Style: ${style.promptPrefix}. ${style.compositionHints}.`,
+      'STYLE PRIORITY: render the whole image in this style. The channel/episode visual bible below still decides characters, brand, composition and recurring rules, and the CUT scene decides what is shown; only rendering-medium words in them (e.g. 3D animation, photorealistic) yield to this style.'
+    ].join('\n'),
+    tail: `[VISUAL STYLE NEGATIVE] Avoid: ${style.negativePrompt}.`
+  }
+}
 export function withVisualStyle(prompt: string, style: VisualStyleProfile | null): string {
-  if (!style) return prompt
-  return [
-    `[VISUAL STYLE PROFILE — BASE ART STYLE: ${style.id}]`,
-    `Style: ${style.promptPrefix}. ${style.compositionHints}.`,
-    'STYLE PRIORITY: render the whole image in this style. The channel/episode visual bible below still decides characters, brand, composition and recurring rules, and the CUT scene decides what is shown; only rendering-medium words in them (e.g. 3D animation, photorealistic) yield to this style.',
-    '',
-    prompt,
-    '',
-    `[VISUAL STYLE NEGATIVE] Avoid: ${style.negativePrompt}.`
-  ].join('\n')
+  const w = visualStyleWrap(style)
+  return w ? [w.head, '', prompt, '', w.tail].join('\n') : prompt
 }

@@ -13,7 +13,7 @@ import { buildReferenceProductionBrief } from '../reference/profile.js'
 import { normalizeGenerativeBrief, generativeBriefHash } from '../generative/contracts.js'
 import { normalizeLongformBrief, longformBriefHash } from '../generative/longform.js'
 import { createVoicePreview, PreviewError } from '../generative/voicePreview.js'
-import { creativeContentFor, resolveCreativeProfile } from '../generative/creativeProfile.js'
+import { creativeContentFor, resolveCreativeProfile, imageStyleFor, visualStyleWrap } from '../generative/creativeProfile.js'
 import { openAiTts } from '../generative/providers.js'
 
 // HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
@@ -120,7 +120,8 @@ export function createJobsHttp(deps: JobsDeps) {
         try {
           const content = creativeContentFor(input.family, input.format)
           const c = resolveCreativeProfile(content, input, String(input.topic || '').slice(0, 2000))
-          return res.status(200).json({ ok: true, creative: { schema: c.schema, content, family: input.family, format: input.format, requested: c.requested, resolved: c.resolved } })
+          // styleWrap: the style text for prompts the user copies by hand (null when nothing is added)
+          return res.status(200).json({ ok: true, creative: { schema: c.schema, content, family: input.family, format: input.format, requested: c.requested, resolved: c.resolved }, styleWrap: visualStyleWrap(imageStyleFor({ content, requested: c.requested, resolved: c.resolved })) })
         } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
       }
       if (taskType === VOICE_PREVIEW_TASK) {
