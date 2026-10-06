@@ -194,8 +194,8 @@ test('Named-thinker anchor re-aims only the first beat image prompt; narration a
  assert.doesNotMatch(script.beats[0].imagePrompt,/one recurring elderly man/)
  assert.deepEqual(namedThinkerVisualErrors(s.title,script),[])
  assert.deepEqual(script.beats.map((b:any)=>[b.id,b.narration,b.durationSec]),s.beats.map((b:any)=>[b.id,b.narration,b.durationSec]))
- assert.deepEqual(script.beats.slice(1),s.beats.slice(1))
- assert.equal(anchorNamedThinkerVisual(script,s.title).anchoredBeatId,null) // idempotent
+ assert.ok(script.beats.slice(1).every((b:any,i:number)=>b.imagePrompt.includes(s.beats[i+1].imagePrompt)&&b.imagePrompt.includes('Recurring protagonist LOCK:')))
+ const again=anchorNamedThinkerVisual(script,s.title); assert.equal(again.anchoredBeatId,null); assert.deepEqual(again.script,script) // idempotent
  assert.equal(anchorNamedThinkerVisual(s,'나이가 들수록 인간관계를 줄여야 하는 이유').anchoredBeatId,null) // no named person
  assert.match(anchorNamedThinkerVisual({...s,title:'니체가 말한 고독'},'니체가 말한 고독').script.beats[0].imagePrompt,/Friedrich Nietzsche.*walrus moustache/)
 })
