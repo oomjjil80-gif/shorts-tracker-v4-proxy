@@ -575,22 +575,24 @@ test('LOUDNESS: the narration is levelled ONCE to about -17 LUFS (true peak <= -
   const m: any = await fx.blobs.getJson(out.result.assetSpecRef)
   assert.equal(m.narration.loudness, 'loudnorm=I=-17:TP=-1.5:LRA=11')
   const file = join(fx.d, 'narration.m4a'); await (await import('node:fs/promises')).writeFile(file, await fx.blobs.getBytes(m.narration.ref))
-  const { spawnSync } = await import('node:child_process')
-  const meter = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', file, '-af', 'ebur128=peak=true', '-f', 'null', '-'], { encoding: 'utf8' }).stderr
+  // the project's own ffmpeg (ffmpeg-static on CI), not whatever is on PATH
+  const { runFfmpeg } = await import('../lib/media/ffmpeg.js')
+  const ff = async (args: string[]) => (await runFfmpeg(args)).stderr
+  const meter = await ff(['-nostats', '-i', file, '-af', 'ebur128=peak=true', '-f', 'null', '-'])
   const summary = meter.slice(meter.lastIndexOf('Summary:'))
   const lufs = Number(/I:\s+(-?[\d.]+) LUFS/.exec(summary)![1]), peak = Number(/Peak:\s+(-?[\d.]+) dBFS/.exec(summary)![1])
   assert.ok(lufs >= -18.5 && lufs <= -15.5, `integrated loudness ${lufs} LUFS`)
   assert.ok(peak <= -1.0, `true peak ${peak} dBTP (no clipping)`)
   // sentence onsets in the levelled track vs the card timeline: card k start + where the voice starts inside sentence k's
   // own TTS audio (measured on that sentence alone), so loudnorm may not move any sentence by more than 0.03 s
-  const firstSound = (f: string) => Number(/silence_end: ([\d.]+)/.exec(spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', f, '-af', 'silencedetect=n=-90dB:d=0.15', '-f', 'null', '-'], { encoding: 'utf8' }).stderr)?.[1] ?? 0)
-  const sd = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', file, '-af', 'silencedetect=n=-90dB:d=0.15', '-f', 'null', '-'], { encoding: 'utf8' }).stderr
+  const firstSound = async (f: string) => Number(/silence_end: ([\d.]+)/.exec(await ff(['-nostats', '-i', f, '-af', 'silencedetect=n=-90dB:d=0.15', '-f', 'null', '-']))?.[1] ?? 0)
+  const sd = await ff(['-nostats', '-i', file, '-af', 'silencedetect=n=-90dB:d=0.15', '-f', 'null', '-'])
   const onsets = [...sd.matchAll(/silence_end: ([\d.]+)/g)].map((x) => Number(x[1]))
   const tl = cardTimeline(SAMPLE, m.chunks, m.chunks.map((c: any) => c.seconds))
   assert.equal(onsets.length, tl.length)
   for (const [i, t] of tl.entries()) {
     const own = join(fx.d, `s${i}.mp3`); await (await import('node:fs/promises')).writeFile(own, await fx.blobs.getBytes(m.chunks[i].ref))
-    const want = t.start + firstSound(own)
+    const want = t.start + await firstSound(own)
     assert.ok(Math.abs(onsets[i] - want) <= 0.03, `sentence ${i + 1}: voice ${onsets[i]} vs card ${want}`)
   }
   const sum = m.chunks.reduce((s: number, c: any) => s + c.seconds, 0)
