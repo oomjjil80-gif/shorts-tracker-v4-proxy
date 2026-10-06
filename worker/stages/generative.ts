@@ -107,10 +107,16 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   if(!apiKey)throw new StageError('PROVIDER_DOWN','OPENAI_API_KEY is not configured',true)
   const p=await previous('PLAN'); const scriptRef=(p?.result as any)?.scriptRef; if(!scriptRef)throw new StageError('SCRIPT_MISSING','ASSET requires PLAN script')
   const planned:any=await blobs.getJson(scriptRef); if(!planned||planned.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
-  // A thinker named in the opening (title/hook/first two narrations) must be drawn in the first cuts. Only that beat's image
-  // prompt can change, so its image is the only cache miss; every other image and all narration/TTS (and timing) are reused.
+  const prior=await previous('ASSET')
+  // New PLANs already contain identity locks. For legacy already-paid ASSET reruns, preserve the
+  // old paid prompts except the one deterministic named-thinker anchor so an upgrade never silently re-buys media.
   const opening=[planned.title,planned.hook,...(planned.beats||[]).slice(0,2).map((b:any)=>b?.narration)].join(' ')
-  const {script,anchoredBeatId}=anchorNamedThinkerVisual(planned,opening)
+  const anchored=anchorNamedThinkerVisual(planned,opening)
+  let script:any=anchored.script, anchoredBeatId=anchored.anchoredBeatId
+  const legacyPaidRerun=!!(prior?.result as any)?.assetSpecRef && !(planned.beats||[]).some((b:any)=>/Identity LOCK:|Recurring protagonist LOCK:/.test(String(b?.imagePrompt||'')))
+  if(legacyPaidRerun){
+   script={...planned,beats:(planned.beats||[]).map((b:any,i:number)=>i===0&&anchoredBeatId?{...b,imagePrompt:anchored.script.beats[0].imagePrompt}:b)}
+  }
   const items:any[]=[]; let bytes=0, generated=0, reused=0
   const cached:Array<{im:any,au:any}>=[]
   for(const b of script.beats){
@@ -122,12 +128,11 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   }
   // Rerun of an already-paid ASSET (ASSET_RECHECK_JOB_ID): the only paid call allowed is the named-thinker anchor image.
   // Any other cache miss would silently re-buy images/TTS and could change timing, so refuse before spending anything.
-  const prior=await previous('ASSET')
   const priorAssetSpecRef=(prior?.result as any)?.assetSpecRef
-  let samePlannedScript=false
+  let samePlannedScript=!!priorAssetSpecRef
   if(priorAssetSpecRef){
    const priorSpec:any=await blobs.getJson(priorAssetSpecRef).catch(()=>null)
-   samePlannedScript=String(priorSpec?.scriptRef||'')===String(scriptRef||'')
+   if(priorSpec?.scriptRef) samePlannedScript=String(priorSpec.scriptRef)===String(scriptRef||'')
   }
   if(priorAssetSpecRef&&samePlannedScript){
    const misses=script.beats.flatMap((b:any,i:number)=>[...(!cached[i].im&&b.id!==anchoredBeatId?[`${b.id}.image`]:[]),...(!cached[i].au?[`${b.id}.tts`]:[])])
