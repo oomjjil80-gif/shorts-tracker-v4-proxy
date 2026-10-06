@@ -153,8 +153,8 @@ $('make').onclick=async()=>{
 };
 function setModeUi(profile){
   const generated=profile==='wisdom'||profile==='wisdom_longform';
-  $('sourceInputCard').style.opacity=generated?'0.55':'1';
-  $('sourceCard').style.opacity=generated?'0.45':'1';
+  $('sourceInputCard').style.opacity='1';
+  $('sourceCard').style.display=generated?'none':'';
 }
 function waitLabel(j){
   if(j.status!=='WAITING_USER')return null;
