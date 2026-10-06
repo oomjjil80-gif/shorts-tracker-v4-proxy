@@ -93,7 +93,7 @@ test('planner defense-in-depth cuts foreign text instead of restoring it to prot
 
 test('benchmark prompt explicitly forbids explainer prose, foreign-text flashes, and gives precise hit anchors', () => {
   const p = storyPrompt(analysis())
-  assert.equal(AI_PLANNER_PROMPT_VERSION, 'source-story-analysis/16')
+  assert.equal(AI_PLANNER_PROMPT_VERSION, 'source-story-analysis/17')
   assert.match(p, /BENCHMARK BAR/)
   assert.match(p, /not at the level of an AI explainer/)
   assert.match(p, /ZERO-TOLERANCE FOREIGN TEXT/)
