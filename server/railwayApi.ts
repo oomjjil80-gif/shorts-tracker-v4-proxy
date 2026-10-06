@@ -53,7 +53,7 @@ a{color:#bcaeff}.hidden{display:none}.title{font-weight:900;font-size:17px;margi
 <body><main>
 <div class="top"><h1>콘텐츠 제작 Tracker</h1><span class="pill" id="health">연결 확인 중</span></div>
 
-<section class="card">
+<section id="sourceInputCard" class="card">
 <label for="sourceUrl">영상 주소</label>
 <input id="sourceUrl" type="url" inputmode="url" placeholder="TikTok / Douyin / Instagram 주소 붙여넣기"/>
 <button id="collect">소스 수집</button>
@@ -147,10 +147,23 @@ $('make').onclick=async()=>{
   try{
     const nonce=randomHex(12);
     const d=await post({taskType:'job_create',profile:'source_shorts',sourceAssetId:currentSource.sourceAssetId,idempotencyKey:'continuity-'+currentSource.sourceAssetId.slice(-20)+'-'+nonce},true);
-    currentJobId=d.job.id;localStorage.setItem(LS_JOB,currentJobId);$('jobCard').classList.remove('hidden');previewRenderKey='';startPoll();await refreshJob();
+    currentJobId=d.job.id;localStorage.setItem(LS_JOB,currentJobId);$('jobCard').classList.remove('hidden');previewRenderKey='';setModeUi('source_shorts');startPoll();await refreshJob();
   }catch(e){status($('collectStatus'),'제작 시작 실패: '+e.message,false)}
   finally{$('make').disabled=false;$('make').textContent='이 소스로 새 영상 만들기'}
 };
+function setModeUi(profile){
+  const generated=profile==='wisdom'||profile==='wisdom_longform';
+  $('sourceInputCard').style.opacity=generated?'0.55':'1';
+  $('sourceCard').style.opacity=generated?'0.45':'1';
+}
+function waitLabel(j){
+  if(j.status!=='WAITING_USER')return null;
+  if(j.waitReason==='DECISION')return '선택 대기';
+  if(j.waitReason==='QC_BLOCKED')return 'QC 차단 · 재검사 필요';
+  if(j.waitReason==='BUDGET')return '예산 확인 필요';
+  if(j.waitReason==='PROVIDER_DOWN')return '외부 생성 서비스 대기';
+  return '사용자 확인 필요';
+}
 async function startGenerated(profile,input,statusId,buttonId){
   const text=String(input.text||'').trim();
   if(text.length<4)return status($(statusId),'4자 이상 입력해 주세요.',false);
@@ -158,8 +171,8 @@ async function startGenerated(profile,input,statusId,buttonId){
   $('variants').innerHTML='';$('final').innerHTML='';previewRenderKey='';
   try{
     const d=await post({taskType:'job_create',profile,input:{...input,text},idempotencyKey:profile+'-'+Date.now()+'-'+randomHex(8)},true);
-    currentJobId=d.job.id;localStorage.setItem(LS_JOB,currentJobId);$('jobCard').classList.remove('hidden');
-    status($(statusId),'✓ 제작 시작',true);startPoll();await refreshJob();$('jobCard').scrollIntoView({behavior:'smooth',block:'start'});
+    currentJobId=d.job.id;localStorage.setItem(LS_JOB,currentJobId);$('jobCard').classList.remove('hidden');setModeUi(profile);
+    status($(statusId),'제작 작업 생성됨 · 아래 진행상태 확인',true);startPoll();await refreshJob();$('jobCard').scrollIntoView({behavior:'smooth',block:'start'});
   }catch(e){status($(statusId),'제작 시작 실패: '+e.message,false)}
   finally{btn.disabled=false;btn.textContent=old}
 }
@@ -223,8 +236,12 @@ async function refreshJob(){
   try{
     const d=await getJob(currentJobId);const j=d.job;$('jobCard').classList.remove('hidden');
     const profileName=j.profile==='wisdom'?'지혜 쇼폼':j.profile==='wisdom_longform'?'지혜 롱폼':'소스 쇼츠';
-    $('jobState').textContent=profileName+' · '+(j.status==='COMPLETE'?'완성':j.status==='FAILED'?'실패':j.status==='WAITING_USER'?'선택 대기':'제작 중 · '+j.stage);
+    setModeUi(j.profile);
+    const waiting=waitLabel(j);
+    $('jobState').textContent=profileName+' · '+(j.status==='COMPLETE'?'완성':j.status==='FAILED'?'실패':waiting||(j.status==='WAITING_USER'?'사용자 확인 필요':'제작 중 · '+j.stage));
     $('jobDetail').textContent=(j.error?j.error+'\n':'')+'현재 단계: '+j.stage+(j.waitReason?' · '+j.waitReason:'');
+    if(j.profile==='wisdom') status($('wisdomStatus'),j.status==='COMPLETE'?'✓ 완성':j.status==='FAILED'?'실패':j.waitReason==='QC_BLOCKED'?'QC 차단 · 자동 재검사/수정 필요':'제작 진행 중 · '+j.stage,j.status==='COMPLETE'?true:j.status==='FAILED'?false:null);
+    if(j.profile==='wisdom_longform') status($('longStatus'),j.status==='COMPLETE'?'✓ 완성':j.status==='FAILED'?'실패':j.waitReason==='QC_BLOCKED'?'QC 차단 · 자동 재검사/수정 필요':'제작 진행 중 · '+j.stage,j.status==='COMPLETE'?true:j.status==='FAILED'?false:null);
     if(j.status==='WAITING_USER'&&j.waitReason==='DECISION'){await loadPreviews(j);clearInterval(pollTimer);pollTimer=null}
     if(j.status==='COMPLETE'){clearInterval(pollTimer);pollTimer=null;await loadFinal(j)}
     if(j.status==='FAILED'||j.status==='CANCELLED')clearInterval(pollTimer);
