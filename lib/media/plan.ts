@@ -137,6 +137,7 @@ export function sourceToOutput(beats: Beat[], t: number): number | null {
 // Effect placement is decided at render time (it needs the real framing); PLAN only says WHERE in time.
 // Consecutive impacts alternate left/right inside the visual window so repeated hits read as separate beats.
 const EFFECT_SLOTS = [{ xPct: 40, yPct: 42 }, { xPct: 60, yPct: 36 }, { xPct: 50, yPct: 48 }]
+const POINT_SLOTS = [{ xPct: 50, yPct: 56 }, { xPct: 50, yPct: 48 }]
 
 // Turns grounded semantic cues into the presentation layer of ONE edit:
 // hook => persistent top headline; context/payoff => timed explanation captions; effect => short pop text.
@@ -147,11 +148,19 @@ export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<Varia
   const hook = placed.find((c) => c.kind === 'hook')
   const events = placed.filter((c) => c.kind === 'context' || c.kind === 'payoff').map((c) => ({ start: c.srcStart, end: c.srcEnd, text: c.text }))
   const fx = placed.filter((c) => c.kind === 'effect').sort((a, b) => a.srcStart - b.srcStart)
-  // one pop per impact: each ends before the next one starts, so 퍽! 퍽! 퍽! never stack on the same frame
-  const effectCaptions = fx.map((c, idx) => ({
+  const points = placed.filter((c) => c.kind === 'point').sort((a, b) => a.srcStart - b.srcStart)
+  // One pop per real impact. Bright yellow, large, and short.
+  const impactCaptions = fx.map((c, idx) => ({
     start: c.srcStart, end: idx + 1 < fx.length && fx[idx + 1].srcStart > c.srcStart ? Math.min(c.srcEnd, fx[idx + 1].srcStart) : c.srcEnd,
-    text: c.text, ...EFFECT_SLOTS[idx % EFFECT_SLOTS.length], fontSizePct: 13, animation: 'pop'
+    text: c.text, ...EFFECT_SLOTS[idx % EFFECT_SLOTS.length], role: 'effect', color: '#FFD928', strokeColor: '#111111', fontSizePct: 14, animation: 'pop'
   }))
+  // Short dialogue/reaction punches are visually distinct from explanatory captions:
+  // center-weighted, yellow, large, and fast. Never duplicate them as lower subtitles.
+  const pointCaptions = points.map((c, idx) => ({
+    start: c.srcStart, end: Math.min(c.srcEnd, c.srcStart + 1.35),
+    text: c.text, ...POINT_SLOTS[idx % POINT_SLOTS.length], role: 'point', color: '#FFD928', strokeColor: '#111111', fontSizePct: 11.8, animation: 'pop'
+  }))
+  const effectCaptions = [...impactCaptions, ...pointCaptions].sort((a, b) => a.start - b.start)
   return {
     ...(hook ? { headline: hook.text } : {}),
     ...(events.length ? { events } : {}),
