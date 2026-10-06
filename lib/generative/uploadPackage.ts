@@ -12,7 +12,7 @@ const sentences = (t: string) => String(t || '').split(/(?<=[.!?。？！]|[다�
 
 // Wisdom title DNA: titles should create an honest information gap instead of summarising the answer.
 // The gap must be paid off by the actual narration; this is not permission for unrelated clickbait.
-const STRONG_CURIOSITY = /(이런|이곳|여기|이것|이걸|이렇게|이 사람|이 말|이 행동|이 습관|왜|이유|어떻게|무엇|어디|누가|어떤|정작|진짜 이유|따로 있다|숨은 이유)/i
+const STRONG_CURIOSITY = /(이런|이곳|여기|이것|이걸|이렇게|이 사람|이 행동|이 습관|왜|이유|어떻게|무엇|어디|누가|어떤|정작|진짜 이유|따로 있다|숨은 이유)/i
 const LIST_CURIOSITY = /\d+\s*가지/
 const CONSEQUENCE_CURIOSITY = /(손해|후회|만만|무시|외면|절대|오히려|결국|달라지|편해지|망치|버려야|끊어야|하면 안|하지 마|살아야|죽어야)/
 
