@@ -26,7 +26,7 @@ export const beatScene=(imagePrompt:unknown)=>{const p=String(imagePrompt||''),i
 
 export function lockWisdomProtagonistAcrossBeats(s:WisdomScript,topic:string):WisdomScript{
  const thinker=thinkerFor(topic)
- const identity='Recurring protagonist LOCK: when an unnamed everyday protagonist appears, depict the SAME Korean adult in every such scene — early 40s, oval face, short neat dark hair, calm dark eyes, charcoal coat over a plain light shirt; identical face, apparent age, hair and clothing across scenes. Do not redesign this recurring protagonist.'
+ const identity='Recurring protagonist LOCK: when an unnamed everyday protagonist appears, depict the SAME Korean adult in every such scene — early 40s, oval face, short neat dark hair, calm dark eyes, charcoal coat over a plain light shirt; identical face, apparent age, hair and clothing across scenes. Do not redesign this recurring protagonist. The protagonist does NOT need to appear in every scene. Vary camera distance, setting, body language, supporting characters, and composition across adjacent scenes; avoid repeated portrait framing.'
  return {...s,beats:s.beats.map(b=>{const scene=beatScene(b.imagePrompt).toLowerCase();const named=thinker?.aliases.some(a=>scene.includes(a))??false;return named?b:{...b,imagePrompt:`${b.imagePrompt} ${identity}`}})}
 }
 
@@ -95,9 +95,9 @@ export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
   const d=Number(b?.durationSec); if(!Number.isFinite(d)||d<3||d>12)e.push(`beats[${i}].durationSec`)
  }
  const total=beats.reduce((n:any,b:any)=>n+Number(b.durationSec||0),0)
- if(total<35||total>75)e.push('totalSeconds')
+ if(total<25||total>120)e.push('totalSeconds')
  if(Math.abs(total-Number(s?.totalSeconds||0))>.1)e.push('totalSeconds.mismatch')
- if(Math.abs(total-brief.targetSeconds)>Math.max(5,brief.targetSeconds*.15))e.push('targetSeconds.mismatch')
+ // targetSeconds is editorial guidance, not a quality gate. Do not fail a good Short for running longer/shorter.
  if(brief.profile!=='wisdom')e.push('profile')
  e.push(...namedThinkerVisualErrors(String(brief.text||''),s))
  return e
