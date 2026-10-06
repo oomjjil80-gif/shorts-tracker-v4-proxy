@@ -10,6 +10,7 @@ import { FONTS_DIR } from '../../lib/media/ass.js'
 import { openAiLongformImage } from '../../lib/generative/providers.js'
 import { openAiWisdomPublishKit, thumbnailArgv, thumbnailCopyErrors, thumbnailFigure, figureRightPrompt } from '../../lib/generative/wisdomThumbnail.js'
 import { uploadMetadataErrors, uploadPackageText } from '../../lib/generative/uploadPackage.js'
+import { thinkerDisplayName } from '../../lib/generative/wisdom.js'
 import { subjectSide } from './longform.js'
 import type { StageExecutor } from '../types.js'
 import { profileFeatures, type FeatureResolver } from '../modules/features.js'
@@ -33,9 +34,16 @@ export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string;
         const script: any = pr.scriptRef ? await blobs.getJson(pr.scriptRef) : null
         if (!script) throw new Error('script missing')
         const bible: any = pr.visualBibleRef ? await blobs.getJson(pr.visualBibleRef) : null
-        const brief: any = job.planRef ? await blobs.getJson(job.planRef) : null
+        // PLAN replaces job.planRef with the generated plan, so use the preserved original briefRef for publishing copy.
+        // This keeps high-value named thinkers (e.g. 쇼펜하우어) available even when the generated on-video title is generic.
+        const brief: any = pr.briefRef ? await blobs.getJson(String(pr.briefRef)) : null
         const topic = String(brief?.text || script.title || ''), narration = (script.beats || []).map((b: any) => b.narration).join(' ')
-        const check = (k: any) => ({ copy: thumbnail ? thumbnailCopyErrors(k.lines, script.title) : [], upload: uploadMetadataErrors(k.metadata || ({} as any), { narration, format: 'shorts' }) })
+        const thinker = thinkerDisplayName(topic)
+        const check = (k: any) => {
+          const upload = uploadMetadataErrors(k.metadata || ({} as any), { narration, format: 'shorts' })
+          if (thinker && !String(k?.metadata?.title || '').includes(thinker)) upload.push('title.missing_named_thinker')
+          return { copy: thumbnail ? thumbnailCopyErrors(k.lines, script.title) : [], upload }
+        }
         let made = await kit({ topic, title: script.title, hook: script.hook, narration }, apiKey), errs = check(made)
         if (errs.copy.length || errs.upload.length) {
           made = await kit({ topic, title: script.title, hook: script.hook, narration, repair: [...errs.copy.map((x) => 'thumbnail ' + x), ...errs.upload] }, apiKey); errs = check(made)

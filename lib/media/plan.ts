@@ -22,6 +22,8 @@ export type VariantSpec = {
   kind?: 'chronological' | 'preview' | 'tight'
   // What the presentation layer kept/dropped for THIS edit (recorded in the PLAN result; never part of job-plan/1)
   presentation?: PresentationReport
+  audioMode?: 'source' | 'dub'
+  voiceoverLines?: Array<{ start: number; end: number; text: string }>
   headline?: string; events?: Array<{ start: number; end: number; text: string }>
   effectCaptions?: Array<Record<string, unknown>>; callouts?: Array<Record<string, unknown>>
   cleanEdgeCrop?: CleanEdgeCrop
@@ -135,6 +137,7 @@ export function sourceToOutput(beats: Beat[], t: number): number | null {
 // Effect placement is decided at render time (it needs the real framing); PLAN only says WHERE in time.
 // Consecutive impacts alternate left/right inside the visual window so repeated hits read as separate beats.
 const EFFECT_SLOTS = [{ xPct: 40, yPct: 42 }, { xPct: 60, yPct: 36 }, { xPct: 50, yPct: 48 }]
+const POINT_SLOTS = [{ xPct: 50, yPct: 56 }, { xPct: 50, yPct: 48 }]
 
 // Turns grounded semantic cues into the presentation layer of ONE edit:
 // hook => persistent top headline; context/payoff => timed explanation captions; effect => short pop text.
@@ -145,11 +148,19 @@ export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<Varia
   const hook = placed.find((c) => c.kind === 'hook')
   const events = placed.filter((c) => c.kind === 'context' || c.kind === 'payoff').map((c) => ({ start: c.srcStart, end: c.srcEnd, text: c.text }))
   const fx = placed.filter((c) => c.kind === 'effect').sort((a, b) => a.srcStart - b.srcStart)
-  // one pop per impact: each ends before the next one starts, so 퍽! 퍽! 퍽! never stack on the same frame
-  const effectCaptions = fx.map((c, idx) => ({
+  const points = placed.filter((c) => c.kind === 'point').sort((a, b) => a.srcStart - b.srcStart)
+  // One pop per real impact. Bright yellow, large, and short.
+  const impactCaptions = fx.map((c, idx) => ({
     start: c.srcStart, end: idx + 1 < fx.length && fx[idx + 1].srcStart > c.srcStart ? Math.min(c.srcEnd, fx[idx + 1].srcStart) : c.srcEnd,
-    text: c.text, ...EFFECT_SLOTS[idx % EFFECT_SLOTS.length], fontSizePct: 13, animation: 'pop'
+    text: c.text, ...EFFECT_SLOTS[idx % EFFECT_SLOTS.length], role: 'effect', color: '#FFD928', strokeColor: '#111111', fontSizePct: 14, animation: 'pop'
   }))
+  // Short dialogue/reaction punches are visually distinct from explanatory captions:
+  // center-weighted, yellow, large, and fast. Never duplicate them as lower subtitles.
+  const pointCaptions = points.map((c, idx) => ({
+    start: c.srcStart, end: Math.min(c.srcEnd, c.srcStart + 1.35),
+    text: c.text, ...POINT_SLOTS[idx % POINT_SLOTS.length], role: 'point', color: '#FFD928', strokeColor: '#111111', fontSizePct: 11.8, animation: 'pop'
+  }))
+  const effectCaptions = [...impactCaptions, ...pointCaptions].sort((a, b) => a.start - b.start)
   return {
     ...(hook ? { headline: hook.text } : {}),
     ...(events.length ? { events } : {}),
@@ -190,17 +201,27 @@ export function planVariants(a: SourceAnalysis, semantic: SemanticResult | null 
   if (!base.length) throw new Error('story analysis left no usable footage')
   const variants: VariantSpec[] = []
   const clean = story.cleanEdgeCrop ? { cleanEdgeCrop: story.cleanEdgeCrop } : {}
-  variants.push({ id: 'v1', label: '추천 · 원인→결말', kind: 'chronological', rationale: 'causal story + grounded Korean presentation layer; off-story footage removed', beats: base, ...clean, ...presentationFor(base, story) })
+  // Two-mode audio policy:
+  // - meaningful/non-silent source audio => keep source at full level, captions only.
+  // - no/mostly-silent source audio => mute source and use timed dub lines.
+  // Ambiguous cases deliberately default to SOURCE to avoid destroying useful natural sound.
+  const audioMode: 'source' | 'dub' = a.media.hasAudio && !a.audio.intentionallySilent ? 'source' : 'dub'
+  const withAudio = (v: VariantSpec): VariantSpec => {
+    if (audioMode === 'source') return { ...v, audioMode }
+    const lines = (v.events || []).map((e) => ({ start: e.start, end: e.end, text: e.text.trim() })).filter((x) => x.text)
+    return { ...v, audioMode, ...(lines.length ? { voiceoverLines: lines } : {}) }
+  }
+  variants.push(withAudio({ id: 'v1', label: '추천 · 원인→결말', kind: 'chronological', rationale: 'causal story + grounded Korean presentation layer; off-story footage removed', beats: base, ...clean, ...presentationFor(base, story) }))
 
   if (story.hookStrategy === 'preview' && story.previewRange) {
     const p = story.previewRange
     const beats = capLength([{ label: 'preview', trimStart: p.start, trimEnd: p.end }, ...base.map((b) => ({ ...b }))], a, storyMaxSeconds(story), [story.payoffRange, p])
-    if (beats[0]?.label === 'preview') variants.push({ id: 'v2', label: '결말 살짝 먼저', kind: 'preview', rationale: `preview hook: ${story.hookReason}`.slice(0, 200), beats, ...clean, ...presentationFor(beats, story) })
+    if (beats[0]?.label === 'preview') variants.push(withAudio({ id: 'v2', label: '결말 살짝 먼저', kind: 'preview', rationale: `preview hook: ${story.hookReason}`.slice(0, 200), beats, ...clean, ...presentationFor(beats, story) }))
   }
 
   const core = subtractIntervals(base.map(asRange).flatMap((r) => [...story.setupRanges, ...story.escalationRanges, story.payoffRange].map((s) => ({ start: Math.max(r.start, s.start), end: Math.min(r.end, s.end) })).filter((x) => x.end > x.start)), [])
   const tight = rangesToBeats(core, 'core')
-  if (tight.length && totalSeconds(tight) >= PLAN_LIMITS.minOutputSeconds) variants.push({ id: 'v3', label: '핵심만 짧게', kind: 'tight', rationale: 'setup, escalation and payoff only with grounded presentation cues', beats: tight, ...clean, ...presentationFor(tight, story) })
+  if (tight.length && totalSeconds(tight) >= PLAN_LIMITS.minOutputSeconds) variants.push(withAudio({ id: 'v3', label: '핵심만 짧게', kind: 'tight', rationale: 'setup, escalation and payoff only with grounded presentation cues', beats: tight, ...clean, ...presentationFor(tight, story) }))
 
   // The recommended edit is always kept (its report says what is missing). Alternatives are only offered when their own
   // presentation is complete: a preview-first or tight cut that loses the headline or leaves the screen unattended
@@ -230,7 +251,10 @@ export function validateVariant(v: VariantSpec, a: SourceAnalysis): string[] {
   if ((v.events || []).length > PLAN_LIMITS.maxEvents) errors.push(`more than ${PLAN_LIMITS.maxEvents} explanation captions`)
   if ((v.effectCaptions || []).length > PLAN_LIMITS.maxEffects) errors.push(`more than ${PLAN_LIMITS.maxEffects} effect captions`)
   for (const e of v.events || []) if (!e?.text || [...String(e.text)].length > 20 || !(e.end > e.start)) errors.push('invalid event')
-  for (const e of v.effectCaptions || []) if (!e?.text || [...String(e.text)].length > 8 || !(Number(e.end) > Number(e.start))) errors.push('invalid effect caption')
+  for (const e of v.effectCaptions || []) {
+    const maxChars = e?.role === 'point' ? 18 : 8
+    if (!e?.text || [...String(e.text)].length > maxChars || !(Number(e.end) > Number(e.start))) errors.push(e?.role === 'point' ? 'invalid point caption' : 'invalid effect caption')
+  }
   if (v.headline && [...String(v.headline)].length > 24) errors.push('headline too long')
   if (v.cleanEdgeCrop) {
     const { topPct, bottomPct, confidence, basis } = v.cleanEdgeCrop
@@ -247,6 +271,8 @@ export function toJobPlan(sourceAssetId: string, v: VariantSpec) {
       profile: v.id,
       beats: v.beats.map((b) => ({ label: b.label, trimStart: b.trimStart, trimEnd: b.trimEnd })),
       ...(v.headline ? { headline: v.headline } : {}),
+      audioStrategy: v.audioMode === 'dub' ? 'DUB_REPLACE' : 'SOURCE_SOUND',
+      ...(v.audioMode === 'dub' && v.voiceoverLines?.length ? { voiceover: { mode: 'timed', lines: v.voiceoverLines, sourceVolume: 0, voiceVolume: 1 } } : {}),
       ...(v.events?.length ? { events: v.events, plansTimeDomain: 'source' as const } : {}),
       ...(v.effectCaptions?.length ? { effectCaptions: v.effectCaptions, timeDomain: 'source' as const } : {}),
       ...(v.callouts?.length ? { callouts: v.callouts, plansTimeDomain: 'source' as const } : {}),

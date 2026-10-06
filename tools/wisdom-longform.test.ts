@@ -131,13 +131,15 @@ function scriptOfSeconds(n: number) {
 test('Longform contract (Astra cases): length, 2-3 line cards, coloured accent, no fade, real-audio timing', () => {
   const brief = SAMPLE_BRIEF()
   assert.deepEqual(validateLongformScript(SAMPLE, brief), [])
-  // length: production target is 20-30 minutes; a ~15-minute script is rejected for the default 1500s target
+  // target selection remains 20-30 minutes; final production narration is allowed to breathe naturally inside 15-35 minutes.
   const prod = normalizeLongformBrief({ kind: 'topic', text: '나이 들수록 멀리해야 할 사람' })
   assert.equal(prod.targetSeconds, 1500); assert.equal(prod.sample, undefined)
   assert.throws(() => normalizeLongformBrief({ kind: 'topic', text: '주제입니다', targetSeconds: 900 }))
   assert.throws(() => normalizeLongformBrief({ kind: 'topic', text: '주제입니다', targetSeconds: 60 })) // short only as an explicit sample
-  assert.ok(validateLongformScript(scriptOfSeconds(900), prod).some((e) => /^length/.test(e)), '15-minute script must be rejected')
-  assert.ok(!validateLongformScript(scriptOfSeconds(1500), prod).some((e) => /^length/.test(e)), '25-minute script passes the length gate')
+  assert.ok(validateLongformScript(scriptOfSeconds(800), prod).some((e) => /^length/.test(e)), 'clearly short output must be rejected')
+  assert.ok(!validateLongformScript(scriptOfSeconds(900), prod).some((e) => /^length/.test(e)), '15-minute result is allowed')
+  assert.ok(!validateLongformScript(scriptOfSeconds(1500), prod).some((e) => /^length/.test(e)), '25-minute result passes')
+  assert.ok(validateLongformScript(scriptOfSeconds(2200), prod).some((e) => /^length/.test(e)), 'runaway output must be rejected')
   // cards: 1 line, no accent, white accent, accent not on the card, a line too wide -> rejected
   const card = (mut: (x: any) => void) => { const s = clone(SAMPLE); mut(s.sections[0].sentences[0]); return validateLongformScript(s, brief) }
   assert.ok(card((x) => { x.show = ['사람에게'] ; x.accent = '사람에게' }).some((e) => /show\.lines/.test(e)))
@@ -199,8 +201,8 @@ test('B1: the FINAL voiced narration must be inside 20-30 minutes exactly (RENDE
   }
   const prod = { kind: 'topic', text: '나이 들수록 멀리해야 할 사람' }
   const rows: any = {}
-  for (const sec of [1081, 1170, 1860, 1979, 1199.9, 1800.1]) { rows[sec] = await run(sec, prod); assert.equal(rows[sec], 'LENGTH_FAIL', `${sec}s must fail`) }
-  for (const sec of [1200, 1500, 1800]) { rows[sec] = await run(sec, prod); assert.notEqual(rows[sec], 'LENGTH_FAIL', `${sec}s must pass the length gate`) }
+  for (const sec of [899, 899.9, 2100.1, 2101]) { rows[sec] = await run(sec, prod); assert.equal(rows[sec], 'LENGTH_FAIL', `${sec}s must fail`) }
+  for (const sec of [900, 1081, 1500, 1979, 2100]) { rows[sec] = await run(sec, prod); assert.notEqual(rows[sec], 'LENGTH_FAIL', `${sec}s must pass the length gate`) }
   // explicit sample brief: its own band (target 50s -> 42.5-57.5s), unchanged
   const sample = { kind: 'topic', text: '만만하게 보이지 않는 사람들의 태도', targetSeconds: 50, sample: true }
   rows['sample 45'] = await run(45, sample); assert.notEqual(rows['sample 45'], 'LENGTH_FAIL')
@@ -210,7 +212,7 @@ test('B1: the FINAL voiced narration must be inside 20-30 minutes exactly (RENDE
   // The chunk sum is kept in range (1500s) so only the audio-file gate decides.
   const wav = async (sec: number) => (await runOk(['-f', 'lavfi', '-i', 'anullsrc=r=8000:cl=mono', '-t', sec.toFixed(3), '-c:a', 'pcm_u8', '-f', 'wav', '-'])).stdout
   const probed: any = {}
-  for (const [sec, expect] of [[1199.9, 'AUDIO_FAIL'], [1200.0, 'PASS'], [1500.0, 'PASS'], [1800.0, 'PASS'], [1800.13, 'AUDIO_FAIL'], [1800.1, 'AUDIO_FAIL']] as const) {
+  for (const [sec, expect] of [[899.9, 'AUDIO_FAIL'], [900.0, 'PASS'], [1500.0, 'PASS'], [2100.0, 'PASS'], [2100.1, 'AUDIO_FAIL']] as const) {
     const audio = await wav(sec), d = await mkdtemp(join(tmpdir(), 'b1a-')); await writeFile(join(d, 'a.wav'), audio)
     const measured = (await probe(join(d, 'a.wav'))).duration
     const got = await run(1500, prod, audio)
@@ -220,7 +222,7 @@ test('B1: the FINAL voiced narration must be inside 20-30 minutes exactly (RENDE
     else assert.equal(got, expect, `${sec}s audio must fail`)
   }
   // the chunk-sum gate still applies even when the audio file is in range
-  assert.equal(await run(1979, prod, await wav(1500)), 'LENGTH_FAIL')
+  assert.equal(await run(2200, prod, await wav(1500)), 'LENGTH_FAIL')
   // sample brief keeps its band on the audio file too (target 50s -> 42.5-57.5s)
   const sample2 = { kind: 'topic', text: '만만하게 보이지 않는 사람들의 태도', targetSeconds: 50, sample: true }
   probed['sample 45 audio'] = await run(45, sample2, await wav(45)); assert.ok(/^past length gates/.test(probed['sample 45 audio']))

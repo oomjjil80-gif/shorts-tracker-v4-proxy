@@ -187,15 +187,19 @@ export function buildAss(input: AssInput): { ass: string; events: OverlayEvent[]
   const styled = (kind: 'effect' | 'callout', e: Record<string, any>, defX: number, defY: number, defPct: number, layer: number) => {
     const text = sanitizeText(e.text)
     if (!text) return
+    const point = kind === 'effect' && e.role === 'point'
     const x = Math.round((clamp(num(e.xPct, defX), 8, 92) / 100) * w)
-    const fs = fitFontSize(text, Math.min(textWidth, 2 * Math.min(x, w - x) - 24), Math.round((Math.max(num(e.fontSizePct, defPct), wisdom && kind === 'effect' ? EFFECT_MIN_PCT : 0) / 100) * w), 1, 36)
-    // Screen DNA: an effect lives inside the visual window above the caption zone (\an5 = centred on pos; keep half a cell clear)
+    const available = point ? Math.min(textWidth, Math.round(w * 0.86)) : Math.min(textWidth, 2 * Math.min(x, w - x) - 24)
+    const base = Math.round((Math.max(num(e.fontSizePct, defPct), wisdom && kind === 'effect' ? EFFECT_MIN_PCT : 0) / 100) * w)
+    const fs = fitFontSize(text, available, base, point ? 2 : 1, point ? 70 : 36)
+    // Point dialogue/reactions live in the visual center; ordinary impact words can float around the action.
     const zone = wisdom && kind === 'effect' ? fxZone : undefined
     const half = Math.ceil(fs / 2) + 12
-    const y = zone ? Math.round(clamp(e.yPct == null ? zone.y + zone.h / 2 : (num(e.yPct, defY) / 100) * h, zone.y + half, zone.y + zone.h - half)) : Math.round((clamp(num(e.yPct, defY), 8, 78) / 100) * h)
-    const rot = num(e.rotateDeg, 0)
-    const pop = e.animation === 'none' ? '' : `\\fscx72\\fscy72\\t(0,140,\\fscx100\\fscy100)`
-    const tags = `{\\an5\\pos(${x},${y})\\frz${-rot}\\fs${fs}\\c${assColor(e.color)}\\3c${assColor(e.strokeColor, '#111111')}\\bord${Math.max(4, Math.round(fs * 0.09))}\\shad0${pop}}`
+    const desiredY = point ? (num(e.yPct, 56) / 100) * h : (num(e.yPct, defY) / 100) * h
+    const y = zone ? Math.round(clamp(e.yPct == null && !point ? zone.y + zone.h / 2 : desiredY, zone.y + half, zone.y + zone.h - half)) : Math.round(clamp(desiredY, h * 0.08, h * 0.78))
+    const rot = point ? 0 : num(e.rotateDeg, 0)
+    const pop = e.animation === 'none' ? '' : (point ? `\\fscx68\\fscy68\\t(0,110,\\fscx108\\fscy108)\\t(110,190,\\fscx100\\fscy100)` : `\\fscx72\\fscy72\\t(0,140,\\fscx100\\fscy100)`)
+    const tags = `{\\an5\\pos(${x},${y})\\frz${-rot}\\fs${fs}\\c${assColor(e.color, point ? '#FFD928' : '#FFFFFF')}\\3c${assColor(e.strokeColor, '#111111')}\\bord${Math.max(5, Math.round(fs * (point ? 0.1 : 0.09)))}\\shad0${pop}}`
     add(layer, kind, 'Fx', num(e.start, 0), num(e.end, 0), text, tags, text, zone)
   }
   // Brief grounded action SFX over the visual, one event per real impact (e.g. 퍽! 퍽! 퍽! at three hit frames).

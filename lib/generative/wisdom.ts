@@ -3,20 +3,22 @@ export type WisdomBeat={id:string,narration:string,visualGoal:string,imagePrompt
 export type WisdomScript={schema:'wisdom-script/1',title:string,hook:string,beats:WisdomBeat[],ending:string,totalSeconds:number}
 // Named historical thinkers: aliases detect the topic; `likeness` is the public-domain visual identity an image model
 // needs to draw THAT person recognizably instead of a generic elderly man.
-const namedThinkers:{re:RegExp,aliases:string[],name:string,likeness:string}[]=[
- {re:/쇼펜하우어|schopenhauer/i,aliases:['쇼펜하우어','schopenhauer','arthur schopenhauer'],name:'Arthur Schopenhauer',likeness:'German philosopher (1788-1860) as in his famous 1850s photographic portraits: elderly, bald crown with tufts of white hair swept out at the sides, large bushy white mutton-chop sideburns, clean-shaven chin and upper lip, thin tightly pressed lips, intense sharp eyes, dark 19th-century frock coat with high white collar and black cravat'},
- {re:/니체|nietzsche/i,aliases:['니체','nietzsche','friedrich nietzsche'],name:'Friedrich Nietzsche',likeness:'German philosopher (1844-1900) as in his 1880s portraits: very large thick drooping walrus moustache, deep-set intense eyes, swept-back dark hair, dark 19th-century suit with high collar'},
- {re:/소크라테스|socrates/i,aliases:['소크라테스','socrates'],name:'Socrates',likeness:'ancient Athenian philosopher as in classical marble busts: bald head, broad snub nose, full curly beard, simple Greek himation robe, ancient Athens setting'},
- {re:/세네카|seneca/i,aliases:['세네카','seneca'],name:'Seneca',likeness:'Roman Stoic philosopher as in classical busts: lean aged face, short unkempt beard, receding tousled hair, Roman toga, ancient Rome setting'},
- {re:/마르쿠스\s*아우렐리우스|marcus\s*aurelius/i,aliases:['마르쿠스 아우렐리우스','marcus aurelius'],name:'Marcus Aurelius',likeness:'Roman emperor and Stoic philosopher as in his classical busts and equestrian statue: thick curly hair, full curly beard, Roman imperial cloak, ancient Rome setting'},
+const namedThinkers:{re:RegExp,aliases:string[],name:string,display:string,likeness:string}[]=[
+ {re:/쇼펜하우어|schopenhauer/i,aliases:['쇼펜하우어','schopenhauer','arthur schopenhauer'],name:'Arthur Schopenhauer',display:'쇼펜하우어',likeness:'German philosopher (1788-1860) as in his famous 1850s photographic portraits: elderly, bald crown with tufts of white hair swept out at the sides, large bushy white mutton-chop sideburns, clean-shaven chin and upper lip, thin tightly pressed lips, intense sharp eyes, dark 19th-century frock coat with high white collar and black cravat'},
+ {re:/니체|nietzsche/i,aliases:['니체','nietzsche','friedrich nietzsche'],name:'Friedrich Nietzsche',display:'니체',likeness:'German philosopher (1844-1900) as in his 1880s portraits: very large thick drooping walrus moustache, deep-set intense eyes, swept-back dark hair, dark 19th-century suit with high collar'},
+ {re:/소크라테스|socrates/i,aliases:['소크라테스','socrates'],name:'Socrates',display:'소크라테스',likeness:'ancient Athenian philosopher as in classical marble busts: bald head, broad snub nose, full curly beard, simple Greek himation robe, ancient Athens setting'},
+ {re:/세네카|seneca/i,aliases:['세네카','seneca'],name:'Seneca',display:'세네카',likeness:'Roman Stoic philosopher as in classical busts: lean aged face, short unkempt beard, receding tousled hair, Roman toga, ancient Rome setting'},
+ {re:/마르쿠스\s*아우렐리우스|marcus\s*aurelius/i,aliases:['마르쿠스 아우렐리우스','marcus aurelius'],name:'Marcus Aurelius',display:'마르쿠스 아우렐리우스',likeness:'Roman emperor and Stoic philosopher as in his classical busts and equestrian statue: thick curly hair, full curly beard, Roman imperial cloak, ancient Rome setting'},
 ]
 export const thinkerFor=(topic:string)=>namedThinkers.find(t=>t.re.test(String(topic||'')))
+export const thinkerDisplayName=(topic:string)=>thinkerFor(topic)?.display??null
 export function lockNamedThinkerAcrossBeats(s:WisdomScript,topic:string):WisdomScript{
  const t=thinkerFor(topic); if(!t)return s
  const identity=`Identity LOCK: every depiction of ${t.name} must be the SAME person as the first portrait — identical face shape, hairline, sideburns/beard/moustache, apparent age and clothing; do not redesign or reinterpret his face between scenes. Canonical identity: ${t.likeness}.`
  return {...s,beats:s.beats.map((b,i)=>{
   const scene=beatScene(b.imagePrompt), mentions=t.aliases.some(a=>scene.toLowerCase().includes(a))
   if(i!==0&&!mentions)return b
+  if(String(b.imagePrompt||'').includes('Identity LOCK:'))return b
   return {...b,imagePrompt:`${b.imagePrompt} ${identity}`}
  })}
 }
@@ -26,8 +28,8 @@ export const beatScene=(imagePrompt:unknown)=>{const p=String(imagePrompt||''),i
 
 export function lockWisdomProtagonistAcrossBeats(s:WisdomScript,topic:string):WisdomScript{
  const thinker=thinkerFor(topic)
- const identity='Recurring protagonist LOCK: when an unnamed everyday protagonist appears, depict the SAME Korean adult in every such scene — early 40s, oval face, short neat dark hair, calm dark eyes, charcoal coat over a plain light shirt; identical face, apparent age, hair and clothing across scenes. Do not redesign this recurring protagonist.'
- return {...s,beats:s.beats.map(b=>{const scene=beatScene(b.imagePrompt).toLowerCase();const named=thinker?.aliases.some(a=>scene.includes(a))??false;return named?b:{...b,imagePrompt:`${b.imagePrompt} ${identity}`}})}
+ const identity='Recurring protagonist LOCK: when an unnamed everyday protagonist appears, depict the SAME Korean adult in every such scene — early 40s, oval face, short neat dark hair, calm dark eyes, charcoal coat over a plain light shirt; identical face, apparent age, hair and clothing across scenes. Do not redesign this recurring protagonist. The protagonist does NOT need to appear in every scene. Vary camera distance, setting, body language, supporting characters, and composition across adjacent scenes; avoid repeated portrait framing.'
+ return {...s,beats:s.beats.map(b=>{const scene=beatScene(b.imagePrompt).toLowerCase();const named=thinker?.aliases.some(a=>scene.includes(a))??false;if(named||String(b.imagePrompt||'').includes('Recurring protagonist LOCK:'))return b;return {...b,imagePrompt:`${b.imagePrompt} ${identity}`}})}
 }
 
 // Mobile-readable Wisdom captions: short phrases (one line at the Wisdom caption size, two at most), each on screen long
@@ -72,7 +74,12 @@ export function namedThinkerVisualErrors(topic:string,s:any):string[]{
 // recognizable likeness of that person, keeping the shared style/palette/lighting but not the generic character policy.
 export function anchorNamedThinkerVisual(s:WisdomScript,topic:string):{script:WisdomScript;anchoredBeatId:string|null}{
  const t=thinkerFor(topic)
- if(!t||!s.beats.length||!namedThinkerVisualErrors(topic,s).length)return {script:s,anchoredBeatId:null}
+ if(!t||!s.beats.length)return {script:lockWisdomProtagonistAcrossBeats(s,topic),anchoredBeatId:null}
+ // Keep identity consistency separate from anchoring: if the planner already depicts the thinker early,
+ // still lock every later depiction to the same canonical face/age/hair/clothing.
+ if(!namedThinkerVisualErrors(topic,s).length){
+  return {script:lockWisdomProtagonistAcrossBeats(lockNamedThinkerAcrossBeats(s,topic),topic),anchoredBeatId:null}
+ }
  const b=s.beats[0], p=String(b.imagePrompt||''), cp=p.indexOf(' Character policy: '), av=p.lastIndexOf('. Avoid: ')
  const style=cp>=0?p.slice(0,cp):'', avoid=av>=0?p.slice(av+2):'no readable text, no watermark'
  const imagePrompt=`${style?style+' ':''}Main subject: a clearly recognizable portrait of ${t.name}, ${t.likeness}. He is the only person and the focal point, face fully visible in the central area. Setting mood from the scene: ${beatScene(p)}. ${avoid}`
@@ -95,9 +102,9 @@ export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
   const d=Number(b?.durationSec); if(!Number.isFinite(d)||d<3||d>12)e.push(`beats[${i}].durationSec`)
  }
  const total=beats.reduce((n:any,b:any)=>n+Number(b.durationSec||0),0)
- if(total<35||total>75)e.push('totalSeconds')
+ if(total<25||total>120)e.push('totalSeconds')
  if(Math.abs(total-Number(s?.totalSeconds||0))>.1)e.push('totalSeconds.mismatch')
- if(Math.abs(total-brief.targetSeconds)>Math.max(5,brief.targetSeconds*.15))e.push('targetSeconds.mismatch')
+ // targetSeconds is editorial guidance, not a quality gate. Do not fail a good Short for running longer/shorter.
  if(brief.profile!=='wisdom')e.push('profile')
  e.push(...namedThinkerVisualErrors(String(brief.text||''),s))
  return e

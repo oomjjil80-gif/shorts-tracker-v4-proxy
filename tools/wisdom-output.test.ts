@@ -13,7 +13,7 @@ import { runOk } from '../lib/media/ffmpeg.js'
 import { compileJobPlan } from '../lib/tracker-core/jobCompile.js'
 import { renderPayload, extractRenderPlan } from '../lib/media/render.js'
 import { assFromPayload } from '../lib/media/ass.js'
-import { wisdomCaptionChunks, wisdomCaptionEvents, WISDOM_CAPTION } from '../lib/generative/wisdom.js'
+import { wisdomCaptionChunks, wisdomCaptionEvents, WISDOM_CAPTION, anchorNamedThinkerVisual } from '../lib/generative/wisdom.js'
 
 const W = 1080, H = 1920
 const h = (x: string | Buffer) => createHash('sha256').update(x).digest('hex')
@@ -92,8 +92,10 @@ test('FINAL MP4: Wisdom narration appears as short large captions and every imag
   const jpg = (await runOk(['-f', 'lavfi', '-i', 'testsrc2=s=1024x1536:d=1', '-frames:v', '1', '-f', 'mjpeg', '-'])).stdout
   // beat 3 is a near-white picture: the caption must stay readable on a bright image too
   const bright = (await runOk(['-f', 'lavfi', '-i', 'color=c=0xF2F0EA:s=1024x1536:d=1', '-frames:v', '1', '-f', 'mjpeg', '-'])).stdout
-  const beats = NARR.map((narration, i) => ({ id: 'b' + (i + 1), narration, visualGoal: 'g', imagePrompt: i === 0 ? 'scene 1: Seneca, the Roman Stoic philosopher, writing at a desk' : 'scene ' + (i + 1), durationSec: 6 }))
-  const script: any = { schema: 'wisdom-script/1', title: '세네카가 말하는 시간의 비밀', hook: 'h', ending: 'e', totalSeconds: 18, beats }
+  const rawBeats = NARR.map((narration, i) => ({ id: 'b' + (i + 1), narration, visualGoal: 'g', imagePrompt: i === 0 ? 'scene 1: Seneca, the Roman Stoic philosopher, writing at a desk' : 'scene ' + (i + 1), durationSec: 6 }))
+  const rawScript: any = { schema: 'wisdom-script/1', title: '세네카가 말하는 시간의 비밀', hook: 'h', ending: 'e', totalSeconds: 18, beats: rawBeats }
+  const script: any = anchorNamedThinkerVisual(rawScript,rawScript.title).script
+  const beats = script.beats
   // existing paid assets are reused from the generative cache (no image/TTS call is allowed)
   for (const b of beats) {
     const img = Buffer.concat([b.id === 'b3' ? bright : jpg, Buffer.from(b.id)]), mp3 = (await runOk(['-f', 'lavfi', '-i', `sine=f=${300 + Number(b.id.slice(1)) * 50}:d=6`, '-c:a', 'libmp3lame', '-f', 'mp3', '-'])).stdout
