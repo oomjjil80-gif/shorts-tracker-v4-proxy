@@ -33,7 +33,7 @@ export const STORY_JSON_SCHEMA = {
     openingHook: captionBody,
     minimalCaptions: {
       type: 'array', minItems: 1, maxItems: 9,
-      items: { type: 'object', additionalProperties: false, required: ['kind', 'start', 'end', 'text', 'basis'], properties: { kind: { type: 'string', enum: ['context', 'payoff', 'effect'] }, start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, basis: { type: 'string' } } }
+      items: { type: 'object', additionalProperties: false, required: ['kind', 'start', 'end', 'text', 'basis'], properties: { kind: { type: 'string', enum: ['context', 'payoff', 'point', 'effect'] }, start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, basis: { type: 'string' } } }
     },
     publishabilityWarnings: { type: 'array', items: { type: 'string' } },
     cleanEdgeCrop: {
@@ -81,6 +81,7 @@ export function storyPrompt(a: SourceAnalysis): string {
     `  * Add 1–${PRESENTATION_LIMITS.contexts} kind="context" cues (<=${STORY_LIMITS.maxCaptionChars} chars), spaced across meaningful story changes. They are short explanatory captions, not transcript subtitles.`,
     '  * CAPTION WRITING RULE (context/payoff): NEVER restate what the viewer can already see (bad: "여자가 남자를 때린다", "아이가 기어간다"). Each caption must ADD something the picture alone does not give: context (who/why), curiosity (what happens next), the relationship between the people, the meaning of the moment, or the payoff\'s punch. If a caption adds none of these, leave it out. Write short spoken Korean (one breath, 1–2 short lines), like a friend commenting, not a narrator describing.',
     `  * Add optional kind="payoff" over the actual payoff (<=${STORY_LIMITS.maxCaptionChars} chars) when it sharpens the punchline.`,
+    `  * kind="point" = a SHORT spoken reaction/dialogue punch (<=${STORY_LIMITS.maxPointChars} chars), e.g. "잠깐, 너였어?", "설마 너야?", "뭐야 이건?". Use it when the wording itself is the joke/reaction. It is rendered LARGE and YELLOW near the middle of the picture, so do NOT duplicate the same idea as a context/payoff caption. Prefer 0–2 point cues per Short.`,
     `  * kind="effect" = a short sound-word (<=${STORY_LIMITS.maxEffectChars} chars, e.g. "퍽!", "쾅!", "철썩!") drawn large in the middle of the video. Add ONE effect cue PER visible impact/hit at its exact moment: three separate hits = three separate "퍽!" cues with three different start times. Never merge repeated hits into one cue and never add an effect where nothing physically hits. At most ${PRESENTATION_LIMITS.effects} effects; they do not use the caption budget. The measured motionPeaks list contains precise source-frame change timestamps: when an impact is visible, anchor the cue start to the nearest matching motionPeak; use a different peak for each separate hit.`,
     '  * Every cue needs a visual basis explaining what on screen justifies the words. Avoid long sentences.',
     '  * Aim for a new timed context/payoff caption roughly every 3–5 seconds of active story so the mobile screen does not feel unattended, while allowing a purposeful quiet beat.',
@@ -170,7 +171,13 @@ export function normalizeProviderStory(raw: any, durationSec?: number): { story:
     return { ...c, end }
   }
   if (x.openingHook) x.openingHook = widen(x.openingHook, 'hook')
-  if (Array.isArray(x.minimalCaptions)) x.minimalCaptions = x.minimalCaptions.map((c: any) => widen(c, String(c?.kind)))
+  if (Array.isArray(x.minimalCaptions)) x.minimalCaptions = x.minimalCaptions.map((c: any) => {
+    const widened = widen(c, String(c?.kind))
+    if (!widened || !fin(widened.start) || !fin(widened.end)) return widened
+    const kind = String(widened.kind || '')
+    const maxDur = kind === 'point' ? 1.35 : (D < 10 && (kind === 'context' || kind === 'payoff') ? 1.6 : null)
+    return maxDur && widened.end - widened.start > maxDur ? { ...widened, end: r2n(Math.min(D, widened.start + maxDur)) } : widened
+  })
 
   const h = x.openingHook
   const rest = Array.isArray(x.minimalCaptions) ? x.minimalCaptions : []
