@@ -121,6 +121,7 @@ $('collect').onclick=async()=>{
 $('make').onclick=async()=>{
   if(!currentSource?.sourceAssetId)return;
   $('make').disabled=true;$('make').textContent='제작 시작 중…';
+  $('variants').innerHTML='';$('final').innerHTML='';previewRenderKey='';
   try{
     const nonce=randomHex(12);
     const d=await post({taskType:'job_create',profile:'source_shorts',sourceAssetId:currentSource.sourceAssetId,idempotencyKey:'continuity-'+currentSource.sourceAssetId.slice(-20)+'-'+nonce},true);
