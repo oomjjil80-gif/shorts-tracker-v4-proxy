@@ -3,14 +3,15 @@ export type WisdomBeat={id:string,narration:string,visualGoal:string,imagePrompt
 export type WisdomScript={schema:'wisdom-script/1',title:string,hook:string,beats:WisdomBeat[],ending:string,totalSeconds:number}
 // Named historical thinkers: aliases detect the topic; `likeness` is the public-domain visual identity an image model
 // needs to draw THAT person recognizably instead of a generic elderly man.
-const namedThinkers:{re:RegExp,aliases:string[],name:string,likeness:string}[]=[
- {re:/쇼펜하우어|schopenhauer/i,aliases:['쇼펜하우어','schopenhauer','arthur schopenhauer'],name:'Arthur Schopenhauer',likeness:'German philosopher (1788-1860) as in his famous 1850s photographic portraits: elderly, bald crown with tufts of white hair swept out at the sides, large bushy white mutton-chop sideburns, clean-shaven chin and upper lip, thin tightly pressed lips, intense sharp eyes, dark 19th-century frock coat with high white collar and black cravat'},
- {re:/니체|nietzsche/i,aliases:['니체','nietzsche','friedrich nietzsche'],name:'Friedrich Nietzsche',likeness:'German philosopher (1844-1900) as in his 1880s portraits: very large thick drooping walrus moustache, deep-set intense eyes, swept-back dark hair, dark 19th-century suit with high collar'},
- {re:/소크라테스|socrates/i,aliases:['소크라테스','socrates'],name:'Socrates',likeness:'ancient Athenian philosopher as in classical marble busts: bald head, broad snub nose, full curly beard, simple Greek himation robe, ancient Athens setting'},
- {re:/세네카|seneca/i,aliases:['세네카','seneca'],name:'Seneca',likeness:'Roman Stoic philosopher as in classical busts: lean aged face, short unkempt beard, receding tousled hair, Roman toga, ancient Rome setting'},
- {re:/마르쿠스\s*아우렐리우스|marcus\s*aurelius/i,aliases:['마르쿠스 아우렐리우스','marcus aurelius'],name:'Marcus Aurelius',likeness:'Roman emperor and Stoic philosopher as in his classical busts and equestrian statue: thick curly hair, full curly beard, Roman imperial cloak, ancient Rome setting'},
+const namedThinkers:{re:RegExp,aliases:string[],name:string,display:string,likeness:string}[]=[
+ {re:/쇼펜하우어|schopenhauer/i,aliases:['쇼펜하우어','schopenhauer','arthur schopenhauer'],name:'Arthur Schopenhauer',display:'쇼펜하우어',likeness:'German philosopher (1788-1860) as in his famous 1850s photographic portraits: elderly, bald crown with tufts of white hair swept out at the sides, large bushy white mutton-chop sideburns, clean-shaven chin and upper lip, thin tightly pressed lips, intense sharp eyes, dark 19th-century frock coat with high white collar and black cravat'},
+ {re:/니체|nietzsche/i,aliases:['니체','nietzsche','friedrich nietzsche'],name:'Friedrich Nietzsche',display:'니체',likeness:'German philosopher (1844-1900) as in his 1880s portraits: very large thick drooping walrus moustache, deep-set intense eyes, swept-back dark hair, dark 19th-century suit with high collar'},
+ {re:/소크라테스|socrates/i,aliases:['소크라테스','socrates'],name:'Socrates',display:'소크라테스',likeness:'ancient Athenian philosopher as in classical marble busts: bald head, broad snub nose, full curly beard, simple Greek himation robe, ancient Athens setting'},
+ {re:/세네카|seneca/i,aliases:['세네카','seneca'],name:'Seneca',display:'세네카',likeness:'Roman Stoic philosopher as in classical busts: lean aged face, short unkempt beard, receding tousled hair, Roman toga, ancient Rome setting'},
+ {re:/마르쿠스\s*아우렐리우스|marcus\s*aurelius/i,aliases:['마르쿠스 아우렐리우스','marcus aurelius'],name:'Marcus Aurelius',display:'마르쿠스 아우렐리우스',likeness:'Roman emperor and Stoic philosopher as in his classical busts and equestrian statue: thick curly hair, full curly beard, Roman imperial cloak, ancient Rome setting'},
 ]
 export const thinkerFor=(topic:string)=>namedThinkers.find(t=>t.re.test(String(topic||'')))
+export const thinkerDisplayName=(topic:string)=>thinkerFor(topic)?.display??null
 export function lockNamedThinkerAcrossBeats(s:WisdomScript,topic:string):WisdomScript{
  const t=thinkerFor(topic); if(!t)return s
  const identity=`Identity LOCK: every depiction of ${t.name} must be the SAME person as the first portrait — identical face shape, hairline, sideburns/beard/moustache, apparent age and clothing; do not redesign or reinterpret his face between scenes. Canonical identity: ${t.likeness}.`
