@@ -265,12 +265,18 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       return ok((rows as Array<{ litFraction: number }>).every((r) => r.litFraction >= 0.7), rows)
     }, { timeoutMs: 240_000 })
   ]
-  // Full decode is the heaviest integrity check. Run it alone first so it cannot be
-  // spuriously killed while competing with the many other ffmpeg QC processes.
-  // All remaining independent checks may still run in parallel.
+  // Full decode and timeline/source matching are the two heaviest ffmpeg checks.
+  // Run both alone, sequentially, so Railway never has several raw-frame decoders
+  // competing for memory at the same time. The checks themselves stay unchanged.
   const decodeIndex = 4
+  const timelineIndex = 11
   const decodeResult = await checks[decodeIndex]()
-  const gate = evaluateGate(await Promise.all(checks.map((check, index) => index === decodeIndex ? Promise.resolve(decodeResult) : check())))
+  const timelineResult = await checks[timelineIndex]()
+  const gate = evaluateGate(await Promise.all(checks.map((check, index) =>
+    index === decodeIndex ? Promise.resolve(decodeResult) :
+    index === timelineIndex ? Promise.resolve(timelineResult) :
+    check()
+  )))
   if (i.contactSheetOut) { try { await contactSheet(i.renderPath, i.contactSheetOut, { cols: 6, rows: 3, tileWidth: 160, duration: total }) } catch { /* optional artifact */ } }
   return { gate, metrics }
 }
