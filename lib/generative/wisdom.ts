@@ -18,6 +18,7 @@ export function lockNamedThinkerAcrossBeats(s:WisdomScript,topic:string):WisdomS
  return {...s,beats:s.beats.map((b,i)=>{
   const scene=beatScene(b.imagePrompt), mentions=t.aliases.some(a=>scene.toLowerCase().includes(a))
   if(i!==0&&!mentions)return b
+  if(String(b.imagePrompt||'').includes('Identity LOCK:'))return b
   return {...b,imagePrompt:`${b.imagePrompt} ${identity}`}
  })}
 }
@@ -28,7 +29,7 @@ export const beatScene=(imagePrompt:unknown)=>{const p=String(imagePrompt||''),i
 export function lockWisdomProtagonistAcrossBeats(s:WisdomScript,topic:string):WisdomScript{
  const thinker=thinkerFor(topic)
  const identity='Recurring protagonist LOCK: when an unnamed everyday protagonist appears, depict the SAME Korean adult in every such scene — early 40s, oval face, short neat dark hair, calm dark eyes, charcoal coat over a plain light shirt; identical face, apparent age, hair and clothing across scenes. Do not redesign this recurring protagonist. The protagonist does NOT need to appear in every scene. Vary camera distance, setting, body language, supporting characters, and composition across adjacent scenes; avoid repeated portrait framing.'
- return {...s,beats:s.beats.map(b=>{const scene=beatScene(b.imagePrompt).toLowerCase();const named=thinker?.aliases.some(a=>scene.includes(a))??false;return named?b:{...b,imagePrompt:`${b.imagePrompt} ${identity}`}})}
+ return {...s,beats:s.beats.map(b=>{const scene=beatScene(b.imagePrompt).toLowerCase();const named=thinker?.aliases.some(a=>scene.includes(a))??false;if(named||String(b.imagePrompt||'').includes('Recurring protagonist LOCK:'))return b;return {...b,imagePrompt:`${b.imagePrompt} ${identity}`}})}
 }
 
 // Mobile-readable Wisdom captions: short phrases (one line at the Wisdom caption size, two at most), each on screen long
