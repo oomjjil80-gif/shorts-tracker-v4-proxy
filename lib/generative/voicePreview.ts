@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import type { JobBlobStore } from '../jobs/blobs.js'
 import { classifyOpenAiError } from './longformResearch.js'
 import type { VoiceProfile } from './voiceProfile.js'
-import { resolveCreativeProfile, creativeVoice, isCreativeContent } from './creativeProfile.js'
+import { resolveCreativeProfile, creativeVoice, isCreativeContent, creativeContentFor } from './creativeProfile.js'
 
 export const VOICE_PREVIEW_VERSION = 'longform-voice-preview/1'
 export const VOICE_PREVIEW_TEXT = '오늘도 편안한 마음으로, 천천히 이야기를 시작해보겠습니다.'
@@ -21,7 +21,9 @@ export class PreviewError extends Error { constructor(public code: string, messa
 // the request -> the runtime voice through the ONE Creative resolver (the provider voice id never leaves the server);
 // 'auto' follows the content type's rule (`profile`, default Wisdom Longform) and the topic
 export function previewVoice(input: any): VoiceProfile {
-  const content = input?.profile === undefined ? 'wisdom_longform' : input.profile
+  // a server profile (wisdom, senior_longform, ...) or a content family + format (Story Writer); default Wisdom Longform
+  let content: unknown = input?.profile === undefined ? 'wisdom_longform' : input.profile
+  if (input?.family !== undefined) { try { content = creativeContentFor(input.family, input.format) } catch (e: any) { throw new PreviewError('BAD_REQUEST', String(e?.message || e)) } }
   if (!isCreativeContent(content) || content === 'source_shorts') throw new PreviewError('BAD_REQUEST', 'profile has no voice preview')
   try { return creativeVoice(resolveCreativeProfile(content, input, String(input?.topic || ''))) }
   catch (e: any) { throw new PreviewError('BAD_REQUEST', String(e?.message || e)) }

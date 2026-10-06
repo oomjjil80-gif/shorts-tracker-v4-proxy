@@ -172,7 +172,7 @@ export default async function handler(req: Request, res: Response) {
       return res.status(201).json({ok:true,referenceAsset:asset,analysisHash:measured.analysisHash,cached:measured.cached})
     } catch(e:any) { return res.status(422).json({ok:false,error:{code:'REFERENCE_INGEST_FAILED',message:e?.message||String(e)}}) }
   }
-  if (['GET', 'POST'].includes(req.method || '') && typeof sourceRequest?.taskType === 'string' && (sourceRequest.taskType.startsWith('job_') || sourceRequest.taskType === 'longform_voice_preview')) {
+  if (['GET', 'POST'].includes(req.method || '') && typeof sourceRequest?.taskType === 'string' && (sourceRequest.taskType.startsWith('job_') || sourceRequest.taskType === 'longform_voice_preview' || sourceRequest.taskType === 'creative_resolve')) {
     const { defaultJobsHttp } = await import('../lib/jobs/http.js')
     return defaultJobsHttp(req, res)
   }

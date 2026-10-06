@@ -13,6 +13,7 @@ import { buildReferenceProductionBrief } from '../reference/profile.js'
 import { normalizeGenerativeBrief, generativeBriefHash } from '../generative/contracts.js'
 import { normalizeLongformBrief, longformBriefHash } from '../generative/longform.js'
 import { createVoicePreview, PreviewError } from '../generative/voicePreview.js'
+import { creativeContentFor, resolveCreativeProfile } from '../generative/creativeProfile.js'
 import { openAiTts } from '../generative/providers.js'
 
 // HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
@@ -42,7 +43,9 @@ export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_pack
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
-export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (t.startsWith('job_') || t === VOICE_PREVIEW_TASK)
+// Creative Settings for browser-made content (Story Writer): the server resolves AUTO (POST; no database, no paid call)
+export const CREATIVE_RESOLVE_TASK = 'creative_resolve'
+export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (t.startsWith('job_') || t === VOICE_PREVIEW_TASK || t === CREATIVE_RESOLVE_TASK)
 
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
@@ -112,6 +115,14 @@ export function createJobsHttp(deps: JobsDeps) {
       const workspaceId = workspaceOf(req)
       const input: any = req.method === 'GET' ? req.query || {} : req.body && typeof req.body === 'object' ? req.body : {}
       const taskType = String(input.taskType || '')
+      if (taskType === CREATIVE_RESOLVE_TASK) {
+        if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
+        try {
+          const content = creativeContentFor(input.family, input.format)
+          const c = resolveCreativeProfile(content, input, String(input.topic || '').slice(0, 2000))
+          return res.status(200).json({ ok: true, creative: { schema: c.schema, content, family: input.family, format: input.format, requested: c.requested, resolved: c.resolved } })
+        } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
+      }
       if (taskType === VOICE_PREVIEW_TASK) {
         if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
         try { const r = await voicePreview(input); return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache }) }

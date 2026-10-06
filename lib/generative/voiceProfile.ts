@@ -52,8 +52,8 @@ const AUTO_RULES: Array<[RegExp, LongformVoiceKey]> = [
   [/할머니|어머니|엄마|노후|황혼|인생 후반/, 'female-senior'],
   [/위로|마음|관계|사랑|외로움|가족|상처|감정|공감/, 'female-middle']
 ]
-export function recommendLongformVoice(topic: string): LongformVoiceKey {
-  return AUTO_RULES.find(([re]) => re.test(String(topic || '')))?.[1] ?? 'female-middle'
+export function recommendLongformVoice(topic: string, fallback: LongformVoiceKey = 'female-middle'): LongformVoiceKey {
+  return AUTO_RULES.find(([re]) => re.test(String(topic || '')))?.[1] ?? fallback
 }
 // Tone (말투) and speed (속도) the user picks for a Longform voice. The tone is spoken style only (no pitch DSP): it is
 // added to the profile's own instruction, which is kept, so the gender/age character stays the same.

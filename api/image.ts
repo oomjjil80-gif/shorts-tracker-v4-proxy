@@ -1,5 +1,7 @@
 import type { Request, Response } from 'express'
 import { handleBenchmarkCloneDiagnostic } from '../lib/benchmarkCloneDiagnostic.js'
+import { imageStyleFor, withVisualStyle } from '../lib/generative/creativeProfile.js'
+import type { VisualStyleProfile } from '../lib/generative/visualStyle.js'
 import { handleBenchmarkRef01Diagnostic } from '../lib/benchmarkRef01Diagnostic.js'
 
 function setCors(req: Request, res: Response) {
@@ -92,8 +94,13 @@ export default async function handler(req: Request, res: Response) {
   if (!apiKey) return res.status(503).json({ error: { message: 'GEMINI_API_KEY is not configured' } })
 
   const input = req.body?.input || {}
-  const prompt = String(input.prompt || '').trim()
-  if (!prompt) return res.status(400).json({ error: { message: 'prompt is required' } })
+  const basePrompt = String(input.prompt || '').trim()
+  if (!basePrompt) return res.status(400).json({ error: { message: 'prompt is required' } })
+  // Creative Settings of the Episode (keys only): its picture style is added here, the one place the style text lives.
+  // An Episode without creative settings (legacy) is drawn exactly as before.
+  let style: VisualStyleProfile | null = null
+  try { style = imageStyleFor(input.creative) } catch (e: any) { return res.status(400).json({ error: { message: String(e?.message || e) } }) }
+  const prompt = withVisualStyle(basePrompt, style)
 
   const profile = String(input.profile || '').trim()
   const economyLongform = profile === 'economy-longform-v01'
@@ -195,6 +202,7 @@ export default async function handler(req: Request, res: Response) {
         requestId: data?.id || null,
         profile: economyLongform ? 'economy-longform-v01' : '',
         effectiveAspectRatio: effectiveRatio,
+        visualStyleProfile: style?.id ?? null,
         referenceCount: referenceBlocks.length
       }
     })
