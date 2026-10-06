@@ -7,18 +7,17 @@ import { join } from 'node:path'
 import { sha256, putAddressed } from '../../lib/jobs/blobs.js'
 import { runOk } from '../../lib/media/ffmpeg.js'
 import { FONTS_DIR } from '../../lib/media/ass.js'
-import { openAiLongformImage } from '../../lib/generative/providers.js'
-import { openAiWisdomPublishKit, thumbnailArgv, thumbnailCopyErrors, thumbnailFigure, figureRightPrompt } from '../../lib/generative/wisdomThumbnail.js'
+import { openAiPortraitImage } from '../../lib/generative/providers.js'
+import { openAiWisdomPublishKit, thumbnailArgv, thumbnailCopyErrors, thumbnailFigure, figureBelowPrompt, SHORTS_THUMB } from '../../lib/generative/wisdomThumbnail.js'
 import { uploadMetadataErrors, uploadPackageText } from '../../lib/generative/uploadPackage.js'
 import { thinkerDisplayName } from '../../lib/generative/wisdom.js'
-import { subjectSide } from './longform.js'
 import type { StageExecutor } from '../types.js'
 import { profileFeatures, type FeatureResolver } from '../modules/features.js'
 
 // THUMBNAIL is a feature module: when the profile does not select it, no thumbnail image/render is made and the
 // thumbnail copy is not checked or repaired. The upload text is PACKAGE's and is made either way (same kit call).
-export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string; kit?: typeof openAiWisdomPublishKit; image?: typeof openAiLongformImage; features?: FeatureResolver } = {}): StageExecutor {
-  const apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? '', kit = deps.kit ?? openAiWisdomPublishKit, image = deps.image ?? openAiLongformImage
+export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string; kit?: typeof openAiWisdomPublishKit; image?: typeof openAiPortraitImage; features?: FeatureResolver } = {}): StageExecutor {
+  const apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? '', kit = deps.kit ?? openAiWisdomPublishKit, image = deps.image ?? openAiPortraitImage
   return {
     ...pkg,
     estimateUsd: (job) => pkg.estimateUsd(job) + (job.profile === 'wisdom' ? 0.07 : 0),
@@ -53,15 +52,15 @@ export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string;
         if (thumbnail && !errs.copy.length) {
           try {
             const style = bible ? ` Style matching the video: ${bible.style}; palette ${bible.palette}; lighting ${bible.lighting}.` : ''
-            const prompt = figureRightPrompt(thumbnailFigure(topic, made.figure)) + style
-            const ik = sha256('wisdom-thumb-image-v1|' + prompt)
+            // 9:16 portrait thumbnail (the Shorts video itself is not touched): portrait picture, person below the text band
+            const prompt = figureBelowPrompt(thumbnailFigure(topic, made.figure)) + style
+            const ik = sha256('wisdom-thumb-image-v2-portrait|' + prompt)
             let im: any = null
             try { const m: any = await blobs.getJson(`generative-cache/image/${ik}.json`); const b = m?.ref ? await blobs.getBytes(m.ref) : null; if (b) im = { ...m, bytes: b } } catch {}
             if (!im) { im = await image(prompt, apiKey); const ref = `generative-assets/images/${sha256(im.bytes)}.jpg`; await blobs.putBytes(ref, im.bytes, im.contentType); await blobs.putJson(`generative-cache/image/${ik}.json`, { ref, sha256: sha256(im.bytes), contentType: im.contentType }) }
-            const raw = join(work, 'raw.jpg'), img = join(work, 'img.jpg'), assPath = join(work, 't.ass'), out = join(work, 'thumb.jpg')
-            await writeFile(raw, im.bytes)
-            if ((await subjectSide(raw)).side === 'left') await runOk(['-y', '-i', raw, '-vf', 'hflip', '-q:v', '2', img]); else await writeFile(img, im.bytes)
-            const t = thumbnailArgv({ image: img, lines: made.lines, assPath, fontsDir: FONTS_DIR, out })
+            const img = join(work, 'img.jpg'), assPath = join(work, 't.ass'), out = join(work, 'thumb.jpg')
+            await writeFile(img, im.bytes)
+            const t = thumbnailArgv({ image: img, lines: made.lines, assPath, fontsDir: FONTS_DIR, out, canvas: SHORTS_THUMB })
             await writeFile(assPath, t.ass, 'utf8'); await runOk(t.argv)
             const tb = await readFile(out), stored = await blobs.putBytes(`renders/${sha256(tb)}.jpg`, tb, 'image/jpeg')
             extra.thumbnailRef = stored.path; extra.thumbnailLines = made.lines

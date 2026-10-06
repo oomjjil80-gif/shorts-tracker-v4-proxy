@@ -3,7 +3,7 @@
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { sha256, putAddressed } from '../../lib/jobs/blobs.js'
+import { sha256, sha256File, putAddressed } from '../../lib/jobs/blobs.js'
 import { runOk, probe } from '../../lib/media/ffmpeg.js'
 import { FONTS_DIR } from '../../lib/media/ass.js'
 import { openAiLongformImage, openAiTts } from '../../lib/generative/providers.js'
@@ -12,7 +12,7 @@ import {
   LONGFORM_PROFILE_ID, LONGFORM, validateLongformScript, cardErrors, sentencesOf, narrationOf, longformImagePrompt, ttsChunks, cardTimeline, sectionPlan, longformFigure,
   longformCardsAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
 } from '../../lib/generative/longform.js'
-import { thumbnailArgv, thumbnailCopyErrors, THUMB } from '../../lib/generative/wisdomThumbnail.js'
+import { thumbnailArgv, thumbnailCopyErrors, LONGFORM_THUMB } from '../../lib/generative/wisdomThumbnail.js'
 import { uploadMetadataErrors } from '../../lib/generative/uploadPackage.js'
 import { longformVoiceProfile, ttsCacheIdentity } from '../../lib/generative/voiceProfile.js'
 import { StageError, type StageExecutor } from '../types.js'
@@ -193,8 +193,9 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
         const narration = join(work, 'narration.m4a')
         const totalSeconds = Number(parts.reduce((s, x) => s + x.seconds, 0).toFixed(3))
         await runOk(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2', narration], { signal, timeoutMs: longformConcatTimeoutMs(totalSeconds) })
-        const nb = await readFile(narration), nsha = sha256(nb), narrationRef = `generative-assets/audio/${nsha}.m4a`
-        await blobs.putBytes(narrationRef, nb, 'audio/mp4')
+        // a 2-hour narration is ~150 MB: hashed and uploaded as a stream, never read whole into memory
+        const nsha = await sha256File(narration), narrationRef = `generative-assets/audio/${nsha}.m4a`
+        await blobs.putFile(narrationRef, narration, 'audio/mp4')
         const manifest = { schema: 'longform-assets/1', profile: LONGFORM_PROFILE_ID, scriptRef, voiceProfileId: voice.id, image: { ref: imageRef, sha256: imgSha, prompt, subjectSide: side, mirrored: side.side === 'left' }, narration: { ref: narrationRef, sha256: nsha, seconds: totalSeconds }, chunks: parts }
         const stored = await putAddressed(blobs, 'generative-assets', manifest)
         return { outputRef: stored.path, outputHash: stored.sha256, result: { assetSpecRef: stored.path, images: 1, chunks: parts.length, totalSeconds, voiceProfileId: voice.id, generated, reused }, provider: 'openai', model: 'gpt-image-1-mini+gpt-4o-mini-tts' }
@@ -247,7 +248,7 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver 
       await runOk(longformVideoArgv({ background, audio, ass: assPath, fontsDir: FONTS_DIR, out, seconds }), { signal, timeoutMs: longformRenderTimeoutMs(seconds), env: ffmpegEnv })
       // click thumbnail: the same single image (figure RIGHT), the planner's re-written punch lines on the LEFT
       if (withThumbnail) {
-        const t = thumbnailArgv({ image, lines: script.thumbnail.lines, assPath: thumbAss, fontsDir: FONTS_DIR, out: thumb })
+        const t = thumbnailArgv({ image, lines: script.thumbnail.lines, assPath: thumbAss, fontsDir: FONTS_DIR, out: thumb, canvas: LONGFORM_THUMB })
         await writeFile(thumbAss, t.ass, 'utf8'); await runOk(t.argv, { signal, env: ffmpegEnv })
       }
       // fatal-only output checks (broken file / wrong canvas / missing narration / wrong length)
@@ -256,14 +257,16 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver 
         ...(info.width !== LONGFORM.canvas.w || info.height !== LONGFORM.canvas.h ? [`video ${info.width}x${info.height}`] : []),
         ...(!info.hasAudio ? ['no narration audio'] : []),
         ...(Math.abs(Number(info.duration || 0) - seconds) > 1.5 ? [`duration ${info.duration} vs narration ${seconds}`] : []),
-        ...(tinfo && (tinfo.width !== THUMB.w || tinfo.height !== THUMB.h) ? [`thumbnail ${tinfo.width}x${tinfo.height}`] : [])
+        ...(tinfo && (tinfo.width !== LONGFORM_THUMB.w || tinfo.height !== LONGFORM_THUMB.h) ? [`thumbnail ${tinfo.width}x${tinfo.height}`] : [])
       ]
       if (problems.length) throw new StageError('LONGFORM_OUTPUT_INVALID', problems.join('; '))
-      const bytes = await readFile(out), renderHash = sha256(bytes)
-      const stored = await blobs.putBytes(`renders/${renderHash}.mp4`, bytes, 'video/mp4')
+      // the final MP4 of a 60-120+ minute video is never loaded into memory: streamed sha256, streamed upload to the
+      // same content-addressed renders/<sha256>.mp4; a retry whose render already exists is not uploaded again
+      const renderHash = await sha256File(out)
+      const stored = await blobs.putFile(`renders/${renderHash}.mp4`, out, 'video/mp4')
       const tb = withThumbnail ? await readFile(thumb) : null, thumbStored = tb ? await blobs.putBytes(`renders/${sha256(tb)}.jpg`, tb, 'image/jpeg') : null
       const thumbRef = thumbStored ? thumbStored.path : null
-      const v = { variantId: 'v1', label: '롱폼', manifestHash: renderHash, renderRef: stored.path, renderHash, bytes: bytes.length, duration: info.duration, posterRef: thumbRef, thumbnailRef: thumbRef, gate: { decision: 'PASS', reasons: [], checks: [] }, publishable: true }
+      const v = { variantId: 'v1', label: '롱폼', manifestHash: renderHash, renderRef: stored.path, renderHash, bytes: stored.bytes, duration: info.duration, posterRef: thumbRef, thumbnailRef: thumbRef, gate: { decision: 'PASS', reasons: [], checks: [] }, publishable: true }
       return { outputRef: stored.path, outputHash: renderHash, result: { variants: [v], cards: cards.length, imageRef: assets.image.ref, thumbnailRef: thumbRef, canvas: `${info.width}x${info.height}`, durationSec: info.duration }, provider: 'ffmpeg', model: 'libx264+libass' }
     } finally { await rm(work, { recursive: true, force: true }) }
   }

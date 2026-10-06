@@ -14,7 +14,7 @@ import { copyFile, chmod, mkdir, writeFile, unlink } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import ffmpegBinaryPath from 'ffmpeg-static'
-import { get } from '@vercel/blob'
+import { get } from './objectStorage.js'
 import type { SourceAsset } from './sourceAssetRegistry.js'
 
 const defaults = { get }

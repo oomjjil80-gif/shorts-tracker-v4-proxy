@@ -1,11 +1,16 @@
-// Wisdom click thumbnail (16:9, Shorts and Longform): the figure on the RIGHT, 2-3 short re-written punch lines on the
-// LEFT in very heavy type with a strong black outline/shadow, and a colour per meaning unit. The picture is NOT covered
-// by a box: only a soft feathered shade sits behind the text block, so the image mood and the person stay visible.
+// Wisdom click thumbnails, one canvas per format (never a shared size):
+//  - Longform: 16:9 1280x720 — figure on the RIGHT, 2-3 punch lines on the LEFT.
+//  - Shorts:   9:16 1080x1920 — the portrait thumbnail seen on phones: punch lines in the upper band, figure below.
+// Very heavy type with a strong black outline/shadow and a colour per meaning unit. The picture is NOT covered by a box:
+// only a soft feathered shade sits behind the text block, so the image mood and the person stay visible.
 import { FONT_FAMILY, assTime, headAdvanceEm } from '../media/ass.js'
 import { thinkerFor } from './wisdom.js'
 import { UPLOAD_METADATA_RULES, UPLOAD_METADATA_SCHEMA, type UploadMetadata } from './uploadPackage.js'
 
-export const THUMB = { w: 1280, h: 720, textX: 56, textMaxWidth: 640, basePx: 200, minPx: 110 } as const
+// textY: top of the text block (null = vertically centred). Every renderer passes its canvas explicitly.
+export type ThumbCanvas = { readonly id: 'longform' | 'shorts'; readonly w: number; readonly h: number; readonly textX: number; readonly textY: number | null; readonly textMaxWidth: number; readonly basePx: number; readonly minPx: number }
+export const LONGFORM_THUMB: ThumbCanvas = { id: 'longform', w: 1280, h: 720, textX: 56, textY: null, textMaxWidth: 640, basePx: 200, minPx: 110 }
+export const SHORTS_THUMB: ThumbCanvas = { id: 'shorts', w: 1080, h: 1920, textX: 72, textY: 170, textMaxWidth: 936, basePx: 260, minPx: 140 }
 export const THUMB_COLORS = { red: '#FF2D2D', purple: '#B45CFF', green: '#3DFF6E', yellow: '#FFD60A', white: '#FFFFFF' } as const
 export type ThumbColor = keyof typeof THUMB_COLORS
 export type ThumbLine = { text: string; color: ThumbColor }
@@ -30,27 +35,28 @@ export function thumbnailFigure(topic: string, fallback: string): string {
   const t = thinkerFor(topic)
   return t ? `${t.name}, ${t.likeness}` : fallback
 }
-export function figureRightPrompt(subject: string): string {
+// Shorts thumbnail (9:16 portrait): the person in the lower part, the upper band kept calm for the punch lines.
+export function figureBelowPrompt(subject: string): string {
   return [
-    `Wide 16:9 YouTube thumbnail artwork. Hero: ${subject}.`,
-    'The person is LARGE and clearly visible, chest-up, in the RIGHT 40% of the frame, face well lit and expressive, looking toward the viewer or slightly left; the person never touches the left half.',
-    'The LEFT 55% is calm, darker, simple background with the same mood (soft shadow, plain wall, sky or mist), no objects, reserved for big text added later.',
+    `Tall 9:16 vertical YouTube Shorts thumbnail artwork (portrait orientation). Hero: ${subject}.`,
+    'The person is LARGE and clearly visible, chest-up, centred horizontally in the LOWER 60% of the frame, face well lit and expressive, looking toward the viewer; the head stays below the upper 40%.',
+    'The UPPER 40% is calm, darker, simple background with the same mood (soft shadow, plain wall, sky or mist), no objects, reserved for big text added later.',
     'Rich cinematic colour, dramatic side light, strong contrast on the face. Absolutely no text, letters, numbers, calligraphy, logos or watermark.'
   ].join(' ')
 }
 
 const hex = (h: string) => { const m = /^#?([0-9a-f]{6})$/i.exec(h)!; return `&H00${m[1].slice(4, 6)}${m[1].slice(2, 4)}${m[1].slice(0, 2)}&`.toUpperCase() }
 const clean = (t: string) => String(t || '').replace(/[{}\\]/g, '').trim()
-export function thumbnailFontSize(lines: ThumbLine[]): number {
+export function thumbnailFontSize(lines: ThumbLine[], c: ThumbCanvas): number {
   const widest = Math.max(1, ...lines.map((l) => headAdvanceEm(clean(l.text))))
-  return Math.max(THUMB.minPx, Math.min(THUMB.basePx, Math.floor((THUMB.textMaxWidth / widest) * 1.448)))
+  return Math.max(c.minPx, Math.min(c.basePx, Math.floor((c.textMaxWidth / widest) * 1.448)))
 }
 // Two layers per card: (1) black outline 12 + offset shadow, (2) the colour with a thin same-colour outline that makes
 // the only bundled weight (Bold) read as Black.
-export function thumbnailAss(lines: ThumbLine[]): { ass: string; fs: number; block: { x0: number; x1: number; y0: number; y1: number } } {
-  const { w, h } = THUMB, fs = thumbnailFontSize(lines)
+export function thumbnailAss(lines: ThumbLine[], cv: ThumbCanvas): { ass: string; fs: number; block: { x0: number; x1: number; y0: number; y1: number } } {
+  const { w, h } = cv, fs = thumbnailFontSize(lines, cv)
   const em = fs / 1.448, lineH = Math.round(fs * 0.86), total = lineH * lines.length
-  const y0 = Math.round((h - total) / 2)
+  const y0 = cv.textY ?? Math.round((h - total) / 2)
   const out = [
     '[Script Info]', 'ScriptType: v4.00+', `PlayResX: ${w}`, `PlayResY: ${h}`, 'WrapStyle: 2', 'ScaledBorderAndShadow: yes', '',
     '[V4+ Styles]',
@@ -61,25 +67,25 @@ export function thumbnailAss(lines: ThumbLine[]): { ass: string; fs: number; blo
   let x1 = 0
   lines.forEach((l, i) => {
     const y = y0 + i * lineH, c = hex(THUMB_COLORS[l.color]), text = clean(l.text)
-    x1 = Math.max(x1, THUMB.textX + headAdvanceEm(text) * em)
-    out.push(`Dialogue: 0,${assTime(0)},${assTime(5)},T,,0,0,0,,{\\an7\\pos(${THUMB.textX},${y})\\fs${fs}\\c${c}\\bord12\\shad7\\4c&H00000000&}${text}`)
-    out.push(`Dialogue: 1,${assTime(0)},${assTime(5)},T,,0,0,0,,{\\an7\\pos(${THUMB.textX},${y})\\fs${fs}\\c${c}\\3c${c}\\bord2.5\\shad0}${text}`)
+    x1 = Math.max(x1, cv.textX + headAdvanceEm(text) * em)
+    out.push(`Dialogue: 0,${assTime(0)},${assTime(5)},T,,0,0,0,,{\\an7\\pos(${cv.textX},${y})\\fs${fs}\\c${c}\\bord12\\shad7\\4c&H00000000&}${text}`)
+    out.push(`Dialogue: 1,${assTime(0)},${assTime(5)},T,,0,0,0,,{\\an7\\pos(${cv.textX},${y})\\fs${fs}\\c${c}\\3c${c}\\bord2.5\\shad0}${text}`)
   })
-  return { ass: [...out, ''].join('\n'), fs, block: { x0: THUMB.textX, x1: Math.round(x1), y0, y1: y0 + total } }
+  return { ass: [...out, ''].join('\n'), fs, block: { x0: cv.textX, x1: Math.round(x1), y0, y1: y0 + total } }
 }
 // Picture: cover-crop, a touch more colour; a feathered shade ONLY behind the text block (max ~55%, fades out before
 // the figure). No full-frame box, no global darkening.
-export function thumbnailPictureFilter(block: { x0: number; x1: number; y0: number; y1: number }): string {
-  const { w, h } = THUMB
+export function thumbnailPictureFilter(block: { x0: number; x1: number; y0: number; y1: number }, c: ThumbCanvas): string {
+  const { w, h } = c
   const cx = Math.round((block.x0 + block.x1) / 2), cy = Math.round((block.y0 + block.y1) / 2)
   const rx = Math.round((block.x1 - block.x0) / 2 + 110), ry = Math.round((block.y1 - block.y0) / 2 + 110)
   return `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},eq=saturation=1.12,format=rgba[pic];` +
     `color=c=black:s=${w}x${h},format=rgba,geq=r=0:g=0:b=0:a='140*clip((1.15-hypot((X-${cx})/${rx},(Y-${cy})/${ry}))/0.45,0,1)'[shade];[pic][shade]overlay=0:0`
 }
-export function thumbnailArgv(o: { image: string; lines: ThumbLine[]; assPath: string; fontsDir: string; out: string }): { argv: string[]; ass: string } {
-  const t = thumbnailAss(o.lines)
+export function thumbnailArgv(o: { image: string; lines: ThumbLine[]; assPath: string; fontsDir: string; out: string; canvas: ThumbCanvas }): { argv: string[]; ass: string } {
+  const t = thumbnailAss(o.lines, o.canvas)
   const e = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
-  return { ass: t.ass, argv: ['-y', '-i', o.image, '-filter_complex', `[0:v]${thumbnailPictureFilter(t.block)},ass=filename='${e(o.assPath)}':fontsdir='${e(o.fontsDir)}',format=yuv420p[v]`, '-map', '[v]', '-frames:v', '1', '-q:v', '2', o.out] }
+  return { ass: t.ass, argv: ['-y', '-i', o.image, '-filter_complex', `[0:v]${thumbnailPictureFilter(t.block, o.canvas)},ass=filename='${e(o.assPath)}':fontsdir='${e(o.fontsDir)}',format=yuv420p[v]`, '-map', '[v]', '-frames:v', '1', '-q:v', '2', o.out] }
 }
 
 // Publish kit for a Wisdom SHORTS video (Longform gets the same from its planner): the thumbnail's 2-3 re-written

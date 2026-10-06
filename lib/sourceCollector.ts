@@ -1,4 +1,4 @@
-import { put } from '@vercel/blob'
+import { put } from './objectStorage.js'
 import { randomUUID, createHash } from 'node:crypto'
 import { resolveDouyin, validateDouyinMedia } from './douyinResolver.js'
 import { probeSourceMedia } from './sourceMediaMetadata.js'

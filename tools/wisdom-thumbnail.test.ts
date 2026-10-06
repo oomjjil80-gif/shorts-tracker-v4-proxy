@@ -9,7 +9,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createMemoryBlobStore, putAddressed } from '../lib/jobs/blobs.js'
 import { thumbnailCopyErrors, thumbnailFigure } from '../lib/generative/wisdomThumbnail.js'
-import { standInPortrait, measureThumbnail, assertThumbnail, rgb, cover } from './thumbnailMeasure.js'
+import { standInPortrait, standInPortraitTall, measureTallThumbnail, assertTallThumbnail, rgb, cover } from './thumbnailMeasure.js'
+import { probe } from '../lib/media/ffmpeg.js'
+import { LONGFORM_THUMB, SHORTS_THUMB, thumbnailAss } from '../lib/generative/wisdomThumbnail.js'
 import { withWisdomThumbnail } from '../worker/stages/wisdomThumbnail.js'
 import { uploadMetadataErrors } from '../lib/generative/uploadPackage.js'
 
@@ -52,9 +54,9 @@ test('copy rules: never the title, 2-3 meaning units, meaning colours', () => {
   assert.equal(thumbnailFigure('나이 들수록 멀리할 사람', 'a calm sage'), 'a calm sage')
 })
 
-test('REAL: Wisdom SHORTS thumbnail (Schopenhauer topic) through the PACKAGE decorator', async () => {
+test('REAL: Wisdom SHORTS thumbnail (Schopenhauer topic) through the PACKAGE decorator: 9:16 1080x1920 portrait', async () => {
   const d = await mkdtemp(join(tmpdir(), 'wthumb-')), blobs: any = createMemoryBlobStore()
-  const portrait = join(d, 'p.jpg'); await standInPortrait(portrait, { side: 'right', tint: [150, 165, 205], bg: [14, 20, 34] })
+  const portrait = join(d, 'p.jpg'); await standInPortraitTall(portrait, { tint: [150, 165, 205], bg: [14, 20, 34] })
   const script = await putAddressed(blobs, 'generative-scripts', { schema: 'wisdom-script/1', title: '쇼펜하우어가 말하는 나이 들수록 혼자가 편한 이유', hook: '왜 나이 들수록 혼자가 편할까', beats: [{ narration: '쇼펜하우어는 고독을 두려워하지 말라고 했습니다' }] })
   const brief = await putAddressed(blobs, 'generative-briefs', { text: '쇼펜하우어가 말하는 나이 들수록 혼자가 편한 이유' })
   const prompts: string[] = []
@@ -62,12 +64,15 @@ test('REAL: Wisdom SHORTS thumbnail (Schopenhauer topic) through the PACKAGE dec
   const r: any = await ex.run({ job: { id: 'j', profile: 'wisdom', planRef: brief.path }, blobs, previous: async (s: string) => (s === 'PLAN' ? { result: { scriptRef: script.path } } : null), signal: new AbortController().signal } as any)
   assert.ok(r.result.thumbnailRef, JSON.stringify(r.result))
   assert.match(prompts[0], /Arthur Schopenhauer/) // named thinker is the hero, not a generic elderly man
+  assert.match(prompts[0], /^Tall 9:16 vertical YouTube Shorts thumbnail/); assert.doesNotMatch(prompts[0], /16:9/)
   const pkg: any = await blobs.getJson(r.result.packageRef); assert.equal(pkg.thumbnailRef, r.result.thumbnailRef)
   const out = join(d, 'thumb.jpg'); writeFileSync(out, blobs.binaries.get(r.result.thumbnailRef))
-  const m = measureThumbnail(await rgb(out), await cover(portrait), pkg.thumbnailLines)
-  console.log('THUMB_SHORTS ' + JSON.stringify(m))
+  const info = await probe(out)
+  assert.deepEqual([info.width, info.height], [1080, 1920], 'the Shorts thumbnail JPEG is 1080x1920 (ffprobe)')
+  const m = measureTallThumbnail(await rgb(out, 1080, 1920), await cover(portrait, 1080, 1920), pkg.thumbnailLines)
+  console.log('THUMB_SHORTS ' + JSON.stringify({ ...m, size: [info.width, info.height] }))
   if (process.env.LONGFORM_SAMPLE_OUT) { mkdirSync(process.env.LONGFORM_SAMPLE_OUT, { recursive: true }); writeFileSync(join(process.env.LONGFORM_SAMPLE_OUT, 'thumbnail-shorts-schopenhauer.jpg'), blobs.binaries.get(r.result.thumbnailRef)) }
-  assertThumbnail(m, 'shorts')
+  assertTallThumbnail(m, 'shorts')
   // a non-wisdom package is untouched
   const plain: any = await ex.run({ job: { id: 'j2', profile: 'source_shorts' }, blobs, previous: async () => null, signal: new AbortController().signal } as any)
   assert.equal(plain.result.thumbnailRef, undefined)
@@ -103,4 +108,14 @@ test('EXAMPLE A: Wisdom Shorts "나이 들수록 설명하지 말아야 할 5가
   const out = { topic: '나이 들수록 설명하지 말아야 할 5가지', format: 'Wisdom Shorts', upload: pkg.metadata, thumbnailLines: pkg.thumbnailLines, oldMethodRejectedFor: old }
   console.log('EXAMPLE_A ' + JSON.stringify(out))
   if (process.env.LONGFORM_SAMPLE_OUT) { mkdirSync(process.env.LONGFORM_SAMPLE_OUT, { recursive: true }); writeFileSync(join(process.env.LONGFORM_SAMPLE_OUT, 'upload-example-A-shorts.json'), JSON.stringify(out, null, 2)); writeFileSync(join(process.env.LONGFORM_SAMPLE_OUT, 'thumbnail-example-A-shorts.jpg'), blobs.binaries.get(r.result.thumbnailRef)) }
+})
+
+test('thumbnail canvases are separate contracts: Shorts 9:16 1080x1920, Longform 16:9 1280x720 (text placed per canvas)', () => {
+  assert.deepEqual([SHORTS_THUMB.w, SHORTS_THUMB.h, LONGFORM_THUMB.w, LONGFORM_THUMB.h], [1080, 1920, 1280, 720])
+  const lines: any = [{ text: '혼자가', color: 'white' }, { text: '편해지는', color: 'purple' }, { text: '진짜 이유', color: 'red' }]
+  const s = thumbnailAss(lines, SHORTS_THUMB), l = thumbnailAss(lines, LONGFORM_THUMB)
+  assert.match(s.ass, /PlayResX: 1080\nPlayResY: 1920/); assert.match(l.ass, /PlayResX: 1280\nPlayResY: 720/)
+  assert.ok(s.block.y1 <= 1920 * 0.45 && s.block.x1 <= 1080 - 20, JSON.stringify(s.block)) // upper band of the portrait
+  assert.ok(l.block.x1 <= 1280 * 0.62 && Math.abs((l.block.y0 + l.block.y1) / 2 - 360) <= 2, JSON.stringify(l.block)) // left, vertically centred
+  assert.ok(s.fs > l.fs) // sized for its own canvas
 })
