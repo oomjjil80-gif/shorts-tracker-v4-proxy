@@ -31,7 +31,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
  return {
  stage:'PLAN', estimateUsd:()=>0.05,
  inputHash:(job)=>sha256(`gen-plan|${job.profile}|${job.planRef}|wisdom/1`),
- async run({job,blobs}){
+ async run({job,blobs,previous}){
   if(job.profile!=='wisdom') throw new StageError('PROFILE_UNSUPPORTED','generative PLAN only handles wisdom')
   if(!job.planRef) throw new StageError('BRIEF_MISSING','wisdom requires a generative brief')
   let briefRef=job.planRef
