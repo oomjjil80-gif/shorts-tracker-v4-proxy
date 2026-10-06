@@ -72,7 +72,12 @@ export function namedThinkerVisualErrors(topic:string,s:any):string[]{
 // recognizable likeness of that person, keeping the shared style/palette/lighting but not the generic character policy.
 export function anchorNamedThinkerVisual(s:WisdomScript,topic:string):{script:WisdomScript;anchoredBeatId:string|null}{
  const t=thinkerFor(topic)
- if(!t||!s.beats.length||!namedThinkerVisualErrors(topic,s).length)return {script:s,anchoredBeatId:null}
+ if(!t||!s.beats.length)return {script:lockWisdomProtagonistAcrossBeats(s,topic),anchoredBeatId:null}
+ // Keep identity consistency separate from anchoring: if the planner already depicts the thinker early,
+ // still lock every later depiction to the same canonical face/age/hair/clothing.
+ if(!namedThinkerVisualErrors(topic,s).length){
+  return {script:lockWisdomProtagonistAcrossBeats(lockNamedThinkerAcrossBeats(s,topic),topic),anchoredBeatId:null}
+ }
  const b=s.beats[0], p=String(b.imagePrompt||''), cp=p.indexOf(' Character policy: '), av=p.lastIndexOf('. Avoid: ')
  const style=cp>=0?p.slice(0,cp):'', avoid=av>=0?p.slice(av+2):'no readable text, no watermark'
  const imagePrompt=`${style?style+' ':''}Main subject: a clearly recognizable portrait of ${t.name}, ${t.likeness}. He is the only person and the focal point, face fully visible in the central area. Setting mood from the scene: ${beatScene(p)}. ${avoid}`
