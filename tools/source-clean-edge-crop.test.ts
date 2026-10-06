@@ -61,7 +61,7 @@ test('immutable render manifest contains the plan-bound cleanup directive',()=>{
 })
 
 test('planner explicitly prefers clean edge crop over flashing or trimming persistent edge text',()=>{
-  assert.equal(AI_PLANNER_PROMPT_VERSION,'source-story-analysis/16')
+  assert.equal(AI_PLANNER_PROMPT_VERSION,'source-story-analysis/17')
   const p=storyPrompt(analysis)
   assert.match(p,/CLEAN EDGE CROP/)
   assert.match(p,/Do NOT shorten its exposure as a workaround/)
