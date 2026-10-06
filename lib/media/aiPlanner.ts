@@ -6,7 +6,7 @@ import { EXCLUDE_REASONS, OFFSTORY_REASONS, PACING_REASONS, STORY_LIMITS, STORY_
 import { planPresentation, PRESENTATION_LIMITS } from './presentation.js'
 import { storyBeats, totalSeconds } from './plan.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/16'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/17'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
 const captionBody = {
@@ -33,7 +33,7 @@ export const STORY_JSON_SCHEMA = {
     openingHook: captionBody,
     minimalCaptions: {
       type: 'array', minItems: 1, maxItems: 9,
-      items: { type: 'object', additionalProperties: false, required: ['kind', 'start', 'end', 'text', 'basis'], properties: { kind: { type: 'string', enum: ['context', 'payoff', 'effect'] }, start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, basis: { type: 'string' } } }
+      items: { type: 'object', additionalProperties: false, required: ['kind', 'start', 'end', 'text', 'basis'], properties: { kind: { type: 'string', enum: ['context', 'payoff', 'point', 'effect'] }, start: { type: 'number' }, end: { type: 'number' }, text: { type: 'string' }, basis: { type: 'string' } } }
     },
     publishabilityWarnings: { type: 'array', items: { type: 'string' } },
     cleanEdgeCrop: {
@@ -77,10 +77,11 @@ export function storyPrompt(a: SourceAnalysis): string {
     '  REPEAT RULE: a second person/animal copying, reacting, following, interrupting or joining is NOT repeat when that new participant changes the humor/meaning; keep it as escalation/payoff.',
     '- hookStrategy: chronological by default. preview ONLY if a <=3s escalation/payoff preview is independently understandable and returning to the start will not confuse.',
     `- openingHook is REQUIRED and structurally separate from the other captions. It must start at/just after causalStart, within the first ~1 second of the clean edit, contain short Korean text (<=${STORY_LIMITS.maxCaptionChars} chars) of AT LEAST TWO words separated by a space (it is shown as an exactly two-line headline), and be grounded in what is visibly happening. It becomes the persistent top headline. Never leave it blank.`,
-    `- minimalCaptions contains 1–9 ADDITIONAL grounded cues only (at most 5 context/payoff captions plus the per-hit effect cues); do NOT put another hook in this array. At most ${PRESENTATION_LIMITS.totalMessages} screen messages are ever shown (hook 1, payoff ${PRESENTATION_LIMITS.payoffs}, context ${PRESENTATION_LIMITS.contexts}); the hook always has priority. Cues must lie INSIDE the selected story (after causalStart, before recommendedEnd) and NEVER on excluded footage. Any stretch of the final edit longer than ${PRESENTATION_LIMITS.maxDynamicGapSec}s without a new timed cue is rejected.`,
+    `- minimalCaptions contains 1–9 ADDITIONAL grounded cues only (context/payoff explanation, 0–2 point reactions/dialogue punches, plus per-hit effect cues); do NOT put another hook in this array. At most ${PRESENTATION_LIMITS.totalMessages} screen messages are ever shown (hook 1, payoff ${PRESENTATION_LIMITS.payoffs}, context ${PRESENTATION_LIMITS.contexts}); the hook always has priority. Cues must lie INSIDE the selected story (after causalStart, before recommendedEnd) and NEVER on excluded footage. Any stretch of the final edit longer than ${PRESENTATION_LIMITS.maxDynamicGapSec}s without a new timed cue is rejected.`,
     `  * Add 1–${PRESENTATION_LIMITS.contexts} kind="context" cues (<=${STORY_LIMITS.maxCaptionChars} chars), spaced across meaningful story changes. They are short explanatory captions, not transcript subtitles.`,
     '  * CAPTION WRITING RULE (context/payoff): NEVER restate what the viewer can already see (bad: "여자가 남자를 때린다", "아이가 기어간다"). Each caption must ADD something the picture alone does not give: context (who/why), curiosity (what happens next), the relationship between the people, the meaning of the moment, or the payoff\'s punch. If a caption adds none of these, leave it out. Write short spoken Korean (one breath, 1–2 short lines), like a friend commenting, not a narrator describing.',
     `  * Add optional kind="payoff" over the actual payoff (<=${STORY_LIMITS.maxCaptionChars} chars) when it sharpens the punchline.`,
+    `  * kind="point" = a SHORT spoken reaction/dialogue punch (<=${STORY_LIMITS.maxPointChars} chars), e.g. "잠깐, 너였어?", "설마 너야?", "뭐야 이건?". Use it when the wording itself is the joke/reaction. It is rendered LARGE and YELLOW near the middle of the picture, so do NOT duplicate the same idea as a context/payoff caption. Prefer 0–2 point cues per Short.`,
     `  * kind="effect" = a short sound-word (<=${STORY_LIMITS.maxEffectChars} chars, e.g. "퍽!", "쾅!", "철썩!") drawn large in the middle of the video. Add ONE effect cue PER visible impact/hit at its exact moment: three separate hits = three separate "퍽!" cues with three different start times. Never merge repeated hits into one cue and never add an effect where nothing physically hits. At most ${PRESENTATION_LIMITS.effects} effects; they do not use the caption budget. The measured motionPeaks list contains precise source-frame change timestamps: when an impact is visible, anchor the cue start to the nearest matching motionPeak; use a different peak for each separate hit.`,
     '  * Every cue needs a visual basis explaining what on screen justifies the words. Avoid long sentences.',
     '  * Aim for a new timed context/payoff caption roughly every 3–5 seconds of active story so the mobile screen does not feel unattended, while allowing a purposeful quiet beat.',
@@ -121,6 +122,23 @@ export function normalizeProviderStory(raw: any, durationSec?: number): { story:
   const D = fin(durationSec) ? durationSec : Infinity
   const x: any = { ...raw }
 
+  // Presentation text may contain harmless formatting characters from the model
+  // (newlines/tabs/braces). Normalize those deterministically before strict
+  // validation so a semantically valid story is not rejected for typography.
+  const cleanText = (value: unknown) => String(value ?? '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[{}]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (x.openingHook && typeof x.openingHook === 'object') {
+    x.openingHook = { ...x.openingHook, text: cleanText(x.openingHook.text) }
+  }
+  if (Array.isArray(x.minimalCaptions)) {
+    x.minimalCaptions = x.minimalCaptions.map((cue: any) =>
+      cue && typeof cue === 'object' ? { ...cue, text: cleanText(cue.text) } : cue
+    )
+  }
+
   // payoffRange first: caption normalization below depends on it.
   const p = x.payoffRange
   if (degenerate(p) && p.start >= 0 && p.start < D && fin(x.recommendedEnd)) {
@@ -153,7 +171,13 @@ export function normalizeProviderStory(raw: any, durationSec?: number): { story:
     return { ...c, end }
   }
   if (x.openingHook) x.openingHook = widen(x.openingHook, 'hook')
-  if (Array.isArray(x.minimalCaptions)) x.minimalCaptions = x.minimalCaptions.map((c: any) => widen(c, String(c?.kind)))
+  if (Array.isArray(x.minimalCaptions)) x.minimalCaptions = x.minimalCaptions.map((c: any) => {
+    const widened = widen(c, String(c?.kind))
+    if (!widened || !fin(widened.start) || !fin(widened.end)) return widened
+    const kind = String(widened.kind || '')
+    const maxDur = kind === 'point' ? 1.35 : (D < 10 && (kind === 'context' || kind === 'payoff') ? 1.6 : null)
+    return maxDur && widened.end - widened.start > maxDur ? { ...widened, end: r2n(Math.min(D, widened.start + maxDur)) } : widened
+  })
 
   const h = x.openingHook
   const rest = Array.isArray(x.minimalCaptions) ? x.minimalCaptions : []
