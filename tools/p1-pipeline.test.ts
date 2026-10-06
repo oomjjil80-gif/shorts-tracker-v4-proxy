@@ -23,7 +23,19 @@ await makeSyntheticSource(srcPath, { withBlack: false })
 const srcSha = sha256(readFileSync(srcPath))
 const asset = { sourceAssetId: 'src_p1_fixture_0001', blobPath: 'source-collector/p1/fixture.mp4', sha256: srcSha, duration: 12, width: 576, height: 1024 }
 
-async function setup(executors = [analyzeExecutor, createPlanExecutor(), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor]) {
+const DEFAULT_SEMANTIC_STORY = {
+  storyType: 'single_event', confidence: 0.9, causalStart: 0, setupRanges: [{ start: 0, end: 3 }], escalationRanges: [{ start: 3, end: 6 }],
+  payoffRange: { start: 9, end: 11.5 }, recommendedEnd: 11.8, excludeRanges: [{ start: 6, end: 9, reason: 'repeat' }],
+  hookStrategy: 'chronological', previewRange: null, hookConfidence: 0.1, hookReason: '',
+  minimalCaptions: [
+    { kind: 'hook', start: 0, end: 1.8, text: '무슨 일이 생길까?', basis: 'the visible setup begins' },
+    { kind: 'context', start: 3.0, end: 4.2, text: '장면이 바뀌기 시작', basis: 'visible colour and motion change' },
+    { kind: 'payoff', start: 9.5, end: 11, text: '마지막 장면', basis: 'colour bars change' }
+  ], publishabilityWarnings: []
+}
+const defaultSemanticPlanExecutor = () => createPlanExecutor({ openAi: { apiKey: 'k', model: 'm', fetchImpl: (async () => ({ ok: true, status: 200, json: async () => ({ model: 'gpt-test', output_text: JSON.stringify(DEFAULT_SEMANTIC_STORY) }) })) as unknown as typeof fetch } })
+
+async function setup(executors = [analyzeExecutor, defaultSemanticPlanExecutor(), compileExecutor, renderExecutor, autoQcExecutor, decisionExecutor, finalExecutor, packageExecutor]) {
   const db = await createTestDb()
   const store = createJobStore(db)
   const blobs = createMemoryBlobStore()
@@ -80,10 +92,9 @@ test('P1 pipeline: source -> ANALYZE -> PLAN -> COMPILE -> RENDER -> AUTO_QC -> 
   assert.ok(gate.counts.requiredTotal >= 12 && gate.counts.requiredPass === gate.counts.requiredTotal)
   for (const id of ['decode.full', 'timeline.segment_order_and_trim', 'duration.matches_manifest', 'video.format', 'audio.present_and_alive', 'visual.no_black']) assert.equal(gate.checks.find((c: any) => c.id === id)?.status, 'PASS', id)
 
-  const v0 = qc.variants[0]
-  assert.equal(v0.contentGate.decision, 'BLOCK'); assert.equal(v0.publishable, false)
-  assert.ok(v0.contentGate.checks.some((c: any) => c.id === 'content.payoff_present' && c.status === 'UNKNOWN'))
-  assert.equal(qc.semantic.status, 'unavailable'); assert.equal(qc.publishable, 0)
+  const v0 = qc.variants.find((x: any) => x.variantId === qc.recommendedVariantId)
+  assert.equal(v0.contentGate.decision, 'PASS', JSON.stringify(v0.contentGate.reasons)); assert.equal(v0.publishable, true)
+  assert.equal(qc.semantic.status, 'ok'); assert.ok(qc.publishable >= 1)
 
   const bytes = blobs.binaries.get(rv[0].renderRef)!
   const f = join(dir, 'check.mp4'); (await import('node:fs')).writeFileSync(f, bytes)
@@ -100,7 +111,7 @@ test('DECISION -> FINAL -> PACKAGE: the chosen render is promoted as the same bl
   const qc = (await store.getLatestSucceeded(job.id, 'AUTO_QC'))!.result as any
   const chosen = qc.variants[qc.variants.length - 1]
   const rendersBefore = blobs.binaries.size
-  const decided = await store.recordDecision({ jobId: job.id, workspaceId: 'ws', manifestHash: chosen.manifestHash, override: { reason: 'test explicitly accepts content-blocked heuristic output' } })
+  const decided = await store.recordDecision({ jobId: job.id, workspaceId: 'ws', manifestHash: chosen.manifestHash })
   assert.deepEqual([decided.status, decided.stage, decided.approvedManifestHash], ['QUEUED', 'FINAL', chosen.manifestHash])
   const trail = await drive(job.id)
   assert.deepEqual(trail, ['FINAL:completed', 'PACKAGE:completed'])
@@ -118,7 +129,7 @@ test('DECISION -> FINAL -> PACKAGE: the chosen render is promoted as the same bl
 test('QC block: a corrupted render is never promoted (AUTO_QC blocks; decision without override is refused)', async () => {
   const { store, blobs } = await setup()
   const { job } = await store.createJob({ workspaceId: 'ws', profile: 'source_shorts', sourceAssetId: asset.sourceAssetId, idempotencyKey: 'idem-p1-0003', budgetUsd: 5 })
-  for (let n = 0; n < 4; n++) await runOnce({ store, blobs, executors: [analyzeExecutor, createPlanExecutor(), compileExecutor, renderExecutor], workerId: 'w1', resolveSourceAsset: async () => asset, resolveSourceFile: async () => ({ path: srcPath, cleanup: async () => {} }) } as any)
+  for (let n = 0; n < 4; n++) await runOnce({ store, blobs, executors: [analyzeExecutor, defaultSemanticPlanExecutor(), compileExecutor, renderExecutor], workerId: 'w1', resolveSourceAsset: async () => asset, resolveSourceFile: async () => ({ path: srcPath, cleanup: async () => {} }) } as any)
   for (const [k, v] of blobs.binaries) if (k.endsWith('.mp4')) blobs.binaries.set(k, v.subarray(0, Math.floor(v.length / 2)))
   const out = await runOnce({ store, blobs, executors: [autoQcExecutor], workerId: 'w1', resolveSourceAsset: async () => asset, resolveSourceFile: async () => ({ path: srcPath, cleanup: async () => {} }) })
   assert.equal(out.ran && out.outcome, 'waiting')
@@ -147,7 +158,7 @@ test('job_create without a plan starts at ANALYZE; job_get exposes a phone-sized
   assert.equal(p.status, 200)
   assert.ok(p.json.previews.length >= 1 && p.json.previews.every((x: any) => x.url.includes('renders/')))
   const pick = g.json.job.variants[0]
-  const d = await call('POST', { body: { taskType: 'job_decision', jobId: j0.id, manifestHash: pick.manifestHash, override: { reason: 'test explicitly accepts content-blocked heuristic output' } } })
+  const d = await call('POST', { body: { taskType: 'job_decision', jobId: j0.id, manifestHash: pick.manifestHash } })
   assert.equal(d.status, 200); assert.equal(d.json.job.stage, 'FINAL')
 })
 
