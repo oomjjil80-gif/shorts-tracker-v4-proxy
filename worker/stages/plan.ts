@@ -82,7 +82,7 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
       if (job.profile === 'source_shorts') {
         const lead = variants[0]
         if (!lead || !presentationComplete(lead)) throw new StageError('PLAN_PRESENTATION_INCOMPLETE', 'source Shorts requires a grounded headline, timed context/payoff captions, and acceptable presentation rhythm', false)
-        if (!lead.voiceoverText) throw new StageError('PLAN_NARRATION_MISSING', 'source Shorts requires grounded narration text derived from the selected story', false)
+        if (lead.audioMode === 'dub' && !lead.voiceoverLines?.length) throw new StageError('PLAN_NARRATION_MISSING', 'dub-mode source Shorts requires timed grounded narration lines', false)
       }
       const referenceProfile = options.resolveReferenceProfile ? await options.resolveReferenceProfile(job, blobs) : (options.referenceProfile ?? null)
       const referencePlan = referenceProfile ? applyReferencePlanConstraints(variants, referenceProfile.constraints) : null
@@ -93,7 +93,7 @@ export function createPlanExecutor(options: PlanExecutorOptions = {}): StageExec
       const stored = []
       for (const v of variants) {
         const s = await putAddressed(blobs, 'plans', toJobPlan(job.sourceAssetId, v))
-        stored.push({ variantId: v.id, label: v.label, kind: v.kind ?? null, rationale: v.rationale, planRef: s.path, seconds: v.beats.reduce((t, b) => t + (b.trimEnd - b.trimStart), 0), presentation: v.presentation ?? null })
+        stored.push({ variantId: v.id, label: v.label, kind: v.kind ?? null, rationale: v.rationale, planRef: s.path, seconds: v.beats.reduce((t, b) => t + (b.trimEnd - b.trimStart), 0), presentation: v.presentation ?? null, audioMode: v.audioMode ?? 'source' })
       }
       return {
         outputRef: stored[0].planRef, outputHash: sha256(stored.map((s) => s.planRef).join('|')), planRef: stored[0].planRef,
