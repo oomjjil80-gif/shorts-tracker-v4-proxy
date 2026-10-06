@@ -207,7 +207,9 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    const timedTotal=actualTotal
    const timedManifest={...manifest,items,actualDurationSec:actualTotal}
    const timedStored=await putAddressed(blobs,'generative-assets',timedManifest)
-   const timedPlan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:timedTotal}],headline:wisdomHeadline(script.title,String((await blobs.getJson(String((await previous('PLAN'))?.result?.briefRef||'')) as any)?.text||'')),events:timedEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
+   const priorPlanRun:any=await previous('PLAN')
+   const priorBrief:any=priorPlanRun?.result?.briefRef?await blobs.getJson(String(priorPlanRun.result.briefRef)):null
+   const timedPlan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:timedTotal}],headline:wisdomHeadline(script.title,String(priorBrief?.text||'')),events:timedEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
    const timedPlanStored=await putAddressed(blobs,'plans',timedPlan)
    await blobs.putBytes(blobPath,video,'video/mp4')
    // Execution receipt: the exact geometry command this attempt ran and the bytes it produced (verified by AUTO_QC).
