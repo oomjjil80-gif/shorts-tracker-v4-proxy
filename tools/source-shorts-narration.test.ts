@@ -26,7 +26,8 @@ test('General Shorts narration generates once, caches bytes, and reuses the same
   const blobs:any=createMemoryBlobStore()
   const stored=await putAddressed(blobs,'plans',{schema:'job-plan/1',profile:'source_shorts',sourceAssetId:'src_test_narration_0001',variantPlan:{
     beats:[{trimStart:10,trimEnd:14},{trimStart:20,trimEnd:24}],
-    voiceover:{text:'둘은 헤어진 친남매였습니다. 다시 만난 순간 서로를 바로 알아본 것처럼 보였습니다.',sourceVolume:0.2,voiceVolume:1.1}
+    audioMode:'dub',
+    voiceover:{mode:'timed',lines:[{start:10,end:14,text:'둘은 헤어진 친남매였습니다.'},{start:20,end:24,text:'다시 만난 순간 서로를 바로 알아봤습니다.'}],sourceVolume:0.2,voiceVolume:1.1}
   }})
   const audio=await mp3(1.4)
   let calls=0
@@ -34,7 +35,7 @@ test('General Shorts narration generates once, caches bytes, and reuses the same
   const a=await resolveSourceShortsNarration({job:job(stored.path),blobs,apiKey:'k',tts})
   const b=await resolveSourceShortsNarration({job:job(stored.path),blobs,apiKey:'k',tts})
   assert.ok(a&&b)
-  assert.equal(calls,1)
+  assert.equal(calls,2)
   assert.equal(a.ref,b.ref)
   assert.equal(a.sha256,b.sha256)
   assert.equal(a.generated,true)
@@ -48,7 +49,8 @@ test('General Shorts narration refuses speech longer than the selected edit befo
   const blobs:any=createMemoryBlobStore()
   const stored=await putAddressed(blobs,'plans',{schema:'job-plan/1',profile:'source_shorts',sourceAssetId:'src_test_narration_0001',variantPlan:{
     beats:[{trimStart:10,trimEnd:11}],
-    voiceover:{text:'짧은 편집보다 긴 더빙'}
+    audioMode:'dub',
+    voiceover:{mode:'timed',lines:[{start:10,end:11,text:'짧은 편집보다 긴 더빙'}],sourceVolume:0,voiceVolume:1}
   }})
   const audio=await mp3(2.2)
   await assert.rejects(
