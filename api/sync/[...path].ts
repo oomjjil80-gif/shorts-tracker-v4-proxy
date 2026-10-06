@@ -4,7 +4,9 @@ import { createHash, randomUUID } from 'node:crypto'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
+  const configuredOrigin = String(process.env.TRACKER_WEB_ORIGIN || '').trim().replace(/\/$/, '')
   const allowed =
+    (configuredOrigin !== '' && origin === configuredOrigin) ||
     /^http:\/\/localhost(?::\d+)?$/i.test(origin) ||
     /^http:\/\/127\.0\.0\.1(?::\d+)?$/i.test(origin) ||
     /^https:\/\/shorts-production-tracker\.vercel\.app$/i.test(origin) ||
