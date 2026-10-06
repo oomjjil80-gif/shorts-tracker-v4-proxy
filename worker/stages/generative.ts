@@ -18,7 +18,6 @@ export function wisdomHeadline(title:string,topic=''){
  const thinker=thinkerDisplayName(topic)
  let source=String(title||'').trim()
  if(thinker&&!source.includes(thinker)) source=`${thinker}가 말한 ${source}`
- const t=source
  const t=source.replace(/\s+/g,' ')
  if(!t)return ''
  const split=Math.max(1,Math.min(t.length-1,Math.round(t.length/2)))
