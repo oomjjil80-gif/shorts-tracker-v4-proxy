@@ -38,9 +38,15 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom')throw new StageError('BRIEF_INVALID','invalid wisdom brief')
   let script:any, visualBible:any=null, provider='deterministic', fallbackReason:string|undefined
   if(apiKey){try{
-   const made=await aiPlan(brief,apiKey)
-   const candidate=anchorNamedThinkerVisual(applyVisualBible(made.script,made.visualBible),String(brief.text||'')).script
-   const candidateErrors=validateWisdomScript(candidate,brief)
+   let made=await aiPlan(brief,apiKey)
+   let candidate=anchorNamedThinkerVisual(applyVisualBible(made.script,made.visualBible),String(brief.text||'')).script
+   let candidateErrors=validateWisdomScript(candidate,brief)
+   if(candidateErrors.includes('narration.total_too_long')){
+    const repairBrief={...brief,text:`${brief.text}\n\n[MANDATORY LENGTH REPAIR] The draft narration was too long for a natural ${brief.targetSeconds}-second Korean Short. Rewrite more concisely while keeping the hook, concrete situations, turn and payoff. Aim near ${Math.round(brief.targetSeconds*4.6)} total Korean characters across all beat narrations. Do not mention this instruction.`}
+    made=await aiPlan(repairBrief,apiKey)
+    candidate=anchorNamedThinkerVisual(applyVisualBible(made.script,made.visualBible),String(brief.text||'')).script
+    candidateErrors=validateWisdomScript(candidate,brief)
+   }
    if(candidateErrors.length)throw new Error('AI script validation: '+candidateErrors.join(','))
    script=candidate;visualBible=made.visualBible;provider='openai'
   }catch(e){fallbackReason=e instanceof Error?e.message:String(e)}}
@@ -158,20 +164,8 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
     segments.push(op)
    }
    const list=join(work,'concat.txt');await writeFile(list,segments.map(p=>`file '${p.replaceAll("'","'\\''")}'`).join('\n'))
-   let out=join(work,'source.mp4');await runOk(['-y','-f','concat','-safe','0','-i',list,'-c','copy','-movflags','+faststart',out],{signal,timeoutMs:120000})
-   let info=await probe(out)
-   const rawTotal=Number(info.duration||0)
-   // Soft duration correction only when a generated narration stretches noticeably beyond the requested length.
-   // For a 55s request, 50-60s is accepted as natural. If TTS pushes it beyond ~60s, speed the already-synced
-   // finished source only enough to bring it back to target+5s, capped at 10% so the voice never sounds rushed.
-   if(targetSeconds>0&&rawTotal>targetSeconds+5){
-    const speed=Math.min(1.10,rawTotal/(targetSeconds+5))
-    if(speed>1.005){
-     const paced=join(work,'source-paced.mp4')
-     await runOk(['-y','-i',out,'-filter_complex',`[0:v]setpts=PTS/${speed.toFixed(6)}[v];[0:a]atempo=${speed.toFixed(6)}[a]`,'-map','[v]','-map','[a]','-c:v','libx264','-preset','veryfast','-threads','4','-c:a','aac','-ar','44100','-ac','2','-movflags','+faststart',paced],{signal,timeoutMs:180000})
-     out=paced;info=await probe(out)
-    }
-   }
+   const out=join(work,'source.mp4');await runOk(['-y','-f','concat','-safe','0','-i',list,'-c','copy','-movflags','+faststart',out],{signal,timeoutMs:120000})
+   const info=await probe(out)
    const video=await readFile(out), vh=sha256(video), blobPath=`source-collector/generated/${vh}.mp4`
    const actualTotal=Number(Number(info.duration||0).toFixed(2))
    if(!(actualTotal>0)) throw new StageError('GENERATED_DURATION_INVALID','generated concat duration is invalid')
