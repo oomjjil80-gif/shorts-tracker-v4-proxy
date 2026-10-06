@@ -116,7 +116,7 @@ async function renderFixture() {
   await runOk(['-y', '-f', 'lavfi', '-i', 'testsrc=s=360x640:d=2:r=30', '-f', 'lavfi', '-i', 'sine=f=300:d=2', '-shortest', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', src])
   const voice = (await runOk(['-f', 'lavfi', '-i', 'sine=f=600:d=1', '-c:a', 'libmp3lame', '-f', 'mp3', '-'])).stdout
   const blobs: any = createMemoryBlobStore()
-  const plan = await putAddressed(blobs, 'plans', { schema: 'job-plan/1', profile: 'source_shorts', sourceAssetId: 'src_test_000001', variantPlan: { beats: [{ trimStart: 0, trimEnd: 2 }], voiceover: { text: '안녕하세요 오늘의 이야기입니다' } } })
+  const plan = await putAddressed(blobs, 'plans', { schema: 'job-plan/1', profile: 'source_shorts', sourceAssetId: 'src_test_000001', variantPlan: { beats: [{ trimStart: 0, trimEnd: 2 }], audioMode: 'dub', voiceover: { mode: 'timed', lines: [{ start: 0, end: 2, text: '안녕하세요 오늘의 이야기입니다' }], sourceVolume: 0, voiceVolume: 1 } } })
   const payload = { renderSettings: { width: 1080, height: 1920 }, cuts: [{ mediaType: 'source_video', sourceVideo: { trimStart: 0, trimEnd: 2 }, start: 0, duration: 2 }], editorialPlan: { headline: '테스트 제목' }, subtitleEvents: [{ start: 0, end: 2, text: '자막 한 줄' }] }
   const manifestHash = h(JSON.stringify(payload))
   const m = await putAddressed(blobs, 'manifests', { manifestHash, payload, identity: [] })
