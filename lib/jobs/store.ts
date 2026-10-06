@@ -273,7 +273,8 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
         const qcBlocked = job.status === 'WAITING_USER' && job.waitReason === 'QC_BLOCKED' && job.stage === 'AUTO_QC'
         const completed = job.status === 'COMPLETE' && job.stage === 'PACKAGE'
         const awaitingDecision = job.status === 'WAITING_USER' && job.waitReason === 'DECISION' && job.stage === 'DECISION'
-        if (!stages.includes('PLAN') || stages.includes('ASSET') || (!qcBlocked && !completed && !awaitingDecision)) throw new JobError('NOT_PLAN_RECHECKABLE', 'job is not a safe source-first re-plan state')
+        const generativeWisdom = job.profile === 'wisdom'
+        if (!stages.includes('PLAN') || (stages.includes('ASSET') && !generativeWisdom) || (!qcBlocked && !completed && !awaitingDecision)) throw new JobError('NOT_PLAN_RECHECKABLE', 'job is not a safe re-plan state')
         const analyzed = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='ANALYZE' AND status='SUCCEEDED' LIMIT 1`, [job.id])
         if (!analyzed.rows[0]) throw new JobError('PREREQUISITE_MISSING', 'PLAN recheck requires a successful ANALYZE')
         const r = await tx.query(`UPDATE production_jobs SET stage='PLAN', status='QUEUED', wait_reason=NULL, approved_manifest_hash=NULL, run_after=NULL, updated_at=$2::timestamptz WHERE id=$1 RETURNING *`, [job.id, iso(now)])
