@@ -22,7 +22,8 @@ export type VariantSpec = {
   kind?: 'chronological' | 'preview' | 'tight'
   // What the presentation layer kept/dropped for THIS edit (recorded in the PLAN result; never part of job-plan/1)
   presentation?: PresentationReport
-  voiceoverText?: string
+  audioMode?: 'source' | 'dub'
+  voiceoverLines?: Array<{ start: number; end: number; text: string }>
   headline?: string; events?: Array<{ start: number; end: number; text: string }>
   effectCaptions?: Array<Record<string, unknown>>; callouts?: Array<Record<string, unknown>>
   cleanEdgeCrop?: CleanEdgeCrop
@@ -141,7 +142,7 @@ const EFFECT_SLOTS = [{ xPct: 40, yPct: 42 }, { xPct: 60, yPct: 36 }, { xPct: 50
 // hook => persistent top headline; context/payoff => timed explanation captions; effect => short pop text.
 // Cues are placed on the edit (clipped to the beat that contains them), then selected by priority under the screen
 // budget (hook first, never dropped), so nothing is lost by list order or by an arbitrary trim.
-export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<VariantSpec, 'headline' | 'events' | 'effectCaptions' | 'presentation' | 'voiceoverText'> {
+export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<VariantSpec, 'headline' | 'events' | 'effectCaptions' | 'presentation'> {
   const { placed, report } = planPresentation(beats, story.minimalCaptions, { pinHook: (beats as any)[0]?.label === 'preview' })
   const hook = placed.find((c) => c.kind === 'hook')
   const events = placed.filter((c) => c.kind === 'context' || c.kind === 'payoff').map((c) => ({ start: c.srcStart, end: c.srcEnd, text: c.text }))
@@ -151,19 +152,10 @@ export function presentationFor(beats: Beat[], story: StoryAnalysis): Pick<Varia
     start: c.srcStart, end: idx + 1 < fx.length && fx[idx + 1].srcStart > c.srcStart ? Math.min(c.srcEnd, fx[idx + 1].srcStart) : c.srcEnd,
     text: c.text, ...EFFECT_SLOTS[idx % EFFECT_SLOTS.length], fontSizePct: 13, animation: 'pop'
   }))
-  const spokenCues = placed.filter((c) => c.kind === 'context' || c.kind === 'payoff').map((c) => c.text.trim()).filter(Boolean)
-  const maxVoiceChars = Math.max(16, Math.min(180, Math.floor(totalSeconds(beats) * 4.8)))
-  let voiceoverText = ''
-  for (const text of spokenCues) {
-    const next = voiceoverText ? voiceoverText + ' ' + text : text
-    if ([...next].length > maxVoiceChars) break
-    voiceoverText = next
-  }
   return {
     ...(hook ? { headline: hook.text } : {}),
     ...(events.length ? { events } : {}),
     ...(effectCaptions.length ? { effectCaptions } : {}),
-    ...(voiceoverText ? { voiceoverText } : {}),
     presentation: report
   }
 }
@@ -200,17 +192,27 @@ export function planVariants(a: SourceAnalysis, semantic: SemanticResult | null 
   if (!base.length) throw new Error('story analysis left no usable footage')
   const variants: VariantSpec[] = []
   const clean = story.cleanEdgeCrop ? { cleanEdgeCrop: story.cleanEdgeCrop } : {}
-  variants.push({ id: 'v1', label: '추천 · 원인→결말', kind: 'chronological', rationale: 'causal story + grounded Korean presentation layer; off-story footage removed', beats: base, ...clean, ...presentationFor(base, story) })
+  // Two-mode audio policy:
+  // - meaningful/non-silent source audio => keep source at full level, captions only.
+  // - no/mostly-silent source audio => mute source and use timed dub lines.
+  // Ambiguous cases deliberately default to SOURCE to avoid destroying useful natural sound.
+  const audioMode: 'source' | 'dub' = a.media.hasAudio && !a.audio.intentionallySilent ? 'source' : 'dub'
+  const withAudio = (v: VariantSpec): VariantSpec => {
+    if (audioMode === 'source') return { ...v, audioMode }
+    const lines = (v.events || []).map((e) => ({ start: e.start, end: e.end, text: e.text.trim() })).filter((x) => x.text)
+    return { ...v, audioMode, ...(lines.length ? { voiceoverLines: lines } : {}) }
+  }
+  variants.push(withAudio({ id: 'v1', label: '추천 · 원인→결말', kind: 'chronological', rationale: 'causal story + grounded Korean presentation layer; off-story footage removed', beats: base, ...clean, ...presentationFor(base, story) }))
 
   if (story.hookStrategy === 'preview' && story.previewRange) {
     const p = story.previewRange
     const beats = capLength([{ label: 'preview', trimStart: p.start, trimEnd: p.end }, ...base.map((b) => ({ ...b }))], a, storyMaxSeconds(story), [story.payoffRange, p])
-    if (beats[0]?.label === 'preview') variants.push({ id: 'v2', label: '결말 살짝 먼저', kind: 'preview', rationale: `preview hook: ${story.hookReason}`.slice(0, 200), beats, ...clean, ...presentationFor(beats, story) })
+    if (beats[0]?.label === 'preview') variants.push(withAudio({ id: 'v2', label: '결말 살짝 먼저', kind: 'preview', rationale: `preview hook: ${story.hookReason}`.slice(0, 200), beats, ...clean, ...presentationFor(beats, story) }))
   }
 
   const core = subtractIntervals(base.map(asRange).flatMap((r) => [...story.setupRanges, ...story.escalationRanges, story.payoffRange].map((s) => ({ start: Math.max(r.start, s.start), end: Math.min(r.end, s.end) })).filter((x) => x.end > x.start)), [])
   const tight = rangesToBeats(core, 'core')
-  if (tight.length && totalSeconds(tight) >= PLAN_LIMITS.minOutputSeconds) variants.push({ id: 'v3', label: '핵심만 짧게', kind: 'tight', rationale: 'setup, escalation and payoff only with grounded presentation cues', beats: tight, ...clean, ...presentationFor(tight, story) })
+  if (tight.length && totalSeconds(tight) >= PLAN_LIMITS.minOutputSeconds) variants.push(withAudio({ id: 'v3', label: '핵심만 짧게', kind: 'tight', rationale: 'setup, escalation and payoff only with grounded presentation cues', beats: tight, ...clean, ...presentationFor(tight, story) }))
 
   // The recommended edit is always kept (its report says what is missing). Alternatives are only offered when their own
   // presentation is complete: a preview-first or tight cut that loses the headline or leaves the screen unattended
@@ -257,7 +259,8 @@ export function toJobPlan(sourceAssetId: string, v: VariantSpec) {
       profile: v.id,
       beats: v.beats.map((b) => ({ label: b.label, trimStart: b.trimStart, trimEnd: b.trimEnd })),
       ...(v.headline ? { headline: v.headline } : {}),
-      ...(v.voiceoverText ? { voiceover: { text: v.voiceoverText, sourceVolume: 0.28, voiceVolume: 1 } } : {}),
+      audioStrategy: v.audioMode === 'dub' ? 'DUB_REPLACE' : 'SOURCE_SOUND',
+      ...(v.audioMode === 'dub' && v.voiceoverLines?.length ? { voiceover: { mode: 'timed', lines: v.voiceoverLines, sourceVolume: 0, voiceVolume: 1 } } : {}),
       ...(v.events?.length ? { events: v.events, plansTimeDomain: 'source' as const } : {}),
       ...(v.effectCaptions?.length ? { effectCaptions: v.effectCaptions, timeDomain: 'source' as const } : {}),
       ...(v.callouts?.length ? { callouts: v.callouts, plansTimeDomain: 'source' as const } : {}),
