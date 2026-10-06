@@ -47,15 +47,9 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom')throw new StageError('BRIEF_INVALID','invalid wisdom brief')
   let script:any, visualBible:any=null, provider='deterministic', fallbackReason:string|undefined
   if(apiKey){try{
-   let made=await aiPlan(brief,apiKey)
-   let candidate=anchorNamedThinkerVisual(applyVisualBible(made.script,made.visualBible),String(brief.text||'')).script
-   let candidateErrors=validateWisdomScript(candidate,brief)
-   if(candidateErrors.includes('narration.total_too_long')){
-    const repairBrief={...brief,text:`${brief.text}\n\n[MANDATORY LENGTH REPAIR] The draft narration was too long for a natural ${brief.targetSeconds}-second Korean Short. Rewrite more concisely while keeping the hook, concrete situations, turn and payoff. Aim near ${Math.round(brief.targetSeconds*4.6)} total Korean characters across all beat narrations. Do not mention this instruction.`}
-    made=await aiPlan(repairBrief,apiKey)
-    candidate=anchorNamedThinkerVisual(applyVisualBible(made.script,made.visualBible),String(brief.text||'')).script
-    candidateErrors=validateWisdomScript(candidate,brief)
-   }
+   const made=await aiPlan(brief,apiKey)
+   const candidate=anchorNamedThinkerVisual(applyVisualBible(made.script,made.visualBible),String(brief.text||'')).script
+   const candidateErrors=validateWisdomScript(candidate,brief)
    if(candidateErrors.length)throw new Error('AI script validation: '+candidateErrors.join(','))
    script=candidate;visualBible=made.visualBible;provider='openai'
   }catch(e){fallbackReason=e instanceof Error?e.message:String(e)}}
