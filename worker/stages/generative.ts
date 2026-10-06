@@ -1,6 +1,6 @@
 import { sha256, putAddressed } from '../../lib/jobs/blobs.js'
 import { WISDOM_PROFILE } from '../../lib/generative/contracts.js'
-import { deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual, wisdomCaptionEvents } from '../../lib/generative/wisdom.js'
+import { deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual, wisdomCaptionEvents, thinkerDisplayName } from '../../lib/generative/wisdom.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -12,10 +12,14 @@ import { evaluateWisdomSemanticQc } from '../../lib/generative/semanticQc.js'
 import { SHORTS_SCREEN_DNA, screenDnaSegmentArgv, screenDnaSegmentFilter, type AssetGeometryReceipt } from '../../lib/media/screenDna.js'
 import { cacheEntryIsCanonical } from '../../lib/generative/cache.js'
 import { profileFeatures, needFeatures, type FeatureResolver } from '../modules/features.js'
+import * as objectStorage from '../../lib/objectStorage.js'
 
 
-export function wisdomHeadline(title:string){
- const t=String(title||'').trim().replace(/\s+/g,' ')
+export function wisdomHeadline(title:string,topic=''){
+ const thinker=thinkerDisplayName(topic)
+ let source=String(title||'').trim()
+ if(thinker&&!source.includes(thinker)) source=`${thinker}가 말한 ${source}`
+ const t=source.replace(/\s+/g,' ')
  if(!t)return ''
  const split=Math.max(1,Math.min(t.length-1,Math.round(t.length/2)))
  let i=split
@@ -31,10 +35,32 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
  return {
  stage:'PLAN', estimateUsd:()=>0.05,
  inputHash:(job)=>sha256(`gen-plan|${job.profile}|${job.planRef}|wisdom/1`),
- async run({job,blobs}){
+ async run({job,blobs,previous}){
   if(job.profile!=='wisdom') throw new StageError('PROFILE_UNSUPPORTED','generative PLAN only handles wisdom')
   if(!job.planRef) throw new StageError('BRIEF_MISSING','wisdom requires a generative brief')
-  const brief:any=await blobs.getJson(job.planRef)
+  let briefRef=job.planRef
+  let brief:any=await blobs.getJson(briefRef)
+  if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom'){
+   const priorPlan=await previous('PLAN')
+   const preserved=String((priorPlan?.result as any)?.briefRef||'')
+   if(preserved){
+    const recovered:any=await blobs.getJson(preserved)
+    if(recovered?.schema==='generative-brief/1'&&recovered?.profile==='wisdom'){briefRef=preserved;brief=recovered}
+   }
+  }
+  // Legacy Wisdom jobs created before briefRef preservation can still recover the
+  // immutable brief because src_gen_<32hex> is the prefix of the content-addressed brief hash.
+  if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom'){
+   const prefix=String(job.sourceAssetId||'').match(/^src_gen_([0-9a-f]{32})$/)?.[1]||''
+   if(prefix){
+    const page=await objectStorage.list({prefix:`generative-briefs/${prefix}`,limit:2}).catch(()=>null)
+    const match=page?.blobs?.find((x:any)=>/^generative-briefs\/[0-9a-f]{64}\.json$/.test(String(x?.pathname||'')))
+    if(match?.pathname){
+     const recovered:any=await blobs.getJson(match.pathname)
+     if(recovered?.schema==='generative-brief/1'&&recovered?.profile==='wisdom'){briefRef=match.pathname;brief=recovered}
+    }
+   }
+  }
   if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom')throw new StageError('BRIEF_INVALID','invalid wisdom brief')
   let script:any, visualBible:any=null, provider='deterministic', fallbackReason:string|undefined
   if(apiKey){try{
@@ -74,10 +100,10 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
    const start=Number(clock.toFixed(2));clock+=Number(b.durationSec);const end=Number(clock.toFixed(2))
    if(withCaption)captionEvents.push(...captions(b.narration,start,end))
   }
-  const headline=wisdomHeadline(script.title)
+  const headline=wisdomHeadline(script.title,String(brief.text||''))
   const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}],headline,events:captionEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
   const planStored=await putAddressed(blobs,'plans',plan)
-  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,audioPolicy:{bgm:'off',sfx:'off'},semanticQcRef:semanticQcStored.path,semanticQc,beats:script.beats.length,totalSeconds:script.totalSeconds}}
+  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,briefRef,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,audioPolicy:{bgm:'off',sfx:'off'},semanticQcRef:semanticQcStored.path,semanticQc,beats:script.beats.length,totalSeconds:script.totalSeconds,targetSeconds:brief.targetSeconds}}
  }
 }}
 export const generativePlanExecutor=createGenerativePlanExecutor()
@@ -94,11 +120,18 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   const features=(deps.features??profileFeatures)(job); needFeatures(features,['IMAGE','TTS'],'Wisdom ASSET')
   if(!apiKey)throw new StageError('PROVIDER_DOWN','OPENAI_API_KEY is not configured',true)
   const p=await previous('PLAN'); const scriptRef=(p?.result as any)?.scriptRef; if(!scriptRef)throw new StageError('SCRIPT_MISSING','ASSET requires PLAN script')
+  const targetSeconds=Number((p?.result as any)?.targetSeconds||0)
   const planned:any=await blobs.getJson(scriptRef); if(!planned||planned.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
-  // A thinker named in the opening (title/hook/first two narrations) must be drawn in the first cuts. Only that beat's image
-  // prompt can change, so its image is the only cache miss; every other image and all narration/TTS (and timing) are reused.
+  const prior=await previous('ASSET')
+  // New PLANs already contain identity locks. For legacy already-paid ASSET reruns, preserve the
+  // old paid prompts except the one deterministic named-thinker anchor so an upgrade never silently re-buys media.
   const opening=[planned.title,planned.hook,...(planned.beats||[]).slice(0,2).map((b:any)=>b?.narration)].join(' ')
-  const {script,anchoredBeatId}=anchorNamedThinkerVisual(planned,opening)
+  const anchored=anchorNamedThinkerVisual(planned,opening)
+  let script:any=anchored.script, anchoredBeatId=anchored.anchoredBeatId
+  const legacyPaidRerun=!!(prior?.result as any)?.assetSpecRef && !(planned.beats||[]).some((b:any)=>/Identity LOCK:|Recurring protagonist LOCK:/.test(String(b?.imagePrompt||'')))
+  if(legacyPaidRerun){
+   script={...planned,beats:(planned.beats||[]).map((b:any,i:number)=>i===0&&anchoredBeatId?{...b,imagePrompt:anchored.script.beats[0].imagePrompt}:b)}
+  }
   const items:any[]=[]; let bytes=0, generated=0, reused=0
   const cached:Array<{im:any,au:any}>=[]
   for(const b of script.beats){
@@ -110,10 +143,15 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   }
   // Rerun of an already-paid ASSET (ASSET_RECHECK_JOB_ID): the only paid call allowed is the named-thinker anchor image.
   // Any other cache miss would silently re-buy images/TTS and could change timing, so refuse before spending anything.
-  const prior=await previous('ASSET')
-  if((prior?.result as any)?.assetSpecRef){
+  const priorAssetSpecRef=(prior?.result as any)?.assetSpecRef
+  let samePlannedScript=!!priorAssetSpecRef
+  if(priorAssetSpecRef){
+   const priorSpec:any=await blobs.getJson(priorAssetSpecRef).catch(()=>null)
+   if(priorSpec?.scriptRef) samePlannedScript=String(priorSpec.scriptRef)===String(scriptRef||'')
+  }
+  if(priorAssetSpecRef&&samePlannedScript){
    const misses=script.beats.flatMap((b:any,i:number)=>[...(!cached[i].im&&b.id!==anchoredBeatId?[`${b.id}.image`]:[]),...(!cached[i].au?[`${b.id}.tts`]:[])])
-   if(misses.length)throw new StageError('ASSET_RECHECK_WOULD_REGENERATE',`ASSET rerun refuses paid regeneration beyond the named-thinker anchor: ${misses.join(',')}`)
+   if(misses.length)throw new StageError('ASSET_RECHECK_WOULD_REGENERATE',`same-plan ASSET rerun refuses paid regeneration beyond the named-thinker anchor: ${misses.join(',')}`)
   }
   for(const [i,b] of script.beats.entries()){
    if(signal.aborted)throw new Error('aborted')
@@ -158,7 +196,8 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    }
    const list=join(work,'concat.txt');await writeFile(list,segments.map(p=>`file '${p.replaceAll("'","'\\''")}'`).join('\n'))
    const out=join(work,'source.mp4');await runOk(['-y','-f','concat','-safe','0','-i',list,'-c','copy','-movflags','+faststart',out],{signal,timeoutMs:120000})
-   const video=await readFile(out), vh=sha256(video), info=await probe(out), blobPath=`source-collector/generated/${vh}.mp4`
+   const info=await probe(out)
+   const video=await readFile(out), vh=sha256(video), blobPath=`source-collector/generated/${vh}.mp4`
    const actualTotal=Number(Number(info.duration||0).toFixed(2))
    if(!(actualTotal>0)) throw new StageError('GENERATED_DURATION_INVALID','generated concat duration is invalid')
    const plannedTotal=items.reduce((sum:number,x:any)=>sum+Number(x.durationSec||0),0)
@@ -173,7 +212,9 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    const timedTotal=actualTotal
    const timedManifest={...manifest,items,actualDurationSec:actualTotal}
    const timedStored=await putAddressed(blobs,'generative-assets',timedManifest)
-   const timedPlan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:timedTotal}],headline:wisdomHeadline(script.title),events:timedEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
+   const priorPlanRun:any=await previous('PLAN')
+   const priorBrief:any=priorPlanRun?.result?.briefRef?await blobs.getJson(String(priorPlanRun.result.briefRef)):null
+   const timedPlan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:timedTotal}],headline:wisdomHeadline(script.title,String(priorBrief?.text||'')),events:timedEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
    const timedPlanStored=await putAddressed(blobs,'plans',timedPlan)
    await blobs.putBytes(blobPath,video,'video/mp4')
    // Execution receipt: the exact geometry command this attempt ran and the bytes it produced (verified by AUTO_QC).

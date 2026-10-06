@@ -4,6 +4,7 @@
 //   hook    -> persistent top headline (exactly one, mandatory, never dropped by any budget)
 //   payoff  -> timed caption over the payoff (priority right after the hook)
 //   context -> timed short explanation captions at story changes
+//   point   -> short dialogue/reaction punch, shown large in the visual center
 //   effect  -> short pop word (onomatopoeia/mimetic). NOT DRAWN: the Common Shorts Screen DNA has no zone for it (the
 //              centre is visual only), so it gets no budget, no rhythm credit and is never selected.
 // Budget (screen messages incl. the headline): 6 — unchanged; the two former effect slots are context captions now, so
@@ -12,13 +13,14 @@
 // longest stretch with nothing new on screen wins.
 import type { Range } from './story.js'
 
-export type CueKind = 'hook' | 'context' | 'payoff' | 'effect'
+export type CueKind = 'hook' | 'context' | 'payoff' | 'point' | 'effect'
 export type Cue = { kind: CueKind; start: number; end: number; text: string; basis: string }
 
 export const PRESENTATION_LIMITS = {
   hook: 1,
   contexts: 4,
   payoffs: 1,
+  points: 2,
   effects: 4,                // per-impact pop words (퍽!) drawn large inside the visual window; own budget, not messages
   totalMessages: 6,          // hook + payoff + contexts (effects are counted separately above)
   eventsMax: 5,              // context + payoff (timed explanation captions)
@@ -26,9 +28,10 @@ export const PRESENTATION_LIMITS = {
   maxDynamicGapSec: 5.5,     // longest allowed stretch without a NEW timed message/effect (output time)
   explanationMinTotalSec: 10, // edits this long need at least one context/payoff explanation, not only a hook/effects
   minCueSec: 0.6,            // a clipped cue shorter than this is not readable
+  minPointSec: 0.45,
   minEffectSec: 0.4,
   minEffectGapSec: 0.2,       // two impacts closer than this are one hit
-  maxHookChars: 20, maxCaptionChars: 20, maxEffectChars: 8, maxHeadlineChars: 24
+  maxHookChars: 20, maxCaptionChars: 20, maxPointChars: 18, maxEffectChars: 8, maxHeadlineChars: 24
 } as const
 
 export const minDynamicFor = (totalSec: number) => (totalSec >= 12 ? 2 : 1)
@@ -61,7 +64,7 @@ export function selectCues(placed: PlacedCue[], total: number): { kept: PlacedCu
   if (hooks[0]) kept.push(hooks[0])
   for (const h of hooks.slice(1)) dropped.push({ cue: h, reason: 'only one hook/headline is allowed' })
 
-  const caps: Record<Exclude<CueKind, 'hook'>, number> = { payoff: L.payoffs, context: L.contexts, effect: L.effects }
+  const caps: Record<Exclude<CueKind, 'hook'>, number> = { payoff: L.payoffs, point: L.points, context: L.contexts, effect: L.effects }
   const count = (k: CueKind) => kept.filter((c) => c.kind === k).length
   const timed = () => kept.filter((c) => c.kind !== 'hook').map((c) => c.outStart)
   const budgetLeft = (kind: CueKind) => (kind === 'effect' ? Infinity : L.totalMessages - kept.filter((c) => c.kind !== 'effect').length)
@@ -86,6 +89,7 @@ export function selectCues(placed: PlacedCue[], total: number): { kept: PlacedCu
     for (const c of rest) dropped.push({ cue: c, reason: count(kind) >= caps[kind] ? `at most ${caps[kind]} ${kind} message(s)` : 'screen-message budget exhausted' })
   }
   take(placed, 'payoff', false)
+  take(placed, 'point', false)
   take(placed, 'context', true)
   // effects follow the action: every impact in time order (the first N hits, not the N that best fill gaps)
   take([...placed].sort((a, b) => a.outStart - b.outStart), 'effect', false)
@@ -103,7 +107,7 @@ export function placeCue(beats: EditBeat[], cue: Cue): { placed: PlacedCue | nul
     // A preview clip repeats footage that is shown again in story order; timed cues belong to the story occurrence.
     if (b.label !== 'preview' && cue.start >= b.trimStart - 0.01 && cue.start < b.trimEnd - 0.05) {
       const end = Math.min(cue.end, b.trimEnd)
-      const need = cue.kind === 'effect' ? PRESENTATION_LIMITS.minEffectSec : cue.kind === 'hook' ? 0 : Math.min(PRESENTATION_LIMITS.minCueSec, (cue.end - cue.start) * 0.6)
+      const need = cue.kind === 'effect' ? PRESENTATION_LIMITS.minEffectSec : cue.kind === 'point' ? PRESENTATION_LIMITS.minPointSec : cue.kind === 'hook' ? 0 : Math.min(PRESENTATION_LIMITS.minCueSec, (cue.end - cue.start) * 0.6)
       if (end - cue.start < need) return { placed: null, reason: `only ${r2(end - cue.start)}s of it remains inside the edit` }
       return { placed: { ...cue, start: cue.start, end, srcStart: cue.start, srcEnd: end, outStart: r2(clock + Math.max(0, cue.start - b.trimStart)) } }
     }

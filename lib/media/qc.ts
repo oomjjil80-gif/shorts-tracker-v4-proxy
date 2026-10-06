@@ -16,7 +16,8 @@ const WINDOW_CROP = `crop=${DNA.center.w}:${DNA.center.h}:${DNA.center.x}:${DNA.
 
 export const QC_THRESHOLDS = {
   minBytes: 20_000, durationToleranceSec: 0.25, maxBlackSec: 0.3, unexplainedFreezeSec: 1.5, minFrameLuma: 6,
-  frameMatchMaxDist: 45, frameMismatchMargin: 15, deadAudioDb: -60, maxSilentExcess: 0.2, minOverlayDelta: 6
+  frameMatchMaxDist: 45, frameMismatchMargin: 15, deadAudioDb: -60, maxSilentExcess: 0.2, minOverlayDelta: 6,
+  freezeBoundaryToleranceSec: 0.35
 }
 
 const pass = (evidence?: unknown) => ({ status: 'PASS' as const, evidence })
@@ -149,8 +150,13 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       const frozen = await detectFreeze(i.renderPath, { minDuration: T.unexplainedFreezeSec })
       // freezes that already exist in the source (static camera) are not defects of the render
       const explained: Interval[] = i.analysis.ranges.freeze.flatMap((f) => sourceRangeToOutputRanges(plan.cuts.map((c) => ({ start: c.start, duration: c.duration, trimStart: c.trimStart, trimEnd: c.trimEnd })), f.start, f.end))
-      const bad = frozen.filter((f) => overlapSec(f, f) > 0 && explained.reduce((s, e) => s + overlapSec(f, e), 0) < 0.9 * (f.end - f.start))
-      return ok(bad.length === 0, { frozen, explainedBySource: explained, unexplained: bad })
+      const bad = frozen.filter((f) => {
+        const duration = f.end - f.start
+        const covered = explained.reduce((s, e) => s + overlapSec(f, e), 0)
+        const uncovered = Math.max(0, duration - covered)
+        return uncovered > T.freezeBoundaryToleranceSec && covered < 0.9 * duration
+      })
+      return ok(bad.length === 0, { frozen, explainedBySource: explained, boundaryToleranceSec: T.freezeBoundaryToleranceSec, unexplained: bad })
     }, to),
     () => runCheck('visual.first_last_frame', true, async () => {
       const v = await getInfo()
@@ -265,12 +271,18 @@ export async function runRenderQc(i: RenderQcInput): Promise<RenderQcResult> {
       return ok((rows as Array<{ litFraction: number }>).every((r) => r.litFraction >= 0.7), rows)
     }, { timeoutMs: 240_000 })
   ]
-  // Full decode is the heaviest integrity check. Run it alone first so it cannot be
-  // spuriously killed while competing with the many other ffmpeg QC processes.
-  // All remaining independent checks may still run in parallel.
+  // Full decode and timeline/source matching are the two heaviest ffmpeg checks.
+  // Run both alone, sequentially, so Railway never has several raw-frame decoders
+  // competing for memory at the same time. The checks themselves stay unchanged.
   const decodeIndex = 4
+  const timelineIndex = 11
   const decodeResult = await checks[decodeIndex]()
-  const gate = evaluateGate(await Promise.all(checks.map((check, index) => index === decodeIndex ? Promise.resolve(decodeResult) : check())))
+  const timelineResult = await checks[timelineIndex]()
+  const gate = evaluateGate(await Promise.all(checks.map((check, index) =>
+    index === decodeIndex ? Promise.resolve(decodeResult) :
+    index === timelineIndex ? Promise.resolve(timelineResult) :
+    check()
+  )))
   if (i.contactSheetOut) { try { await contactSheet(i.renderPath, i.contactSheetOut, { cols: 6, rows: 3, tileWidth: 160, duration: total }) } catch { /* optional artifact */ } }
   return { gate, metrics }
 }

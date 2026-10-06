@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 // canonicalize() comes from the shared compiler so plan/manifest addresses are stable across repos.
 import { canonicalize } from '../tracker-core/renderManifest.js'
+import * as objectStorage from '../objectStorage.js'
 
 export interface JobBlobStore {
   // Create-once by default. `overwrite` is only for the few mutable POINTERS (e.g. generative-sources/<id>.json); without
@@ -41,16 +42,16 @@ export function createMemoryBlobStore(): JobBlobStore & { files: Map<string, str
 
 // Private Vercel Blob, create-once (allowOverwrite:false). "already exists" is success: the path is content-addressed.
 export function createVercelJobBlobStore(deps?: { put?: any; get?: any; head?: any; issueSignedToken?: any; presignUrl?: any }): JobBlobStore {
-  const lazy = async () => (deps?.put && deps?.get ? deps : await import('@vercel/blob'))
+  const lazy = async () => (deps?.put && deps?.get ? deps : objectStorage)
   const exists = async (path: string): Promise<boolean> => {
     const mod: any = await lazy()
     if (typeof mod.head === 'function') {
       try {
-        await mod.head(path)
-        return true
+        const found = await mod.head(path)
+        return Boolean(found)
       } catch (e: any) {
         const detail = `${String(e?.name || '')} ${String(e?.code || '')} ${String(e?.message || e)}`
-        if (/BlobNotFound|not.?found|404/i.test(detail)) return false
+        if (/BlobNotFound|not.?found|does not exist|404/i.test(detail)) return false
         throw e
       }
     }
@@ -98,6 +99,7 @@ export function createVercelJobBlobStore(deps?: { put?: any; get?: any; head?: a
     },
     async presign(path, validForMs = 60 * 60 * 1000) {
       const mod: any = await lazy()
+      if (typeof mod.presign === 'function') return mod.presign(path, validForMs)
       if (!mod.issueSignedToken || !mod.presignUrl) return null
       const token = await mod.issueSignedToken({ pathname: path, operations: ['get'] })
       const validUntil = Date.now() + validForMs

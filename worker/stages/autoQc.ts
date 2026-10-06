@@ -234,7 +234,7 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
       return {
         outputRef: (lead ?? results[0]).renderRef, outputHash: (lead ?? results[0]).renderHash,
         result: { variants: results, recommendedVariantId: lead?.variantId ?? null, passing: passing.length, publishable: publishable.length, semantic: { status: semantic.status, reason: semantic.reason } },
-        wait: passing.length ? undefined : 'QC_BLOCKED'
+        wait: publishable.length ? undefined : 'QC_BLOCKED'
       }
     } finally { await rm(work, { recursive: true, force: true }); await file.cleanup() }
   }
