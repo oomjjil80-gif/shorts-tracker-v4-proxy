@@ -42,7 +42,7 @@ const continuityHtml = String.raw`<!doctype html>
 main{max-width:760px;margin:0 auto;padding:18px 14px 80px}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
 h1{font-size:22px;margin:0}.pill{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:6px 9px;color:var(--muted)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin:12px 0}
-label{display:block;font-weight:800;margin-bottom:8px}input{width:100%;font-size:16px;background:#0f1119;color:var(--text);border:1px solid var(--line);border-radius:12px;padding:13px}
+label{display:block;font-weight:800;margin-bottom:8px}input,textarea,select{width:100%;font-size:16px;background:#0f1119;color:var(--text);border:1px solid var(--line);border-radius:12px;padding:13px}textarea{min-height:120px;resize:vertical}.formrow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.sectionTitle{font-size:19px;font-weight:900;margin:2px 0 12px}
 button{width:100%;border:0;border-radius:12px;padding:13px 14px;margin-top:10px;font-weight:800;font-size:16px;background:var(--accent);color:white}
 button.secondary{background:#282c3b}button:disabled{opacity:.5}.muted{color:var(--muted);font-size:13px;line-height:1.45;white-space:pre-wrap}
 .ok{color:var(--ok)}.bad{color:var(--bad)}video{width:100%;max-height:58vh;background:#000;border-radius:12px;margin-top:10px}
@@ -65,6 +65,28 @@ a{color:#bcaeff}.hidden{display:none}.title{font-weight:900;font-size:17px;margi
 <div id="sourceMeta" class="muted"></div>
 <video id="sourceVideo" controls playsinline preload="metadata"></video>
 <button id="make">이 소스로 새 영상 만들기</button>
+</section>
+
+<section class="card">
+<div class="sectionTitle">지혜 쇼폼</div>
+<div class="formrow">
+<select id="wisdomKind"><option value="topic">주제로 만들기</option><option value="text">원문으로 만들기</option></select>
+<select id="wisdomSeconds"><option value="45">45초</option><option value="55" selected>55초</option><option value="65">65초</option><option value="75">75초</option></select>
+</div>
+<textarea id="wisdomText" placeholder="예: 쇼펜하우어가 말한 인간관계의 지혜"></textarea>
+<button id="makeWisdom">지혜 쇼폼 만들기</button>
+<div id="wisdomStatus" class="muted" style="margin-top:10px"></div>
+</section>
+
+<section class="card">
+<div class="sectionTitle">지혜 롱폼</div>
+<div class="formrow">
+<select id="longKind"><option value="topic">주제로 만들기</option><option value="text">원문으로 만들기</option></select>
+<select id="longSeconds"><option value="1200">20분</option><option value="1500" selected>25분</option><option value="1800">30분</option></select>
+</div>
+<textarea id="longText" placeholder="예: 나이가 들수록 버려야 할 인간관계 7가지"></textarea>
+<button id="makeLong">지혜 롱폼 만들기</button>
+<div id="longStatus" class="muted" style="margin-top:10px"></div>
 </section>
 
 <section id="jobCard" class="card hidden">
@@ -129,6 +151,25 @@ $('make').onclick=async()=>{
   }catch(e){status($('collectStatus'),'제작 시작 실패: '+e.message,false)}
   finally{$('make').disabled=false;$('make').textContent='이 소스로 새 영상 만들기'}
 };
+async function startGenerated(profile,input,statusId,buttonId){
+  const text=String(input.text||'').trim();
+  if(text.length<4)return status($(statusId),'4자 이상 입력해 주세요.',false);
+  const btn=$(buttonId),old=btn.textContent;btn.disabled=true;btn.textContent='제작 시작 중…';
+  $('variants').innerHTML='';$('final').innerHTML='';previewRenderKey='';
+  try{
+    const d=await post({taskType:'job_create',profile,input:{...input,text},idempotencyKey:profile+'-'+Date.now()+'-'+randomHex(8)},true);
+    currentJobId=d.job.id;localStorage.setItem(LS_JOB,currentJobId);$('jobCard').classList.remove('hidden');
+    status($(statusId),'✓ 제작 시작',true);startPoll();await refreshJob();$('jobCard').scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){status($(statusId),'제작 시작 실패: '+e.message,false)}
+  finally{btn.disabled=false;btn.textContent=old}
+}
+$('makeWisdom').onclick=()=>startGenerated('wisdom',{
+  kind:$('wisdomKind').value,text:$('wisdomText').value,targetSeconds:Number($('wisdomSeconds').value)
+},'wisdomStatus','makeWisdom');
+$('makeLong').onclick=()=>startGenerated('wisdom_longform',{
+  kind:$('longKind').value,text:$('longText').value,targetSeconds:Number($('longSeconds').value)
+},'longStatus','makeLong');
+
 function startPoll(){clearInterval(pollTimer);pollTimer=setInterval(refreshJob,4000)}
 async function loadPreviews(job){
   try{
@@ -161,11 +202,19 @@ async function choose(job,variantId){
 }
 async function loadFinal(job){
   try{
-    const [pre,pkg]=await Promise.all([getJob(job.id,'job_preview'),getJob(job.id,'job_package')]);
+    const pkg=await getJob(job.id,'job_package');
+    let pre={previews:[]};
+    if(job.profile!=='wisdom_longform'){try{pre=await getJob(job.id,'job_preview')}catch{}}
     const chosen=(pre.previews||[]).find(x=>x.approved)||(pre.previews||[]).find(x=>x.recommended)||(pre.previews||[])[0];
+    const esc=s=>String(s||'').replace(/[<&]/g,m=>m==='<'?'&lt;':'&amp;');
+    const videoUrl=pkg?.videoUrl||chosen?.url||null;
     let html='<div class="variant"><div class="title">완성</div>';
-    if(chosen?.url)html+='<video controls playsinline src="'+chosen.url.replace(/"/g,'&quot;')+'"></video>';
-    if(pkg?.upload?.title)html+='<div class="muted" style="margin-top:10px">'+String(pkg.upload.title).replace(/[<&]/g,m=>m==='<'?'&lt;':'&amp;')+'</div>';
+    if(videoUrl)html+='<video controls playsinline src="'+String(videoUrl).replace(/"/g,'&quot;')+'"></video>';
+    if(pkg?.thumbnailUrl)html+='<img src="'+String(pkg.thumbnailUrl).replace(/"/g,'&quot;')+'" alt="썸네일" style="width:100%;border-radius:12px;margin-top:10px"/>';
+    if(pkg?.upload?.title)html+='<div class="title" style="margin-top:12px">'+esc(pkg.upload.title)+'</div>';
+    if(pkg?.upload?.description)html+='<div class="muted" style="margin-top:8px">'+esc(pkg.upload.description)+'</div>';
+    if(pkg?.upload?.tags?.length)html+='<div class="muted" style="margin-top:8px">태그: '+esc(pkg.upload.tags.join(', '))+'</div>';
+    if(pkg?.upload?.pinnedComment)html+='<div class="muted" style="margin-top:8px">고정댓글: '+esc(pkg.upload.pinnedComment)+'</div>';
     html+='</div>';$('final').innerHTML=html;
   }catch(e){$('jobDetail').textContent+='\n완성본 준비 확인 중…'}
 }
@@ -173,7 +222,8 @@ async function refreshJob(){
   if(!currentJobId)return;
   try{
     const d=await getJob(currentJobId);const j=d.job;$('jobCard').classList.remove('hidden');
-    $('jobState').textContent=j.status==='COMPLETE'?'완성':j.status==='FAILED'?'실패':j.status==='WAITING_USER'?'선택 대기':'제작 중 · '+j.stage;
+    const profileName=j.profile==='wisdom'?'지혜 쇼폼':j.profile==='wisdom_longform'?'지혜 롱폼':'소스 쇼츠';
+    $('jobState').textContent=profileName+' · '+(j.status==='COMPLETE'?'완성':j.status==='FAILED'?'실패':j.status==='WAITING_USER'?'선택 대기':'제작 중 · '+j.stage);
     $('jobDetail').textContent=(j.error?j.error+'\n':'')+'현재 단계: '+j.stage+(j.waitReason?' · '+j.waitReason:'');
     if(j.status==='WAITING_USER'&&j.waitReason==='DECISION'){await loadPreviews(j);clearInterval(pollTimer);pollTimer=null}
     if(j.status==='COMPLETE'){clearInterval(pollTimer);pollTimer=null;await loadFinal(j)}
