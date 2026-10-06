@@ -251,7 +251,10 @@ export function validateVariant(v: VariantSpec, a: SourceAnalysis): string[] {
   if ((v.events || []).length > PLAN_LIMITS.maxEvents) errors.push(`more than ${PLAN_LIMITS.maxEvents} explanation captions`)
   if ((v.effectCaptions || []).length > PLAN_LIMITS.maxEffects) errors.push(`more than ${PLAN_LIMITS.maxEffects} effect captions`)
   for (const e of v.events || []) if (!e?.text || [...String(e.text)].length > 20 || !(e.end > e.start)) errors.push('invalid event')
-  for (const e of v.effectCaptions || []) if (!e?.text || [...String(e.text)].length > 8 || !(Number(e.end) > Number(e.start))) errors.push('invalid effect caption')
+  for (const e of v.effectCaptions || []) {
+    const maxChars = e?.role === 'point' ? 18 : 8
+    if (!e?.text || [...String(e.text)].length > maxChars || !(Number(e.end) > Number(e.start))) errors.push(e?.role === 'point' ? 'invalid point caption' : 'invalid effect caption')
+  }
   if (v.headline && [...String(v.headline)].length > 24) errors.push('headline too long')
   if (v.cleanEdgeCrop) {
     const { topPct, bottomPct, confidence, basis } = v.cleanEdgeCrop
