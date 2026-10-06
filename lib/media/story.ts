@@ -21,13 +21,14 @@ export const STORY_LIMITS = {
   maxRawCues: 12,
   maxCaptionChars: PRESENTATION_LIMITS.maxCaptionChars,
   maxEffectChars: PRESENTATION_LIMITS.maxEffectChars,
+  maxPointChars: PRESENTATION_LIMITS.maxPointChars,
   maxTailAfterPayoff: 1.5
 }
 
 export type StoryType = (typeof STORY_TYPES)[number]
 export type ExcludeReason = (typeof EXCLUDE_REASONS)[number]
 export type Range = { start: number; end: number }
-export type StoryCaptionKind = 'hook' | 'context' | 'payoff' | 'effect'
+export type StoryCaptionKind = 'hook' | 'context' | 'payoff' | 'point' | 'effect'
 export type StoryCaption = { kind: StoryCaptionKind; start: number; end: number; text: string; basis: string }
 export type CleanEdgeCrop = { topPct: number; bottomPct: number; confidence: number; basis: string }
 export const CLEAN_EDGE_LIMITS = { topMax: 0.24, bottomMax: 0.24, totalMax: 0.32, minConfidence: 0.8 } as const
@@ -159,13 +160,13 @@ export function validateStory(raw: any, a: SourceAnalysis, meta: { model: string
   }
 
   const captions: StoryCaption[] = []
-  const allowedKinds: StoryCaptionKind[] = ['hook', 'context', 'payoff', 'effect']
+  const allowedKinds: StoryCaptionKind[] = ['hook', 'context', 'payoff', 'point', 'effect']
   for (const [i, c] of (Array.isArray(raw.minimalCaptions) ? raw.minimalCaptions : []).entries()) {
     const text = String(c?.text ?? '').trim(), basis = String(c?.basis ?? '').trim()
     const r = range(c, `minimalCaptions[${i}]`)
     if (!r) continue
-    if (!allowedKinds.includes(c.kind)) { errors.push(`minimalCaptions[${i}]: kind must be hook|context|payoff|effect`); continue }
-    const maxChars = c.kind === 'effect' ? STORY_LIMITS.maxEffectChars : STORY_LIMITS.maxCaptionChars
+    if (!allowedKinds.includes(c.kind)) { errors.push(`minimalCaptions[${i}]: kind must be hook|context|payoff|point|effect`); continue }
+    const maxChars = c.kind === 'effect' ? STORY_LIMITS.maxEffectChars : c.kind === 'point' ? STORY_LIMITS.maxPointChars : STORY_LIMITS.maxCaptionChars
     if (!text || [...text].length > maxChars) { errors.push(`minimalCaptions[${i}]: text must be 1..${maxChars} chars`); continue }
     if (!basis) { errors.push(`minimalCaptions[${i}]: missing visual basis (caption would be invented)`); continue }
     if (/[\n{}]/.test(text)) { errors.push(`minimalCaptions[${i}]: invalid characters`); continue }
