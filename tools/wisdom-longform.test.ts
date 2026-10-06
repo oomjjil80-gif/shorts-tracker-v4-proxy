@@ -52,6 +52,12 @@ const SAMPLE: LongformScript = {
   ]
 }
 
+// a stored-free research stand-in (no paid web search in tests): enough fragments for any number of sections
+async function fakeResearch({ topic, sections }: { topic: string; sections: number }) {
+  const fragments = Array.from({ length: sections * 2 }, (_, k) => ({ id: `f${k + 1}`, type: 'traditional_story' as const, claim: `claim ${k + 1}`, story: `story ${k + 1}`, sourceTitle: 'Source', sourceUrl: `https://www.accesstoinsight.org/f${k + 1}.html`, confidence: 'medium' as const, usableAsDirectBuddhaQuote: false, storyValue: 3 }))
+  return { bundle: { topic, model: 'gpt-6-luna', researchedAt: '2026-01-01T00:00:00Z', fragments, sectionMap: Array.from({ length: sections }, (_, i) => ({ section: i + 1, fragmentIds: [`f${2 * i + 1}`, `f${2 * i + 2}`], purpose: `part ${i + 1}` })) }, requests: 1, webSearchCalls: 1 }
+}
+
 // A planner (outline -> sections -> upload text) that serves a fixed script, split into exactly the number of sections
 // the PLAN asks for. Counts every call so checkpoint reuse can be proven.
 function plannerFromScript(script: any, calls: Record<string, number> = {}) {
@@ -187,7 +193,7 @@ test('one gate for every path: no model -> PROVIDER_DOWN; a broken section never
   const calls: Record<string, number> = {}
   const broken = plannerFromScript(SAMPLE, calls)
   broken.section = async () => { calls.section = (calls.section || 0) + 1; return { sentences: [{ say: '말', show: ['한 줄'], accent: '', color: 'white' }] } as any }
-  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', planner: broken as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true)
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: broken as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true)
   assert.equal(calls.section, 2) // the draft and its one repair, both rejected
   // PACKAGE refuses a script whose upload text does not pass
   const bad = await putAddressed(blobs, 'generative-scripts', { ...clone(SAMPLE), metadata: { description: 'x', tags: [], hashtags: [], pinnedComment: '' } })
@@ -237,7 +243,7 @@ test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 M
   let imageCalls = 0, ttsCalls = 0
   const img = await standInImage(d)
   const executors = withLongform([], [
-    createLongformPlanExecutor({ apiKey: 'k', planner: sample(d) as any }),
+    createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: sample(d) as any }),
     createLongformAssetExecutor({ apiKey: 'k', image: async () => { imageCalls++; return { bytes: img, contentType: 'image/jpeg', provider: 'standin', model: 'still' } }, tts: async (t: string) => { ttsCalls++; return standInTts(t) } }),
     longformRenderExecutor, longformPackageExecutor
   ])
@@ -354,7 +360,7 @@ for (const minutes of [25, 60, 120]) test(`T${minutes === 25 ? 1 : minutes === 6
   const planner: any = longPlanner(calls)
   const outline = planner.outline; planner.outline = async (b: any, n: number) => { seen.push({ target: b.targetSeconds, n }); return outline(b, n) }
   const section = planner.section; planner.section = async (i: any) => { seen.push({ chars: i.targetChars }); return section(i) }
-  const out: any = await createLongformPlanExecutor({ apiKey: 'k', planner }).run({ job: { id: 'j', profile: 'wisdom_longform', planRef: job.planRef ?? json.job.planRef }, blobs, signal: new AbortController().signal } as any)
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner }).run({ job: { id: 'j', profile: 'wisdom_longform', planRef: job.planRef ?? json.job.planRef }, blobs, signal: new AbortController().signal } as any)
   const size = sectionPlan(minutes * 60)
   assert.deepEqual(seen[0], { target: minutes * 60, n: size.sections })
   assert.equal(seen[1].chars, size.charsPerSection)
@@ -454,19 +460,19 @@ test('T13 + T14: a 120-minute script is written section by section; a failure mi
   assert.ok(size.sections >= 20, `120 min -> ${size.sections} sections`)
   const calls: Record<string, number> = {}
   // section 10 fails (twice = draft + repair) -> retryable SECTION_INVALID; sections 1-9 are already checkpointed
-  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', planner: longPlanner(calls, { index: 9, times: 2 }) as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true && /section-010/.test(e.message))
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: longPlanner(calls, { index: 9, times: 2 }) as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true && /section-010/.test(e.message))
   assert.equal(calls.outline, 1); assert.equal(calls.section, 9 + 2)
   const ck = `longform-plan-checkpoints/${createHash('sha256').update(`${ctx.job.planRef}|${LONGFORM_PLANNER_VERSION}`).digest('hex')}`
   for (let i = 1; i <= 9; i++) assert.ok(await blobs.getJson(`${ck}/section-${String(i).padStart(3, '0')}.json`), `section ${i} checkpoint`)
   // the retry: the outline and sections 1-9 are reused, only 10..N are written, nothing starts from scratch
   const again: Record<string, number> = {}
-  const out: any = await createLongformPlanExecutor({ apiKey: 'k', planner: longPlanner(again) as any }).run(ctx)
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: longPlanner(again) as any }).run(ctx)
   assert.equal(again.outline, undefined); for (let i = 1; i <= 9; i++) assert.equal(again[`section${i}`], undefined, `section ${i} reused`)
   assert.equal(again.section, size.sections - 9); assert.equal(again.metadata, 1)
   assert.equal(out.result.checkpoints.reused.length, 1 + 9); assert.equal(out.result.sections, size.sections)
   // a full rerun reuses everything (0 planner calls)
   const third: Record<string, number> = {}
-  await createLongformPlanExecutor({ apiKey: 'k', planner: longPlanner(third) as any }).run(ctx)
+  await createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: longPlanner(third) as any }).run(ctx)
   assert.deepEqual(third, {})
 })
 
@@ -477,7 +483,79 @@ test('Buddha topic: the representative figure stays the Buddha (never a generic 
   assert.equal(longformFigure('나이 들수록 멀리할 사람', 'a calm elder'), 'a calm elder')
   assert.equal(thumbnailFigure('부처님 말씀', 'x'), 'x') // the Shorts thumbnail rule (wisdom.ts) is not touched
   const { ctx, blobs } = await planJob(1500)
-  const out: any = await createLongformPlanExecutor({ apiKey: 'k', planner: longPlanner({}) as any }).run(ctx)
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: longPlanner({}) as any }).run(ctx)
   const script: any = await blobs.getJson(out.result.scriptRef)
   assert.equal(script.figure.imagePrompt, BUDDHA_FIGURE) // the planner suggested "an old Western sage": replaced
+})
+
+// ======================= RESEARCH (once per topic, cached, never repeated by a retry) =======================
+import { openAiLongformResearcher, researchPath } from '../lib/generative/longformResearch.js'
+import { researchJson } from './researchFixture.js'
+
+// the real researcher behind a fake Responses API: every request it makes is counted
+function researchApi(steps: Array<{ status: number; body?: any }> = [{ status: 200 }]) {
+  const calls: any[] = []
+  const f = (async (_u: string, init: any) => {
+    calls.push(JSON.parse(init.body))
+    const s = steps[Math.min(calls.length - 1, steps.length - 1)]
+    if (s.status !== 200) return new Response(JSON.stringify(s.body ?? {}), { status: s.status })
+    return new Response(JSON.stringify({ model: 'gpt-6-luna', output: [{ type: 'web_search_call', action: { type: 'search' } }, { type: 'message', content: [{ type: 'output_text', text: JSON.stringify(researchJson()) }] }] }), { status: 200 })
+  }) as any
+  return { research: openAiLongformResearcher(f, async () => {}), calls }
+}
+
+test('RESEARCH MISS -> 1 request, bundle stored; HIT (another job, same topic) -> 0 requests; outline/sections get the bundle', async () => {
+  const { ctx, blobs, brief } = await planJob(3600)
+  const api = researchApi(), logs: string[] = [], seen: any[] = []
+  const planner: any = longPlanner({})
+  const outline = planner.outline; planner.outline = async (b: any, n: number, k: string, r: any, research: any) => { seen.push({ outline: research?.fragments.length }); return outline(b, n) }
+  const section = planner.section; planner.section = async (i: any) => { seen.push({ index: i.index, ids: i.fragments.map((x: any) => x.id) }); return section(i) }
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: api.research, log: (l) => logs.push(l), planner }).run(ctx)
+  assert.equal(api.calls.length, 1)
+  const ref = researchPath(brief.text, 11)
+  const stored: any = await blobs.getJson(ref)
+  assert.equal(stored.fragments.length, 24); assert.equal(stored.model, 'gpt-6-luna')
+  assert.deepEqual(out.result.research, { ref, cache: 'MISS', model: 'gpt-6-luna', requests: 1, webSearchCalls: 1, fragments: 24 })
+  assert.match(logs.join('\n'), /\[longform-research\] .*"cache":"MISS".*"requests":1/); assert.doesNotMatch(logs.join('\n'), /Bearer|"k"/)
+  // the outline saw the whole bundle; each section only its own 2 fragments from the section map
+  assert.deepEqual(seen[0], { outline: 24 })
+  for (const s of seen.slice(1)) assert.deepEqual(s.ids, stored.sectionMap[s.index].fragmentIds)
+  // a second job on the same topic (different brief/job): research reused, 0 requests
+  const b2 = await putAddressed(blobs, 'generative-briefs', { ...brief, voice: undefined })
+  const api2 = researchApi(), logs2: string[] = []
+  const out2: any = await createLongformPlanExecutor({ apiKey: 'k', research: api2.research, log: (l) => logs2.push(l), planner: longPlanner({}) as any }).run({ ...ctx, job: { ...ctx.job, id: 'j2', planRef: b2.path } })
+  assert.equal(api2.calls.length, 0); assert.equal(out2.result.research.cache, 'HIT'); assert.equal(out2.result.research.requests, 0)
+  assert.match(logs2.join('\n'), /"cache":"HIT"/)
+})
+
+test('RESEARCH is not repeated by an OUTLINE or SECTION failure: the retry resumes from the stored research', async () => {
+  const { ctx } = await planJob(3600)
+  const api = researchApi()
+  const failing: any = longPlanner({}); failing.outline = async () => { throw new Error('provider timeout') }
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: api.research, log: () => {}, planner: failing }).run(ctx), (e: any) => e.code === 'OUTLINE_INVALID' && e.retryable === true)
+  assert.equal(api.calls.length, 1)
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: api.research, log: () => {}, planner: longPlanner({}, { index: 4, times: 2 }) as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true)
+  assert.equal(api.calls.length, 1, 'outline retry: 0 research requests')
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: api.research, log: () => {}, planner: longPlanner({}) as any }).run(ctx)
+  assert.equal(api.calls.length, 1, 'section retry: 0 research requests'); assert.equal(out.result.research.cache, 'HIT')
+  assert.equal(out.result.checkpoints.reused.includes('outline'), true)
+})
+
+test('cost guard: credit_balance_exhausted / quota stop the job at once (no retry, nothing stored); planner billing errors are not repaired', async () => {
+  const { ctx, blobs, brief } = await planJob(3600)
+  const api = researchApi([{ status: 429, body: { error: { code: 'credit_balance_exhausted', message: 'Your credit balance is too low' } } }, { status: 200 }])
+  const logs: string[] = []
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: api.research, log: (l) => logs.push(l), planner: longPlanner({}) as any }).run(ctx), (e: any) => e.code === 'PROVIDER_BILLING' && e.retryable === false)
+  assert.equal(api.calls.length, 1); assert.equal(await blobs.getJson(researchPath(brief.text, 11)), null)
+  assert.match(logs.join('\n'), /"code":"credit_balance_exhausted"/)
+  // a transient failure that persists: 2 requests, then a NON-retryable failure (the stage retry does not pay again)
+  const flaky = researchApi([{ status: 502 }])
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: flaky.research, log: () => {}, planner: longPlanner({}) as any }).run(ctx), (e: any) => e.code === 'RESEARCH_FAILED' && e.retryable === false)
+  assert.equal(flaky.calls.length, 2)
+  // research stored, then the outline call hits the quota: 1 outline call (no repair), non-retryable
+  const ok = researchApi(), calls: Record<string, number> = {}
+  const planner: any = longPlanner(calls)
+  planner.outline = async () => { calls.outline = (calls.outline || 0) + 1; throw Object.assign(new Error('OpenAI billing stop (HTTP 429): insufficient_quota'), { stop: true, code: 'insufficient_quota' }) }
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: ok.research, log: () => {}, planner }).run(ctx), (e: any) => e.code === 'PROVIDER_BILLING' && e.retryable === false)
+  assert.equal(calls.outline, 1)
 })

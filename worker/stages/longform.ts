@@ -3,11 +3,12 @@
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { sha256, sha256File, putAddressed } from '../../lib/jobs/blobs.js'
+import { sha256, sha256File, putAddressed, type JobBlobStore } from '../../lib/jobs/blobs.js'
 import { runOk, probe } from '../../lib/media/ffmpeg.js'
 import { FONTS_DIR } from '../../lib/media/ass.js'
 import { openAiLongformImage, openAiTts } from '../../lib/generative/providers.js'
 import { openAiLongformPlanner, type LongformPlanner, type LongformOutline, type LongformSectionDraft, type LongformMetadataDraft } from '../../lib/generative/longformPlanner.js'
+import { openAiLongformResearcher, researchPath, researchErrors, sectionFragments, RESEARCH_MODEL, type LongformResearcher, type ResearchBundle } from '../../lib/generative/longformResearch.js'
 import {
   LONGFORM_PROFILE_ID, LONGFORM, validateLongformScript, cardErrors, sentencesOf, narrationOf, longformImagePrompt, ttsChunks, cardTimeline, sectionPlan, longformFigure,
   longformCardsAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
@@ -36,7 +37,7 @@ export function withLongform(executors: StageExecutor[], longform: StageExecutor
 }
 
 // Bumped whenever the planning steps change, so old checkpoints are never mixed into a new plan.
-export const LONGFORM_PLANNER_VERSION = 'longform-sections/1'
+export const LONGFORM_PLANNER_VERSION = 'longform-sections/2-research'
 const outlineErrors = (o: any, sections: number): string[] => {
   const e: string[] = []
   for (const k of ['title', 'hook']) if (!String(o?.[k] || '').trim()) e.push(k)
@@ -57,11 +58,45 @@ const sectionErrors = (d: any): string[] => {
   ])
 }
 
-// PLAN: outline -> each section -> upload text. Every step is stored as a checkpoint (keyed by the brief + planner
+// A billing/auth provider error (insufficient_quota, credit_balance_exhausted, 401/403) stops the job at once: no repair
+// attempt, no stage retry.
+const stopError = (e: any) => new StageError(/quota|credit_balance/.test(String(e?.code)) ? 'PROVIDER_BILLING' : 'PROVIDER_STOP', String(e?.message || e).slice(0, 300), false, { providerCode: e?.code ?? null })
+
+// RESEARCH: stored under a key of (version, sections, topic) and reused unconditionally; made at most once per topic
+// (one request + one retry only on a transient error). Any research failure is not retried by the stage.
+export async function longformResearchFor(o: { blobs: JobBlobStore; topic: string; sections: number; apiKey: string; researcher: LongformResearcher; log: (line: string) => void; signal?: AbortSignal }): Promise<{ research: ResearchBundle; ref: string; log: Record<string, unknown> }> {
+  const ref = researchPath(o.topic, o.sections)
+  let research = await o.blobs.getJson<ResearchBundle>(ref).catch(() => null)
+  if (research && researchErrors(research, o.sections).length) research = null
+  const rLog: Record<string, unknown> = { cache: research ? 'HIT' : 'MISS', model: research?.model ?? RESEARCH_MODEL, requests: 0, webSearchCalls: null }
+  if (!research) {
+    if (o.signal?.aborted) throw new Error('aborted')
+    try {
+      const r = await o.researcher({ topic: o.topic, sections: o.sections }, o.apiKey)
+      Object.assign(rLog, { model: r.bundle.model, requests: r.requests, webSearchCalls: r.webSearchCalls })
+      const errs = researchErrors(r.bundle, o.sections)
+      if (errs.length) { rLog.code = 'RESEARCH_INVALID'; throw new StageError('RESEARCH_INVALID', errs.join(', '), false) }
+      await o.blobs.putJson(ref, r.bundle, { overwrite: true })
+      research = r.bundle
+    } catch (e: any) {
+      if (!rLog.code) Object.assign(rLog, { requests: e?.requests ?? (rLog.requests || 1), code: e?.code ?? 'RESEARCH_FAILED' })
+      o.log(`[longform-research] ${JSON.stringify({ ...rLog, ref })}`)
+      if (e instanceof StageError) throw e
+      if (e?.stop) throw stopError(e)
+      throw new StageError('RESEARCH_FAILED', String(e?.message || e).slice(0, 300), false, { providerCode: e?.code ?? null })
+    }
+  }
+  rLog.fragments = research.fragments.length
+  o.log(`[longform-research] ${JSON.stringify({ ...rLog, ref })}`)
+  return { research, ref, log: rLog }
+}
+
+// PLAN: research (once per topic, cached) -> outline -> each section -> upload text. Every step is stored as a checkpoint (keyed by the brief + planner
 // version) the moment it passes its checks; a retry reuses every stored step and only writes what is missing, so a long
 // script is never regenerated from the start. targetSeconds only sizes the script (number and length of sections).
-export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: LongformPlanner } = {}): StageExecutor {
-  const apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? '', planner = deps.planner ?? openAiLongformPlanner()
+export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: LongformPlanner; research?: LongformResearcher; log?: (line: string) => void } = {}): StageExecutor {
+  const apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? '', planner = deps.planner ?? openAiLongformPlanner(), researcher = deps.research ?? openAiLongformResearcher()
+  const log = deps.log ?? ((line: string) => console.log(line))
   return {
     stage: 'PLAN', estimateUsd: () => 0.3,
     inputHash: (job) => sha256(`longform-plan|${job.planRef}|wisdom_longform/1`),
@@ -81,16 +116,17 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         for (let attempt = 0; attempt < 2; attempt++) {
           if (signal?.aborted) throw new Error('aborted')
           try { const v = await make(attempt ? errs : undefined); errs = errorsOf(v); if (!errs.length) { await blobs.putJson(`${ck}/${name}.json`, v, { overwrite: true }); made.push(name); return v } }
-          catch (e: any) { errs = [String(e?.message || e)] }
+          catch (e: any) { if (e?.stop) throw stopError(e); errs = [String(e?.message || e)] }
         }
         // retryable: the stage retry resumes from the stored steps
         throw new StageError(code, `${name}: ${errs.slice(0, 20).join(', ')}`, true)
       }
-      const outline = await step<LongformOutline>('outline', 'OUTLINE_INVALID', (r) => planner.outline(brief, size.sections, apiKey, r), (o) => outlineErrors(o, size.sections))
+      const { research, ref: rRef, log: rLog } = await longformResearchFor({ blobs, topic: brief.text, sections: size.sections, apiKey, researcher, log, signal })
+      const outline = await step<LongformOutline>('outline', 'OUTLINE_INVALID', (r) => planner.outline(brief, size.sections, apiKey, r, research), (o) => outlineErrors(o, size.sections))
       const sections: LongformScript['sections'] = []
       let tail: string[] = []
       for (let i = 0; i < outline.sections.length; i++) {
-        const d = await step<LongformSectionDraft>(`section-${String(i + 1).padStart(3, '0')}`, 'SECTION_INVALID', (r) => planner.section({ brief, outline, index: i, previousTail: tail, targetChars: size.charsPerSection, repair: r }, apiKey), sectionErrors)
+        const d = await step<LongformSectionDraft>(`section-${String(i + 1).padStart(3, '0')}`, 'SECTION_INVALID', (r) => planner.section({ brief, outline, index: i, previousTail: tail, targetChars: size.charsPerSection, repair: r, fragments: sectionFragments(research, i) }, apiKey), sectionErrors)
         sections.push({ id: String(outline.sections[i].id || `s${i + 1}`), sentences: d.sentences })
         tail = d.sentences.slice(-2).map((x) => x.say)
       }
@@ -104,7 +140,7 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       const errors = validateLongformScript(script, brief)
       if (errors.length) throw new StageError('SCRIPT_INVALID', errors.join(','))
       const stored = await putAddressed(blobs, 'generative-scripts', script)
-      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: LONGFORM_PROFILE_ID, provider: 'openai', scriptRef: stored.path, sections: sections.length, sentences: sentencesOf(script).length, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, validation: errors } }
+      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: LONGFORM_PROFILE_ID, provider: 'openai', scriptRef: stored.path, sections: sections.length, sentences: sentencesOf(script).length, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, validation: errors } }
     }
   }
 }
