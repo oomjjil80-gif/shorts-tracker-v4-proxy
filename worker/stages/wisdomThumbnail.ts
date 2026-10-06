@@ -33,7 +33,9 @@ export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string;
         const script: any = pr.scriptRef ? await blobs.getJson(pr.scriptRef) : null
         if (!script) throw new Error('script missing')
         const bible: any = pr.visualBibleRef ? await blobs.getJson(pr.visualBibleRef) : null
-        const brief: any = job.planRef ? await blobs.getJson(job.planRef) : null
+        // PLAN replaces job.planRef with the generated plan, so use the preserved original briefRef for publishing copy.
+        // This keeps high-value named thinkers (e.g. 쇼펜하우어) available even when the generated on-video title is generic.
+        const brief: any = pr.briefRef ? await blobs.getJson(String(pr.briefRef)) : null
         const topic = String(brief?.text || script.title || ''), narration = (script.beats || []).map((b: any) => b.narration).join(' ')
         const check = (k: any) => ({ copy: thumbnail ? thumbnailCopyErrors(k.lines, script.title) : [], upload: uploadMetadataErrors(k.metadata || ({} as any), { narration, format: 'shorts' }) })
         let made = await kit({ topic, title: script.title, hook: script.hook, narration }, apiKey), errs = check(made)
