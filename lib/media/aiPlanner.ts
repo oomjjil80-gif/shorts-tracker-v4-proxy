@@ -6,7 +6,7 @@ import { EXCLUDE_REASONS, OFFSTORY_REASONS, PACING_REASONS, STORY_LIMITS, STORY_
 import { planPresentation, PRESENTATION_LIMITS } from './presentation.js'
 import { storyBeats, totalSeconds } from './plan.js'
 
-export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/16'
+export const AI_PLANNER_PROMPT_VERSION = 'source-story-analysis/17'
 
 const range = { type: 'object', additionalProperties: false, required: ['start', 'end'], properties: { start: { type: 'number' }, end: { type: 'number' } } }
 const captionBody = {
@@ -77,7 +77,7 @@ export function storyPrompt(a: SourceAnalysis): string {
     '  REPEAT RULE: a second person/animal copying, reacting, following, interrupting or joining is NOT repeat when that new participant changes the humor/meaning; keep it as escalation/payoff.',
     '- hookStrategy: chronological by default. preview ONLY if a <=3s escalation/payoff preview is independently understandable and returning to the start will not confuse.',
     `- openingHook is REQUIRED and structurally separate from the other captions. It must start at/just after causalStart, within the first ~1 second of the clean edit, contain short Korean text (<=${STORY_LIMITS.maxCaptionChars} chars) of AT LEAST TWO words separated by a space (it is shown as an exactly two-line headline), and be grounded in what is visibly happening. It becomes the persistent top headline. Never leave it blank.`,
-    `- minimalCaptions contains 1–9 ADDITIONAL grounded cues only (at most 5 context/payoff captions plus the per-hit effect cues); do NOT put another hook in this array. At most ${PRESENTATION_LIMITS.totalMessages} screen messages are ever shown (hook 1, payoff ${PRESENTATION_LIMITS.payoffs}, context ${PRESENTATION_LIMITS.contexts}); the hook always has priority. Cues must lie INSIDE the selected story (after causalStart, before recommendedEnd) and NEVER on excluded footage. Any stretch of the final edit longer than ${PRESENTATION_LIMITS.maxDynamicGapSec}s without a new timed cue is rejected.`,
+    `- minimalCaptions contains 1–9 ADDITIONAL grounded cues only (context/payoff explanation, 0–2 point reactions/dialogue punches, plus per-hit effect cues); do NOT put another hook in this array. At most ${PRESENTATION_LIMITS.totalMessages} screen messages are ever shown (hook 1, payoff ${PRESENTATION_LIMITS.payoffs}, context ${PRESENTATION_LIMITS.contexts}); the hook always has priority. Cues must lie INSIDE the selected story (after causalStart, before recommendedEnd) and NEVER on excluded footage. Any stretch of the final edit longer than ${PRESENTATION_LIMITS.maxDynamicGapSec}s without a new timed cue is rejected.`,
     `  * Add 1–${PRESENTATION_LIMITS.contexts} kind="context" cues (<=${STORY_LIMITS.maxCaptionChars} chars), spaced across meaningful story changes. They are short explanatory captions, not transcript subtitles.`,
     '  * CAPTION WRITING RULE (context/payoff): NEVER restate what the viewer can already see (bad: "여자가 남자를 때린다", "아이가 기어간다"). Each caption must ADD something the picture alone does not give: context (who/why), curiosity (what happens next), the relationship between the people, the meaning of the moment, or the payoff\'s punch. If a caption adds none of these, leave it out. Write short spoken Korean (one breath, 1–2 short lines), like a friend commenting, not a narrator describing.',
     `  * Add optional kind="payoff" over the actual payoff (<=${STORY_LIMITS.maxCaptionChars} chars) when it sharpens the punchline.`,
