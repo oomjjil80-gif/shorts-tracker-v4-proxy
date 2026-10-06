@@ -92,15 +92,16 @@ export async function resolveSourceShortsNarration(o:{
       }
       filters.push(`${timed.map((_:any,i:number)=>`[d${i}]`).join('')}amix=inputs=${timed.length}:duration=longest:dropout_transition=0:normalize=0,atrim=duration=${total.toFixed(3)}[mix]`)
       await runOk(['-y',...inputs,'-filter_complex',filters.join(';'),' -map'.trim(),'[mix]','-c:a','pcm_s16le','-ar','44100','-ac','2',composite],{signal,timeoutMs:120000})
-      bytes=await import('node:fs/promises').then(m=>m.readFile(composite))
-      const audioHash=sha256(bytes)
+      const generatedBytes=await import('node:fs/promises').then(m=>m.readFile(composite))
+      bytes=generatedBytes
+      const audioHash=sha256(generatedBytes)
       const ref=`source-shorts-assets/audio/${audioHash}.wav`
-      await blobs.putBytes(ref,bytes,'audio/wav')
+      await blobs.putBytes(ref,generatedBytes,'audio/wav')
       meta={ref,sha256:audioHash,contentType:'audio/wav',provider:'openai',model:GENERAL_SHORTS_DEFAULT_VOICE_PROFILE.model,voiceProfileId:GENERAL_SHORTS_DEFAULT_VOICE_PROFILE.id,lines:refs}
       await blobs.putJson(cachePath,meta)
       generated=true
     } else {
-      await writeFile(composite,bytes)
+      await writeFile(composite,bytes as Buffer)
     }
 
     const info=await probe(composite)
