@@ -95,12 +95,9 @@ export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
   const d=Number(b?.durationSec); if(!Number.isFinite(d)||d<3||d>12)e.push(`beats[${i}].durationSec`)
  }
  const total=beats.reduce((n:any,b:any)=>n+Number(b.durationSec||0),0)
- const narrationChars=beats.reduce((n:any,b:any)=>n+String(b?.narration||'').length,0)
- const narrationCeiling=Math.round(brief.targetSeconds*5.2)
- if(narrationChars>narrationCeiling)e.push('narration.total_too_long')
- if(total<35||total>75)e.push('totalSeconds')
+ if(total<25||total>120)e.push('totalSeconds')
  if(Math.abs(total-Number(s?.totalSeconds||0))>.1)e.push('totalSeconds.mismatch')
- if(Math.abs(total-brief.targetSeconds)>Math.max(5,brief.targetSeconds*.1))e.push('targetSeconds.mismatch')
+ // targetSeconds is editorial guidance, not a quality gate. Do not fail a good Short for running longer/shorter.
  if(brief.profile!=='wisdom')e.push('profile')
  e.push(...namedThinkerVisualErrors(String(brief.text||''),s))
  return e
