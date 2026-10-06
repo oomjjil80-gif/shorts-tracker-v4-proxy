@@ -12,6 +12,7 @@ import { evaluateWisdomSemanticQc } from '../../lib/generative/semanticQc.js'
 import { SHORTS_SCREEN_DNA, screenDnaSegmentArgv, screenDnaSegmentFilter, type AssetGeometryReceipt } from '../../lib/media/screenDna.js'
 import { cacheEntryIsCanonical } from '../../lib/generative/cache.js'
 import { profileFeatures, needFeatures, type FeatureResolver } from '../modules/features.js'
+import * as objectStorage from '../../lib/objectStorage.js'
 
 
 export function wisdomHeadline(title:string){
@@ -42,6 +43,19 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
    if(preserved){
     const recovered:any=await blobs.getJson(preserved)
     if(recovered?.schema==='generative-brief/1'&&recovered?.profile==='wisdom'){briefRef=preserved;brief=recovered}
+   }
+  }
+  // Legacy Wisdom jobs created before briefRef preservation can still recover the
+  // immutable brief because src_gen_<32hex> is the prefix of the content-addressed brief hash.
+  if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom'){
+   const prefix=String(job.sourceAssetId||'').match(/^src_gen_([0-9a-f]{32})$/)?.[1]||''
+   if(prefix){
+    const page=await objectStorage.list({prefix:`generative-briefs/${prefix}`,limit:2}).catch(()=>null)
+    const match=page?.blobs?.find((x:any)=>/^generative-briefs\/[0-9a-f]{64}\.json$/.test(String(x?.pathname||'')))
+    if(match?.pathname){
+     const recovered:any=await blobs.getJson(match.pathname)
+     if(recovered?.schema==='generative-brief/1'&&recovered?.profile==='wisdom'){briefRef=match.pathname;brief=recovered}
+    }
    }
   }
   if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom')throw new StageError('BRIEF_INVALID','invalid wisdom brief')
