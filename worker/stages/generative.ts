@@ -1,6 +1,6 @@
 import { sha256, putAddressed } from '../../lib/jobs/blobs.js'
 import { WISDOM_PROFILE } from '../../lib/generative/contracts.js'
-import { deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual, wisdomCaptionEvents } from '../../lib/generative/wisdom.js'
+import { deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual, wisdomCaptionEvents, thinkerDisplayName } from '../../lib/generative/wisdom.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -15,8 +15,12 @@ import { profileFeatures, needFeatures, type FeatureResolver } from '../modules/
 import * as objectStorage from '../../lib/objectStorage.js'
 
 
-export function wisdomHeadline(title:string){
- const t=String(title||'').trim().replace(/\s+/g,' ')
+export function wisdomHeadline(title:string,topic=''){
+ const thinker=thinkerDisplayName(topic)
+ let source=String(title||'').trim()
+ if(thinker&&!source.includes(thinker)) source=`${thinker}가 말한 ${source}`
+ const t=source
+ const t=source.replace(/\s+/g,' ')
  if(!t)return ''
  const split=Math.max(1,Math.min(t.length-1,Math.round(t.length/2)))
  let i=split
@@ -97,7 +101,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
    const start=Number(clock.toFixed(2));clock+=Number(b.durationSec);const end=Number(clock.toFixed(2))
    if(withCaption)captionEvents.push(...captions(b.narration,start,end))
   }
-  const headline=wisdomHeadline(script.title)
+  const headline=wisdomHeadline(script.title,String(brief.text||''))
   const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}],headline,events:captionEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
   const planStored=await putAddressed(blobs,'plans',plan)
   return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,briefRef,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,audioPolicy:{bgm:'off',sfx:'off'},semanticQcRef:semanticQcStored.path,semanticQc,beats:script.beats.length,totalSeconds:script.totalSeconds,targetSeconds:brief.targetSeconds}}
@@ -204,7 +208,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    const timedTotal=actualTotal
    const timedManifest={...manifest,items,actualDurationSec:actualTotal}
    const timedStored=await putAddressed(blobs,'generative-assets',timedManifest)
-   const timedPlan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:timedTotal}],headline:wisdomHeadline(script.title),events:timedEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
+   const timedPlan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:timedTotal}],headline:wisdomHeadline(script.title,String((await blobs.getJson(String((await previous('PLAN'))?.result?.briefRef||'')) as any)?.text||'')),events:timedEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
    const timedPlanStored=await putAddressed(blobs,'plans',timedPlan)
    await blobs.putBytes(blobPath,video,'video/mp4')
    // Execution receipt: the exact geometry command this attempt ran and the bytes it produced (verified by AUTO_QC).
