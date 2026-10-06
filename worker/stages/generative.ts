@@ -77,7 +77,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   const headline=wisdomHeadline(script.title)
   const plan={schema:'job-plan/1',profile:'source_shorts',sourceAssetId:job.sourceAssetId,variantPlan:{profile:'wisdom-v1',beats:[{label:'generated-wisdom',trimStart:0,trimEnd:script.totalSeconds}],headline,events:captionEvents,plansTimeDomain:'output',useNarration:false,audioPolicy:{bgm:'off',sfx:'off',reason:'wisdom-v1 keeps generated narration intelligible; music/effects require an explicit later policy'}}}
   const planStored=await putAddressed(blobs,'plans',plan)
-  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,audioPolicy:{bgm:'off',sfx:'off'},semanticQcRef:semanticQcStored.path,semanticQc,beats:script.beats.length,totalSeconds:script.totalSeconds}}
+  return {outputRef:planStored.path,outputHash:planStored.sha256,planRef:planStored.path,result:{provider,fallbackReason,profile:WISDOM_PROFILE,scriptRef:stored.path,visualBibleRef:bibleStored?.path??null,audioPolicy:{bgm:'off',sfx:'off'},semanticQcRef:semanticQcStored.path,semanticQc,beats:script.beats.length,totalSeconds:script.totalSeconds,targetSeconds:brief.targetSeconds}}
  }
 }}
 export const generativePlanExecutor=createGenerativePlanExecutor()
@@ -94,6 +94,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   const features=(deps.features??profileFeatures)(job); needFeatures(features,['IMAGE','TTS'],'Wisdom ASSET')
   if(!apiKey)throw new StageError('PROVIDER_DOWN','OPENAI_API_KEY is not configured',true)
   const p=await previous('PLAN'); const scriptRef=(p?.result as any)?.scriptRef; if(!scriptRef)throw new StageError('SCRIPT_MISSING','ASSET requires PLAN script')
+  const targetSeconds=Number((p?.result as any)?.targetSeconds||0)
   const planned:any=await blobs.getJson(scriptRef); if(!planned||planned.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
   // A thinker named in the opening (title/hook/first two narrations) must be drawn in the first cuts. Only that beat's image
   // prompt can change, so its image is the only cache miss; every other image and all narration/TTS (and timing) are reused.
@@ -157,8 +158,21 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
     segments.push(op)
    }
    const list=join(work,'concat.txt');await writeFile(list,segments.map(p=>`file '${p.replaceAll("'","'\\''")}'`).join('\n'))
-   const out=join(work,'source.mp4');await runOk(['-y','-f','concat','-safe','0','-i',list,'-c','copy','-movflags','+faststart',out],{signal,timeoutMs:120000})
-   const video=await readFile(out), vh=sha256(video), info=await probe(out), blobPath=`source-collector/generated/${vh}.mp4`
+   let out=join(work,'source.mp4');await runOk(['-y','-f','concat','-safe','0','-i',list,'-c','copy','-movflags','+faststart',out],{signal,timeoutMs:120000})
+   let info=await probe(out)
+   const rawTotal=Number(info.duration||0)
+   // Soft duration correction only when a generated narration stretches noticeably beyond the requested length.
+   // For a 55s request, 50-60s is accepted as natural. If TTS pushes it beyond ~60s, speed the already-synced
+   // finished source only enough to bring it back to target+5s, capped at 10% so the voice never sounds rushed.
+   if(targetSeconds>0&&rawTotal>targetSeconds+5){
+    const speed=Math.min(1.10,rawTotal/(targetSeconds+5))
+    if(speed>1.005){
+     const paced=join(work,'source-paced.mp4')
+     await runOk(['-y','-i',out,'-filter_complex',`[0:v]setpts=PTS/${speed.toFixed(6)}[v];[0:a]atempo=${speed.toFixed(6)}[a]`,'-map','[v]','-map','[a]','-c:v','libx264','-preset','veryfast','-threads','4','-c:a','aac','-ar','44100','-ac','2','-movflags','+faststart',paced],{signal,timeoutMs:180000})
+     out=paced;info=await probe(out)
+    }
+   }
+   const video=await readFile(out), vh=sha256(video), blobPath=`source-collector/generated/${vh}.mp4`
    const actualTotal=Number(Number(info.duration||0).toFixed(2))
    if(!(actualTotal>0)) throw new StageError('GENERATED_DURATION_INVALID','generated concat duration is invalid')
    const plannedTotal=items.reduce((sum:number,x:any)=>sum+Number(x.durationSec||0),0)
