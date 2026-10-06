@@ -118,9 +118,15 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   // Rerun of an already-paid ASSET (ASSET_RECHECK_JOB_ID): the only paid call allowed is the named-thinker anchor image.
   // Any other cache miss would silently re-buy images/TTS and could change timing, so refuse before spending anything.
   const prior=await previous('ASSET')
-  if((prior?.result as any)?.assetSpecRef){
+  const priorAssetSpecRef=(prior?.result as any)?.assetSpecRef
+  let samePlannedScript=false
+  if(priorAssetSpecRef){
+   const priorSpec:any=await blobs.getJson(priorAssetSpecRef).catch(()=>null)
+   samePlannedScript=String(priorSpec?.scriptRef||'')===String(scriptRef||'')
+  }
+  if(priorAssetSpecRef&&samePlannedScript){
    const misses=script.beats.flatMap((b:any,i:number)=>[...(!cached[i].im&&b.id!==anchoredBeatId?[`${b.id}.image`]:[]),...(!cached[i].au?[`${b.id}.tts`]:[])])
-   if(misses.length)throw new StageError('ASSET_RECHECK_WOULD_REGENERATE',`ASSET rerun refuses paid regeneration beyond the named-thinker anchor: ${misses.join(',')}`)
+   if(misses.length)throw new StageError('ASSET_RECHECK_WOULD_REGENERATE',`same-plan ASSET rerun refuses paid regeneration beyond the named-thinker anchor: ${misses.join(',')}`)
   }
   for(const [i,b] of script.beats.entries()){
    if(signal.aborted)throw new Error('aborted')
