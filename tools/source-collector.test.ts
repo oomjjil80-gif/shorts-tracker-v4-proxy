@@ -20,7 +20,7 @@ test('Douyin does not require or call Cobalt; stores exactly the returned MP4 by
     ...assetDeps, env: {},
     resolveDouyin: async url => { assert.equal(url, sourceUrl); return resolved },
     fetch: async (url, options) => { requests.push(String(url)); assert.equal(new Headers(options?.headers).get('Authorization'), null); return new Response(mp4) },
-    put: async (path, body, options) => { saved = body as Buffer; assert.equal(options.access, 'private'); assert.match(path, /^source-collector\//); return { url: 'https://example.invalid/blob' } as any }
+    put: async (path, body, options) => { saved = body as Buffer; assert.equal(options?.access, 'private'); assert.match(path, /^source-collector\//); return { url: 'https://example.invalid/blob' } as any }
   })
   assert.deepEqual(requests, [mediaUrl])
   assert.deepEqual(saved, mp4)

@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express'
 import { Readable } from 'node:stream'
 import { runVisualDirector } from '../lib/visualDirectorCore.js'
-import { get, issueSignedToken, presignUrl } from '@vercel/blob'
+import { get, presign as presignObject, storageBackend } from '../lib/objectStorage.js'
 import { collectSource } from '../lib/sourceCollector.js'
 import { getSourceAsset, listSourceAssets } from '../lib/sourceAssetRegistry.js'
 import { extractSourceFrame, extractSourceFrames, extractSourceContactSheet, parseSecondsList } from '../lib/sourceFrames.js'
@@ -10,7 +10,9 @@ import { analyzeRegisteredReference } from '../lib/reference/serverPipeline.js'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
+  const configuredOrigin = String(process.env.TRACKER_WEB_ORIGIN || '').trim().replace(/\/$/, '')
   const allowed =
+    (configuredOrigin !== '' && origin === configuredOrigin) ||
     /^http:\/\/localhost(?::\d+)?$/i.test(origin) ||
     /^http:\/\/127\.0\.0\.1(?::\d+)?$/i.test(origin) ||
     /^https:\/\/tracker\.vercel\.app$/i.test(origin) ||
@@ -27,10 +29,9 @@ function setCors(req: Request, res: Response) {
 
 async function makeSourcePlaybackUrl(pathname:string){
   if(!pathname.startsWith('source-collector/')) throw new Error('invalid source path')
-  const token=await issueSignedToken({pathname,operations:['get']})
-  const validUntil=Date.now()+60*60*1000
-  const signed=await presignUrl(token,{pathname,operation:'get',validUntil,access:'private'})
-  return {playbackUrl:signed.presignedUrl,validUntil}
+  const signed=await presignObject(pathname,60*60*1000)
+  if(!signed) throw new Error('source playback URL unavailable')
+  return {playbackUrl:signed.url,validUntil:signed.validUntil}
 }
 
 const LONGFORM_CHAPTER_SCHEMA = {
@@ -234,7 +235,7 @@ export default async function handler(req: Request, res: Response) {
         visualDirector: true,
         longformChapterFallback: true,
         sourceCollector: true,
-        sourceAssetRegistry: 'private-blob-v1',
+        sourceAssetRegistry: storageBackend() + '-v1',
         sourceCollectorConfigured: Boolean(process.env.COBALT_API_URL),
         sourceCollectorResolvers: { douyin: 'browser-v1', otherPlatforms: 'cobalt' },
         sourceFrameExtraction: 'ffmpeg-server-v1'

@@ -28,6 +28,14 @@ export async function openAiWisdomTts(text:string,apiKey:string,f:FetchLike=fetc
  return openAiTts(text,apiKey,DEFAULT_VOICE_PROFILE,f)
 }
 
+// Wisdom Shorts click thumbnail: a PORTRAIT (9:16-friendly) picture for the 1080x1920 thumbnail. Beat images untouched.
+export async function openAiPortraitImage(prompt:string,apiKey:string,f:FetchLike=fetch):Promise<GeneratedBinary>{
+ if(!apiKey)throw new Error('OPENAI_API_KEY is not configured')
+ const r=await checked(await f('https://api.openai.com/v1/images/generations',{method:'POST',headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'},body:JSON.stringify({model:'gpt-image-1-mini',prompt,size:'1024x1536',quality:'medium',output_format:'jpeg',n:1})}),'portrait image generation')
+ const j:any=await r.json();const b64=j?.data?.[0]?.b64_json
+ if(!b64)throw new Error('image generation returned no b64_json')
+ return {bytes:Buffer.from(b64,'base64'),contentType:'image/jpeg',provider:'openai',model:'gpt-image-1-mini'}
+}
 // Wisdom Longform: ONE landscape image per video (composition is forced by longformImagePrompt). Shorts images untouched.
 export async function openAiLongformImage(prompt:string,apiKey:string,f:FetchLike=fetch):Promise<GeneratedBinary>{
  if(!apiKey)throw new Error('OPENAI_API_KEY is not configured')

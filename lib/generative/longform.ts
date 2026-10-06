@@ -7,12 +7,16 @@ import { FONT_FAMILY, assTime, headAdvanceEm } from '../media/ass.js'
 import { VIDEO_ENCODER_THREADS } from '../media/render.js'
 import { thumbnailCopyErrors } from './wisdomThumbnail.js'
 import { uploadMetadataErrors, uploadPackageText } from './uploadPackage.js'
+import { thinkerFor } from './wisdom.js'
+import { resolveLongformVoice, type LongformVoiceChoice, type LongformVoiceKey } from './voiceProfile.js'
 
 export const LONGFORM_PROFILE_ID = 'wisdom_longform'
 export const LONGFORM = {
   canvas: { w: 1920, h: 1080 }, thumb: { w: 1280, h: 720 }, fps: 30,
-  // the Longform contract: 20-30 minutes. A `sample` brief (E2E verification only, never sent by the app) may be short.
-  targetSeconds: { min: 1200, max: 1800, default: 1500 }, productionSeconds: { min: 900, max: 2100 }, sampleSeconds: { min: 30, max: 300 }, lengthTolerance: 0.15,
+  // targetSeconds only sizes the script the planner writes; it is never a pass/fail condition on the result.
+  targetSeconds: { default: 1500 },
+  // long scripts are written section by section (each section a checkpoint), ~5-6 minutes of narration each
+  plan: { sectionChars: 2200, minSections: 3 },
   // the text column: left 60% of the frame (figure lives in the right 40%); every card is 2-3 lines with a coloured accent
   text: { x: 100, maxWidth: 1050, basePx: 150, minPx: 84, minLines: 2, maxLines: 3, maxLineChars: 14 },
   ttsChunkChars: 1200,
@@ -23,7 +27,7 @@ export const ACCENTS = { red: '#FF3B30', purple: '#B36BFF', green: '#4CFF7A', ye
 export const CARD_ACCENTS = ['red', 'purple', 'green', 'yellow'] as const
 export type AccentColor = keyof typeof ACCENTS
 
-export type LongformBrief = { schema: 'generative-brief/1'; profile: 'wisdom_longform'; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true }
+export type LongformBrief = { schema: 'generative-brief/1'; profile: 'wisdom_longform'; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; voice?: { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
 // one narration sentence and the card shown while it is spoken
 export type LongformSentence = { say: string; show: string[]; accent: string; color: AccentColor }
 export type LongformScript = {
@@ -40,29 +44,33 @@ export function normalizeLongformBrief(input: any): LongformBrief {
   if (kind !== 'topic' && kind !== 'text') throw new Error('input.kind must be topic or text')
   const text = String(input?.text || '').replace(/\s+/g, ' ').trim()
   if (text.length < 4 || text.length > 30000) throw new Error('input.text must be 4..30000 characters')
-  const sample = input?.sample === true, range = sample ? LONGFORM.sampleSeconds : LONGFORM.targetSeconds
+  const sample = input?.sample === true
+  // any running time the user picks (no min/max); only a non-number, zero or negative value is refused
   const targetSeconds = Number(input?.targetSeconds ?? LONGFORM.targetSeconds.default)
-  if (!Number.isFinite(targetSeconds) || targetSeconds < range.min || targetSeconds > range.max) throw new Error(`targetSeconds must be ${range.min}..${range.max} for wisdom_longform${sample ? ' sample' : ''}`)
-  return { schema: 'generative-brief/1', profile: 'wisdom_longform', kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds, ...(sample ? { sample: true as const } : {}) }
+  if (!Number.isFinite(targetSeconds) || targetSeconds <= 0) throw new Error('targetSeconds must be a positive number of seconds')
+  const voice = resolveLongformVoice(input?.voiceProfile, text)
+  return { schema: 'generative-brief/1', profile: 'wisdom_longform', kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds: Math.round(targetSeconds), ...(sample ? { sample: true as const } : {}), voice }
 }
 export const longformBriefHash = (b: LongformBrief) => createHash('sha256').update(canonicalize(b)).digest('hex')
 
 export const sentencesOf = (s: LongformScript) => s.sections.flatMap((x) => x.sentences)
 export const narrationOf = (s: LongformScript) => sentencesOf(s).map((x) => x.say.trim()).join(' ')
 export const estimatedSeconds = (s: LongformScript) => [...narrationOf(s)].length / LONGFORM.charsPerSecond
-// targetSeconds guides generation; it is not a pass/fail target for production. Accept a naturally useful
-// longform result (15-35 minutes) and reject only clearly non-longform / runaway output. Samples keep a tight band.
-export function allowedSeconds(brief: Pick<LongformBrief, 'targetSeconds' | 'sample'>): { min: number; max: number } {
-  if (!brief.sample) return LONGFORM.productionSeconds
-  const t = brief.targetSeconds, tol = LONGFORM.lengthTolerance
-  return { min: t * (1 - tol), max: t * (1 + tol) }
+// The running time only sizes the script: how many sections the planner writes and how long each one is.
+// The finished video may come out shorter or longer than the target; that is never a failure.
+export function sectionPlan(targetSeconds: number): { sections: number; charsPerSection: number; totalChars: number } {
+  const totalChars = Math.max(1, Math.round(targetSeconds * LONGFORM.charsPerSecond))
+  const sections = Math.max(LONGFORM.plan.minSections, Math.ceil(totalChars / LONGFORM.plan.sectionChars))
+  return { sections, charsPerSection: Math.round(totalChars / sections), totalChars }
 }
-export function voicedSecondsAllowed(brief: Pick<LongformBrief, 'targetSeconds' | 'sample'>): { min: number; max: number } {
-  return allowedSeconds(brief)
-}
-export function voicedLengthErrors(seconds: number, brief: Pick<LongformBrief, 'targetSeconds' | 'sample'>): string[] {
-  const ok = voicedSecondsAllowed(brief)
-  return seconds >= ok.min && seconds <= ok.max ? [] : [`narration ${seconds.toFixed(1)}s outside ${ok.min}-${ok.max}s`]
+// The one representative person. A figure the topic names (the Buddha, or a named thinker) is kept as that person;
+// it is never swapped for a generic philosopher or a Western sage.
+const BUDDHA = /부처|붓다|석가모니|석가|세존|buddha|gautama|shakyamuni/i
+export const BUDDHA_FIGURE = 'Gautama Buddha (Shakyamuni) as in classical Buddhist art: serene compassionate face with half-closed eyes, short tight curls with the ushnisha, elongated earlobes, simple saffron monastic robe draped over one shoulder, seated in calm meditation'
+export function longformFigure(topic: string, fallback: string): string {
+  if (BUDDHA.test(String(topic || ''))) return BUDDHA_FIGURE
+  const t = thinkerFor(topic)
+  return t ? `${t.name}, ${t.likeness}` : fallback
 }
 // The card contract for one sentence (also re-checked at RENDER on what is actually drawn).
 export function cardErrors(x: any): string[] {
@@ -103,10 +111,6 @@ export function validateLongformScript(s: any, brief: LongformBrief): string[] {
   // upload text written for THIS video (never script copy / title words / fixed hashtags / generic comment)
   if (n && s?.metadata) e.push(...uploadMetadataErrors({ title: String(s.title || ''), ...s.metadata }, { narration: narrationOf(s as LongformScript), format: 'longform' }).map((x) => `upload.${x}`))
   else if (!s?.metadata) e.push('upload.missing')
-  if (n) {
-    const est = estimatedSeconds(s as LongformScript), ok = allowedSeconds(brief)
-    if (est < ok.min || est > ok.max) e.push(`length: ~${Math.round(est)}s narration, allowed ${Math.round(ok.min)}-${Math.round(ok.max)}s`)
-  }
   if (brief.profile !== 'wisdom_longform') e.push('profile')
   return e
 }

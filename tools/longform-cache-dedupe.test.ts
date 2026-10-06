@@ -12,7 +12,10 @@ test('Longform cache identity accepts canonical assets and rejects stale metadat
 
 test('Longform ASSET reuses one TTS cache read and avoids duplicate identical image writes', async () => {
   const src = await readFile(new URL('../worker/stages/longform.ts', import.meta.url), 'utf8')
-  assert.match(src, /const ttsCached = await Promise\.all/)
-  assert.match(src, /let au: any = ttsCached\[i\]/)
+  // cache METADATA is read once for every chunk up front; each chunk's audio bytes are then read once, when it is used
+  // (long runs never hold every cached audio file in memory at the same time)
+  assert.match(src, /const ttsMeta = await Promise\.all\(ttsKeys\.map/)
+  assert.match(src, /let au: any = ttsMeta\[i\] \? await withBytes\(ttsMeta\[i\]\) : null/)
+  assert.equal((src.match(/withBytes\(ttsMeta/g) || []).length, 1)
   assert.match(src, /if \(imageRef !== rawRef\) await blobs\.putBytes\(imageRef/)
 })

@@ -52,7 +52,19 @@ const SAMPLE: LongformScript = {
   ]
 }
 
-const sample = (d: string) => async () => SAMPLE
+// A planner (outline -> sections -> upload text) that serves a fixed script, split into exactly the number of sections
+// the PLAN asks for. Counts every call so checkpoint reuse can be proven.
+function plannerFromScript(script: any, calls: Record<string, number> = {}) {
+  const bump = (k: string) => { calls[k] = (calls[k] || 0) + 1 }
+  const sents = script.sections.flatMap((x: any) => x.sentences)
+  const split = (n: number) => Array.from({ length: n }, (_, i) => sents.slice(Math.floor((i * sents.length) / n), Math.floor(((i + 1) * sents.length) / n)))
+  return {
+    outline: async (_b: any, n: number) => { bump('outline'); return { title: script.title, hook: script.hook, figure: script.figure, thumbnail: script.thumbnail, sections: split(n).map((_, i) => ({ id: `s${i + 1}`, heading: `part ${i + 1}`, points: ['a', 'b'] })) } },
+    section: async (i: any) => { bump('section'); return { sentences: JSON.parse(JSON.stringify(split(i.outline.sections.length)[i.index])) } },
+    metadata: async () => { bump('metadata'); return { title: script.title, ...script.metadata } }
+  }
+}
+const sample = (d: string) => plannerFromScript(SAMPLE)
 // image stand-in: a lit bust on the LEFT of a dark frame (the ASSET must mirror it to the right)
 async function standInImage(d: string) {
   const p = join(d, 'portrait.jpg')
@@ -128,18 +140,16 @@ function scriptOfSeconds(n: number) {
   return s
 }
 
-test('Longform contract (Astra cases): length, 2-3 line cards, coloured accent, no fade, real-audio timing', () => {
+test('Longform contract: running time is only a target (never pass/fail), 2-3 line cards, coloured accent, no fade, real-audio timing', () => {
   const brief = SAMPLE_BRIEF()
   assert.deepEqual(validateLongformScript(SAMPLE, brief), [])
-  // target selection remains 20-30 minutes; final production narration is allowed to breathe naturally inside 15-35 minutes.
+  // the running time the user picks is accepted as is (no 20-30 minute window); only non-positive / non-numbers are refused
   const prod = normalizeLongformBrief({ kind: 'topic', text: '나이 들수록 멀리해야 할 사람' })
   assert.equal(prod.targetSeconds, 1500); assert.equal(prod.sample, undefined)
-  assert.throws(() => normalizeLongformBrief({ kind: 'topic', text: '주제입니다', targetSeconds: 900 }))
-  assert.throws(() => normalizeLongformBrief({ kind: 'topic', text: '주제입니다', targetSeconds: 60 })) // short only as an explicit sample
-  assert.ok(validateLongformScript(scriptOfSeconds(800), prod).some((e) => /^length/.test(e)), 'clearly short output must be rejected')
-  assert.ok(!validateLongformScript(scriptOfSeconds(900), prod).some((e) => /^length/.test(e)), '15-minute result is allowed')
-  assert.ok(!validateLongformScript(scriptOfSeconds(1500), prod).some((e) => /^length/.test(e)), '25-minute result passes')
-  assert.ok(validateLongformScript(scriptOfSeconds(2200), prod).some((e) => /^length/.test(e)), 'runaway output must be rejected')
+  for (const t of [60, 900, 1500, 2700, 3600, 5400, 7200, 10800]) assert.equal(normalizeLongformBrief({ kind: 'topic', text: '주제입니다', targetSeconds: t }).targetSeconds, t)
+  for (const t of [0, -60, 'abc', NaN, Infinity]) assert.throws(() => normalizeLongformBrief({ kind: 'topic', text: '주제입니다', targetSeconds: t }), /positive/)
+  // a script shorter or longer than the target is never rejected for its length
+  for (const sec of [300, 800, 1500, 2200, 4000]) assert.ok(!validateLongformScript(scriptOfSeconds(sec), prod).some((e) => /length/.test(e)), `${sec}s script must not fail on length`)
   // cards: 1 line, no accent, white accent, accent not on the card, a line too wide -> rejected
   const card = (mut: (x: any) => void) => { const s = clone(SAMPLE); mut(s.sections[0].sentences[0]); return validateLongformScript(s, brief) }
   assert.ok(card((x) => { x.show = ['사람에게'] ; x.accent = '사람에게' }).some((e) => /show\.lines/.test(e)))
@@ -167,22 +177,24 @@ test('Longform contract (Astra cases): length, 2-3 line cards, coloured accent, 
   for (const k of ['upload.description.copies_script', 'upload.hashtags.fixed_set', 'upload.pinnedComment.generic']) assert.ok(ge.includes(k), `${k}: ${ge}`)
 })
 
-test('one gate for every path: no model -> PROVIDER_DOWN; a 3-second script never passes PLAN; PACKAGE needs upload text', async () => {
+test('one gate for every path: no model -> PROVIDER_DOWN; a broken section never passes PLAN; PACKAGE needs upload text', async () => {
   const blobs: any = createMemoryBlobStore()
   const brief = await putAddressed(blobs, 'generative-briefs', normalizeLongformBrief({ kind: 'text', text: '짧은 글입니다. 이것으로 롱폼을 만들어 주세요.', targetSeconds: 1500 }))
   const job: any = { id: 'j', profile: 'wisdom_longform', planRef: brief.path }
   const ctx = { job, blobs, previous: async () => null, signal: new AbortController().signal } as any
   await assert.rejects(() => createLongformPlanExecutor({ apiKey: '' }).run(ctx), (e: any) => e.code === 'PROVIDER_DOWN')
-  const tiny = clone(SAMPLE); tiny.sections = [{ id: 's1', sentences: [SAMPLE.sections[0].sentences[0]] }] // ~3 seconds
-  let calls = 0
-  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', plan: async () => { calls++; return clone(tiny) } }).run(ctx), (e: any) => e.code === 'SCRIPT_INVALID' && /length/.test(e.message))
-  assert.equal(calls, 2) // the draft and its one repair, both rejected
+  // a section whose cards break the contract is rejected after its one free repair (retryable: the retry resumes)
+  const calls: Record<string, number> = {}
+  const broken = plannerFromScript(SAMPLE, calls)
+  broken.section = async () => { calls.section = (calls.section || 0) + 1; return { sentences: [{ say: '말', show: ['한 줄'], accent: '', color: 'white' }] } as any }
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', planner: broken as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true)
+  assert.equal(calls.section, 2) // the draft and its one repair, both rejected
   // PACKAGE refuses a script whose upload text does not pass
   const bad = await putAddressed(blobs, 'generative-scripts', { ...clone(SAMPLE), metadata: { description: 'x', tags: [], hashtags: [], pinnedComment: '' } })
   await assert.rejects(() => longformPackageExecutor.run({ job, blobs, signal: new AbortController().signal, previous: async (st: string) => st === 'RENDER' ? { result: { variants: [{ renderRef: 'renders/a.mp4', thumbnailRef: 'renders/t.jpg' }] } } : { result: { scriptRef: bad.path } } } as any), (e: any) => e.code === 'UPLOAD_PACKAGE_INVALID')
 })
 
-test('B1: the FINAL voiced narration must be inside 20-30 minutes exactly (RENDER executor path); sample keeps its band', async () => {
+test('RENDER never fails on the running time (chunk sum or probed narration file); 60-minute target with 53 or 68 minutes passes', async () => {
   const run = async (seconds: number, briefIn: any, audio?: Buffer) => {
     const blobs: any = createMemoryBlobStore()
     const brief = await putAddressed(blobs, 'generative-briefs', normalizeLongformBrief(briefIn))
@@ -194,40 +206,17 @@ test('B1: the FINAL voiced narration must be inside 20-30 minutes exactly (RENDE
       await longformRenderExecutor.run({ job: { id: 'j', profile: 'wisdom_longform', planRef: brief.path }, blobs, signal: new AbortController().signal, previous: async () => ({ result: { assetSpecRef: assets.path } }) } as any)
       return 'rendered'
     } catch (e: any) {
-      if (e.code === 'LONGFORM_CONTRACT' && /^narration \d/.test(e.message)) return 'LENGTH_FAIL' // chunk-sum gate
-      if (e.code === 'LONGFORM_CONTRACT' && /^narration audio:/.test(e.message)) return 'AUDIO_FAIL' // probed audio-file gate
-      return `past length gates (${e.code || 'error'})`
+      if (/narration|length|minute|outside/i.test(String(e.message)) && e.code === 'LONGFORM_CONTRACT') return `DURATION_FAIL ${e.message}`
+      return `past duration (${e.code || 'error'})` // the stand-in image is not a real image, so the render itself stops later
     }
   }
-  const prod = { kind: 'topic', text: '나이 들수록 멀리해야 할 사람' }
+  const sixty = { kind: 'topic', text: '부처님이 말하는 마음 다스리는 법', targetSeconds: 3600 }
   const rows: any = {}
-  for (const sec of [899, 899.9, 2100.1, 2101]) { rows[sec] = await run(sec, prod); assert.equal(rows[sec], 'LENGTH_FAIL', `${sec}s must fail`) }
-  for (const sec of [900, 1081, 1500, 1979, 2100]) { rows[sec] = await run(sec, prod); assert.notEqual(rows[sec], 'LENGTH_FAIL', `${sec}s must pass the length gate`) }
-  // explicit sample brief: its own band (target 50s -> 42.5-57.5s), unchanged
-  const sample = { kind: 'topic', text: '만만하게 보이지 않는 사람들의 태도', targetSeconds: 50, sample: true }
-  rows['sample 45'] = await run(45, sample); assert.notEqual(rows['sample 45'], 'LENGTH_FAIL')
-  rows['sample 60'] = await run(60, sample); assert.equal(rows['sample 60'], 'LENGTH_FAIL')
-  console.log('B1 ' + JSON.stringify(rows))
-  // B1-final: the probed duration of the actual narration file, same contract, no rounding/tolerance.
-  // The chunk sum is kept in range (1500s) so only the audio-file gate decides.
+  for (const sec of [60, 899, 1500, 2101, 3180, 3600, 4080, 7200, 9000]) { rows[sec] = await run(sec, sixty); assert.ok(rows[sec].startsWith('past duration'), `${sec}s: ${rows[sec]}`) }
+  // the probed duration of the actual narration file is not a gate either (53 and 68 minutes for a 60-minute target)
   const wav = async (sec: number) => (await runOk(['-f', 'lavfi', '-i', 'anullsrc=r=8000:cl=mono', '-t', sec.toFixed(3), '-c:a', 'pcm_u8', '-f', 'wav', '-'])).stdout
-  const probed: any = {}
-  for (const [sec, expect] of [[899.9, 'AUDIO_FAIL'], [900.0, 'PASS'], [1500.0, 'PASS'], [2100.0, 'PASS'], [2100.1, 'AUDIO_FAIL']] as const) {
-    const audio = await wav(sec), d = await mkdtemp(join(tmpdir(), 'b1a-')); await writeFile(join(d, 'a.wav'), audio)
-    const measured = (await probe(join(d, 'a.wav'))).duration
-    const got = await run(1500, prod, audio)
-    probed[sec] = { probed: measured, result: got }
-    assert.equal(measured, sec, `probe reads ${sec}s exactly`)
-    if (expect === 'PASS') assert.ok(/^past length gates/.test(got), `${sec}s audio must pass: ${got}`)
-    else assert.equal(got, expect, `${sec}s audio must fail`)
-  }
-  // the chunk-sum gate still applies even when the audio file is in range
-  assert.equal(await run(2200, prod, await wav(1500)), 'LENGTH_FAIL')
-  // sample brief keeps its band on the audio file too (target 50s -> 42.5-57.5s)
-  const sample2 = { kind: 'topic', text: '만만하게 보이지 않는 사람들의 태도', targetSeconds: 50, sample: true }
-  probed['sample 45 audio'] = await run(45, sample2, await wav(45)); assert.ok(/^past length gates/.test(probed['sample 45 audio']))
-  probed['sample 57.6 audio'] = await run(45, sample2, await wav(57.6)); assert.equal(probed['sample 57.6 audio'], 'AUDIO_FAIL')
-  console.log('B1_AUDIO ' + JSON.stringify(probed))
+  for (const sec of [3180, 4080]) { rows[`audio ${sec}`] = await run(sec, sixty, await wav(sec)); assert.ok(rows[`audio ${sec}`].startsWith('past duration'), rows[`audio ${sec}`]) }
+  console.log('NO_DURATION_GATE ' + JSON.stringify(rows))
 })
 
 test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 MP4 + thumbnail measured', async () => {
@@ -248,7 +237,7 @@ test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 M
   let imageCalls = 0, ttsCalls = 0
   const img = await standInImage(d)
   const executors = withLongform([], [
-    createLongformPlanExecutor({ apiKey: 'k', plan: sample(d) as any }),
+    createLongformPlanExecutor({ apiKey: 'k', planner: sample(d) as any }),
     createLongformAssetExecutor({ apiKey: 'k', image: async () => { imageCalls++; return { bytes: img, contentType: 'image/jpeg', provider: 'standin', model: 'still' } }, tts: async (t: string) => { ttsCalls++; return standInTts(t) } }),
     longformRenderExecutor, longformPackageExecutor
   ])
@@ -319,4 +308,176 @@ test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 M
   assertThumbnail(thumbM, 'longform'); void thumbAccents; void thumbLines
   assert.ok(sync.every((x) => x.voiceOnset !== null && x.cardChange !== null), `every card changes where its sentence is voiced: ${JSON.stringify(sync)}`)
   assert.ok(lines.every((l) => l.length >= 2 && l.length <= 3), 'every card 2-3 lines')
+})
+
+// ======================= running time / Voice Profile / long-run stability =======================
+import { sectionPlan, longformFigure, BUDDHA_FIGURE, longformImagePrompt } from '../lib/generative/longform.js'
+import { LONGFORM_PLANNER_VERSION, longformRenderTimeoutMs, longformConcatTimeoutMs } from '../worker/stages/longform.js'
+import { DEFAULT_VOICE_PROFILE, LONGFORM_VOICE_PROFILES, resolveLongformVoice, recommendLongformVoice, longformVoiceProfile, ttsCacheIdentity } from '../lib/generative/voiceProfile.js'
+import { openAiTts, openAiWisdomTts } from '../lib/generative/providers.js'
+import { thumbnailFigure } from '../lib/generative/wisdomThumbnail.js'
+import { createHash } from 'node:crypto'
+
+// a planner that writes ANY number of valid sections (for 60-120 minute outlines), counting each call
+function longPlanner(calls: Record<string, number>, failAt?: { index: number; times: number }) {
+  const base = sentencesOf(SAMPLE)
+  return {
+    outline: async (_b: any, n: number) => { calls.outline = (calls.outline || 0) + 1; return { title: SAMPLE.title, hook: SAMPLE.hook, figure: { name: 'a wise man', imagePrompt: 'an old Western sage in a cloak' }, thumbnail: SAMPLE.thumbnail, sections: Array.from({ length: n }, (_, i) => ({ id: `s${i + 1}`, heading: `part ${i + 1}`, points: ['a', 'b'] })) } },
+    section: async (i: any) => {
+      calls.section = (calls.section || 0) + 1; calls[`section${i.index + 1}`] = (calls[`section${i.index + 1}`] || 0) + 1
+      if (failAt && i.index === failAt.index && failAt.times-- > 0) throw new Error('provider timeout')
+      return { sentences: base.slice(0, 3).map((x, k) => ({ ...x, say: `${x.say} (${i.index + 1}-${k + 1})` })) }
+    },
+    metadata: async () => { calls.metadata = (calls.metadata || 0) + 1; return { title: SAMPLE.title, ...SAMPLE.metadata } }
+  }
+}
+async function planJob(targetSeconds: number, extra: any = {}) {
+  const blobs: any = createMemoryBlobStore()
+  const brief = normalizeLongformBrief({ kind: 'topic', text: '부처님이 말하는 마음 다스리는 법', targetSeconds, ...extra })
+  const stored = await putAddressed(blobs, 'generative-briefs', brief)
+  return { blobs, brief, ctx: { job: { id: 'j', profile: 'wisdom_longform', planRef: stored.path }, blobs, previous: async () => null, signal: new AbortController().signal } as any }
+}
+
+for (const minutes of [25, 60, 120]) test(`T${minutes === 25 ? 1 : minutes === 60 ? 2 : 3}: ${minutes}-minute targetSeconds reaches PLAN (job_create -> brief -> planner outline/sections)`, async () => {
+  // through the real API: the chosen running time is stored in the brief unchanged
+  const db = await createTestDb(), store = createJobStore(db), blobs: any = createMemoryBlobStore()
+  const handler = createJobsHttp({ getStore: async () => store, blobs, sourceExists: async () => true })
+  let status = 0, json: any = null
+  await handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': KEY }, query: {}, body: { taskType: 'job_create', profile: 'wisdom_longform', idempotencyKey: `lf-runtime-${minutes}`, budgetUsd: 5, input: { kind: 'topic', text: '부처님이 말하는 마음 다스리는 법', targetSeconds: minutes * 60, voiceProfile: 'female-middle', aspectRatio: '16:9' } } } as any,
+    { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } } as any)
+  assert.equal(status, 201, JSON.stringify(json))
+  const job = await store.getJob(json.job.id, json.job.workspaceId ?? undefined as any) ?? json.job
+  const brief: any = await blobs.getJson(job.planRef ?? json.job.planRef)
+  assert.equal(brief.targetSeconds, minutes * 60); assert.equal(brief.voice.key, 'female-middle')
+  // PLAN sizes the script from it: section count and per-section length
+  const seen: any[] = [], calls: Record<string, number> = {}
+  const planner: any = longPlanner(calls)
+  const outline = planner.outline; planner.outline = async (b: any, n: number) => { seen.push({ target: b.targetSeconds, n }); return outline(b, n) }
+  const section = planner.section; planner.section = async (i: any) => { seen.push({ chars: i.targetChars }); return section(i) }
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', planner }).run({ job: { id: 'j', profile: 'wisdom_longform', planRef: job.planRef ?? json.job.planRef }, blobs, signal: new AbortController().signal } as any)
+  const size = sectionPlan(minutes * 60)
+  assert.deepEqual(seen[0], { target: minutes * 60, n: size.sections })
+  assert.equal(seen[1].chars, size.charsPerSection)
+  assert.equal(out.result.targetSeconds, minutes * 60); assert.equal(out.result.sections, size.sections)
+})
+
+test('T4-T6: no duration reason ever fails a Longform script/result (60-minute target: 53 and 68 minutes)', () => {
+  const sixty = normalizeLongformBrief({ kind: 'topic', text: '부처님 말씀', targetSeconds: 3600 })
+  for (const minutes of [53, 68, 10, 150]) assert.deepEqual(validateLongformScript(scriptOfSeconds(minutes * 60), sixty).filter((e) => /length|second|minute/.test(e)), [], `${minutes} min`)
+  // long runs get time to finish instead of a fixed 90-minute cap
+  assert.equal(longformRenderTimeoutMs(1500), 90 * 60_000)
+  assert.ok(longformRenderTimeoutMs(7200) >= 7200_000 + 30 * 60_000)
+  assert.ok(longformRenderTimeoutMs(10800) > longformRenderTimeoutMs(7200))
+  assert.ok(longformConcatTimeoutMs(1500) >= 15 * 60_000); assert.ok(longformConcatTimeoutMs(10800) > longformConcatTimeoutMs(1500))
+})
+
+const mp3Tone = async () => (await runOk(['-f', 'lavfi', '-i', 'sine=f=300:d=0.4', '-c:a', 'libmp3lame', '-f', 'mp3', '-'])).stdout
+async function assetFixture(voiceProfile?: string) {
+  const d = await mkdtemp(join(tmpdir(), 'lf-voice-'))
+  const blobs: any = createMemoryBlobStore()
+  const brief = await putAddressed(blobs, 'generative-briefs', normalizeLongformBrief({ kind: 'topic', text: '부처님이 말하는 마음 다스리는 법', targetSeconds: 3600, ...(voiceProfile ? { voiceProfile } : {}) }))
+  const script = await putAddressed(blobs, 'generative-scripts', SAMPLE)
+  return { d, blobs, brief, ctx: (b: any = blobs, ref = brief.path) => ({ job: { id: 'j', profile: 'wisdom_longform', planRev: 1, planRef: ref }, blobs: b, previous: async () => ({ result: { scriptRef: script.path } }), signal: new AbortController().signal } as any) }
+}
+
+test('T7: the female-middle Voice Profile reaches the real TTS provider request (voice + instructions)', async () => {
+  const fx = await assetFixture('female-middle'), tone = await mp3Tone(), bodies: any[] = []
+  const fakeFetch: any = async (_u: string, init: any) => { bodies.push(JSON.parse(init.body)); return new Response(new Uint8Array(tone), { status: 200 }) }
+  const img = await standInImage(fx.d)
+  const out: any = await createLongformAssetExecutor({ apiKey: 'k', image: async () => ({ bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' }), tts: (t, k, p) => openAiTts(t, k, p, fakeFetch) }).run(fx.ctx())
+  const want = LONGFORM_VOICE_PROFILES['female-middle']
+  assert.equal(bodies.length, sentencesOf(SAMPLE).length)
+  for (const b of bodies) { assert.equal(b.voice, want.voice); assert.equal(b.instructions, want.instructions); assert.equal(b.model, want.model); assert.equal(b.speed, want.speed) }
+  assert.match(want.instructions, /40~50대 한국 여성/)
+  assert.equal(out.result.voiceProfileId, 'ko-lf-female-middle-v1')
+  assert.equal(((await fx.blobs.getJson(out.result.assetSpecRef)) as any).voiceProfileId, 'ko-lf-female-middle-v1')
+})
+
+test('T8 + T13: TTS cache is per Voice Profile; an ASSET retry reuses the ONE image and every narration chunk', async () => {
+  const fx = await assetFixture('female-middle'), tone = await mp3Tone(), img = await standInImage(fx.d)
+  const calls = { image: 0, tts: [] as string[] }
+  const deps = { apiKey: 'k', image: async () => { calls.image++; return { bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' } }, tts: async (_t: string, _k: string, p: any) => { calls.tts.push(p.id); return { bytes: Buffer.concat([tone, Buffer.from(p.id)]), contentType: 'audio/mpeg', provider: 's', model: 'm' } } }
+  const n = sentencesOf(SAMPLE).length
+  const first: any = await createLongformAssetExecutor(deps).run(fx.ctx())
+  assert.equal(calls.image, 1); assert.equal(calls.tts.length, n) // T10: exactly ONE image
+  const retry: any = await createLongformAssetExecutor(deps).run(fx.ctx())
+  assert.equal(calls.image, 1); assert.equal(calls.tts.length, n); assert.equal(retry.result.reused, n + 1); assert.equal(retry.result.generated, 0)
+  // the same script with ANOTHER voice never reuses the female-middle audio
+  const other = await putAddressed(fx.blobs, 'generative-briefs', normalizeLongformBrief({ kind: 'topic', text: '부처님이 말하는 마음 다스리는 법', targetSeconds: 3600, voiceProfile: 'male-senior' }))
+  await createLongformAssetExecutor(deps).run(fx.ctx(fx.blobs, other.path))
+  assert.equal(calls.tts.length, 2 * n); assert.ok(calls.tts.slice(n).every((id) => id === 'ko-lf-male-senior-v1'))
+  assert.equal(calls.image, 1) // the image is not voice-dependent: still reused
+  const text = sentencesOf(SAMPLE)[0].say
+  assert.notEqual(ttsCacheIdentity(LONGFORM_VOICE_PROFILES['female-middle'], text), ttsCacheIdentity(LONGFORM_VOICE_PROFILES['male-senior'], text))
+})
+
+test('T9: Wisdom Shorts voice and cache identity are unchanged; legacy Longform briefs keep the default voice', async () => {
+  const bodies: any[] = []
+  const fakeFetch: any = async (_u: string, init: any) => { bodies.push(JSON.parse(init.body)); return new Response(Buffer.from('x'), { status: 200 }) }
+  await openAiWisdomTts('같은 문장', 'k', fakeFetch)
+  assert.deepEqual({ voice: bodies[0].voice, instructions: bodies[0].instructions, speed: bodies[0].speed, model: bodies[0].model }, { voice: 'marin', instructions: '한국어로 차분하고 따뜻하게, 과장하지 말고 또렷하게 읽어주세요.', speed: 1, model: 'gpt-4o-mini-tts' })
+  assert.equal(ttsCacheIdentity(DEFAULT_VOICE_PROFILE, '문장'), 'tts-v1|문장') // the Shorts/legacy cache key format
+  assert.equal(longformVoiceProfile({} as any), DEFAULT_VOICE_PROFILE)
+  // the Wisdom Shorts ASSET still synthesizes with openAiWisdomTts and the tts-v1 key (source unchanged)
+  const gen = (await import('node:fs')).readFileSync(new URL('../worker/stages/generative.ts', import.meta.url), 'utf8')
+  assert.match(gen, /tts=deps\.tts\?\?openAiWisdomTts/); assert.match(gen, /sha256\('tts-v1\|'\+b\.narration\)/)
+})
+
+test('Voice Profile choices: UI keys only (provider values live in voiceProfile.ts); auto picks ONE profile from the topic', () => {
+  assert.deepEqual(Object.keys(LONGFORM_VOICE_PROFILES), ['male-young', 'male-middle', 'male-senior', 'female-young', 'female-middle', 'female-senior'])
+  assert.equal(new Set(Object.values(LONGFORM_VOICE_PROFILES).map((p) => p.id)).size, 6)
+  assert.equal(recommendLongformVoice('부처님이 말하는 마음 다스리는 법'), 'male-senior')
+  assert.equal(recommendLongformVoice('쇼펜하우어의 인생론'), 'male-middle')
+  assert.equal(recommendLongformVoice('지친 마음을 위로하는 말'), 'female-middle')
+  assert.deepEqual(resolveLongformVoice('auto', '부처님 말씀'), { choice: 'auto', key: 'male-senior', profileId: 'ko-lf-male-senior-v1' })
+  assert.deepEqual(resolveLongformVoice('female-middle', '부처님 말씀'), { choice: 'female-middle', key: 'female-middle', profileId: 'ko-lf-female-middle-v1' })
+  assert.throws(() => resolveLongformVoice('marin', 'x')) // provider values are not accepted from the client
+})
+
+test('T11 + T12: figure right / text left kept; the card k starts exactly where narration chunk k starts (measured audio)', async () => {
+  const fx = await assetFixture('female-middle'), img = await standInImage(fx.d)
+  const out: any = await createLongformAssetExecutor({ apiKey: 'k', image: async () => ({ bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' }), tts: async (t: string) => standInTts(t) }).run(fx.ctx())
+  const m: any = await fx.blobs.getJson(out.result.assetSpecRef)
+  assert.equal(m.image.mirrored, true) // the stand-in figure was on the LEFT: mirrored to the right
+  assert.match(longformImagePrompt(SAMPLE), /RIGHT third of the frame \(right 35-40%\).*LEFT 60%/)
+  const tl = cardTimeline(SAMPLE, m.chunks, m.chunks.map((c: any) => c.seconds))
+  let acc = 0
+  tl.forEach((t, i) => { assert.equal(t.start, Number(acc.toFixed(3))); acc += m.chunks[i].seconds })
+  assert.ok(Math.abs(acc - m.narration.seconds) < 0.01)
+  const { ass } = longformCardsAss(SAMPLE, tl)
+  assert.match(ass, /\\an4\\pos\(100,540\)/); assert.doesNotMatch(ass, /\\fad|\\move|\\t\(/)
+})
+
+test('T13 + T14: a 120-minute script is written section by section; a failure mid-way resumes from the stored sections', async () => {
+  const { ctx, blobs } = await planJob(7200)
+  const size = sectionPlan(7200)
+  assert.ok(size.sections >= 20, `120 min -> ${size.sections} sections`)
+  const calls: Record<string, number> = {}
+  // section 10 fails (twice = draft + repair) -> retryable SECTION_INVALID; sections 1-9 are already checkpointed
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', planner: longPlanner(calls, { index: 9, times: 2 }) as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true && /section-010/.test(e.message))
+  assert.equal(calls.outline, 1); assert.equal(calls.section, 9 + 2)
+  const ck = `longform-plan-checkpoints/${createHash('sha256').update(`${ctx.job.planRef}|${LONGFORM_PLANNER_VERSION}`).digest('hex')}`
+  for (let i = 1; i <= 9; i++) assert.ok(await blobs.getJson(`${ck}/section-${String(i).padStart(3, '0')}.json`), `section ${i} checkpoint`)
+  // the retry: the outline and sections 1-9 are reused, only 10..N are written, nothing starts from scratch
+  const again: Record<string, number> = {}
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', planner: longPlanner(again) as any }).run(ctx)
+  assert.equal(again.outline, undefined); for (let i = 1; i <= 9; i++) assert.equal(again[`section${i}`], undefined, `section ${i} reused`)
+  assert.equal(again.section, size.sections - 9); assert.equal(again.metadata, 1)
+  assert.equal(out.result.checkpoints.reused.length, 1 + 9); assert.equal(out.result.sections, size.sections)
+  // a full rerun reuses everything (0 planner calls)
+  const third: Record<string, number> = {}
+  await createLongformPlanExecutor({ apiKey: 'k', planner: longPlanner(third) as any }).run(ctx)
+  assert.deepEqual(third, {})
+})
+
+test('Buddha topic: the representative figure stays the Buddha (never a generic or Western sage); Wisdom Shorts figure rule unchanged', async () => {
+  assert.equal(longformFigure('부처님이 말하는 마음 다스리는 법', 'an old sage'), BUDDHA_FIGURE)
+  for (const t of ['석가모니의 가르침', '붓다의 말씀', 'Buddha on anger']) assert.equal(longformFigure(t, 'x'), BUDDHA_FIGURE)
+  assert.match(longformFigure('쇼펜하우어의 인생론', 'x'), /^Arthur Schopenhauer/)
+  assert.equal(longformFigure('나이 들수록 멀리할 사람', 'a calm elder'), 'a calm elder')
+  assert.equal(thumbnailFigure('부처님 말씀', 'x'), 'x') // the Shorts thumbnail rule (wisdom.ts) is not touched
+  const { ctx, blobs } = await planJob(1500)
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', planner: longPlanner({}) as any }).run(ctx)
+  const script: any = await blobs.getJson(out.result.scriptRef)
+  assert.equal(script.figure.imagePrompt, BUDDHA_FIGURE) // the planner suggested "an old Western sage": replaced
 })

@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
+import { readFile, stat } from 'node:fs/promises'
 // canonicalize() comes from the shared compiler so plan/manifest addresses are stable across repos.
 import { canonicalize } from '../tracker-core/renderManifest.js'
+import * as objectStorage from '../objectStorage.js'
 
 export interface JobBlobStore {
   // Create-once by default. `overwrite` is only for the few mutable POINTERS (e.g. generative-sources/<id>.json); without
@@ -10,11 +13,20 @@ export interface JobBlobStore {
   // Binary artifacts (rendered MP4, contact sheets). Content-addressed by the caller; never overwritten.
   putBytes(path: string, bytes: Buffer, contentType: string): Promise<{ path: string; sha256: string; bytes: number }>
   getBytes(path: string): Promise<Buffer | null>
+  // A large file on disk (e.g. a 60-120+ minute final MP4): hashed and uploaded as a STREAM, never read whole into
+  // memory. Create-once like putBytes: an existing path (a retry of the same content) is not uploaded again.
+  putFile(path: string, filePath: string, contentType: string): Promise<{ path: string; bytes: number; uploaded: boolean }>
   // Short-lived URL a browser can play (private blobs only; never stored, never part of any hash).
   presign?(path: string, validForMs?: number): Promise<{ url: string; validUntil: number } | null>
 }
 
 export const sha256 = (data: string | Buffer) => createHash('sha256').update(data).digest('hex')
+// sha256 of a file, streamed (constant memory whatever the size)
+export async function sha256File(filePath: string): Promise<string> {
+  const h = createHash('sha256')
+  for await (const chunk of createReadStream(filePath)) h.update(chunk as Buffer)
+  return h.digest('hex')
+}
 
 // Content-addressed: same value => same path. Immutable by construction (never overwritten).
 export async function putAddressed(store: JobBlobStore, prefix: string, value: unknown): Promise<{ path: string; sha256: string }> {
@@ -29,6 +41,8 @@ export function createMemoryBlobStore(): JobBlobStore & { files: Map<string, str
     files, binaries,
     async putBytes(path, bytes) { if (!binaries.has(path)) binaries.set(path, Buffer.from(bytes)); return { path, sha256: sha256(binaries.get(path)!), bytes: binaries.get(path)!.length } },
     async getBytes(path) { const b = binaries.get(path); return b ? Buffer.from(b) : null },
+    // test store only: keeps the bytes in memory (the real store streams)
+    async putFile(path, filePath) { const had = binaries.has(path); if (!had) binaries.set(path, await readFile(filePath)); return { path, bytes: binaries.get(path)!.length, uploaded: !had } },
     async presign(path) { return binaries.has(path) || files.has(path) ? { url: `memory://${path}`, validUntil: Date.now() + 3_600_000 } : null },
     async putJson(path, value, opts) {
       const body = JSON.stringify(value)
@@ -41,16 +55,16 @@ export function createMemoryBlobStore(): JobBlobStore & { files: Map<string, str
 
 // Private Vercel Blob, create-once (allowOverwrite:false). "already exists" is success: the path is content-addressed.
 export function createVercelJobBlobStore(deps?: { put?: any; get?: any; head?: any; issueSignedToken?: any; presignUrl?: any }): JobBlobStore {
-  const lazy = async () => (deps?.put && deps?.get ? deps : await import('@vercel/blob'))
+  const lazy = async () => (deps?.put && deps?.get ? deps : objectStorage)
   const exists = async (path: string): Promise<boolean> => {
     const mod: any = await lazy()
     if (typeof mod.head === 'function') {
       try {
-        await mod.head(path)
-        return true
+        const found = await mod.head(path)
+        return Boolean(found)
       } catch (e: any) {
         const detail = `${String(e?.name || '')} ${String(e?.code || '')} ${String(e?.message || e)}`
-        if (/BlobNotFound|not.?found|404/i.test(detail)) return false
+        if (/BlobNotFound|not.?found|does not exist|404/i.test(detail)) return false
         throw e
       }
     }
@@ -90,6 +104,14 @@ export function createVercelJobBlobStore(deps?: { put?: any; get?: any; head?: a
       }
       return { path, sha256: digest, bytes: bytes.length }
     },
+    async putFile(path, filePath, contentType) {
+      const { size } = await stat(filePath)
+      if (await exists(path)) return { path, bytes: size, uploaded: false }
+      const mod: any = await lazy()
+      if (typeof mod.putFile !== 'function') throw new Error('this object store cannot stream files')
+      await mod.putFile(path, filePath, { access: 'private', addRandomSuffix: false, allowOverwrite: false, contentType })
+      return { path, bytes: size, uploaded: true }
+    },
     async getBytes(path) {
       const { get } = await lazy()
       const result: any = await get(path, { access: 'private', useCache: false })
@@ -98,6 +120,7 @@ export function createVercelJobBlobStore(deps?: { put?: any; get?: any; head?: a
     },
     async presign(path, validForMs = 60 * 60 * 1000) {
       const mod: any = await lazy()
+      if (typeof mod.presign === 'function') return mod.presign(path, validForMs)
       if (!mod.issueSignedToken || !mod.presignUrl) return null
       const token = await mod.issueSignedToken({ pathname: path, operations: ['get'] })
       const validUntil = Date.now() + validForMs
