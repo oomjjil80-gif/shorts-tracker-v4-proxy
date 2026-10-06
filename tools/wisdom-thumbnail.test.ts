@@ -13,7 +13,7 @@ import { standInPortrait, standInPortraitTall, measureTallThumbnail, assertTallT
 import { probe } from '../lib/media/ffmpeg.js'
 import { LONGFORM_THUMB, SHORTS_THUMB, thumbnailAss } from '../lib/generative/wisdomThumbnail.js'
 import { withWisdomThumbnail } from '../worker/stages/wisdomThumbnail.js'
-import { uploadMetadataErrors } from '../lib/generative/uploadPackage.js'
+import { uploadMetadataErrors, titleCuriosityErrors } from '../lib/generative/uploadPackage.js'
 
 // Example A: a Wisdom Shorts script as PLAN stores it, and the publish kit the model returns for it
 const A_SCRIPT = { schema: 'wisdom-script/1', title: '나이 들수록 설명하지 말아야 할 5가지', hook: '나이가 들수록 말을 아끼는 사람이 더 단단해 보입니다.',
@@ -52,6 +52,19 @@ test('copy rules: never the title, 2-3 meaning units, meaning colours', () => {
   assert.match(thumbnailFigure('세네카가 말하는 시간', 'old man'), /^Seneca, Roman Stoic/)
   assert.match(thumbnailFigure('쇼펜하우어가 말하는 고독', 'old man'), /^Arthur Schopenhauer/)
   assert.equal(thumbnailFigure('나이 들수록 멀리할 사람', 'a calm sage'), 'a calm sage')
+})
+
+test('Wisdom upload title DNA: reject bland attribution summaries; accept honest curiosity gaps', () => {
+  const bland = '부처님이 말한 인생의 마지막 공부｜죽기 전에 반드시 깨달아야 할 7가지'
+  assert.ok(titleCuriosityErrors(bland).includes('title.no_curiosity_gap'))
+  assert.ok(titleCuriosityErrors(bland).includes('title.attribution_summary'))
+
+  for (const good of [
+    '평생 괴로운 사람은 이것을 놓지 못합니다｜부처님이 말한 이유',
+    '나이 들수록 왜 이런 관계부터 끊어야 할까｜쇼펜하우어의 답',
+    '나이 들수록 설명하면 손해 보는 5가지｜말을 아끼는 사람이 단단한 이유',
+    '만만하게 보이지 않는 사람들의 5가지 태도'
+  ]) assert.deepEqual(titleCuriosityErrors(good), [], good)
 })
 
 test('REAL: Wisdom SHORTS thumbnail (Schopenhauer topic) through the PACKAGE decorator: 9:16 1080x1920 portrait', async () => {
