@@ -143,6 +143,49 @@ export function seniorVideoArgv(o: { images: string[]; runs: Array<{ image: numb
     '-c:v', 'libx264', '-threads:v', String(o.threads), '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', String(LONGFORM.fps), '-g', String(LONGFORM.fps * 4),
     '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2', '-movflags', '+faststart', o.out]
 }
+// ---------------- CHUNKED RENDER (scene longforms: Senior / 숨은야담) ----------------
+// One ffmpeg process for a whole 45~120 minute video held every scene picture in one filter graph and ran out of the
+// worker's 1 GB (SIGKILL). The video is now made in SEGMENTS cut at scene boundaries (never inside a sentence; the cold
+// open stays in the first one), each holding at most RENDER_SEGMENT.maxRuns pictures and maxSeconds of video, so a
+// longer video means MORE segments, never a bigger process. Segments are video only, frame-exact, encoded with the same
+// settings; the final file is a stream copy of the segments plus the narration track as it is (no re-encode).
+export const RENDER_SEGMENT = { maxRuns: 8, maxSeconds: 360 } as const
+export const SEGMENT_ENCODER = 'libx264-veryfast-crf20-yuv420p-gop120-v1'
+// scene runs -> segments [from, to) of run indices
+export function planSegments(runs: Array<{ seconds: number; cold?: boolean }>, o: { maxRuns: number; maxSeconds: number } = RENDER_SEGMENT): Array<{ from: number; to: number }> {
+  const out: Array<{ from: number; to: number }> = []
+  let from = 0, n = 0, sec = 0
+  for (const [i, r] of runs.entries()) {
+    // a cold-open beat never starts a new segment: the whole cold open is in the first one
+    if (n > 0 && !r.cold && (n + 1 > o.maxRuns || sec + r.seconds > o.maxSeconds)) { out.push({ from, to: i }); from = i; n = 0; sec = 0 }
+    n++; sec += r.seconds
+  }
+  if (n) out.push({ from, to: runs.length })
+  return out
+}
+// frame-exact run lengths: cumulative rounding, so the frames of all runs add up to round(total * fps) (no drift)
+export function runFrames(starts: number[], total: number, fps: number = LONGFORM.fps): number[] {
+  const edge = [...starts.map((x) => Math.round(x * fps)), Math.round(total * fps)]
+  return starts.map((_, i) => Math.max(1, edge[i + 1] - edge[i]))
+}
+// one segment: its own pictures only, the same motion each run had in the single-graph render (by its index in the
+// whole video), bottom shade + its own subtitle cards, video only, exactly `frames` frames
+export function sceneSegmentArgv(o: { images: string[]; runs: Array<{ image: number; frames: number; index: number; cold?: boolean }>; ass: string; fontsDir: string; out: string; threads: number }): string[] {
+  const e = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
+  const { w, h } = SENIOR.canvas, fps = LONGFORM.fps
+  const sec = (f: number) => (f / fps).toFixed(3)
+  const inputs = o.runs.flatMap((r) => ['-loop', '1', '-framerate', String(fps), '-t', sec(r.frames), '-i', o.images[r.image]])
+  const parts = o.runs.map((r, i) => (r.cold ? sceneFilter(i, r.frames / fps, coldMotion(r.index), `s${i}`, true) : sceneFilter(i, r.frames / fps, sceneMotion(r.index), `s${i}`)))
+  const shade = `color=c=black:s=${w}x${h},format=rgba,geq=r=0:g=0:b=0:a='clip(210*(Y-${h}*0.62)/(${h}*0.38),0,210)'[sh]`
+  const graph = [...parts, shade, `${o.runs.map((_, i) => `[s${i}]`).join('')}concat=n=${o.runs.length}:v=1:a=0,format=rgba[cat]`, `[cat][sh]overlay=0:0,ass=filename='${e(o.ass)}':fontsdir='${e(o.fontsDir)}',format=yuv420p[v]`].join(';')
+  const frames = o.runs.reduce((a, r) => a + r.frames, 0)
+  return ['-y', ...inputs, '-filter_complex', graph, '-map', '[v]', '-frames:v', String(frames), '-an',
+    '-c:v', 'libx264', '-threads:v', String(o.threads), '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', String(fps), '-g', String(fps * 4), o.out]
+}
+// the final MP4: the segments back to back (stream copy) + the narration as it is (stream copy); nothing re-encoded
+export function segmentConcatArgv(o: { list: string; audio: string; out: string; seconds: number }): string[] {
+  return ['-y', '-f', 'concat', '-safe', '0', '-i', o.list, '-i', o.audio, '-map', '0:v', '-map', '1:a', '-c', 'copy', '-t', o.seconds.toFixed(3), '-movflags', '+faststart', o.out]
+}
 export const seniorSentences = (s: SeniorScript) => sentencesOf(s as unknown as LongformScript) as SeniorSentence[]
 // outline checks (before any act is written): the Character Bible and every act's scenes
 export function seniorOutlineErrors(o: any): string[] {
