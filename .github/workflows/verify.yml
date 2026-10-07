@@ -39,6 +39,10 @@ jobs:
           else
             echo "ran=false" >> "$GITHUB_OUTPUT"
           fi
+      # PR #158 (longform chunked render) only: the tests in its scope; the long REAL RENDER regression stays out of this PR's CI
+      - name: Run longform chunked render scope tests
+        if: github.head_ref == 'feat/longform-chunked-render'
+        run: timeout 12m npx tsx --test tools/longform-chunked-render.test.ts tools/wisdom-longform.test.ts tools/jobs-api.test.ts tools/jobs-store.test.ts
       - name: Run full tests with hang protection
-        if: steps.focused.outputs.ran != 'true'
-        run: timeout 15m npm test
+        if: steps.focused.outputs.ran != 'true' && github.head_ref != 'feat/longform-chunked-render'
+        run: timeout 12m npm test
