@@ -241,6 +241,24 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       })
     },
 
+    // Same-job RENDER retry for a Longform that FAILED at RENDER after PLAN and ASSET succeeded: the job goes back to
+    // RENDER (QUEUED) and reuses every stored script, picture and narration — no PLAN / IMAGE / TTS call is made again,
+    // and segments already rendered are reused (render-segments/<job>/...). One attempt per request.
+    async retryLongformRender(input: { jobId: string; workspaceId: string }): Promise<Job> {
+      const now = clock()
+      return db.transaction(async (tx) => {
+        const job = await lockedJob(tx, input.jobId)
+        if (job.workspaceId !== input.workspaceId) throw new JobError('NOT_FOUND', 'job not found')
+        if (!['wisdom_longform', 'senior_longform', 'yasa_longform'].includes(job.profile) || job.status !== 'FAILED' || job.stage !== 'RENDER') throw new JobError('NOT_RENDER_RETRYABLE', `job is ${job.profile} ${job.status}/${job.stage}`)
+        for (const st of ['PLAN', 'ASSET']) {
+          const ok = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage=$2 AND status='SUCCEEDED' LIMIT 1`, [job.id, st])
+          if (!ok.rows[0]) throw new JobError('PREREQUISITE_MISSING', `RENDER retry requires a successful ${st}`)
+        }
+        const r = await tx.query(`UPDATE production_jobs SET status='QUEUED', wait_reason=NULL, run_after=NULL, updated_at=$2::timestamptz WHERE id=$1 RETURNING *`, [job.id, iso(now)])
+        return mapJob(r.rows[0])
+      })
+    },
+
     // Re-run RENDER for a QC-blocked Wisdom job after a renderer-only fix. Paid PLAN/ASSET/ANALYZE/COMPILE artifacts are preserved.
     async recheckRender(input: { jobId: string }): Promise<Job> {
       const now = clock()

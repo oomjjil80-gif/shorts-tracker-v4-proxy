@@ -14,7 +14,7 @@ import { openAiYasaPlanner, type YasaPlanner } from '../../lib/generative/yasaPl
 import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaScenePrompt, coldOpenErrors } from '../../lib/generative/yasaLongform.js'
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
-import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, seniorVideoArgv, type SeniorScript } from '../../lib/generative/seniorLongform.js'
+import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { VISUAL_STYLE_PROFILES } from '../../lib/generative/visualStyle.js'
 import { VIDEO_ENCODER_THREADS } from '../../lib/media/render.js'
@@ -331,7 +331,8 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
 export const longformRenderTimeoutMs = (seconds: number) => Math.max(90 * 60_000, Math.round(seconds * 1000) + 30 * 60_000)
 // Feature modules inside this stage: CAPTION (sentence cards, required: LOCK) -> LONGFORM_RENDER -> THUMBNAIL -> QC
 // (fatal output checks). THUMBNAIL/QC are skipped only when the profile does not select them.
-export const createLongformRenderExecutor = (deps: { features?: FeatureResolver } = {}): StageExecutor => ({
+// segmentRunner / segment: test seams (the ffmpeg call of one segment, the segment limits)
+export const createLongformRenderExecutor = (deps: { features?: FeatureResolver; segment?: { maxRuns: number; maxSeconds: number }; segmentRunner?: (argv: string[], opts: any, index: number) => Promise<unknown> } = {}): StageExecutor => ({
   stage: 'RENDER', estimateUsd: () => 0,
   inputHash: (job) => sha256(`longform-render|${job.id}|${job.planRev}|wisdom_longform/1`),
   async run({ job, blobs, previous, signal }) {
@@ -348,6 +349,7 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver 
     try {
       // libass uses Fontconfig even when fontsdir is supplied. Railway has no system Fontconfig config, so give this
       // render a tiny self-contained config that scans only our bundled Korean font and writes cache only under /tmp.
+      let segmentLog: Record<string, unknown> | null = null, segmentsMade = 0, segmentsReused = 0
       const fontConfig = join(work, 'fonts.conf')
       await writeFile(fontConfig, `<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "fonts.dtd"><fontconfig><dir>${FONTS_DIR}</dir><cachedir>${work}/font-cache</cachedir></fontconfig>`, 'utf8')
       const ffmpegEnv = { FONTCONFIG_FILE: fontConfig, FONTCONFIG_PATH: work }
@@ -367,13 +369,47 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver 
       const seconds = Number((await probe(audio)).duration ?? 0)
       if (!(seconds > 0)) throw new StageError('LONGFORM_OUTPUT_INVALID', 'narration audio has no duration')
       if (scenes) {
-        // Senior: each scene picture held for exactly the narration told over it (gentle motion, hard cuts), one encode
-        const pics = (assets.images ?? []) as Array<{ sceneId: string; ref: string }>
+        // Senior / 숨은야담: each scene picture held for exactly the narration told over it (gentle motion, hard cuts),
+        // rendered in SEGMENTS cut at scene boundaries (bounded memory whatever the length), then stream-copied together
+        const pics = (assets.images ?? []) as Array<{ sceneId: string; ref: string; sha256?: string }>
         const files: string[] = []
         for (const [i, x] of pics.entries()) { const b = await blobs.getBytes(x.ref); if (!b) throw new StageError('ASSET_BYTES_MISSING', `scene picture ${x.sceneId} is missing`); const f = join(work, `scene${i}.jpg`); await writeFile(f, b); files.push(f) }
-        const runs = sceneRuns(script as unknown as SeniorScript, timeline).map((r, i, all) => ({ image: pics.findIndex((x) => x.sceneId === r.sceneId), seconds: (i === all.length - 1 ? seconds : all[i + 1].start) - r.start, ...(r.cold ? { cold: true } : {}) }))
+        const spans = sceneRuns(script as unknown as SeniorScript, timeline)
+        const runs = spans.map((r, i) => ({ image: pics.findIndex((x) => x.sceneId === r.sceneId), start: r.start, seconds: (i === spans.length - 1 ? seconds : spans[i + 1].start) - r.start, cold: !!r.cold }))
         if (runs.some((r) => r.image < 0)) throw new StageError('LONGFORM_CONTRACT', 'a scene has no picture')
-        await runOk(seniorVideoArgv({ images: files, runs, audio, ass: assPath, fontsDir: FONTS_DIR, out, seconds, threads: VIDEO_ENCODER_THREADS }), { signal, timeoutMs: longformRenderTimeoutMs(seconds) * 2, env: ffmpegEnv })
+        const frames = runFrames(runs.map((r) => r.start), seconds)
+        const before = (i: number) => frames.slice(0, i).reduce((a, b) => a + b, 0)
+        const specs = planSegments(runs, deps.segment ?? RENDER_SEGMENT).map((g, k) => {
+          const from = runs[g.from].start, to = g.to < runs.length ? runs[g.to].start : Infinity, shift = before(g.from) / LONGFORM.fps
+          // the segment's own subtitle cards (a card never crosses a segment: segments start where a sentence starts)
+          const tl = timeline.filter((t) => t.start >= from - 1e-6 && t.start < to - 1e-6).map((t) => ({ ...t, start: Number(Math.max(0, t.start - shift).toFixed(3)), end: Number((t.end - shift).toFixed(3)) }))
+          const segAss = longformCardsAss(script, tl, mode.cards).ass
+          const segRuns = runs.slice(g.from, g.to).map((r, j) => ({ image: r.image, frames: frames[g.from + j], index: g.from + j, ...(r.cold ? { cold: true } : {}) }))
+          const key = sha256(JSON.stringify({ v: SEGMENT_ENCODER, canvas: SENIOR.canvas, fps: LONGFORM.fps, runs: segRuns.map((r) => ({ picture: pics[r.image].sha256 ?? pics[r.image].ref, frames: r.frames, index: r.index, cold: !!r.cold })), ass: sha256(segAss) }))
+          return { k, segAss, segRuns, key, cards: tl.length }
+        })
+        // checkpoint: render-segments/<job>/<plan>/segment-NNN.mp4 — a retry re-renders only the segments not stored yet
+        const plan = sha256(specs.map((x) => x.key).join('|')), run = deps.segmentRunner ?? ((argv: string[], opts: any) => runOk(argv, opts))
+        if (specs.reduce((a, x) => a + x.cards, 0) !== sents.length) throw new StageError('LONGFORM_CONTRACT', 'subtitle cards do not split cleanly into segments')
+        const list: string[] = []
+        for (const sp of specs) {
+          if (signal.aborted) throw new Error('aborted')
+          const name = `segment-${String(sp.k + 1).padStart(3, '0')}.mp4`, ref = `render-segments/${job.id}/${plan}/${name}`, f = join(work, name)
+          // a segment made by an earlier attempt is reused (streamed to disk, never held whole in memory)
+          const stored = await (blobs.getFile ? blobs.getFile(ref, f) : blobs.getBytes(ref).then(async (b) => (b ? (await writeFile(f, b), true) : false))).catch(() => false)
+          if (stored) segmentsReused++
+          else {
+            const sa = join(work, `segment-${sp.k + 1}.ass`); await writeFile(sa, sp.segAss, 'utf8')
+            const segSeconds = sp.segRuns.reduce((a, r) => a + r.frames, 0) / LONGFORM.fps
+            // only THIS segment's pictures go into this ffmpeg process
+            await run(sceneSegmentArgv({ images: files, runs: sp.segRuns, ass: sa, fontsDir: FONTS_DIR, out: f, threads: VIDEO_ENCODER_THREADS }), { signal, timeoutMs: longformRenderTimeoutMs(segSeconds) * 2, env: ffmpegEnv }, sp.k)
+            await blobs.putFile(ref, f, 'video/mp4'); segmentsMade++
+          }
+          list.push(`file '${f.replace(/'/g, "'\\''")}'`)
+        }
+        const listPath = join(work, 'segments.txt'); await writeFile(listPath, list.join('\n') + '\n', 'utf8')
+        await runOk(segmentConcatArgv({ list: listPath, audio, out, seconds }), { signal, timeoutMs: longformRenderTimeoutMs(seconds), env: ffmpegEnv })
+        segmentLog = { plan, segments: specs.length, made: segmentsMade, reused: segmentsReused, maxPicturesPerProcess: Math.max(...specs.map((x) => x.segRuns.length)) }
       } else {
         const background = join(work, 'background.png')
         await runOk(longformBackgroundArgv({ image, out: background }), { signal })
@@ -400,7 +436,7 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver 
       const tb = withThumbnail ? await readFile(thumb) : null, thumbStored = tb ? await blobs.putBytes(`renders/${sha256(tb)}.jpg`, tb, 'image/jpeg') : null
       const thumbRef = thumbStored ? thumbStored.path : null
       const v = { variantId: 'v1', label: '롱폼', manifestHash: renderHash, renderRef: stored.path, renderHash, bytes: stored.bytes, duration: info.duration, posterRef: thumbRef, thumbnailRef: thumbRef, gate: { decision: 'PASS', reasons: [], checks: [] }, publishable: true }
-      return { outputRef: stored.path, outputHash: renderHash, result: { variants: [v], cards: cards.length, imageRef: assets.image.ref, ...(scenes ? { scenePictures: (assets.images ?? []).length } : {}), thumbnailRef: thumbRef, canvas: `${info.width}x${info.height}`, durationSec: info.duration }, provider: 'ffmpeg', model: 'libx264+libass' }
+      return { outputRef: stored.path, outputHash: renderHash, result: { variants: [v], cards: cards.length, imageRef: assets.image.ref, ...(scenes ? { scenePictures: (assets.images ?? []).length, segments: segmentLog } : {}), thumbnailRef: thumbRef, canvas: `${info.width}x${info.height}`, durationSec: info.duration }, provider: 'ffmpeg', model: 'libx264+libass' }
     } finally { await rm(work, { recursive: true, force: true }) }
   }
 })

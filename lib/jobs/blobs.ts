@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
-import { readFile, stat } from 'node:fs/promises'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 // canonicalize() comes from the shared compiler so plan/manifest addresses are stable across repos.
 import { canonicalize } from '../tracker-core/renderManifest.js'
 import * as objectStorage from '../objectStorage.js'
@@ -16,6 +18,8 @@ export interface JobBlobStore {
   // A large file on disk (e.g. a 60-120+ minute final MP4): hashed and uploaded as a STREAM, never read whole into
   // memory. Create-once like putBytes: an existing path (a retry of the same content) is not uploaded again.
   putFile(path: string, filePath: string, contentType: string): Promise<{ path: string; bytes: number; uploaded: boolean }>
+  // The other way: a large blob (e.g. a rendered longform segment) STREAMED to a file on disk; false when it is not there.
+  getFile?(path: string, filePath: string): Promise<boolean>
   // Short-lived URL a browser can play (private blobs only; never stored, never part of any hash).
   presign?(path: string, validForMs?: number): Promise<{ url: string; validUntil: number } | null>
 }
@@ -43,6 +47,7 @@ export function createMemoryBlobStore(): JobBlobStore & { files: Map<string, str
     async getBytes(path) { const b = binaries.get(path); return b ? Buffer.from(b) : null },
     // test store only: keeps the bytes in memory (the real store streams)
     async putFile(path, filePath) { const had = binaries.has(path); if (!had) binaries.set(path, await readFile(filePath)); return { path, bytes: binaries.get(path)!.length, uploaded: !had } },
+    async getFile(path, filePath) { const b = binaries.get(path); if (!b) return false; await writeFile(filePath, b); return true },
     async presign(path) { return binaries.has(path) || files.has(path) ? { url: `memory://${path}`, validUntil: Date.now() + 3_600_000 } : null },
     async putJson(path, value, opts) {
       const body = JSON.stringify(value)
@@ -117,6 +122,13 @@ export function createVercelJobBlobStore(deps?: { put?: any; get?: any; head?: a
       const result: any = await get(path, { access: 'private', useCache: false })
       if (!result || result.statusCode !== 200 || !result.stream) return null
       return Buffer.from(await new Response(result.stream).arrayBuffer())
+    },
+    async getFile(path, filePath) {
+      const { get } = await lazy()
+      const result: any = await get(path, { access: 'private', useCache: false })
+      if (!result || result.statusCode !== 200 || !result.stream) return false
+      try { await pipeline(Readable.fromWeb(result.stream), createWriteStream(filePath)) } catch (e) { await rm(filePath, { force: true }); throw e }
+      return true
     },
     async presign(path, validForMs = 60 * 60 * 1000) {
       const mod: any = await lazy()
