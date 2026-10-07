@@ -140,3 +140,25 @@ test('voice preview resolves through the same resolver: AUTO follows the content
   assert.throws(() => previewVoice({ profile: 'source_shorts' }), /no voice preview/)
   assert.throws(() => previewVoice({ profile: 'nope' }), /no voice preview/)
 })
+
+test('숨은야담 그림체: 5 illustration presets (never photoreal), AUTO = 고급 사극 일러스트, 1.0x; the choice reaches the scene prompt with the Joseon LOCK', async () => {
+  const { YADAM_STYLE_KEYS, YADAM_NO_PHOTO } = await import('../lib/generative/visualStyle.js')
+  const { creativeStylesFor } = await import('../lib/generative/creativeProfile.js')
+  const { yasaScenePrompt, JOSEON_LOCK, JOSEON_FORBIDDEN } = await import('../lib/generative/yasaLongform.js')
+  assert.deepEqual([...creativeStylesFor('yasa_longform')], ['korean_drama_illustration', 'oriental_painterly', 'webtoon_historical', 'fairytale_illustration', 'classic_storybook'])
+  assert.deepEqual(creativeAutoDefaults('yasa_longform'), { voiceProfile: 'female-senior', voiceTone: 'calm', voiceSpeed: 1, voiceProfileId: 'ko-lf-female-senior-calm-1.0-yadam-v1', visualStyleProfile: 'korean_drama_illustration' })
+  assert.equal(resolveCreativeProfile('yasa_longform', { voiceSpeed: 0.9 }, '').resolved.voiceSpeed, 0.9, '0.9x only when chosen')
+  // other contents keep their list and AUTO
+  assert.ok(!creativeStylesFor('senior_longform').some((k) => (YADAM_STYLE_KEYS as readonly string[]).includes(k)))
+  assert.equal(creativeAutoDefaults('yasa_shorts').visualStyleProfile, 'historical-dramatic')
+  const script: any = { characters: [{ id: 'bride', name: '윤씨', role: 'r', age: 22, gender: 'female', appearance: 'oval face', hair: 'long braid', outfit: 'pale pink hanbok', props: '' }], yasaStoryDNA: { setting: { region: '조선', era: '후기' }, mystery: { concreteProp: '메주' } } }
+  const scene: any = { id: 's1', place: '부엌 앞', time: '아침', characters: ['bride'], action: '메주를 든다', mood: '진지', visual: 'a bride holds a block of meju' }
+  for (const k of YADAM_STYLE_KEYS) {
+    const st = VISUAL_STYLE_PROFILES[k], p = yasaScenePrompt(script, scene, st)
+    assert.ok(st.negativePrompt.includes(YADAM_NO_PHOTO), `${k}: never photoreal`)
+    const at = (x: string) => p.indexOf(x)
+    assert.ok(at('Content:') < at(JOSEON_LOCK) && at(JOSEON_LOCK) < at('Characters') && at('Characters') < at(st.promptPrefix) && at(st.promptPrefix) < at('Avoid:'), `${k}: scene -> era LOCK -> Character Bible -> style -> negatives`)
+    assert.ok(p.includes(JOSEON_FORBIDDEN) && p.includes('pale pink hanbok'))
+  }
+  assert.ok(!yasaScenePrompt({ ...script, yasaStoryDNA: { setting: { region: '당나라', era: '8세기 중국' } } }, scene, VISUAL_STYLE_PROFILES.korean_drama_illustration).includes(JOSEON_LOCK), 'a story set elsewhere is not forced into Joseon')
+})

@@ -6,7 +6,7 @@ import {
   DEFAULT_VOICE_PROFILE, GENERAL_SHORTS_DEFAULT_VOICE_PROFILE, LONGFORM_VOICE_CHOICES, LONGFORM_VOICE_PROFILES, recommendLongformVoice, resolveLongformRuntimeVoice,
   parseLongformTone, parseLongformSpeed, toneInstruction, type LongformVoiceKey, type LongformVoiceTone, type LongformVoiceSpeed, type VoiceProfile
 } from './voiceProfile.js'
-import { VISUAL_STYLE_PROFILES, parseVisualStyle, type VisualStyleKey, type VisualStyleProfile } from './visualStyle.js'
+import { VISUAL_STYLE_PROFILES, YADAM_STYLE_KEYS, parseVisualStyle, type VisualStyleKey, type VisualStyleProfile } from './visualStyle.js'
 import { YADAM_VOICE, YADAM_STORYTELLER } from './voiceProfile.js'
 
 // Server Job profiles (wisdom, wisdom_longform, senior_longform, source_shorts) and the Story Writer content types (a
@@ -34,7 +34,10 @@ export type CreativeProfile = { schema: 'creative-profile/1'; content: CreativeC
 //         no topic rule matches); 'topic-mature' does the same but never a young voice.
 //  style: the AUTO picture style; `native` is the style the content's existing prompts already draw (no prompt change).
 //  'fixed' = one AUTO voice for the content (`fixed`); `speed` = the AUTO speed when the request names none.
-type ContentRule = { voice: 'house' | 'topic' | 'topic-mature' | 'fixed'; house?: VoiceProfile; fallback?: LongformVoiceKey; fixed?: LongformVoiceKey; speed?: LongformVoiceSpeed; style: VisualStyleKey | null; native?: VisualStyleKey }
+//  styles: the 그림체 this content offers the user (none = the shared list)
+type ContentRule = { voice: 'house' | 'topic' | 'topic-mature' | 'fixed'; house?: VoiceProfile; fallback?: LongformVoiceKey; fixed?: LongformVoiceKey; speed?: LongformVoiceSpeed; style: VisualStyleKey | null; native?: VisualStyleKey; styles?: readonly VisualStyleKey[] }
+// 숨은야담 AUTO 그림체 (one place to change the recommendation)
+export const YADAM_AUTO_STYLE: VisualStyleKey = 'korean_drama_illustration'
 const CONTENT_RULES: Readonly<Record<CreativeContent, ContentRule>> = {
   wisdom: { voice: 'house', house: DEFAULT_VOICE_PROFILE, style: 'wisdom-painterly', native: 'wisdom-painterly' },
   wisdom_longform: { voice: 'topic', style: 'wisdom-painterly', native: 'wisdom-painterly' },
@@ -42,14 +45,16 @@ const CONTENT_RULES: Readonly<Record<CreativeContent, ContentRule>> = {
   source_shorts: { voice: 'house', house: GENERAL_SHORTS_DEFAULT_VOICE_PROFILE, style: null },
   senior_shorts: { voice: 'topic-mature', style: 'senior-warm-watercolor' },
   yasa_shorts: { voice: 'topic-mature', fallback: 'male-middle', style: 'historical-dramatic' },
-  // 숨은야담 롱폼: an old tale told by a grandmother (female-senior, calm, 0.9x, the storyteller reading)
-  yasa_longform: { voice: 'fixed', fixed: YADAM_VOICE.key, speed: YADAM_VOICE.speed, style: 'historical-dramatic' },
+  // 숨은야담 롱폼: an old tale told by a grandmother (female-senior, calm, 1.0x, the storyteller reading); AUTO 그림체 = 고급 사극 일러스트
+  yasa_longform: { voice: 'fixed', fixed: YADAM_VOICE.key, speed: YADAM_VOICE.speed, style: YADAM_AUTO_STYLE, styles: YADAM_STYLE_KEYS },
   general_shorts: { voice: 'topic', style: 'bright-editorial' },
   general_longform: { voice: 'topic', style: 'bright-editorial' },
   // the economy channel bible already draws a premium documentary/editorial look: AUTO keeps its prompts as they are
   economy_shorts: { voice: 'topic', fallback: 'male-middle', style: 'realistic-documentary', native: 'realistic-documentary' },
   economy_longform: { voice: 'topic', fallback: 'male-middle', style: 'realistic-documentary', native: 'realistic-documentary' }
 }
+// the 그림체 list a content offers (UI); AUTO resolves to rule.style
+export const creativeStylesFor = (content: CreativeContent): readonly VisualStyleKey[] => CONTENT_RULES[content].styles ?? ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial']
 export const isCreativeContent = (c: unknown): c is CreativeContent => typeof c === 'string' && Object.prototype.hasOwnProperty.call(CONTENT_RULES, c)
 
 function autoVoice(content: CreativeContent, topic: string): LongformVoiceKey | 'house' {

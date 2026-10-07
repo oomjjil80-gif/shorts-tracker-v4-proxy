@@ -38,9 +38,12 @@ jobs:
           NON_TEST="$(printf '%s\n' "$CHANGED" | grep -Ev '^(tools/.*\.test\.(ts|mjs)|\.github/workflows/verify\.yml)$' || true)"
           TESTS="$(printf '%s\n' "$CHANGED" | grep -E '^tools/.*\.test\.(ts|mjs)$' || true)"
           WORKFLOW_ONLY="$(printf '%s\n' "$CHANGED" | grep -Ev '^\.github/workflows/verify\.yml$' || true)"
+          YADAM_STYLE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/visualStyle\.ts|lib/generative/creativeProfile\.ts|lib/generative/voiceProfile\.ts|lib/generative/yasaLongform\.ts|worker/stages/longform\.ts|tools/creative-profile\.test\.ts|tools/creative-all-content\.test\.ts|tools/yasa-longform-job\.test\.ts|tools/make-yadam-style-previews\.ts|\.github/workflows/verify\.yml)$' || true)"
 
           if [ -z "$LONGFORM_RENDER_OTHER" ]; then
             echo "mode=longform-render" >> "$GITHUB_OUTPUT"
+          elif [ -z "$YADAM_STYLE_OTHER" ]; then
+            echo "mode=yadam-style" >> "$GITHUB_OUTPUT"
           elif [ -z "$WORKFLOW_ONLY" ]; then
             echo "mode=workflow-only" >> "$GITHUB_OUTPUT"
           elif [ -z "$NON_TEST" ] && [ -n "$TESTS" ]; then
@@ -64,6 +67,20 @@ jobs:
             tools/jobs-api.test.ts \
             tools/jobs-store.test.ts \
             tools/r2-job-storage.test.ts
+
+      - name: Run focused 숨은야담 그림체 verification
+        if: steps.scope.outputs.mode == 'yadam-style'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 10m npx tsx --test \
+            tools/creative-profile.test.ts \
+            tools/creative-all-content.test.ts \
+            tools/longform-voice.test.ts \
+            tools/yasa-longform-job.test.ts \
+            tools/wisdom-longform.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
 
       - name: Run focused tests for test-only changes
         if: steps.scope.outputs.mode == 'test-only'

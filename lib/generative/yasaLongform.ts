@@ -8,7 +8,7 @@
 //     that shows the strangest act, the worst danger, the prop and the question — never the answer
 //   - deterministic checks of every act, the cold open and the whole script against the DNA (no AI QC)
 //   - scene pictures keep the story's own country / era (costume, architecture, props) and the concrete prop's look
-import { composeImagePrompt, type VisualStyleProfile } from './visualStyle.js'
+import { YADAM_NO_PHOTO, type VisualStyleProfile } from './visualStyle.js'
 import { characterLine, type SeniorScene, type SeniorScript } from './seniorLongform.js'
 import { checkYasaScript, propKeyword, validateYasaStoryDna } from '../story/yasaStoryDna.js'
 
@@ -105,20 +105,25 @@ export function yasaScriptErrors(script: any, o: { speed?: number; charsPerSecon
   return e
 }
 
-// the scene picture: the story's own country/era, the Character Bible, the prop's one look, the ONE style
+// 조선 고증 LOCK: whatever 그림체 is chosen, a Korean story keeps Korea / Joseon in every picture (style != country)
+export const JOSEON_LOCK = 'Korea, Joseon dynasty: Joseon hanbok, gat (horsehair hats), sangtu topknots, Joseon women\'s hairstyles (braids, chignon with binyeo), Joseon soldiers\' uniforms, hanok, thatched-roof choga houses, tiled giwa houses, jangdokdae crock terraces, Joseon everyday tools, Joseon village and street layout'
+export const JOSEON_FORBIDDEN = 'Chinese-style costumes, Qing queue hairstyle, Chinese official robes, Chinese palace architecture, Japanese kimono, Japanese chonmage topknot, torii gates, Japanese architecture'
+const KOREAN_SETTING = /조선|한국|고려|신라|백제|한양|korea|joseon|goryeo/i
+export const isKoreanSetting = (set: any) => { const t = `${set?.region || ''} ${set?.era || ''}`.trim(); return !t || KOREAN_SETTING.test(t) }
+
+// the scene picture, always in this order: 1 the scene, 2 the country/era LOCK, 3 the Character Bible, 4 the chosen
+// 그림체, 5 what never appears (style negatives + another country/era + never a photo)
 export function yasaScenePrompt(s: SeniorScript & { yasaStoryDNA?: any }, scene: SeniorScene, style: VisualStyleProfile): string {
   const dna = s.yasaStoryDNA ?? {}, set = dna.setting ?? {}, prop = String(dna.mystery?.concreteProp || '').trim()
   const people = scene.characters.map((id) => s.characters.find((c) => c.id === id)).filter(Boolean).map((c) => characterLine(c!))
   const showsProp = prop && hasProp(`${scene.visual} ${scene.action}`, dna)
-  return composeImagePrompt({
-    content: [
-      `${scene.visual} Place: ${scene.place}. Time: ${scene.time}. Action: ${scene.action}. Mood: ${scene.mood}`,
-      `Setting: ${set.region || ''}, ${set.era || ''}${set.culturalNotes ? ` (${set.culturalNotes})` : ''} — clothing, hairstyles, architecture and objects belong to exactly this place and time`,
-      ...(showsProp ? [`The key object "${prop}" looks exactly the same in every picture`] : [])
-    ].join('. '),
-    style,
-    composition: 'Wide 16:9 story frame. Faces and the key action in the upper two thirds; the bottom quarter calm and simple (subtitles are added later).',
-    characters: people,
-    negative: 'modern objects, costumes or buildings of another country or era'
-  })
+  const korean = isKoreanSetting(set)
+  return [
+    `Content: ${scene.visual} Place: ${scene.place}. Time: ${scene.time}. Action: ${scene.action}. Mood: ${scene.mood}${showsProp ? `. The key object "${prop}" looks exactly the same in every picture` : ''}.`,
+    `Country and era (locked, the style never changes this): ${set.region || ''}, ${set.era || ''}${set.culturalNotes ? ` (${set.culturalNotes})` : ''} — clothing, hairstyles, architecture and objects belong to exactly this place and time${korean ? `; ${JOSEON_LOCK}` : ''}.`,
+    ...(people.length ? [`Characters (keep exactly this look in every picture — face, age, hair, clothing colors and shape, build, key props): ${people.join(' | ')}.`] : []),
+    `Style: ${style.promptPrefix}.`,
+    `Composition: Wide 16:9 story frame. Faces and the key action in the upper two thirds; the bottom quarter calm and simple (subtitles are added later). ${style.compositionHints}.`,
+    `Avoid: ${[style.negativePrompt, 'modern objects, costumes or buildings of another country or era', korean ? JOSEON_FORBIDDEN : '', YADAM_NO_PHOTO].filter(Boolean).join(', ')}.`
+  ].join(' ')
 }

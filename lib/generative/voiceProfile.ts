@@ -93,6 +93,6 @@ export const ttsCacheIdentity = (profile: VoiceProfile, text: string) =>
   profile.id === DEFAULT_VOICE_PROFILE.id ? `tts-v1|${text}` : `tts-v2|${profile.id}|${text}`
 
 // 숨은야담 롱폼 AUTO voice: a grandmother telling an old tale (lib/generative/creativeProfile.ts uses these)
-export const YADAM_VOICE = { key: 'female-senior', tone: 'calm', speed: 0.9 } as const
+export const YADAM_VOICE = { key: 'female-senior', tone: 'calm', speed: 1 } as const
 export const YADAM_STORYTELLER = '60~70대 한국 여성 어른이 손주에게 오래된 옛날이야기를 들려주듯 읽어주세요. 따뜻하고 깊은 목소리로, 서두르지 말고 문장과 문장 사이에 호흡이 느껴지게. 감정을 지나치게 연기하지 말고, 중요한 순간은 조금 눌러 읽어주세요. 광고·뉴스·강의 톤은 피해주세요.'
 
