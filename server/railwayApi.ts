@@ -1,14 +1,17 @@
 import express, { type Request, type Response, type NextFunction } from 'express'
-import storyHandler from '../api/story.js'
+import storyHandler, { setCors } from '../api/story.js'
 import syncHandler from '../api/sync/[...path].js'
 import syncHealthHandler from '../api/sync-health.js'
 import healthHandler from '../api/health.js'
 import { storageBackend } from '../lib/objectStorage.js'
+import { createMaterials, createMaterialsHttp } from '../lib/materials/intake.js'
+import { createVercelJobBlobStore } from '../lib/jobs/blobs.js'
 
 const app = express()
 app.disable('x-powered-by')
 
 app.use('/api/story', express.json({ limit: '32mb' }))
+app.use('/api/materials', express.json({ limit: '2mb' }))
 app.use('/api/sync', express.raw({ type: 'application/octet-stream', limit: '3mb' }))
 app.use('/api/sync', express.json({ type: 'application/json', limit: '1mb' }))
 
@@ -26,6 +29,10 @@ app.get('/api/continuity-health', (_req, res) => {
   })
 })
 app.all('/api/story', route(storyHandler))
+// 소재 보관함 auto intake (scheduled GPT -> R2 materials/v1/production/) and the browser's read
+const materialsHttp = createMaterialsHttp({ materials: createMaterials({ blobs: createVercelJobBlobStore() }), cors: setCors })
+app.all('/api/materials/intake', route(materialsHttp.intake))
+app.all('/api/materials', route(materialsHttp.list))
 app.all('/api/sync-health', route(syncHealthHandler))
 app.all('/api/sync/*', route(syncHandler))
 app.all('/api/health', route(healthHandler))
