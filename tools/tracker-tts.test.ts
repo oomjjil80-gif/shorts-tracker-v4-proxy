@@ -107,4 +107,13 @@ test('13-14: one levelled narration (~-17 LUFS, no clipping); its probed length 
   const again = await t.assemble({ ...body, refs })
   assert.equal(again.cache, 'HIT'); assert.equal(again.seconds, n.seconds); assert.equal(s.calls.length, 3)
   await assert.rejects(() => t.assemble({ ...body, refs: ['../etc/passwd'] }), (e: any) => e.code === 'BAD_REQUEST')
+  // the browser takes the narration bytes through the API (tts_audio), never any other stored object
+  const handler = createJobsHttp({ getStore: async () => { throw new Error('no database') }, blobs, trackerTts: t })
+  const got = await new Promise<{ status: number; type: string; bytes: Buffer }>((resolve) => {
+    const h: Record<string, string> = {}; let status = 0
+    handler({ method: 'GET', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32) }, query: { taskType: 'tts_audio', ref: n.ref } } as any,
+      { setHeader(k: string, v: string) { h[k] = v }, status(c: number) { status = c; return this }, json(b: any) { resolve({ status, type: 'json', bytes: Buffer.from(JSON.stringify(b)) }); return this }, end(b: Buffer) { resolve({ status, type: h['Content-Type'], bytes: b }); return this } } as any)
+  })
+  assert.equal(got.status, 200); assert.equal(got.type, 'audio/mp4'); assert.ok(got.bytes.equals(blobs.binaries.get(n.ref)))
+  await assert.rejects(() => t.audio(refs[0]), (e: any) => e.code === 'BAD_REQUEST')
 })

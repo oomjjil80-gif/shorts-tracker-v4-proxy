@@ -32,7 +32,7 @@ export type JobsDeps = {
   sourceExists?: (sourceAssetId: string) => Promise<boolean>
   analyzeReference?: typeof analyzeRegisteredReference
   voicePreview?: (input: any) => Promise<{ playbackUrl: string; validUntil: number; cache: 'HIT' | 'MISS' }>
-  trackerTts?: { clips: (input: any) => Promise<any>; assemble: (input: any) => Promise<any> }
+  trackerTts?: { clips: (input: any) => Promise<any>; assemble: (input: any) => Promise<any>; audio?: (ref: string) => Promise<Buffer> }
 }
 
 function workspaceOf(req: Request): string {
@@ -48,8 +48,8 @@ export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
 // Creative Settings for browser-made content (Story Writer): the server resolves AUTO (POST; no database, no paid call)
 export const CREATIVE_RESOLVE_TASK = 'creative_resolve'
 // Tracker TTS for browser-made content: voice clips in small batches, then one levelled narration (POST; no database)
-export const TTS_CLIPS_TASK = 'tts_clips', TTS_ASSEMBLE_TASK = 'tts_assemble'
-export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (t.startsWith('job_') || [VOICE_PREVIEW_TASK, CREATIVE_RESOLVE_TASK, TTS_CLIPS_TASK, TTS_ASSEMBLE_TASK].includes(t))
+export const TTS_CLIPS_TASK = 'tts_clips', TTS_ASSEMBLE_TASK = 'tts_assemble', TTS_AUDIO_TASK = 'tts_audio'
+export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (t.startsWith('job_') || [VOICE_PREVIEW_TASK, CREATIVE_RESOLVE_TASK, TTS_CLIPS_TASK, TTS_ASSEMBLE_TASK, TTS_AUDIO_TASK].includes(t))
 
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
@@ -123,6 +123,12 @@ export function createJobsHttp(deps: JobsDeps) {
       if (taskType === TTS_CLIPS_TASK || taskType === TTS_ASSEMBLE_TASK) {
         if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
         try { return res.status(200).json({ ok: true, ...(await (taskType === TTS_CLIPS_TASK ? trackerTts.clips(input) : trackerTts.assemble(input))) }) }
+        catch (e: any) { if (e instanceof TrackerTtsError) throw new JobError(e.code as any, e.message); throw e }
+      }
+      // the assembled narration's bytes through the API (same origin rules as every job call; no storage CORS needed)
+      if (taskType === TTS_AUDIO_TASK) {
+        if (req.method !== 'GET') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires GET`)
+        try { const bytes = await trackerTts.audio!(String(input.ref || '')); res.setHeader('Content-Type', 'audio/mp4'); res.setHeader('Content-Length', String(bytes.length)); return res.status(200).end(bytes) }
         catch (e: any) { if (e instanceof TrackerTtsError) throw new JobError(e.code as any, e.message); throw e }
       }
       if (taskType === CREATIVE_RESOLVE_TASK) {

@@ -15,7 +15,7 @@ import { LONGFORM_VOICE_PROFILES, LONGFORM_VOICE_TONES, LONGFORM_VOICE_SPEEDS, t
 
 export class TrackerTtsError extends Error { constructor(public code: string, message: string) { super(message); this.name = 'TrackerTtsError' } }
 const MAX_CLIPS = 24, MAX_CLIP_CHARS = 6000, MAX_REFS = 4000
-const REF = /^generative-assets\/audio\/[0-9a-f]{64}\.mp3$/
+const REF = /^generative-assets\/audio\/[0-9a-f]{64}\.mp3$/, NARRATION_REF = /^generative-assets\/audio\/[0-9a-f]{64}\.m4a$/
 
 // the narration voice of an Episode: its stored resolved profile (from creative_resolve), else the same resolver
 export function trackerVoice(input: any): { content: CreativeContent; voice: VoiceProfile } {
@@ -95,5 +95,12 @@ export function createTrackerTts(deps: { blobs: JobBlobStore; tts: TtsFn; apiKey
       return { ref, seconds, clipsSeconds, loudness: NARRATION_LOUDNORM, playbackUrl: s.url, validUntil: s.validUntil, cache: 'MISS' }
     } finally { await rm(work, { recursive: true, force: true }) }
   }
-  return { clips, assemble }
+  // the assembled narration (only the .m4a refs tts_assemble makes)
+  async function audio(ref: string) {
+    if (!NARRATION_REF.test(ref)) throw new TrackerTtsError('BAD_REQUEST', 'ref must be a narration returned by tts_assemble')
+    const bytes = await deps.blobs.getBytes(ref)
+    if (!bytes) throw new TrackerTtsError('NOT_FOUND', 'narration not found; make it again')
+    return bytes
+  }
+  return { clips, assemble, audio }
 }
