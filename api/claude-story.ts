@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { validateYasaStoryDna, yasaScriptBrief, isYasa } from '../lib/story/yasaStoryDna.js'
 
 function setCors(_req: Request, res: Response) {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -403,6 +404,11 @@ export default async function handler(req: Request, res: Response) {
     const chapterCount = Math.max(3, Math.min(10, Number(input?.chapterCount || 6)))
 
     if (String(req.body?.mode || '') === 'chapter') {
+      // 숨은야사: a chapter is only written from a valid STORY DNA PLAN, which then overrides the explainer rules
+      if (isYasa(input)) {
+        const v = validateYasaStoryDna(input?.yasaStoryDNA, 'longform')
+        if (!v.ok) return res.status(422).json({ ok:false, error:{ code: input?.yasaStoryDNA ? 'YASA_DNA_INVALID' : 'YASA_DNA_REQUIRED', message:'숨은야사 대본은 STORY DNA PLAN이 먼저 필요합니다.', errors:v.errors } })
+      }
       const chapterNo = Math.max(1, Math.min(chapterCount, Number(req.body?.chapterNo || 1)))
       const totalChapters = Math.max(chapterCount, Number(req.body?.totalChapters || chapterCount))
       const chapterMinutes = Math.max(2, targetMinutes / totalChapters)
@@ -412,10 +418,14 @@ export default async function handler(req: Request, res: Response) {
       const payload = {
         model,
         max_tokens: 7000,
-        system: buildSystemPrompt(),
+        system: isYasa(input)
+          ? [buildSystemPrompt(), '', '[숨은야사 우선 규칙] 이 원고는 경제·생활 설명형이 아니라 숨은야사 드라마형 야사 스토리다. 아래 STORY DNA가 위 채널 규칙보다 우선한다.'].join('\n')
+          : buildSystemPrompt(),
         messages: [{
           role:'user',
-          content: buildChapterPrompt(input, chapterNo, totalChapters, chapterMinutes, previousChapter)
+          content: buildChapterPrompt(input, chapterNo, totalChapters, chapterMinutes, previousChapter) + (isYasa(input)
+            ? `\n\n${yasaScriptBrief(input.yasaStoryDNA, 'longform')}\n\n[이번 챕터 위치] 전체 ${totalChapters}개 중 ${chapterNo}번 — 전체 진행률 약 ${Math.round(((chapterNo - 1) / totalChapters) * 100)}~${Math.round((chapterNo / totalChapters) * 100)}% 구간의 구조를 따른다.`
+            : '')
         }],
         output_config: { format: { type:'json_schema', schema:LONGFORM_DRAFT_SCHEMA } }
       }

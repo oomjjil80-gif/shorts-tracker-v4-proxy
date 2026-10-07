@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { isYasa, yasaScriptBrief } from '../lib/story/yasaStoryDna.js'
 
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -167,7 +168,9 @@ function buildUserPrompt(input: any) {
       ? '이 원고는 실제 업로드 제작 직전 최종본이다. 제목·훅·챕터 순서·검증된 사실·핵심 논리를 유지하되 그루, 민재 등 고정 캐릭터 대화 흔적을 모두 제거한다. 질문형 대사는 자연스러운 내레이션의 수사 질문으로 바꾸고, 모든 segment의 speaker는 정확히 내레이션으로 설정한다. 새로운 사실이나 숫자를 추가하지 않는다. TTS가 그대로 읽어도 자연스러운 완성 원고를 동일 JSON 구조로 반환하라.'
       : (input?.rewriteMode
         ? '같은 QC 문제가 3회 이상 반복됐다. 반복 문제와 연결된 구간은 기존 문장을 살리려 하지 말고 삭제 후 verifiedFacts·claimsToVerify·sources와 현재 GPT 필수 수정지시만으로 새로 작성하라. 나머지 좋은 구간과 큰 구조는 유지하고 동일 JSON 구조만 반환하라.'
-        : '위 자료만 사용해 정확히 1회 수정본을 작성하라. 새로운 외부 사실을 보충하지 말고, 필요한 부분만 수정한 뒤 동일 JSON 구조만 반환하라.')
+        : '위 자료만 사용해 정확히 1회 수정본을 작성하라. 새로운 외부 사실을 보충하지 말고, 필요한 부분만 수정한 뒤 동일 JSON 구조만 반환하라.'),
+    // 숨은야사: the revision keeps the STORY DNA (never drop or move the reveal structure)
+    isYasa(input) ? '\n' + yasaScriptBrief(input.yasaStoryDNA, 'longform') : ''
   ].join('\n')
 }
 
