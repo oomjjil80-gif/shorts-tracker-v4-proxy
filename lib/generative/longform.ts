@@ -224,6 +224,57 @@ export function longformCardsAss(s: LongformScript, timeline: Array<{ start: num
   }
   return { ass: [...lines, ''].join('\n'), cards }
 }
+// ---------------- 숨은야담: the bottom caption IS the narration (never the planner's short "show" lines) ----------------
+// A sentence's spoken text, whitespace normalised, cut at spaces (never inside a word) into 1~2 line chunks that fit the
+// subtitle column; a line prefers to end after punctuation. The chunks joined with one space ARE the sentence, letter for
+// letter. Each chunk is shown inside the sentence's own measured audio span, in proportion to its length (+ a pause
+// after punctuation): the first starts at the sentence start, the last ends at its end, no gap and no overlap.
+export const YADAM_CAPTION = { lineEm: 22, lines: 2 } as const
+const capNorm = (t: unknown) => String(t ?? '').replace(/\s+/g, ' ').trim()
+const endsPause = (w: string) => /[,.?!…。、"”'’)\]]$/.test(w)
+export function yasaCaptionChunks(say: unknown, o: { lineEm?: number; lines?: number } = {}): Array<{ text: string; lines: string[] }> {
+  const maxEm = o.lineEm ?? YADAM_CAPTION.lineEm, maxLines = o.lines ?? YADAM_CAPTION.lines
+  const words = capNorm(say).split(' ').filter(Boolean)
+  const lines: string[] = []
+  let cur: string[] = []
+  for (const w of words) {
+    const next = [...cur, w].join(' ')
+    if (cur.length && headAdvanceEm(next) > maxEm) { lines.push(cur.join(' ')); cur = [w] } else cur.push(w)
+    // a comfortable break after punctuation once the line is more than half full
+    if (endsPause(w) && headAdvanceEm(cur.join(' ')) >= maxEm * 0.55) { lines.push(cur.join(' ')); cur = [] }
+  }
+  if (cur.length) lines.push(cur.join(' '))
+  const chunks: Array<{ text: string; lines: string[] }> = []
+  for (let i = 0; i < lines.length; i += maxLines) { const ls = lines.slice(i, i + maxLines); chunks.push({ text: ls.join(' '), lines: ls }) }
+  return chunks
+}
+// the chunks of one sentence over [start, end] (centisecond steps, as ASS shows them)
+export function yasaCaptionTimes(chunks: Array<{ text: string }>, start: number, end: number): Array<{ start: number; end: number }> {
+  const w = chunks.map((c) => Math.max(1, headAdvanceEm(c.text)) + (endsPause(c.text) ? 1.5 : 0)), total = w.reduce((a, b) => a + b, 0)
+  const cs = (x: number) => Math.round(x * 100) / 100
+  const edges = [start]
+  let acc = 0
+  for (let i = 0; i < chunks.length - 1; i++) { acc += w[i]; edges.push(Math.min(end, Math.max(edges[i] + 0.01, cs(start + ((end - start) * acc) / total)))) }
+  edges.push(end)
+  return chunks.map((_, i) => ({ start: edges[i], end: edges[i + 1] }))
+}
+export function yasaCaptionsAss(s: LongformScript, timeline: Array<{ start: number; end: number; k: number }>): { ass: string; cards: Array<{ start: number; end: number; lines: string[]; fs: number; k: number }>; sentences: number } {
+  const sents = sentencesOf(s), out = header(LONGFORM.canvas.w, LONGFORM.canvas.h, 7, 4), cards: Array<{ start: number; end: number; lines: string[]; fs: number; k: number }> = []
+  const B = SENIOR.text, done = new Set<number>()
+  for (const t of timeline) {
+    if (!(t.end > t.start)) continue
+    const chunks = yasaCaptionChunks(sents[t.k]?.say)
+    if (!chunks.length) continue
+    const times = yasaCaptionTimes(chunks, t.start, t.end)
+    for (const [i, c] of chunks.entries()) {
+      const fs = cardFontSize(c.lines, B.maxWidth, B.basePx, B.minPx)
+      out.push(`Dialogue: 1,${assTime(times[i].start)},${assTime(times[i].end)},Card,,0,0,0,,{\\an2\\pos(${B.x},${LONGFORM.canvas.h - B.bottom})\\fs${fs}\\fsp2}${c.lines.map(esc).join('\\N')}`)
+      cards.push({ ...times[i], lines: c.lines, fs, k: t.k })
+    }
+    done.add(t.k)
+  }
+  return { ass: [...out, ''].join('\n'), cards, sentences: done.size }
+}
 // ---------------- ffmpeg: static picture + left darkening + text (no zoom, pan, motion or transition) ----------------
 // The left column is darkened with a fixed horizontal gradient so the text always reads, whatever the image.
 const leftShade = (w: number, h: number) => `[sh];color=c=black:s=${w}x${h},format=rgba,geq=r=0:g=0:b=0:a='clip(200*(1-X/(${w}*0.62)),0,200)'[g];[sh][g]overlay=0:0`

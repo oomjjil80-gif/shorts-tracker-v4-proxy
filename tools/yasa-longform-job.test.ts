@@ -16,8 +16,8 @@ import { createJobsHttp } from '../lib/jobs/http.js'
 import { runOnce } from '../worker/runJob.js'
 import { runOk, probe } from '../lib/media/ffmpeg.js'
 import { withLongform, createLongformPlanExecutor, createLongformAssetExecutor, longformRenderExecutor, longformPackageExecutor } from '../worker/stages/longform.js'
-import { LONGFORM, normalizeLongformBrief, sentencesOf, cardTimeline, validateLongformScript } from '../lib/generative/longform.js'
-import { YASA_ACTS, YASA_REVEAL_ACT, YASA_REVEAL_WINDOW, COLD_OPEN, YADAM_STORYTELLER, yasaActChars, yasaRevealAt, yasaScriptErrors, coldOpenErrors, revealWords } from '../lib/generative/yasaLongform.js'
+import { LONGFORM, normalizeLongformBrief, sentencesOf, cardTimeline, validateLongformScript, longformCardsAss, yasaCaptionChunks, yasaCaptionsAss } from '../lib/generative/longform.js'
+import { YASA_ACTS, YASA_REVEAL_ACT, YASA_REVEAL_WINDOW, COLD_OPEN, YADAM_STORYTELLER, yasaActChars, yasaRevealAt, yasaScriptErrors, coldOpenErrors, revealWords, coldOpenCandidates } from '../lib/generative/yasaLongform.js'
 import { characterLine, sceneRuns, seniorVideoArgv } from '../lib/generative/seniorLongform.js'
 import { VISUAL_STYLE_PROFILES } from '../lib/generative/visualStyle.js'
 import { PROFILES } from '../lib/jobs/profiles.js'
@@ -262,4 +262,87 @@ test('YADAM planner requests (stubbed fetch, no paid call): DNA schema + rules; 
   assert.equal(sent[4].text.format.name, 'yasa_longform_cold_open'); assert.match(sent[4].instructions, /NEVER reveal/); assert.match(sent[4].instructions, /about 290 Korean characters/)
   assert.deepEqual(sent[4].text.format.schema.properties.sentences.properties ?? sent[4].text.format.schema.properties.sentences.items.properties.scene.enum, outline.sections.map((s: any) => s.scenes[0].id))
   assert.ok([sent[2], sent[3], sent[4]].every((b) => b.instructions.includes(JSON.stringify(DNA, null, 2))))
+})
+
+test('YADAM quality: cold open from the middle (never the first 10% / the reveal / a near repeat); captions = the narration word for word; REMASTER child reuses the source script + TTS', async () => {
+  const db = await createTestDb(), store = createJobStore(db), blobs: any = createMemoryBlobStore()
+  const handler = createJobsHttp({ getStore: async () => store, blobs, sourceExists: async () => true })
+  const call = async (body: any) => { let status = 0, json: any = null; const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } }; await handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': KEY }, query: {}, body } as any, res); return { status, json } }
+  const d = await mkdtemp(join(tmpdir(), 'yadam-remaster-'))
+  const src = await call({ taskType: 'job_create', profile: 'yasa_longform', idempotencyKey: 'yadam-src-00001', budgetUsd: 5, input: { kind: 'topic', text: TOPIC, targetSeconds: SECONDS, voiceSpeed: 0.9 } })
+  const sourceId = src.json.job.id
+  // stand-ins that count every paid call (no real AI / image / TTS call anywhere)
+  const calls: Record<string, any[]> = {}, prompts: string[] = [], ttsTexts: string[] = [], voiceIds: string[] = []
+  let seen: any = null
+  const planner: any = fakePlanner(calls, { coldOpen: (i: any) => { seen = i; return { sentences: COLD.map(([scene, s]) => ({ scene, say: s, show: ['썩은 메주', '왜'], accent: '썩은 메주', color: 'red' })) } } })
+  const tick = (pl: any) => runOnce({ store, blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: pl }), createLongformAssetExecutor({ apiKey: 'k', image: async (p: string) => { prompts.push(p); return scenePicture(d, prompts.length) }, tts: async (t: string, _k: string, v: any) => { ttsTexts.push(t); voiceIds.push(v.id); return shortTts() } } as any)]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
+  await tick(planner); await tick(planner) // source PLAN + ASSET
+  const sourceRuns = await store.listStageRuns(sourceId), splan: any = sourceRuns.find((r: any) => r.stage === 'PLAN' && r.status === 'SUCCEEDED')
+  const script: any = await blobs.getJson(splan.result.scriptRef)
+
+  // 1-3: the cold open may use only scenes past the first 10% and before the reveal; the 15~65% middle first
+  const cand = coldOpenCandidates(script.sections)
+  assert.ok(cand.list.every((c) => c.at >= 0.1 && c.act < YASA_REVEAL_ACT), JSON.stringify(cand.list))
+  assert.ok(!cand.allowed.has('a1s1') && ![...cand.allowed].some((id) => /^a[678]s/.test(id)), 'no opening scene, no reveal / aftermath / payoff scene')
+  assert.ok(cand.list.filter((c) => c.preferred).every((c) => c.at >= 0.15 && c.at <= 0.65) && cand.preferred.size >= 2)
+  assert.deepEqual(seen.candidates.map((c: any) => c.id).sort(), [...cand.allowed].sort(), 'the planner is offered only these')
+  const ids = new Set<string>(script.sections.flatMap((s: any) => s.scenes.map((x: any) => x.id))), main = script.sections.flatMap((s: any) => s.sentences.map((x: any) => x.say))
+  const co = (sents: any[]) => coldOpenErrors(sents, { dna: DNA, sceneIds: ids, mainSentences: main, speed: 0.9, charsPerSecond: LONGFORM.charsPerSecond, candidates: cand }).join(';')
+  const good = script.coldOpen.sentences
+  assert.equal(co(good), '')
+  assert.match(co(good.map((x: any, i: number) => (i === 0 ? { ...x, scene: 'a1s1' } : x))), /cold_open\[0\]\.scene a1s1: not from the first 10%/)
+  assert.match(co(good.map((x: any, i: number) => (i === 1 ? { ...x, scene: 'a7s1' } : x))), /cold_open\[1\]\.scene a7s1: not from the first 10% of the story nor from the reveal/)
+  const late = [...cand.list].filter((c) => !c.preferred).map((c) => c.id)
+  assert.match(co(good.map((x: any, i: number) => ({ ...x, scene: late[i % late.length] === good[i - 1]?.scene ? late[(i + 1) % late.length] : late[i % late.length] }))), /cold_open\.middle 0\/6/)
+  // 4: the same event in almost the same words is refused (exact copies already were)
+  const near = main[12].replace('걷는다', '걸었다')
+  assert.match(co(good.map((x: any, i: number) => (i === 2 ? { ...x, say: near } : x))), /cold_open\[2\]\.near_repeats_main_story/)
+
+  // 5-6: 숨은야담 captions are the narration itself: chunks joined = the sentence; inside its audio span, no gap / overlap
+  const long = '노파는 떨리는 손으로 낡은 열쇠를 소년의 손에 쥐여 주었습니다. "이것만은 절대 잃어버리면 안 된다." 소년은 고개를 끄덕였지만, 그 열쇠가 무엇을 여는지는 아무도 말해 주지 않았습니다.'
+  for (const say of [long, ...sentencesOf(script).map((x: any) => x.say)]) {
+    const chunks = yasaCaptionChunks(say)
+    assert.equal(chunks.map((c) => c.text).join(' '), say.replace(/\s+/g, ' ').trim(), 'every letter of the narration, in order')
+    assert.ok(chunks.every((c) => c.lines.length >= 1 && c.lines.length <= 2))
+  }
+  assert.ok(yasaCaptionChunks(long).length >= 2, 'a long sentence is several caption events')
+  const sa: any = await blobs.getJson((sourceRuns.find((r: any) => r.stage === 'ASSET' && r.status === 'SUCCEEDED') as any).result.assetSpecRef)
+  const tl = cardTimeline(script, sa.chunks, sa.chunks.map((c: any) => c.seconds)), cap = yasaCaptionsAss(script, tl)
+  assert.equal(cap.sentences, sentencesOf(script).length)
+  for (const t of tl) {
+    const ev = cap.cards.filter((c) => c.k === t.k)
+    assert.equal(ev.map((c) => c.lines.join(' ')).join(' '), sentencesOf(script)[t.k].say.replace(/\s+/g, ' ').trim())
+    assert.equal(ev[0].start, t.start); assert.equal(ev.at(-1)!.end, t.end)
+    for (let i = 1; i < ev.length; i++) assert.equal(ev[i].start, ev[i - 1].end, 'no gap, no overlap')
+  }
+  assert.ok(!cap.ass.includes('지고 간 며느리'), 'the planner\'s short "show" lines are never the 숨은야담 caption')
+  // 7: Wisdom / Senior keep their sentence cards (one card per sentence, the "show" lines)
+  const cards = longformCardsAss(script, tl, 'bottom')
+  assert.equal(cards.cards.length, tl.length); assert.ok(cards.ass.includes('지고 간 며느리'))
+
+  // 8: REMASTER — a new child job from the source (kept as it is) with a new 그림체
+  const before = { prompts: prompts.length, tts: ttsTexts.length }
+  assert.equal((await call({ taskType: 'job_remaster_yasa', sourceJobId: sourceId, visualStyleProfile: 'senior-warm-watercolor' })).status, 400, 'only the 숨은야담 그림체')
+  assert.equal((await call({ taskType: 'job_remaster_yasa', sourceJobId: 'job_nope' })).status, 404)
+  const rm = await call({ taskType: 'job_remaster_yasa', sourceJobId: sourceId, visualStyleProfile: 'webtoon_historical' })
+  assert.equal(rm.status, 201, JSON.stringify(rm.json)); const childId = rm.json.job.id
+  assert.notEqual(childId, sourceId)
+  // the remaster writes ONLY a new cold open (a different one); DNA / outline / acts / upload text are never asked for
+  const newCold = COLD.map(([scene, s]) => [scene, `${s.slice(0, -1)}…`]) // every line new, same length
+  const only: any = { coldOpen: async () => ({ sentences: newCold.map(([scene, s]) => ({ scene, say: s, show: ['썩은 메주', '왜'], accent: '썩은 메주', color: 'red' })) }), dna: async () => { throw new Error('no DNA') }, outline: async () => { throw new Error('no outline') }, section: async () => { throw new Error('no act') }, metadata: async () => { throw new Error('no metadata') } }
+  for (let i = 0; i < 4; i++) { const r: any = await tick(only); if (!r.ran) break }
+  const childRuns = await store.listStageRuns(childId), cplan: any = childRuns.find((r: any) => r.stage === 'PLAN' && r.status === 'SUCCEEDED')
+  assert.ok(cplan && childRuns.some((r: any) => r.stage === 'ASSET' && r.status === 'SUCCEEDED'), JSON.stringify(childRuns.map((r: any) => [r.stage, r.status, r.error])))
+  assert.deepEqual([cplan.result.remaster.sourceJobId, cplan.result.remaster.sourceScriptRef], [sourceId, splan.result.scriptRef])
+  const child: any = await blobs.getJson(cplan.result.scriptRef)
+  assert.deepEqual([child.sections, child.yasaStoryDNA, child.metadata, child.title, child.characters], [script.sections, script.yasaStoryDNA, script.metadata, script.title, script.characters], 'the story, acts, narration and upload text are the source\'s')
+  assert.deepEqual(child.coldOpen.sentences.map((x: any) => x.say), newCold.map(([, s]) => s))
+  // TTS: only the new cold open lines (the main narration comes from the cache: same voice, same text); pictures: the new style
+  const childTts = ttsTexts.slice(before.tts)
+  assert.deepEqual(childTts.sort(), newCold.map(([, s]) => s).sort(), 'no main-story TTS again')
+  assert.ok(new Set(voiceIds).size === 1 && voiceIds[0] === 'ko-lf-female-senior-calm-0.9-yadam-v1', 'the source voice (0.9x) is kept')
+  const childPrompts = prompts.slice(before.prompts)
+  assert.ok(childPrompts.length > 0 && childPrompts.every((p) => p.includes(VISUAL_STYLE_PROFILES.webtoon_historical.promptPrefix)))
+  // the source job keeps its own script
+  assert.equal(((await store.listStageRuns(sourceId)).find((r: any) => r.stage === 'PLAN' && r.status === 'SUCCEEDED') as any).result.scriptRef, splan.result.scriptRef)
 })
