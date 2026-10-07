@@ -12,13 +12,17 @@ import { type LongformVoiceChoice, type LongformVoiceKey } from './voiceProfile.
 import { resolveCreativeProfile, type CreativeProfile } from './creativeProfile.js'
 import { composeImagePrompt, type VisualStyleProfile } from './visualStyle.js'
 import { characterBibleErrors, seniorActErrors, SENIOR } from './seniorLongform.js'
+import { yasaScriptErrors } from './yasaLongform.js'
+import { validateYasaStoryDna } from '../story/yasaStoryDna.js'
 
 export const LONGFORM_PROFILE_ID = 'wisdom_longform'
 // One Longform engine, two image modes: Wisdom Longform holds ONE picture (figure right, cards left); Senior Longform
 // tells a story over scene pictures (subtitle cards at the bottom). Research is the wisdom-source step (Wisdom only).
 export const LONGFORM_MODES = {
   wisdom_longform: { images: 'single', script: 'wisdom-longform-script/1', research: true, cards: 'left' },
-  senior_longform: { images: 'scenes', script: 'senior-longform-script/1', research: false, cards: 'bottom' }
+  senior_longform: { images: 'scenes', script: 'senior-longform-script/1', research: false, cards: 'bottom' },
+  // 숨은야담: the scenes mode with the YASA STORY DNA as the first PLAN step (lib/generative/yasaLongform.ts)
+  yasa_longform: { images: 'scenes', script: 'yasa-longform-script/1', research: false, cards: 'bottom' }
 } as const
 export const isLongformProfile = (p: unknown): p is keyof typeof LONGFORM_MODES => typeof p === 'string' && Object.prototype.hasOwnProperty.call(LONGFORM_MODES, p)
 export const longformMode = (p: unknown) => (isLongformProfile(p) ? LONGFORM_MODES[p] : LONGFORM_MODES.wisdom_longform)
@@ -40,8 +44,8 @@ export type AccentColor = keyof typeof ACCENTS
 
 // Longform briefs: Wisdom Longform (one image) and Senior Longform (story scenes) share the engine. `creative` holds the
 // requested + resolved voice/style; `voice` only exists on briefs made before Creative Settings (kept as they were).
-export type LongformProfileId = 'wisdom_longform' | 'senior_longform'
-export type LongformBrief = { schema: 'generative-brief/1'; profile: LongformProfileId; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; creative?: CreativeProfile; voice?: { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
+export type LongformProfileId = 'wisdom_longform' | 'senior_longform' | 'yasa_longform'
+export type LongformBrief = { schema: 'generative-brief/1'; profile: LongformProfileId; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; creative?: CreativeProfile; yasaStoryDNA?: any; deriveShorts?: false; voice?: { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
 // one narration sentence and the card shown while it is spoken
 export type LongformSentence = { say: string; show: string[]; accent: string; color: AccentColor }
 export type LongformScript = {
@@ -51,6 +55,8 @@ export type LongformScript = {
   thumbnail: { lines: Array<{ text: string; color: AccentColor }> }
   metadata: { description: string; tags: string[]; hashtags: string[]; pinnedComment: string }
   sections: Array<{ id: string; sentences: LongformSentence[] }>
+  // 숨은야담: a cold open told before the first section (its sentences come first in the narration and the cards)
+  coldOpen?: { sentences: LongformSentence[] }
 }
 
 export function normalizeLongformBrief(input: any, profile: LongformProfileId = 'wisdom_longform'): LongformBrief {
@@ -63,11 +69,20 @@ export function normalizeLongformBrief(input: any, profile: LongformProfileId = 
   const targetSeconds = Number(input?.targetSeconds ?? LONGFORM.targetSeconds.default)
   if (!Number.isFinite(targetSeconds) || targetSeconds <= 0) throw new Error('targetSeconds must be a positive number of seconds')
   const creative = resolveCreativeProfile(profile, input, text)
-  return { schema: 'generative-brief/1', profile, kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds: Math.round(targetSeconds), ...(sample ? { sample: true as const } : {}), creative }
+  // 숨은야담: a STORY DNA the browser already made may come along (checked here); otherwise the PLAN makes it
+  let yasaStoryDNA: any
+  if (profile === 'yasa_longform' && input?.yasaStoryDNA !== undefined) {
+    const v = validateYasaStoryDna(input.yasaStoryDNA, 'longform', { layers: true })
+    if (!v.ok) throw new Error(`yasaStoryDNA is invalid: ${v.errors.join(', ')}`)
+    yasaStoryDNA = input.yasaStoryDNA
+  }
+  // Wisdom Longform recommends derived Shorts by default; only an explicit "off" is stored (other briefs stay byte-identical)
+  const noDerive = profile === 'wisdom_longform' && input?.deriveShorts === false
+  return { schema: 'generative-brief/1', profile, kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds: Math.round(targetSeconds), ...(sample ? { sample: true as const } : {}), creative, ...(yasaStoryDNA ? { yasaStoryDNA } : {}), ...(noDerive ? { deriveShorts: false as const } : {}) }
 }
 export const longformBriefHash = (b: LongformBrief) => createHash('sha256').update(canonicalize(b)).digest('hex')
 
-export const sentencesOf = (s: LongformScript) => s.sections.flatMap((x) => x.sentences)
+export const sentencesOf = (s: LongformScript) => [...(s.coldOpen?.sentences ?? []), ...s.sections.flatMap((x) => x.sentences)]
 export const narrationOf = (s: LongformScript) => sentencesOf(s).map((x) => x.say.trim()).join(' ')
 export const estimatedSeconds = (s: LongformScript) => [...narrationOf(s)].length / LONGFORM.charsPerSecond
 // The running time only sizes the script: how many sections the planner writes and how long each one is.
@@ -121,6 +136,11 @@ export function validateLongformScript(s: any, brief: LongformBrief): string[] {
       e.push(...cardErrors(x).map((c) => `${at}.${c}`))
     }
   }
+  for (const [j, x] of (Array.isArray(s?.coldOpen?.sentences) ? s.coldOpen.sentences : []).entries()) {
+    n++
+    if (!String(x?.say || '').trim()) e.push(`coldOpen.sentences[${j}].say`)
+    e.push(...cardErrors(x).map((c) => `coldOpen.sentences[${j}].${c}`))
+  }
   if (!n) e.push('sentences')
   // upload text written for THIS video (never script copy / title words / fixed hashtags / generic comment)
   if (n && s?.metadata) e.push(...uploadMetadataErrors({ title: String(s.title || ''), ...s.metadata }, { narration: narrationOf(s as LongformScript), format: 'longform' }).map((x) => `upload.${x}`))
@@ -131,6 +151,7 @@ export function validateLongformScript(s: any, brief: LongformBrief): string[] {
     const ids = new Set<string>((Array.isArray(s?.characters) ? s.characters : []).map((c: any) => String(c?.id)))
     for (const [i, sec] of sections.entries()) e.push(...seniorActErrors(sec, ids).map((x) => `sections[${i}].${x}`))
   }
+  if (brief.profile === 'yasa_longform') e.push(...yasaScriptErrors(s, { speed: Number(brief.creative?.resolved?.voiceSpeed) || 1, charsPerSecond: LONGFORM.charsPerSecond }))
   return e
 }
 

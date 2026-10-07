@@ -2,11 +2,15 @@ import { putAddressed, sha256 } from '../../lib/jobs/blobs.js'
 import { StageError, type StageExecutor } from '../types.js'
 
 // DECISION: nothing to compute — the job parks until the user (or an explicit API call) picks a variant.
+// A Short derived from a Wisdom Longform was already confirmed once (its candidate was chosen): `autoApprove` asks the
+// worker to take the QC-recommended publishable variant (store.approveRecommended); if none is publishable it waits as usual.
 export const decisionExecutor: StageExecutor = {
   stage: 'DECISION', estimateUsd: () => 0, inputHash: (job) => sha256(`decision|${job.id}|${job.planRev}`),
-  async run({ previous }) {
+  async run({ previous, blobs }) {
     const qc = await previous('AUTO_QC')
-    return { result: { awaiting: 'variant choice', recommendedVariantId: (qc?.result as any)?.recommendedVariantId ?? null }, wait: 'DECISION' }
+    const briefRef = ((await previous('PLAN'))?.result as any)?.briefRef
+    const brief: any = briefRef ? await blobs.getJson(String(briefRef)).catch(() => null) : null
+    return { result: { awaiting: 'variant choice', recommendedVariantId: (qc?.result as any)?.recommendedVariantId ?? null, ...(brief?.derivedFrom ? { autoApprove: true } : {}) }, wait: 'DECISION' }
   }
 }
 

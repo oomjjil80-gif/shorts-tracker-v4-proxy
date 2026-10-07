@@ -431,7 +431,7 @@ function applyLowGateUserDecisionPolicy(qc: any) {
   return qc
 }
 
-// 숨은야사: the draft must still carry its STORY DNA PLAN (deterministic; never a second AI call). A broken structure is
+// 숨은야담: the draft must still carry its STORY DNA PLAN (deterministic; never a second AI call). A broken structure is
 // a required fix, so the QC loop sends it back to revision instead of passing it.
 function enforceYasaStoryDna(qc: any, input: any) {
   if (!isYasa(input) || !qc || typeof qc !== 'object') return qc
@@ -443,7 +443,7 @@ function enforceYasaStoryDna(qc: any, input: any) {
   qc.yasaStoryDna = { planOk: plan.ok, scriptOk: check.ok, errors: check.errors }
   if (check.ok) return qc
   const issues = Array.isArray(qc.issues) ? qc.issues : []
-  for (const err of check.errors) issues.push({ severity: 'required', category: 'chapter_role', location: 'yasa_story_dna', claim: err, evidence: err, problem: '숨은야사 STORY DNA 구조가 대본에 유지되지 않았습니다.', recommendation: 'PLAN의 openingLine, concreteProp, apparentMeaning → trueMeaning 전환, partialProof·majorReveal 위치를 그대로 지켜 수정합니다.' })
+  for (const err of check.errors) issues.push({ severity: 'required', category: 'chapter_role', location: 'yasa_story_dna', claim: err, evidence: err, problem: '숨은야담 STORY DNA 구조가 대본에 유지되지 않았습니다.', recommendation: 'PLAN의 openingLine, concreteProp, apparentMeaning → trueMeaning 전환, partialProof·majorReveal 위치를 그대로 지켜 수정합니다.' })
   qc.issues = issues
   if (qc.status === 'pass') qc.status = 'revision_required'
   return qc
@@ -537,7 +537,7 @@ function revisionPrompt(input:any, finalize=false) {
     finalize
       ? '실제 제작 직전 최종 정리다. 제목·훅·챕터 순서·검증된 사실을 유지하고 모든 speaker를 내레이션으로 통일한다. TTS에 자연스럽게 다듬되 새 사실이나 숫자를 추가하지 않는다. 동일 JSON 구조만 반환한다.'
       : 'QC가 요구한 문제만 정확히 수정한다. 근거가 부족한 주장은 삭제·완화하거나 verify_before_publish로 남긴다. 좋은 구간은 이유 없이 전면 재작성하지 않는다. 동일 JSON 구조만 반환한다.',
-    // 숨은야사: revision and finalize keep the STORY DNA (never drop or move the reveal structure)
+    // 숨은야담: revision and finalize keep the STORY DNA (never drop or move the reveal structure)
     isYasa(input) ? '\n' + yasaScriptBrief(input.yasaStoryDNA, 'longform') : ''
   ].join('\n')
 }

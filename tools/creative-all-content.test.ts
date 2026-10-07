@@ -36,8 +36,10 @@ test('AUTO voice per family: Senior and Yasa never a young voice (Yasa/Economy d
   const v = (fam: string, fmt: string, topic: string) => resolveCreativeProfile(creativeContentFor(fam, fmt), {}, topic).resolved.voiceProfile
   const YOUTH = '20대 청춘의 도전과 습관'
   for (const fmt of FORMATS) {
-    assert.equal(v('senior', fmt, YOUTH), 'male-middle'); assert.equal(v('yasa', fmt, YOUTH), 'male-middle')
-    assert.equal(v('yasa', fmt, '조선 왕실의 비밀'), 'male-middle'); assert.equal(v('economy', fmt, '금리와 환율'), 'male-middle')
+    // 숨은야담 롱폼: always the grandmother storyteller (female-senior, calm, 0.9x); 야담 쇼츠 keeps the mature male voice
+    const yasaWant = fmt === 'longform' ? 'female-senior' : 'male-middle'
+    assert.equal(v('senior', fmt, YOUTH), 'male-middle'); assert.equal(v('yasa', fmt, YOUTH), yasaWant)
+    assert.equal(v('yasa', fmt, '조선 왕실의 비밀'), yasaWant); assert.equal(v('economy', fmt, '금리와 환율'), 'male-middle')
     assert.equal(v('general', fmt, YOUTH), 'male-young'); assert.equal(v('general', fmt, '평범한 하루'), 'female-middle')
   }
   assert.equal(v('wisdom', 'shorts', '아무 주제'), 'house')

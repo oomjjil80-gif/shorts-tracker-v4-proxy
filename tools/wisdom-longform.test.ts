@@ -21,6 +21,8 @@ import { LONGFORM, ACCENTS, validateLongformScript, normalizeLongformBrief, ttsC
 import { putAddressed } from '../lib/jobs/blobs.js'
 
 const KEY = 'k'.repeat(32)
+// derived Shorts are tested in tools/wisdom-derived-shorts.test.ts; here the deriver makes no call and proposes nothing
+const NO_DERIVE = async () => ({ ideas: [] })
 const S = (say: string, show: string[], accent: string, color: any) => ({ say, show, accent, color })
 // the shape the planner returns (a short sample with the full Longform structure)
 const SAMPLE: LongformScript = {
@@ -193,7 +195,7 @@ test('one gate for every path: no model -> PROVIDER_DOWN; a broken section never
   const calls: Record<string, number> = {}
   const broken = plannerFromScript(SAMPLE, calls)
   broken.section = async () => { calls.section = (calls.section || 0) + 1; return { sentences: [{ say: '말', show: ['한 줄'], accent: '', color: 'white' }] } as any }
-  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: broken as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true)
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: fakeResearch, log: () => {}, planner: broken as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true)
   assert.equal(calls.section, 2) // the draft and its one repair, both rejected
   // PACKAGE refuses a script whose upload text does not pass
   const bad = await putAddressed(blobs, 'generative-scripts', { ...clone(SAMPLE), metadata: { description: 'x', tags: [], hashtags: [], pinnedComment: '' } })
@@ -243,7 +245,7 @@ test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 M
   let imageCalls = 0, ttsCalls = 0
   const img = await standInImage(d)
   const executors = withLongform([], [
-    createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: sample(d) as any }),
+    createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: fakeResearch, log: () => {}, planner: sample(d) as any }),
     createLongformAssetExecutor({ apiKey: 'k', image: async () => { imageCalls++; return { bytes: img, contentType: 'image/jpeg', provider: 'standin', model: 'still' } }, tts: async (t: string) => { ttsCalls++; return standInTts(t) } }),
     longformRenderExecutor, longformPackageExecutor
   ])
@@ -365,7 +367,7 @@ for (const minutes of [25, 60, 120]) test(`T${minutes === 25 ? 1 : minutes === 6
   const planner: any = longPlanner(calls)
   const outline = planner.outline; planner.outline = async (b: any, n: number) => { seen.push({ target: b.targetSeconds, n }); return outline(b, n) }
   const section = planner.section; planner.section = async (i: any) => { seen.push({ chars: i.targetChars }); return section(i) }
-  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner }).run({ job: { id: 'j', profile: 'wisdom_longform', planRef: job.planRef ?? json.job.planRef }, blobs, signal: new AbortController().signal } as any)
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: fakeResearch, log: () => {}, planner }).run({ job: { id: 'j', profile: 'wisdom_longform', planRef: job.planRef ?? json.job.planRef }, blobs, signal: new AbortController().signal } as any)
   const size = sectionPlan(minutes * 60)
   assert.deepEqual(seen[0], { target: minutes * 60, n: size.sections })
   assert.equal(seen[1].chars, size.charsPerSection)
@@ -473,19 +475,19 @@ test('T13 + T14: a 120-minute script is written section by section; a failure mi
   assert.ok(size.sections >= 20, `120 min -> ${size.sections} sections`)
   const calls: Record<string, number> = {}
   // section 10 fails (twice = draft + repair) -> retryable SECTION_INVALID; sections 1-9 are already checkpointed
-  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: longPlanner(calls, { index: 9, times: 2 }) as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true && /section-010/.test(e.message))
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: fakeResearch, log: () => {}, planner: longPlanner(calls, { index: 9, times: 2 }) as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true && /section-010/.test(e.message))
   assert.equal(calls.outline, 1); assert.equal(calls.section, 9 + 2)
   const ck = `longform-plan-checkpoints/${createHash('sha256').update(`${ctx.job.planRef}|${LONGFORM_PLANNER_VERSION}`).digest('hex')}`
   for (let i = 1; i <= 9; i++) assert.ok(await blobs.getJson(`${ck}/section-${String(i).padStart(3, '0')}.json`), `section ${i} checkpoint`)
   // the retry: the outline and sections 1-9 are reused, only 10..N are written, nothing starts from scratch
   const again: Record<string, number> = {}
-  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: longPlanner(again) as any }).run(ctx)
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: fakeResearch, log: () => {}, planner: longPlanner(again) as any }).run(ctx)
   assert.equal(again.outline, undefined); for (let i = 1; i <= 9; i++) assert.equal(again[`section${i}`], undefined, `section ${i} reused`)
   assert.equal(again.section, size.sections - 9); assert.equal(again.metadata, 1)
   assert.equal(out.result.checkpoints.reused.length, 1 + 9); assert.equal(out.result.sections, size.sections)
   // a full rerun reuses everything (0 planner calls)
   const third: Record<string, number> = {}
-  await createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: longPlanner(third) as any }).run(ctx)
+  await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: fakeResearch, log: () => {}, planner: longPlanner(third) as any }).run(ctx)
   assert.deepEqual(third, {})
 })
 
@@ -496,7 +498,7 @@ test('Buddha topic: the representative figure stays the Buddha (never a generic 
   assert.equal(longformFigure('나이 들수록 멀리할 사람', 'a calm elder'), 'a calm elder')
   assert.equal(thumbnailFigure('부처님 말씀', 'x'), 'x') // the Shorts thumbnail rule (wisdom.ts) is not touched
   const { ctx, blobs } = await planJob(1500)
-  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: fakeResearch, log: () => {}, planner: longPlanner({}) as any }).run(ctx)
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: fakeResearch, log: () => {}, planner: longPlanner({}) as any }).run(ctx)
   const script: any = await blobs.getJson(out.result.scriptRef)
   assert.equal(script.figure.imagePrompt, BUDDHA_FIGURE) // the planner suggested "an old Western sage": replaced
 })
@@ -523,7 +525,7 @@ test('RESEARCH MISS -> 1 request, bundle stored; HIT (another job, same topic) -
   const planner: any = longPlanner({})
   const outline = planner.outline; planner.outline = async (b: any, n: number, k: string, r: any, research: any) => { seen.push({ outline: research?.fragments.length }); return outline(b, n) }
   const section = planner.section; planner.section = async (i: any) => { seen.push({ index: i.index, ids: i.fragments.map((x: any) => x.id) }); return section(i) }
-  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: api.research, log: (l) => logs.push(l), planner }).run(ctx)
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: api.research, log: (l) => logs.push(l), planner }).run(ctx)
   assert.equal(api.calls.length, 1)
   const ref = researchPath(brief.text, 11)
   const stored: any = await blobs.getJson(ref)
@@ -536,7 +538,7 @@ test('RESEARCH MISS -> 1 request, bundle stored; HIT (another job, same topic) -
   // a second job on the same topic (different brief/job): research reused, 0 requests
   const b2 = await putAddressed(blobs, 'generative-briefs', { ...brief, voice: undefined })
   const api2 = researchApi(), logs2: string[] = []
-  const out2: any = await createLongformPlanExecutor({ apiKey: 'k', research: api2.research, log: (l) => logs2.push(l), planner: longPlanner({}) as any }).run({ ...ctx, job: { ...ctx.job, id: 'j2', planRef: b2.path } })
+  const out2: any = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: api2.research, log: (l) => logs2.push(l), planner: longPlanner({}) as any }).run({ ...ctx, job: { ...ctx.job, id: 'j2', planRef: b2.path } })
   assert.equal(api2.calls.length, 0); assert.equal(out2.result.research.cache, 'HIT'); assert.equal(out2.result.research.requests, 0)
   assert.match(logs2.join('\n'), /"cache":"HIT"/)
 })
@@ -545,11 +547,11 @@ test('RESEARCH is not repeated by an OUTLINE or SECTION failure: the retry resum
   const { ctx } = await planJob(3600)
   const api = researchApi()
   const failing: any = longPlanner({}); failing.outline = async () => { throw new Error('provider timeout') }
-  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: api.research, log: () => {}, planner: failing }).run(ctx), (e: any) => e.code === 'OUTLINE_INVALID' && e.retryable === true)
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: api.research, log: () => {}, planner: failing }).run(ctx), (e: any) => e.code === 'OUTLINE_INVALID' && e.retryable === true)
   assert.equal(api.calls.length, 1)
-  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: api.research, log: () => {}, planner: longPlanner({}, { index: 4, times: 2 }) as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true)
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: api.research, log: () => {}, planner: longPlanner({}, { index: 4, times: 2 }) as any }).run(ctx), (e: any) => e.code === 'SECTION_INVALID' && e.retryable === true)
   assert.equal(api.calls.length, 1, 'outline retry: 0 research requests')
-  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: api.research, log: () => {}, planner: longPlanner({}) as any }).run(ctx)
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: api.research, log: () => {}, planner: longPlanner({}) as any }).run(ctx)
   assert.equal(api.calls.length, 1, 'section retry: 0 research requests'); assert.equal(out.result.research.cache, 'HIT')
   assert.equal(out.result.checkpoints.reused.includes('outline'), true)
 })
@@ -558,18 +560,18 @@ test('cost guard: credit_balance_exhausted / quota stop the job at once (no retr
   const { ctx, blobs, brief } = await planJob(3600)
   const api = researchApi([{ status: 429, body: { error: { code: 'credit_balance_exhausted', message: 'Your credit balance is too low' } } }, { status: 200 }])
   const logs: string[] = []
-  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: api.research, log: (l) => logs.push(l), planner: longPlanner({}) as any }).run(ctx), (e: any) => e.code === 'PROVIDER_BILLING' && e.retryable === false)
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: api.research, log: (l) => logs.push(l), planner: longPlanner({}) as any }).run(ctx), (e: any) => e.code === 'PROVIDER_BILLING' && e.retryable === false)
   assert.equal(api.calls.length, 1); assert.equal(await blobs.getJson(researchPath(brief.text, 11)), null)
   assert.match(logs.join('\n'), /"code":"credit_balance_exhausted"/)
   // a transient failure that persists: 2 requests, then a NON-retryable failure (the stage retry does not pay again)
   const flaky = researchApi([{ status: 502 }])
-  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: flaky.research, log: () => {}, planner: longPlanner({}) as any }).run(ctx), (e: any) => e.code === 'RESEARCH_FAILED' && e.retryable === false)
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: flaky.research, log: () => {}, planner: longPlanner({}) as any }).run(ctx), (e: any) => e.code === 'RESEARCH_FAILED' && e.retryable === false)
   assert.equal(flaky.calls.length, 2)
   // research stored, then the outline call hits the quota: 1 outline call (no repair), non-retryable
   const ok = researchApi(), calls: Record<string, number> = {}
   const planner: any = longPlanner(calls)
   planner.outline = async () => { calls.outline = (calls.outline || 0) + 1; throw Object.assign(new Error('OpenAI billing stop (HTTP 429): insufficient_quota'), { stop: true, code: 'insufficient_quota' }) }
-  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', research: ok.research, log: () => {}, planner }).run(ctx), (e: any) => e.code === 'PROVIDER_BILLING' && e.retryable === false)
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: ok.research, log: () => {}, planner }).run(ctx), (e: any) => e.code === 'PROVIDER_BILLING' && e.retryable === false)
   assert.equal(calls.outline, 1)
 })
 
@@ -664,7 +666,7 @@ test('SENIOR 17-21: Wisdom Longform keeps its single-image mode; Senior is the s
   const { ctx, runs, brief } = await seniorJob()
   assert.equal(brief.creative!.resolved.visualStyleProfile, 'senior-warm-watercolor')
   const calls: Record<string, number> = {}, research: any[] = []
-  const out: any = await createLongformPlanExecutor({ apiKey: 'k', research: async (...a: any[]) => { research.push(a); throw new Error('no research for a story') }, log: () => {}, planner: seniorPlanner(calls) as any }).run(ctx())
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: async (...a: any[]) => { research.push(a); throw new Error('no research for a story') }, log: () => {}, planner: seniorPlanner(calls) as any }).run(ctx())
   runs.PLAN = out
   assert.equal(research.length, 0, 'a Senior story is not researched')
   assert.deepEqual([calls.outline, calls.section], [1, 6])
@@ -692,7 +694,7 @@ test('SENIOR 22: a new picture only when place/time/people/action change; scenes
 
 test('SENIOR 18 + 23-25 + REAL RENDER: one picture per scene in ONE style with the Character Bible; common voice; each scene on screen for its narration with gentle motion', async () => {
   const { ctx, runs, brief, blobs } = await seniorJob({ voiceProfile: 'auto', voiceTone: 'calm', voiceSpeed: 0.9 })
-  runs.PLAN = await createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: seniorPlanner() as any }).run(ctx())
+  runs.PLAN = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, log: () => {}, planner: seniorPlanner() as any }).run(ctx())
   const d = await mkdtemp(join(tmpdir(), 'senior-'))
   const prompts: string[] = [], voices: string[] = [], colors = new Map<string, number[]>()
   const deps = { apiKey: 'k', image: async (p: string) => { prompts.push(p); const x = await scenePicture(d, p); return x }, tts: async (_t: string, _k: string, v: any) => { voices.push(v.id); return shortTts() } }

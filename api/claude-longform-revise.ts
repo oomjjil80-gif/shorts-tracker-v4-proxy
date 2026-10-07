@@ -169,7 +169,7 @@ function buildUserPrompt(input: any) {
       : (input?.rewriteMode
         ? '같은 QC 문제가 3회 이상 반복됐다. 반복 문제와 연결된 구간은 기존 문장을 살리려 하지 말고 삭제 후 verifiedFacts·claimsToVerify·sources와 현재 GPT 필수 수정지시만으로 새로 작성하라. 나머지 좋은 구간과 큰 구조는 유지하고 동일 JSON 구조만 반환하라.'
         : '위 자료만 사용해 정확히 1회 수정본을 작성하라. 새로운 외부 사실을 보충하지 말고, 필요한 부분만 수정한 뒤 동일 JSON 구조만 반환하라.'),
-    // 숨은야사: the revision keeps the STORY DNA (never drop or move the reveal structure)
+    // 숨은야담: the revision keeps the STORY DNA (never drop or move the reveal structure)
     isYasa(input) ? '\n' + yasaScriptBrief(input.yasaStoryDNA, 'longform') : ''
   ].join('\n')
 }

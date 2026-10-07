@@ -53,7 +53,9 @@ export async function runOnce(deps: RunDeps): Promise<RunOutcome> {
         previous: (stage) => store.getLatestSucceeded(job.id, stage)
       })
       if (leaseLost) return { ran: true, jobId: job.id, stage: job.stage, outcome: 'lease_lost' }
-      const done = await store.completeStage({ jobId: job.id, workerId, attempt, outputRef: res.outputRef, outputHash: res.outputHash, result: res.result, usage: res.usage, costUsd: res.costUsd, provider: res.provider, model: res.model, kind: res.kind, wait: res.wait, planRef: res.planRef })
+      let done = await store.completeStage({ jobId: job.id, workerId, attempt, outputRef: res.outputRef, outputHash: res.outputHash, result: res.result, usage: res.usage, costUsd: res.costUsd, provider: res.provider, model: res.model, kind: res.kind, wait: res.wait, planRef: res.planRef })
+      // a derived Short takes its recommended publishable variant without a second confirmation (else it waits as usual)
+      if (done.status === 'WAITING_USER' && done.waitReason === 'DECISION' && (res.result as any)?.autoApprove === true) done = await store.approveRecommended({ jobId: job.id }).catch(() => done)
       return { ran: true, jobId: job.id, stage: job.stage, outcome: done.status === 'CANCELLED' ? 'cancelled' : done.status === 'WAITING_USER' ? 'waiting' : 'completed', job: done }
     } catch (e: any) {
       if (leaseLost || e instanceof LeaseLostError) return { ran: true, jobId: job.id, stage: job.stage, outcome: 'lease_lost' }

@@ -40,7 +40,10 @@ test('production profiles: feature selection is exactly the existing behaviour a
   // Senior Longform runs the same Longform modules and features (its scenes mode is chosen inside the engine)
   assert.deepEqual(PROFILES.senior_longform.features, PROFILES.wisdom_longform.features)
   assert.deepEqual(PROFILES.senior_longform.modules, PROFILES.wisdom_longform.modules)
-  assert.deepEqual(Object.values(PROFILES).map((p) => p.stages.length), [8, 9, 4, 4]) // job stages unchanged
+  // 숨은야담 Longform too (its DNA-planned scenes mode is chosen inside the engine)
+  assert.deepEqual(PROFILES.yasa_longform.features, PROFILES.wisdom_longform.features)
+  assert.deepEqual(PROFILES.yasa_longform.modules, PROFILES.wisdom_longform.modules)
+  assert.deepEqual(Object.values(PROFILES).map((p) => p.stages.length), [8, 9, 4, 4, 4]) // job stages unchanged
   // Wisdom never mixed General Shorts narration (resolveSourceShortsNarration returned null for it): no SOUND selected
   assert.equal(profileFeatures({ profile: 'wisdom' } as any).has('SOUND'), false)
   assert.equal(profileFeatures({ profile: 'source_shorts' } as any).has('SOUND'), true)

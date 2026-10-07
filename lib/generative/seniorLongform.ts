@@ -89,13 +89,15 @@ export function seniorActErrors(act: any, characterIds: Set<string>): string[] {
 // every picture of the video, in order (one per scene)
 export const seniorScenes = (s: SeniorScript) => s.sections.flatMap((a) => a.scenes)
 // sentence k -> its scene, then the time span of each scene from the measured narration timeline
-export function sceneRuns(s: SeniorScript, timeline: Array<{ start: number; end: number; k: number }>): Array<{ sceneId: string; start: number; end: number }> {
-  const sceneOf = s.sections.flatMap((a) => a.sentences.map((x) => x.scene))
-  const runs: Array<{ sceneId: string; start: number; end: number }> = []
+// (숨은야담: the cold open's sentences come first and are their own runs, marked `cold`, never merged into the story's)
+export function sceneRuns(s: SeniorScript, timeline: Array<{ start: number; end: number; k: number }>): Array<{ sceneId: string; start: number; end: number; cold?: true }> {
+  const cold: string[] = ((s as any).coldOpen?.sentences ?? []).map((x: any) => x.scene)
+  const sceneOf = [...cold, ...s.sections.flatMap((a) => a.sentences.map((x) => x.scene))]
+  const runs: Array<{ sceneId: string; start: number; end: number; cold?: true }> = []
   for (const t of timeline) {
-    const id = sceneOf[t.k], last = runs[runs.length - 1]
-    if (last && last.sceneId === id) last.end = t.end
-    else runs.push({ sceneId: id, start: t.start, end: t.end })
+    const id = sceneOf[t.k], isCold = t.k < cold.length, last = runs[runs.length - 1]
+    if (last && last.sceneId === id && !!last.cold === isCold) last.end = t.end
+    else runs.push({ sceneId: id, start: t.start, end: t.end, ...(isCold ? { cold: true as const } : {}) })
   }
   return runs
 }
@@ -113,23 +115,28 @@ export function seniorScenePrompt(s: SeniorScript, scene: SeniorScene, style: Vi
 export const SCENE_MOTIONS = ['zoom', 'pan-right', 'pan-left', 'still'] as const
 export type SceneMotion = (typeof SCENE_MOTIONS)[number]
 export const sceneMotion = (i: number): SceneMotion => SCENE_MOTIONS[i % SCENE_MOTIONS.length]
-// one picture held for `seconds`: scaled 10% larger than the frame, then a slow crop move (or a 6% zoom over the scene)
-export function sceneFilter(input: number, seconds: number, motion: SceneMotion, label: string): string {
-  const { w, h } = SENIOR.canvas, W = Math.round(w * 1.1 / 2) * 2, H = Math.round(h * 1.1 / 2) * 2, d = Math.max(0.1, seconds).toFixed(3)
+// 숨은야담 cold open: livelier cuts over the same pictures (always moving: a stronger push-in or a wider pan, never still)
+export const COLD_MOTIONS = ['zoom', 'pan-left', 'pan-right'] as const
+export const coldMotion = (i: number): SceneMotion => COLD_MOTIONS[i % COLD_MOTIONS.length]
+// one picture held for `seconds`: scaled larger than the frame (10%; `strong` 24%), then a crop move (or a zoom of 6%;
+// `strong` 16%) over the scene
+export function sceneFilter(input: number, seconds: number, motion: SceneMotion, label: string, strong = false): string {
+  const k = strong ? 1.24 : 1.1, z = strong ? 0.16 : 0.06
+  const { w, h } = SENIOR.canvas, W = Math.round(w * k / 2) * 2, H = Math.round(h * k / 2) * 2, d = Math.max(0.1, seconds).toFixed(3)
   const base = `[${input}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1`
   const move = motion === 'zoom'
-    ? `,scale=w='trunc(${w}*(1+0.06*t/${d})/2)*2':h=-2:eval=frame,crop=${w}:${h}`
+    ? `,scale=w='trunc(${w}*(1+${z}*t/${d})/2)*2':h=-2:eval=frame,crop=${w}:${h}`
     : motion === 'pan-right' ? `,crop=${w}:${h}:x='(${W}-${w})*t/${d}':y='(${H}-${h})/2'`
       : motion === 'pan-left' ? `,crop=${w}:${h}:x='(${W}-${w})*(1-t/${d})':y='(${H}-${h})/2'`
         : `,crop=${w}:${h}`
-  return `${base}${move},fps=${LONGFORM.fps},format=yuv420p[${label}]`
+  return `${base}${move}${strong ? ',setsar=1' : ''},fps=${LONGFORM.fps},format=yuv420p[${label}]`
 }
 // one encode: every scene picture (looped for its time) -> motion -> concat -> bottom shade -> subtitle cards + narration
-export function seniorVideoArgv(o: { images: string[]; runs: Array<{ image: number; seconds: number }>; audio: string; ass: string; fontsDir: string; out: string; seconds: number; threads: number }): string[] {
+export function seniorVideoArgv(o: { images: string[]; runs: Array<{ image: number; seconds: number; cold?: boolean }>; audio: string; ass: string; fontsDir: string; out: string; seconds: number; threads: number }): string[] {
   const e = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
   const { w, h } = SENIOR.canvas
   const inputs = o.runs.flatMap((r) => ['-loop', '1', '-framerate', String(LONGFORM.fps), '-t', r.seconds.toFixed(3), '-i', o.images[r.image]])
-  const parts = o.runs.map((r, i) => sceneFilter(i, r.seconds, sceneMotion(i), `s${i}`))
+  const parts = o.runs.map((r, i) => (r.cold ? sceneFilter(i, r.seconds, coldMotion(i), `s${i}`, true) : sceneFilter(i, r.seconds, sceneMotion(i), `s${i}`)))
   const shade = `color=c=black:s=${w}x${h},format=rgba,geq=r=0:g=0:b=0:a='clip(210*(Y-${h}*0.62)/(${h}*0.38),0,210)'[sh]`
   const graph = [...parts, shade, `${o.runs.map((_, i) => `[s${i}]`).join('')}concat=n=${o.runs.length}:v=1:a=0,format=rgba[cat]`, `[cat][sh]overlay=0:0,ass=filename='${e(o.ass)}':fontsdir='${e(o.fontsDir)}',format=yuv420p[v]`].join(';')
   return ['-y', ...inputs, '-i', o.audio, '-filter_complex', graph, '-map', '[v]', '-map', `${o.runs.length}:a`, '-t', o.seconds.toFixed(3),

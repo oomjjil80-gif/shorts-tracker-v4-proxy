@@ -66,7 +66,7 @@ test('unknown profile is rejected immediately (table lookup, pipeline, worker ro
   }
   const plan = stageExecutorsFor(createModuleRegistry(X)).find((e) => e.stage === 'PLAN')!
   assert.throws(() => plan.estimateUsd({ profile: 'nope' } as any), /unknown job profile/)
-  assert.deepEqual(Object.keys(PROFILES), ['source_shorts', 'wisdom', 'wisdom_longform', 'senior_longform'])
+  assert.deepEqual(Object.keys(PROFILES), ['source_shorts', 'wisdom', 'wisdom_longform', 'senior_longform', 'yasa_longform'])
 })
 
 test('a missing / wrong module is rejected before anything runs', () => {
