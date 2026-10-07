@@ -115,7 +115,6 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       if (!isLongform(job)) throw new StageError('PROFILE_UNSUPPORTED', 'longform PLAN only handles longform profiles')
       const brief = (job.planRef ? await blobs.getJson(job.planRef) : null) as LongformBrief | null
       if (!brief || brief.schema !== 'generative-brief/1' || brief.profile !== job.profile) throw new StageError('BRIEF_INVALID', `invalid ${job.profile} brief`)
-      if (!apiKey) throw new StageError('PROVIDER_DOWN', 'the longform script needs the planner (OPENAI_API_KEY)', true)
       const mode = longformMode(job.profile), scenes = mode.images === 'scenes', yasa = job.profile === 'yasa_longform'
       const planner = deps.planner ?? (yasa ? openAiYasaPlanner() : scenes ? openAiSeniorPlanner() : openAiLongformPlanner())
       // Senior: six acts; 숨은야담: the DNA's eight acts (one section per act); Wisdom: sections sized by the running time
@@ -138,26 +137,49 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         // retryable: the stage retry resumes from the stored steps
         throw new StageError(code, `${name}: ${errs.slice(0, 20).join(', ')}`, true)
       }
-      // 숨은야담 REMASTER (a child of an earlier job): the source job's script is reused as it is — STORY DNA, outline,
-      // Character Bible, the eight acts and their narration, the upload text. Only the cold open is written again (with
-      // the cold open rules), so the main story's narration (and its TTS, cached by voice + text) is never made again.
-      const remaster = yasa ? (brief as any).remaster : null
+      // Generic Longform REMASTER: every profile enters through the same child-job contract. The source script is
+      // immutable and reused by default. Creative changes alter only cache identities downstream:
+      //   style -> new pictures, same TTS; voice/tone/speed -> new TTS, same pictures; no creative change -> both reused.
+      // A profile-specific repair may opt in without creating a new remaster endpoint (today: 숨은야담 cold-open refresh).
+      const remaster: any = (brief as any).remaster ?? null
       if (remaster) {
-        const src: any = remaster.scriptRef ? await blobs.getJson(remaster.scriptRef) : null
-        if (!src || src.schema !== mode.script || !Array.isArray(src.sections) || src.sections.length !== YASA_ACTS.length || !src.yasaStoryDNA) throw new StageError('REMASTER_SOURCE_INVALID', `source job ${remaster.sourceJobId} has no usable 숨은야담 script`, false)
-        const pb: any = { ...brief, yasaStoryDNA: src.yasaStoryDNA }, sections = src.sections
-        const speed = Number(brief.creative?.resolved?.voiceSpeed) || 1, sceneIds = new Set<string>(sections.flatMap((x: any) => x.scenes.map((y: any) => String(y.id))))
-        const mainSentences = sections.flatMap((x: any) => x.sentences.map((y: any) => String(y.say || '')))
-        const candidates = coldOpenCandidates(sections), targetChars = Math.round(COLD_OPEN.seconds.target * LONGFORM.charsPerSecond * speed)
-        const outline = { title: src.title, hook: src.hook, figure: src.figure, thumbnail: src.thumbnail, characters: src.characters, sections: sections.map((x: any) => ({ id: x.id, heading: x.heading, points: [], scenes: x.scenes })) }
-        const d = await step<any>('cold-open', 'COLD_OPEN_INVALID', (r) => (planner as YasaPlanner).coldOpen({ brief: pb, outline, sections, candidates: candidates.list, targetChars, repair: r }, apiKey),
-          (d) => [...sectionErrors(d), ...coldOpenErrors(d?.sentences, { dna: src.yasaStoryDNA, sceneIds, mainSentences, speed, charsPerSecond: LONGFORM.charsPerSecond, candidates })])
-        const script: any = { ...src, coldOpen: { sentences: d.sentences } }
+        const src: any = remaster.sourceScriptRef ? await blobs.getJson(remaster.sourceScriptRef) : null
+        if (!src || src.schema !== mode.script || !Array.isArray(src.sections) || !src.sections.length) throw new StageError('REMASTER_SOURCE_INVALID', `source job ${remaster.sourceJobId} has no usable ${job.profile} script`, false)
+        const changes = remaster.changes && typeof remaster.changes === 'object' ? remaster.changes : {}
+        const refreshColdOpen = yasa && changes.refreshColdOpen === true
+        let script: any = src
+        if (refreshColdOpen) {
+          if (!apiKey) throw new StageError('PROVIDER_DOWN', 'the cold-open refresh needs the planner (OPENAI_API_KEY)', true)
+          if (src.sections.length !== YASA_ACTS.length || !src.yasaStoryDNA) throw new StageError('REMASTER_SOURCE_INVALID', `source job ${remaster.sourceJobId} has no usable 숨은야담 story`, false)
+          const pb: any = { ...brief, yasaStoryDNA: src.yasaStoryDNA }, sections = src.sections
+          const speed = Number(brief.creative?.resolved?.voiceSpeed) || 1, sceneIds = new Set<string>(sections.flatMap((x: any) => x.scenes.map((y: any) => String(y.id))))
+          const mainSentences = sections.flatMap((x: any) => x.sentences.map((y: any) => String(y.say || '')))
+          const candidates = coldOpenCandidates(sections), targetChars = Math.round(COLD_OPEN.seconds.target * LONGFORM.charsPerSecond * speed)
+          const outline = { title: src.title, hook: src.hook, figure: src.figure, thumbnail: src.thumbnail, characters: src.characters, sections: sections.map((x: any) => ({ id: x.id, heading: x.heading, points: [], scenes: x.scenes })) }
+          const d = await step<any>('cold-open', 'COLD_OPEN_INVALID', (r) => (planner as YasaPlanner).coldOpen({ brief: pb, outline, sections, candidates: candidates.list, targetChars, repair: r }, apiKey),
+            (d) => [...sectionErrors(d), ...coldOpenErrors(d?.sentences, { dna: src.yasaStoryDNA, sceneIds, mainSentences, speed, charsPerSecond: LONGFORM.charsPerSecond, candidates })])
+          script = { ...src, coldOpen: { sentences: d.sentences } }
+        }
         const errors = validateLongformScript(script, brief)
         if (errors.length) throw new StageError('SCRIPT_INVALID', errors.join(','))
         const stored = await putAddressed(blobs, 'generative-scripts', script)
-        return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, sections: sections.length, sentences: sentencesOf(script).length, scenes: seniorScenes(script).length, remaster: { sourceJobId: remaster.sourceJobId, sourceScriptRef: remaster.scriptRef, reused: ['dna', 'outline', 'characters', 'acts', 'narration', 'metadata'], made }, yasa: { dna: 'source', acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), coldOpen: d.sentences.length } } }
+        const sections = script.sections
+        return {
+          outputRef: stored.path, outputHash: stored.sha256,
+          result: {
+            profile: job.profile, provider: refreshColdOpen ? 'openai' : 'reuse', scriptRef: stored.path,
+            sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}),
+            remaster: {
+              schema: 'longform-remaster/1', sourceJobId: remaster.sourceJobId, parentJobId: remaster.parentJobId,
+              sourceScriptRef: remaster.sourceScriptRef, changes,
+              reused: ['story-script', 'narration-text', 'metadata'], made: refreshColdOpen ? made : []
+            },
+            ...(yasa ? { yasa: { dna: 'source', acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), coldOpen: script.coldOpen?.sentences?.length ?? 0 } } : {}),
+            creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, validation: errors
+          }
+        }
       }
+      if (!apiKey) throw new StageError('PROVIDER_DOWN', 'the longform script needs the planner (OPENAI_API_KEY)', true)
       // research gathers wisdom sources (Wisdom Longform only; a Senior story is not researched)
       const { research, ref: rRef, log: rLog } = mode.research ? await longformResearchFor({ blobs, topic: brief.text, sections: size.sections, apiKey, researcher, log, signal }) : { research: null, ref: null, log: { cache: 'OFF' } as Record<string, unknown> }
       // 숨은야담: the STORY DNA first (sent in with the brief, else made once and checkpointed); every later step sees it
