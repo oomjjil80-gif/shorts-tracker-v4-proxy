@@ -60,7 +60,7 @@ const ABSTRACT_TITLE = /(충격적인\s*진실|놀라운\s*비밀|충격\s*실�
 
 const text = (v: unknown) => String(v ?? '').trim()
 // the noun a viewer remembers ("썩은 메주" -> "메주")
-const propKeyword = (dna: any) => { const p = text(dna?.mystery?.concreteProp); return p.split(/\s+/).filter((w) => [...w].length >= 2).pop() || p || '\u0000' }
+export const propKeyword = (dna: any) => { const p = text(dna?.mystery?.concreteProp); return p.split(/\s+/).filter((w) => [...w].length >= 2).pop() || p || '\u0000' }
 
 // deterministic structure check of a PLAN result
 export function validateYasaStoryDna(dna: any, format: YasaFormat): { ok: boolean; errors: string[] } {

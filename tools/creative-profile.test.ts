@@ -16,7 +16,7 @@ import { createMemoryBlobStore } from '../lib/jobs/blobs.js'
 import { PROFILES } from '../lib/jobs/profiles.js'
 
 const BUDDHA = '부처님이 말한 인생의 마지막 공부', YOUTH = '20대 청춘의 도전과 습관', FAMILY = '어머니와 아들의 마지막 겨울'
-const CONTENTS: CreativeContent[] = ['source_shorts', 'wisdom', 'wisdom_longform', 'senior_longform']
+const CONTENTS: CreativeContent[] = ['source_shorts', 'wisdom', 'wisdom_longform', 'senior_longform', 'yasa_longform']
 
 test('A1-2: every real profile resolves through the one resolver; AUTO voice per content type', () => {
   for (const p of Object.keys(PROFILES)) assert.ok(CONTENTS.includes(p as CreativeContent), `profile ${p} has creative rules`)

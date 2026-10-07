@@ -1,4 +1,4 @@
-// Longform stages (profiles wisdom_longform and senior_longform): PLAN -> ASSET -> RENDER -> PACKAGE. One engine; the
+// Longform stages (profiles wisdom_longform, senior_longform and yasa_longform): PLAN -> ASSET -> RENDER -> PACKAGE. One engine; the
 // profile's mode (LONGFORM_MODES) picks one picture (Wisdom) or story scene pictures (Senior).
 // Separate executors; the Shorts executors are reached unchanged for every other profile (see withLongform).
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
@@ -10,6 +10,9 @@ import { FONTS_DIR } from '../../lib/media/ass.js'
 import { openAiLongformImage, openAiTts } from '../../lib/generative/providers.js'
 import { openAiLongformPlanner, type LongformPlanner, type LongformOutline, type LongformSectionDraft, type LongformMetadataDraft } from '../../lib/generative/longformPlanner.js'
 import { openAiSeniorPlanner } from '../../lib/generative/seniorPlanner.js'
+import { openAiYasaPlanner, type YasaPlanner } from '../../lib/generative/yasaPlanner.js'
+import { YASA_ACTS, yasaActChars, yasaActErrors, yasaRevealAt, yasaScenePrompt } from '../../lib/generative/yasaLongform.js'
+import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, seniorVideoArgv, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { VISUAL_STYLE_PROFILES } from '../../lib/generative/visualStyle.js'
@@ -112,10 +115,13 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       const brief = (job.planRef ? await blobs.getJson(job.planRef) : null) as LongformBrief | null
       if (!brief || brief.schema !== 'generative-brief/1' || brief.profile !== job.profile) throw new StageError('BRIEF_INVALID', `invalid ${job.profile} brief`)
       if (!apiKey) throw new StageError('PROVIDER_DOWN', 'the longform script needs the planner (OPENAI_API_KEY)', true)
-      const mode = longformMode(job.profile), scenes = mode.images === 'scenes'
-      const planner = deps.planner ?? (scenes ? openAiSeniorPlanner() : openAiLongformPlanner())
-      // Senior: six acts (one section per act); Wisdom: sections sized by the running time
+      const mode = longformMode(job.profile), scenes = mode.images === 'scenes', yasa = job.profile === 'yasa_longform'
+      const planner = deps.planner ?? (yasa ? openAiYasaPlanner() : scenes ? openAiSeniorPlanner() : openAiLongformPlanner())
+      // Senior / 숨은야사: six acts (one section per act); Wisdom: sections sized by the running time
       const size = scenes ? (() => { const p = seniorScenePlan(brief.targetSeconds); return { sections: p.acts, charsPerSection: p.charsPerAct } })() : sectionPlan(brief.targetSeconds)
+      // 숨은야사: each act sized by its share of the story (the reveal act starts at ~80% of the narration)
+      const actChars = yasa ? yasaActChars(Math.round(brief.targetSeconds * LONGFORM.charsPerSecond)) : null
+      const targetOf = (i: number) => actChars?.[i] ?? size.charsPerSection
       const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}`)}`
       const made: string[] = [], reused: string[] = []
       // one checkpointed step: reuse the stored result, else make it (one free repair with the exact errors) and store it
@@ -133,29 +139,35 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       }
       // research gathers wisdom sources (Wisdom Longform only; a Senior story is not researched)
       const { research, ref: rRef, log: rLog } = mode.research ? await longformResearchFor({ blobs, topic: brief.text, sections: size.sections, apiKey, researcher, log, signal }) : { research: null, ref: null, log: { cache: 'OFF' } as Record<string, unknown> }
-      const outline = await step<LongformOutline>('outline', 'OUTLINE_INVALID', (r) => planner.outline(brief, size.sections, apiKey, r, research), (o) => [...outlineErrors(o, size.sections), ...(scenes ? seniorOutlineErrors(o) : [])])
+      // 숨은야사: the STORY DNA first (sent in with the brief, else made once and checkpointed); every later step sees it
+      let dnaSource: 'brief' | 'plan' | null = null, pbrief: any = brief
+      if (yasa) {
+        const dna = brief.yasaStoryDNA ?? await step<any>('dna', 'DNA_INVALID', (r) => (planner as YasaPlanner).dna(brief, apiKey, r), (d) => validateYasaStoryDna(d, 'longform').errors)
+        dnaSource = brief.yasaStoryDNA ? 'brief' : 'plan'; pbrief = { ...brief, yasaStoryDNA: dna }
+      }
+      const outline = await step<LongformOutline>('outline', 'OUTLINE_INVALID', (r) => planner.outline(pbrief, size.sections, apiKey, r, research), (o) => [...outlineErrors(o, size.sections), ...(scenes ? seniorOutlineErrors(o) : [])])
       const castIds = new Set<string>(((outline as any).characters ?? []).map((c: any) => String(c?.id)))
       const sections: any[] = []
       let tail: string[] = []
       for (let i = 0; i < outline.sections.length; i++) {
         const actScenes = (outline.sections[i] as any).scenes
-        const d = await step<LongformSectionDraft>(`section-${String(i + 1).padStart(3, '0')}`, 'SECTION_INVALID', (r) => planner.section({ brief, outline, index: i, previousTail: tail, targetChars: size.charsPerSection, repair: r, fragments: sectionFragments(research, i) }, apiKey),
-          (d) => [...sectionErrors(d), ...(scenes ? seniorActErrors({ scenes: actScenes, sentences: (d as any)?.sentences }, castIds) : [])])
+        const d = await step<LongformSectionDraft>(`section-${String(i + 1).padStart(3, '0')}`, 'SECTION_INVALID', (r) => planner.section({ brief: pbrief, outline, index: i, previousTail: tail, targetChars: targetOf(i), repair: r, fragments: sectionFragments(research, i) }, apiKey),
+          (d) => [...sectionErrors(d), ...(scenes ? seniorActErrors({ scenes: actScenes, sentences: (d as any)?.sentences }, castIds) : []), ...(yasa ? yasaActErrors(i, (d as any)?.sentences, pbrief.yasaStoryDNA, targetOf(i)) : [])])
         // Senior: two scenes in a row with the same place/time/people/action are one picture
-        sections.push(scenes ? { id: String(outline.sections[i].id || `a${i + 1}`), heading: outline.sections[i].heading, ...mergeSameScenes({ scenes: actScenes, sentences: d.sentences as any }) } : { id: String(outline.sections[i].id || `s${i + 1}`), sentences: d.sentences })
+        sections.push(scenes ? { id: String(outline.sections[i].id || `a${i + 1}`), heading: outline.sections[i].heading, ...(yasa ? { act: YASA_ACTS[i]?.key } : {}), ...mergeSameScenes({ scenes: actScenes, sentences: d.sentences as any }) } : { id: String(outline.sections[i].id || `s${i + 1}`), sentences: d.sentences })
         tail = d.sentences.slice(-2).map((x) => x.say)
       }
       // a figure the topic names (the Buddha, a named thinker) stays that person (Wisdom); Senior: the main character
       const figure = scenes ? outline.figure : { name: outline.figure.name, imagePrompt: longformFigure(brief.text, outline.figure.imagePrompt) }
-      const body: any = { schema: mode.script, title: outline.title, hook: outline.hook, figure, thumbnail: outline.thumbnail, ...(scenes ? { characters: (outline as any).characters } : {}), sections }
+      const body: any = { schema: mode.script, title: outline.title, hook: outline.hook, figure, thumbnail: outline.thumbnail, ...(scenes ? { characters: (outline as any).characters } : {}), ...(yasa ? { yasaStoryDNA: pbrief.yasaStoryDNA } : {}), sections }
       const narration = narrationOf({ ...body, metadata: { description: '', tags: [], hashtags: [], pinnedComment: '' } })
-      const meta = await step<LongformMetadataDraft>('metadata', 'METADATA_INVALID', (r) => planner.metadata({ brief, title: outline.title, headings: outline.sections.map((x) => x.heading), narration, repair: r }, apiKey),
+      const meta = await step<LongformMetadataDraft>('metadata', 'METADATA_INVALID', (r) => planner.metadata({ brief: pbrief, title: outline.title, headings: outline.sections.map((x) => x.heading), narration, repair: r }, apiKey),
         (m) => [...uploadMetadataErrors(m, { narration, format: 'longform' }), ...thumbnailCopyErrors(outline.thumbnail.lines as any, String(m?.title || '')).map((x) => `thumbnail.${x}`)])
       const script: any = { ...body, title: meta.title, metadata: { description: meta.description, tags: meta.tags, hashtags: meta.hashtags, pinnedComment: meta.pinnedComment } }
       const errors = validateLongformScript(script, brief)
       if (errors.length) throw new StageError('SCRIPT_INVALID', errors.join(','))
       const stored = await putAddressed(blobs, 'generative-scripts', script)
-      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, validation: errors } }
+      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(yasa ? { yasa: { dna: dnaSource, revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, validation: errors } }
     }
   }
 }
@@ -196,8 +208,9 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       // Senior: one picture per story scene, all in the resolved style (watercolor by default) with the Character Bible.
       // Wisdom: the one picture; a style the user picked replaces only its style line (AUTO = the prompt as before).
       const sceneList = scenes ? seniorScenes(script as unknown as SeniorScript) : []
-      const sceneStyle = scenes ? ((brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES['senior-warm-watercolor']) : null
-      const scenePrompts = sceneList.map((sc) => seniorScenePrompt(script as unknown as SeniorScript, sc, sceneStyle!))
+      const yasa = job.profile === 'yasa_longform'
+      const sceneStyle = scenes ? ((brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES[yasa ? 'historical-dramatic' : 'senior-warm-watercolor']) : null
+      const scenePrompts = sceneList.map((sc) => (yasa ? yasaScenePrompt : seniorScenePrompt)(script as unknown as SeniorScript, sc, sceneStyle!))
       const prompt = scenes ? scenePrompts[0] : longformImagePrompt(script, creativeStyleOverride(brief?.creative)), chunks = ttsChunks(script)
       // paid calls only on a cache miss (an ASSET rerun reuses every picture and every narration chunk); the prompt (and so
       // the style) is part of every image key
@@ -209,11 +222,13 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       const ttsMeta = await Promise.all(ttsKeys.map((k) => meta('tts', k)))
       const needKey = (!scenes && !im) || sceneMeta.some((x) => !x) || ttsMeta.some((x) => !x)
       if (needKey && !apiKey) throw new StageError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured', true)
-      const sceneImages: any[] = []
+      const sceneImages: any[] = [], madeNow = new Map<string, any>()
       for (const [i, sc] of sceneList.entries()) {
         if (signal.aborted) throw new Error('aborted')
-        let x: any = sceneMeta[i] ? await withBytes(sceneMeta[i]) : null
+        // the same picture twice in one video (same prompt) is generated once
+        let x: any = madeNow.get(sceneKeys[i]) ?? (sceneMeta[i] ? await withBytes(sceneMeta[i]) : null)
         if (x) reused++; else { x = await image(scenePrompts[i], apiKey); generated++ }
+        madeNow.set(sceneKeys[i], x)
         const h = sha256(x.bytes), ref = `generative-assets/images/${h}.jpg`
         if (!cacheEntryIsCanonical(x, ref, h)) {
           await blobs.putBytes(ref, x.bytes, x.contentType)
