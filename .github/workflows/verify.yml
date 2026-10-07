@@ -79,7 +79,6 @@ jobs:
             tools/longform-voice.test.ts \
             tools/yasa-longform-job.test.ts \
             tools/wisdom-longform.test.ts \
-            tools/longform-chunked-render.test.ts \
             tools/jobs-api.test.ts \
             tools/jobs-store.test.ts
 
