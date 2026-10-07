@@ -609,7 +609,7 @@ test('LOUDNESS: the narration is levelled ONCE to about -17 LUFS (true peak <= -
   assert.ok(m.narration.seconds >= sum - 0.01 && m.narration.seconds <= sum + 0.11)
   // the level is applied once, on the whole track: never per sentence
   const src = (await import('node:fs')).readFileSync(new URL('../worker/stages/longform.ts', import.meta.url), 'utf8')
-  assert.equal(src.match(/LONGFORM_LOUDNORM/g)!.length, 3) // defined, applied at the one concat, recorded in the manifest
+  assert.match(src, /assembleNarration\(/); assert.equal(src.match(/LONGFORM_LOUDNORM/g)!.length, 2) // the shared engine's pass, recorded in the manifest
 })
 
 // ======================= SENIOR LONGFORM: the same engine in its story "scenes" mode =======================

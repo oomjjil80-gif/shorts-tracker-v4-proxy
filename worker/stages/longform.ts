@@ -25,6 +25,7 @@ import { ttsCacheIdentity } from '../../lib/generative/voiceProfile.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { profileFeatures, needFeatures, type FeatureResolver } from '../modules/features.js'
 import { cacheEntryIsCanonical } from '../../lib/generative/cache.js'
+import { guardedTts, clipToWav, assembleNarration, NARRATION_LOUDNORM, narrationConcatTimeoutMs, type TtsFn } from '../../lib/generative/narration.js'
 
 
 const isLongform = (job: any) => isLongformProfile(job?.profile)
@@ -173,8 +174,8 @@ export async function subjectSide(imagePath: string): Promise<{ left: number; ri
 // The narration voice is the brief's Voice Profile (lib/generative/voiceProfile.ts) and is part of every TTS cache key.
 // Long runs: only cache METADATA is read up front (audio bytes are loaded per sentence), each sentence becomes a small
 // mono WAV (exact measured length; ~1/4 of the old stereo temp size), and the concat timeout scales with the length.
-export const LONGFORM_LOUDNORM = 'loudnorm=I=-17:TP=-1.5:LRA=11'
-export const longformConcatTimeoutMs = (seconds: number) => Math.max(15 * 60_000, Math.round(seconds * 250) + 10 * 60_000)
+export const LONGFORM_LOUDNORM = NARRATION_LOUDNORM // the one narration engine's loudness pass
+export const longformConcatTimeoutMs = narrationConcatTimeoutMs
 export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver } = {}): StageExecutor {
   const image = deps.image ?? openAiLongformImage, tts = deps.tts ?? openAiTts, apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? ''
   return {
@@ -252,32 +253,28 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
             if (signal.aborted) throw new Error('aborted')
             const c = chunks[i], key = ttsKeys[i]
             let au: any = ttsMeta[i] ? await withBytes(ttsMeta[i]) : null
-            if (au) reused++; else { au = await tts(c.text, apiKey, voice); generated++ }
+            if (au) reused++; else { au = await guardedTts(tts as TtsFn, c.text, apiKey, voice); generated++ }
             const ah = sha256(au.bytes), ref = `generative-assets/audio/${ah}.mp3`
             const ttsCacheValid = cacheEntryIsCanonical(au, ref, ah)
             if (!ttsCacheValid) {
               await blobs.putBytes(ref, au.bytes, au.contentType)
               await blobs.putJson(`generative-cache/tts/${key}.json`, { ref, sha256: ah, contentType: au.contentType, provider: au.provider, model: au.model })
             }
-            const mp3 = join(work, `c${i}.mp3`), wav = join(work, `c${i}.wav`)
-            await writeFile(mp3, au.bytes); await runOk(['-y', '-i', mp3, '-ar', '24000', '-ac', '1', '-c:a', 'pcm_s16le', wav], { signal }); await rm(mp3, { force: true })
-            const seconds = Number(Number((await probe(wav)).duration || 0).toFixed(3))
+            const { wav, seconds } = await clipToWav(au.bytes, work, `c${i}`, signal)
             if (!(seconds > 0)) throw new StageError('TTS_INVALID', `narration sentence ${i + 1} has no audio`)
             parts[i] = { index: i, sentences: c.sentences, chars: [...c.text].length, textSha256: sha256(c.text), ref, sha256: ah, seconds }; wavs[i] = wav
           }
         }
-        await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, worker))
+        // a billing/auth stop from the narration engine ends the job at once (no stage retry pays again)
+        try { await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, worker)) }
+        catch (e: any) { if (e?.stop) throw new StageError(/quota|credit_balance/.test(String(e?.code)) ? 'PROVIDER_BILLING' : 'PROVIDER_STOP', String(e?.message || e).slice(0, 300), false); throw e }
         // ONE continuous narration track: the chunks back to back, in order (no gap, no overlap, no music)
-        const list = join(work, 'list.txt'); await writeFile(list, wavs.map((w) => `file '${w}'`).join('\n'))
+        // ONE continuous narration track through the shared narration engine (one loudness pass, probed again)
         const narration = join(work, 'narration.m4a')
         const totalSeconds = Number(parts.reduce((s, x) => s + x.seconds, 0).toFixed(3))
-        // loudness is levelled ONCE on the whole track (never per sentence): about -17 LUFS, true peak <= -1.5 dBTP, so the
-        // talk is easy to hear on a phone without clipping. loudnorm keeps every sample in place, so the measured chunk
-        // timing (the cards) is unchanged; it only rounds the end up to its 100 ms frame (<= 0.1 s of trailing silence). The
-        // encoded track is probed again: that duration is the narration's length, and it must match the sentences.
-        await runOk(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-af', LONGFORM_LOUDNORM, '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-ac', '2', narration], { signal, timeoutMs: longformConcatTimeoutMs(totalSeconds) })
-        const narrationSeconds = Number(Number((await probe(narration)).duration || 0).toFixed(3))
-        if (!(narrationSeconds >= totalSeconds - 0.05 && narrationSeconds <= totalSeconds + 0.15)) throw new StageError('NARRATION_TIMING', `narration ${narrationSeconds}s != sentences ${totalSeconds}s`)
+        let narrationSeconds: number
+        try { narrationSeconds = await assembleNarration({ wavs, dir: work, out: narration, totalSeconds, signal }) }
+        catch (e: any) { if (/NARRATION_TIMING/.test(String(e?.message))) throw new StageError('NARRATION_TIMING', String(e.message)); throw e }
         // a 2-hour narration is ~150 MB: hashed and uploaded as a stream, never read whole into memory
         const nsha = await sha256File(narration), narrationRef = `generative-assets/audio/${nsha}.m4a`
         await blobs.putFile(narrationRef, narration, 'audio/mp4')
