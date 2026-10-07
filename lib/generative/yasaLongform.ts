@@ -8,7 +8,8 @@
 //     that shows the strangest act, the worst danger, the prop and the question — never the answer
 //   - deterministic checks of every act, the cold open and the whole script against the DNA (no AI QC)
 //   - scene pictures keep the story's own country / era (costume, architecture, props) and the concrete prop's look
-import { YADAM_NO_PHOTO, type VisualStyleProfile } from './visualStyle.js'
+import { YADAM_NO_PHOTO, YADAM_STYLE_KEYS, parseVisualStyle, type VisualStyleProfile } from './visualStyle.js'
+import { YADAM_AUTO_STYLE } from './creativeProfile.js'
 import { characterLine, type SeniorScene, type SeniorScript } from './seniorLongform.js'
 import { checkYasaScript, propKeyword, validateYasaStoryDna } from '../story/yasaStoryDna.js'
 
@@ -28,7 +29,7 @@ export const YASA_AFTERMATH_ACT = YASA_ACTS.findIndex((a) => a.key === 'aftermat
 // the reveal act must start inside this share of the main story narration
 export const YASA_REVEAL_WINDOW = { min: 0.8, max: 0.92 } as const
 // the cold open: before the main story, from the main story's own pictures
-export const COLD_OPEN = { seconds: { min: 45, max: 60, target: 52 }, beats: { min: 5, max: 8 } } as const
+export const COLD_OPEN = { seconds: { min: 45, max: 60, target: 52 }, beats: { min: 5, max: 8 }, skipStart: 0.1, prefer: { min: 0.15, max: 0.65 } } as const
 // AUTO voice of 숨은야담 (defined with the other voices, lib/generative/voiceProfile.ts)
 export { YADAM_VOICE, YADAM_STORYTELLER } from './voiceProfile.js'
 import { YADAM_VOICE } from './voiceProfile.js'
@@ -67,13 +68,39 @@ export function yasaRevealAt(sections: Array<{ sentences: any[] }>): number {
 const PARTICLE = /(으로부터|에게서|에서는|으로는|이라는|라는|에서|에게|으로|부터|까지|처럼|보다|이나|와|과|을|를|이|가|은|는|의|에|로|도|만)$/
 const words = (t: unknown) => (String(t ?? '').match(/[가-힣A-Za-z0-9]{2,}/g) ?? []).map((w) => w.replace(PARTICLE, '')).filter((w) => [...w].length >= 2)
 export function revealWords(dna: any): string[] {
-  const answer = new Set([dna?.reveal?.majorReveal, dna?.mystery?.trueMeaning, dna?.aftermath?.firstResolution, dna?.payoff?.externalRewardOrResolution, dna?.payoff?.emotionalReward].flatMap(words))
+  const answer = new Set([dna?.reveal?.majorReveal, dna?.reveal?.emotionalReframe, dna?.mystery?.trueMeaning, dna?.aftermath?.firstResolution, dna?.payoff?.externalRewardOrResolution, dna?.payoff?.emotionalReward].flatMap(words))
   const question = new Set([dna?.mystery?.strangeAction, dna?.mystery?.concreteProp, dna?.mystery?.apparentMeaning, dna?.mystery?.mainQuestion, dna?.mystery?.secondaryQuestion, dna?.openingLine, dna?.title, dna?.reveal?.majorCrisis, dna?.reveal?.partialProof, dna?.pressure?.immediateLoss, dna?.pressure?.antagonistOrPressure, ...(dna?.pressure?.worseningEvents ?? []), dna?.setting?.region, dna?.setting?.era, ...Object.values(dna?.hero ?? {})].flatMap(words))
   return [...answer].filter((w) => !question.has(w) && [...w].length >= 2)
 }
+// Which main-story pictures the cold open may use. Its job is the most intriguing middle of the story, never the very
+// start (the main story begins there anyway: told twice back to back) and never the answer:
+//   - never a scene first shown in the first 10% of the main story narration (COLD_OPEN.skipStart)
+//   - never a scene of the reveal act or after (majorReveal / trueMeaning / firstResolution / layers / reframe / payoff)
+//   - preferred: scenes first shown between 15% and 65% (the strange act, the pressure, the proof, the crisis)
+export function coldOpenCandidates(sections: Array<{ scenes?: any[]; sentences: any[] }>): { allowed: Set<string>; preferred: Set<string>; list: Array<{ id: string; at: number; act: number; preferred: boolean }> } {
+  const total = sections.reduce((a, s) => a + charsOf(textOf(s.sentences)), 0) || 1
+  const first = new Map<string, { at: number; act: number }>()
+  let pos = 0
+  for (const [act, s] of sections.entries()) for (const x of Array.isArray(s.sentences) ? s.sentences : []) {
+    const id = String(x?.scene || ''); if (id && !first.has(id)) first.set(id, { at: pos / total, act })
+    pos += charsOf(String(x?.say || ''))
+  }
+  const list = [...first.entries()].filter(([, v]) => v.at >= COLD_OPEN.skipStart && v.act < YASA_REVEAL_ACT)
+    .map(([id, v]) => ({ id, at: Number(v.at.toFixed(3)), act: v.act, preferred: v.at >= COLD_OPEN.prefer.min && v.at <= COLD_OPEN.prefer.max }))
+  return { allowed: new Set(list.map((x) => x.id)), preferred: new Set(list.filter((x) => x.preferred).map((x) => x.id)), list }
+}
+// near repeat: the same event told in almost the same words (character bigram overlap of the two sentences, no AI)
+const bigrams = (t: string) => { const c = [...t], m = new Map<string, number>(); for (let i = 0; i + 1 < c.length; i++) { const b = c[i] + c[i + 1]; m.set(b, (m.get(b) ?? 0) + 1) } return m }
+export function nearSame(a: string, b: string): number {
+  const x = bigrams(squash(a)), y = bigrams(squash(b)); let both = 0, n = 0
+  for (const [k, v] of x) { n += v; both += Math.min(v, y.get(k) ?? 0) }
+  for (const v of y.values()) n += v
+  return n ? (2 * both) / n : 0
+}
+export const NEAR_REPEAT = 0.6
 // the cold open, before it is stored: 5~8 beats, 45~60 s at the voice's speed, no background start, the prop, a beat change
 // on every sentence, only main-story pictures, never the answer, never a main-story sentence repeated
-export function coldOpenErrors(sentences: any[], o: { dna: any; sceneIds: Set<string>; mainSentences: string[]; speed: number; charsPerSecond: number }): string[] {
+export function coldOpenErrors(sentences: any[], o: { dna: any; sceneIds: Set<string>; mainSentences: string[]; speed: number; charsPerSecond: number; candidates?: ReturnType<typeof coldOpenCandidates> }): string[] {
   const list = Array.isArray(sentences) ? sentences : [], e: string[] = [], t = textOf(list)
   if (list.length < COLD_OPEN.beats.min || list.length > COLD_OPEN.beats.max) e.push(`cold_open.beats ${list.length} (${COLD_OPEN.beats.min}~${COLD_OPEN.beats.max})`)
   const seconds = [...t].length / (o.charsPerSecond * o.speed)
@@ -82,11 +109,21 @@ export function coldOpenErrors(sentences: any[], o: { dna: any; sceneIds: Set<st
   for (const [i, x] of list.entries()) {
     if (!o.sceneIds.has(String(x?.scene || ''))) e.push(`cold_open[${i}].scene: must be one of the main story's scenes`)
     if (i && String(x?.scene) === String(list[i - 1]?.scene)) e.push(`cold_open[${i}].scene: every beat shows a different picture`)
+    if (o.candidates && o.sceneIds.has(String(x?.scene || '')) && !o.candidates.allowed.has(String(x?.scene || ''))) e.push(`cold_open[${i}].scene ${String(x?.scene)}: not from the first 10% of the story nor from the reveal / ending`)
+  }
+  // most beats from the middle of the story (15~65%) when it has enough pictures there
+  if (o.candidates && o.candidates.preferred.size >= 2) {
+    const mid = list.filter((x) => o.candidates!.preferred.has(String(x?.scene || ''))).length
+    if (mid < Math.ceil(list.length / 2)) e.push(`cold_open.middle ${mid}/${list.length}: most beats come from the story's 15~65% scenes`)
   }
   const leak = revealWords(o.dna).filter((w) => t.includes(w))
   if (leak.length) e.push(`cold_open.reveals_answer: ${leak.slice(0, 5).join(', ')}`)
   const main = o.mainSentences.map(squash).filter((x) => x.length >= 12)
-  for (const [i, x] of list.entries()) { const q = squash(x?.say); if (q.length >= 12 && main.some((m) => m === q || m.includes(q) || q.includes(m))) e.push(`cold_open[${i}].repeats_main_story`) }
+  for (const [i, x] of list.entries()) {
+    const q = squash(x?.say)
+    if (q.length >= 12 && main.some((m) => m === q || m.includes(q) || q.includes(m))) e.push(`cold_open[${i}].repeats_main_story`)
+    else if (q.length >= 12 && o.mainSentences.some((m) => squash(m).length >= 12 && nearSame(String(x?.say || ''), m) >= NEAR_REPEAT)) e.push(`cold_open[${i}].near_repeats_main_story`)
+  }
   return e
 }
 // the finished script against its DNA (deterministic, no AI): DNA valid, eight acts, opening + prop, prop in the reveal,
@@ -101,7 +138,7 @@ export function yasaScriptErrors(script: any, o: { speed?: number; charsPerSecon
   const at = yasaRevealAt(sections)
   if (at < YASA_REVEAL_WINDOW.min || at > YASA_REVEAL_WINDOW.max) e.push(`yasa.reveal_at ${Math.round(at * 100)}% (window ${YASA_REVEAL_WINDOW.min * 100}~${YASA_REVEAL_WINDOW.max * 100}%)`)
   const sceneIds = new Set<string>(sections.flatMap((s: any) => (s.scenes ?? []).map((x: any) => String(x.id))))
-  e.push(...coldOpenErrors(script?.coldOpen?.sentences, { dna, sceneIds, mainSentences: sections.flatMap((s: any) => s.sentences.map((x: any) => String(x.say || ''))), speed: o.speed ?? YADAM_VOICE.speed, charsPerSecond: o.charsPerSecond ?? 6.2 }))
+  e.push(...coldOpenErrors(script?.coldOpen?.sentences, { dna, sceneIds, mainSentences: sections.flatMap((s: any) => s.sentences.map((x: any) => String(x.say || ''))), speed: o.speed ?? YADAM_VOICE.speed, charsPerSecond: o.charsPerSecond ?? 6.2, candidates: coldOpenCandidates(sections) }))
   return e
 }
 
@@ -126,4 +163,16 @@ export function yasaScenePrompt(s: SeniorScript & { yasaStoryDNA?: any }, scene:
     `Composition: Wide 16:9 story frame. Faces and the key action in the upper two thirds; the bottom quarter calm and simple (subtitles are added later). ${style.compositionHints}.`,
     `Avoid: ${[style.negativePrompt, 'modern objects, costumes or buildings of another country or era', korean ? JOSEON_FORBIDDEN : '', YADAM_NO_PHOTO].filter(Boolean).join(', ')}.`
   ].join(' ')
+}
+
+// 숨은야담 REMASTER brief: the source job's brief (its story, length and voice: the main narration's TTS is reused from
+// the cache because voice + text stay the same) with the new 그림체 and the link to the source job and its script.
+// The source job and its files are never changed.
+export function yadamRemasterBrief(source: any, o: { sourceJobId: string; scriptRef: string; visualStyleProfile?: unknown }): any {
+  if (!source || source.schema !== 'generative-brief/1' || source.profile !== 'yasa_longform' || !source.creative?.resolved) throw new Error('the source job has no 숨은야담 brief')
+  const style = parseVisualStyle(o.visualStyleProfile ?? 'auto')
+  if (style !== 'auto' && !(YADAM_STYLE_KEYS as readonly string[]).includes(style)) throw new Error(`visualStyleProfile must be auto or one of ${YADAM_STYLE_KEYS.join(', ')}`)
+  const resolvedStyle = style === 'auto' ? YADAM_AUTO_STYLE : style
+  const c = source.creative
+  return { ...source, creative: { ...c, requested: { ...c.requested, visualStyleProfile: style }, resolved: { ...c.resolved, visualStyleProfile: resolvedStyle } }, remaster: { sourceJobId: o.sourceJobId, parentJobId: o.sourceJobId, scriptRef: o.scriptRef } }
 }

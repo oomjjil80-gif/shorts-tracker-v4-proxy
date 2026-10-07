@@ -12,6 +12,7 @@ import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
 import { buildReferenceProductionBrief } from '../reference/profile.js'
 import { normalizeGenerativeBrief, generativeBriefHash } from '../generative/contracts.js'
 import { normalizeLongformBrief, longformBriefHash } from '../generative/longform.js'
+import { yadamRemasterBrief } from '../generative/yasaLongform.js'
 import { derivedSourceText, type DerivedShortsDoc } from '../generative/derivedShorts.js'
 import { createVoicePreview, PreviewError } from '../generative/voicePreview.js'
 import { createTrackerTts, TrackerTtsError } from '../generative/trackerTts.js'
@@ -42,7 +43,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster_yasa'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -131,7 +132,7 @@ export function createJobsHttp(deps: JobsDeps) {
     try {
       const workspaceId = workspaceOf(req)
       const input: any = req.method === 'GET' ? req.query || {} : req.body && typeof req.body === 'object' ? req.body : {}
-      const taskType = String(input.taskType || '')
+      let taskType = String(input.taskType || '')
       if (taskType === TTS_CLIPS_TASK || taskType === TTS_ASSEMBLE_TASK) {
         if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
         try { return res.status(200).json({ ok: true, ...(await (taskType === TTS_CLIPS_TASK ? trackerTts.clips(input) : trackerTts.assemble(input))) }) }
@@ -223,6 +224,16 @@ export function createJobsHttp(deps: JobsDeps) {
 
       const body: any = input
 
+      // 숨은야담 REMASTER: a NEW child job made from an earlier 숨은야담 job (kept as it is) with a chosen 그림체 — the
+      // source's script, main narration (TTS) and upload text are reused; only the cold open, pictures, captions and the
+      // render are made again
+      if (taskType === 'job_remaster_yasa') {
+        const sourceJobId = need(String(body.sourceJobId || ''), 'sourceJobId is required'), style = String(body.visualStyleProfile ?? 'auto')
+        body.taskType = 'job_create'; body.profile = 'yasa_longform'
+        body.idempotencyKey = body.idempotencyKey ?? `yasa-remaster-${sourceJobId.replace(/[^A-Za-z0-9]/g, '').slice(-40)}-${style}`.slice(0, 128)
+        body.input = { remasterOf: { sourceJobId }, visualStyleProfile: style }
+        taskType = 'job_create'
+      }
       if (taskType === 'job_create') {
         const profile = String(body.profile || '')
         need(isProfileId(profile), `unknown profile: ${profile}`)
@@ -247,6 +258,15 @@ export function createJobsHttp(deps: JobsDeps) {
             derivedFrom = { parentLongformJobId: d.parent.id, parentLongformTitle: d.doc.parentLongformTitle, parentLongformUrl: null, candidateId: c.id, shortTitle: c.shortTitle, hook: c.hook, corePoint: c.corePoint, payoff: c.payoff, sourceClaim: c.sourceClaim, sourceRefs: c.sourceRefs }
             body.input = { ...body.input, kind: 'text', text: derivedSourceText(c, d.doc.parentLongformTitle), derivedFrom: undefined }
           }
+          const remasterOf = longform && body.input?.remasterOf ? body.input.remasterOf : null
+          if (remasterOf) {
+            need(profile === 'yasa_longform', 'a remaster is made from a 숨은야담 Longform job')
+            const src = await store.getJob(need(String(remasterOf.sourceJobId || ''), 'remasterOf.sourceJobId is required'), workspaceId)
+            if (!src || src.profile !== 'yasa_longform') throw new JobError('NOT_FOUND', 'source 숨은야담 job not found')
+            const plan = latest(await store.listStageRuns(src.id), 'PLAN'), scriptRef = String((plan?.result as any)?.scriptRef || '')
+            if (!scriptRef) throw new JobError('PREREQUISITE_MISSING', 'the source job has no finished script (PLAN)')
+            try { brief = yadamRemasterBrief(src.planRef ? await deps.blobs.getJson(src.planRef) : null, { sourceJobId: src.id, scriptRef, visualStyleProfile: body.input.visualStyleProfile }) } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
+          } else
           try { brief = longform ? normalizeLongformBrief(body.input, profile as any) : normalizeGenerativeBrief(body.input) } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
           if (derivedFrom) (brief as any).derivedFrom = derivedFrom
           generativeHash = longform ? longformBriefHash(brief as any) : generativeBriefHash(brief as any)

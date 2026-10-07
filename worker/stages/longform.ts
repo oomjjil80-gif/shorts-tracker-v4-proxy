@@ -11,7 +11,7 @@ import { openAiLongformImage, openAiTts } from '../../lib/generative/providers.j
 import { openAiLongformPlanner, type LongformPlanner, type LongformOutline, type LongformSectionDraft, type LongformMetadataDraft } from '../../lib/generative/longformPlanner.js'
 import { openAiSeniorPlanner } from '../../lib/generative/seniorPlanner.js'
 import { openAiYasaPlanner, type YasaPlanner } from '../../lib/generative/yasaPlanner.js'
-import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaScenePrompt, coldOpenErrors } from '../../lib/generative/yasaLongform.js'
+import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaScenePrompt, coldOpenErrors, coldOpenCandidates } from '../../lib/generative/yasaLongform.js'
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
 import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
@@ -21,7 +21,7 @@ import { VIDEO_ENCODER_THREADS } from '../../lib/media/render.js'
 import { openAiLongformResearcher, researchPath, researchErrors, sectionFragments, RESEARCH_MODEL, type LongformResearcher, type ResearchBundle } from '../../lib/generative/longformResearch.js'
 import {
   LONGFORM, isLongformProfile, longformMode, validateLongformScript, cardErrors, sentencesOf, narrationOf, longformImagePrompt, ttsChunks, cardTimeline, sectionPlan, longformFigure,
-  longformCardsAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
+  longformCardsAss, yasaCaptionsAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
 } from '../../lib/generative/longform.js'
 import { thumbnailArgv, thumbnailCopyErrors, LONGFORM_THUMB } from '../../lib/generative/wisdomThumbnail.js'
 import { uploadMetadataErrors } from '../../lib/generative/uploadPackage.js'
@@ -138,6 +138,26 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         // retryable: the stage retry resumes from the stored steps
         throw new StageError(code, `${name}: ${errs.slice(0, 20).join(', ')}`, true)
       }
+      // 숨은야담 REMASTER (a child of an earlier job): the source job's script is reused as it is — STORY DNA, outline,
+      // Character Bible, the eight acts and their narration, the upload text. Only the cold open is written again (with
+      // the cold open rules), so the main story's narration (and its TTS, cached by voice + text) is never made again.
+      const remaster = yasa ? (brief as any).remaster : null
+      if (remaster) {
+        const src: any = remaster.scriptRef ? await blobs.getJson(remaster.scriptRef) : null
+        if (!src || src.schema !== mode.script || !Array.isArray(src.sections) || src.sections.length !== YASA_ACTS.length || !src.yasaStoryDNA) throw new StageError('REMASTER_SOURCE_INVALID', `source job ${remaster.sourceJobId} has no usable 숨은야담 script`, false)
+        const pb: any = { ...brief, yasaStoryDNA: src.yasaStoryDNA }, sections = src.sections
+        const speed = Number(brief.creative?.resolved?.voiceSpeed) || 1, sceneIds = new Set<string>(sections.flatMap((x: any) => x.scenes.map((y: any) => String(y.id))))
+        const mainSentences = sections.flatMap((x: any) => x.sentences.map((y: any) => String(y.say || '')))
+        const candidates = coldOpenCandidates(sections), targetChars = Math.round(COLD_OPEN.seconds.target * LONGFORM.charsPerSecond * speed)
+        const outline = { title: src.title, hook: src.hook, figure: src.figure, thumbnail: src.thumbnail, characters: src.characters, sections: sections.map((x: any) => ({ id: x.id, heading: x.heading, points: [], scenes: x.scenes })) }
+        const d = await step<any>('cold-open', 'COLD_OPEN_INVALID', (r) => (planner as YasaPlanner).coldOpen({ brief: pb, outline, sections, candidates: candidates.list, targetChars, repair: r }, apiKey),
+          (d) => [...sectionErrors(d), ...coldOpenErrors(d?.sentences, { dna: src.yasaStoryDNA, sceneIds, mainSentences, speed, charsPerSecond: LONGFORM.charsPerSecond, candidates })])
+        const script: any = { ...src, coldOpen: { sentences: d.sentences } }
+        const errors = validateLongformScript(script, brief)
+        if (errors.length) throw new StageError('SCRIPT_INVALID', errors.join(','))
+        const stored = await putAddressed(blobs, 'generative-scripts', script)
+        return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, sections: sections.length, sentences: sentencesOf(script).length, scenes: seniorScenes(script).length, remaster: { sourceJobId: remaster.sourceJobId, sourceScriptRef: remaster.scriptRef, reused: ['dna', 'outline', 'characters', 'acts', 'narration', 'metadata'], made }, yasa: { dna: 'source', acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), coldOpen: d.sentences.length } } }
+      }
       // research gathers wisdom sources (Wisdom Longform only; a Senior story is not researched)
       const { research, ref: rRef, log: rLog } = mode.research ? await longformResearchFor({ blobs, topic: brief.text, sections: size.sections, apiKey, researcher, log, signal }) : { research: null, ref: null, log: { cache: 'OFF' } as Record<string, unknown> }
       // 숨은야담: the STORY DNA first (sent in with the brief, else made once and checkpointed); every later step sees it
@@ -164,8 +184,10 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         const speed = Number(brief.creative?.resolved?.voiceSpeed) || 1, sceneIds = new Set<string>(sections.flatMap((x: any) => x.scenes.map((y: any) => String(y.id))))
         const mainSentences = sections.flatMap((x: any) => x.sentences.map((y: any) => String(y.say || '')))
         const targetChars = Math.round(COLD_OPEN.seconds.target * LONGFORM.charsPerSecond * speed)
-        const d = await step<any>('cold-open', 'COLD_OPEN_INVALID', (r) => (planner as YasaPlanner).coldOpen({ brief: pbrief, outline, sections, targetChars, repair: r }, apiKey),
-          (d) => [...sectionErrors(d), ...coldOpenErrors(d?.sentences, { dna: pbrief.yasaStoryDNA, sceneIds, mainSentences, speed, charsPerSecond: LONGFORM.charsPerSecond })])
+        // only scenes past the first 10% and before the reveal (the middle 15~65% first): never the opening told twice
+        const candidates = coldOpenCandidates(sections)
+        const d = await step<any>('cold-open', 'COLD_OPEN_INVALID', (r) => (planner as YasaPlanner).coldOpen({ brief: pbrief, outline, sections, candidates: candidates.list, targetChars, repair: r }, apiKey),
+          (d) => [...sectionErrors(d), ...coldOpenErrors(d?.sentences, { dna: pbrief.yasaStoryDNA, sceneIds, mainSentences, speed, charsPerSecond: LONGFORM.charsPerSecond, candidates })])
         coldOpen = { sentences: d.sentences }
       }
       // a figure the topic names (the Buddha, a named thinker) stays that person (Wisdom); Senior: the main character
@@ -362,8 +384,11 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver;
       const sents = sentencesOf(script)
       const badCards = sents.flatMap((x, k) => cardErrors(x).map((c) => `card ${k + 1}: ${c}`))
       if (badCards.length) throw new StageError('LONGFORM_CONTRACT', badCards.slice(0, 20).join('; '))
-      const { ass, cards } = longformCardsAss(script, timeline, mode.cards)
-      if (cards.length !== sents.length) throw new StageError('LONGFORM_CONTRACT', `${cards.length} cards drawn for ${sents.length} sentences`)
+      // 숨은야담: the caption is the narration itself (every letter, chunked); Senior / Wisdom: the sentence cards
+      const yasa = job.profile === 'yasa_longform'
+      const subtitles = (tl: Array<{ start: number; end: number; k: number }>) => { if (yasa) { const y = yasaCaptionsAss(script, tl); return { ass: y.ass, cards: y.cards, sentences: y.sentences } } const c = longformCardsAss(script, tl, mode.cards); return { ass: c.ass, cards: c.cards, sentences: c.cards.length } }
+      const { ass, cards, sentences: drawn } = subtitles(timeline)
+      if (drawn !== sents.length) throw new StageError('LONGFORM_CONTRACT', `${drawn} sentences captioned of ${sents.length}`)
       await writeFile(assPath, ass, 'utf8')
       // the video runs exactly as long as the FINAL narration file (measured); an unreadable/empty narration is a defect
       const seconds = Number((await probe(audio)).duration ?? 0)
@@ -383,7 +408,7 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver;
           const from = runs[g.from].start, to = g.to < runs.length ? runs[g.to].start : Infinity, shift = before(g.from) / LONGFORM.fps
           // the segment's own subtitle cards (a card never crosses a segment: segments start where a sentence starts)
           const tl = timeline.filter((t) => t.start >= from - 1e-6 && t.start < to - 1e-6).map((t) => ({ ...t, start: Number(Math.max(0, t.start - shift).toFixed(3)), end: Number((t.end - shift).toFixed(3)) }))
-          const segAss = longformCardsAss(script, tl, mode.cards).ass
+          const segAss = subtitles(tl).ass
           const segRuns = runs.slice(g.from, g.to).map((r, j) => ({ image: r.image, frames: frames[g.from + j], index: g.from + j, ...(r.cold ? { cold: true } : {}) }))
           const key = sha256(JSON.stringify({ v: SEGMENT_ENCODER, canvas: SENIOR.canvas, fps: LONGFORM.fps, runs: segRuns.map((r) => ({ picture: pics[r.image].sha256 ?? pics[r.image].ref, frames: r.frames, index: r.index, cold: !!r.cold })), ass: sha256(segAss) }))
           return { k, segAss, segRuns, key, cards: tl.length }

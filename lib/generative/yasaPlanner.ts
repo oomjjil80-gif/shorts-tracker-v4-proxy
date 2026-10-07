@@ -7,7 +7,7 @@ import { openAiLongformPlanner, respond, repairNote, str, CARD_COLORS, CARD_RULE
 import { YASA_ACTS, COLD_OPEN, yasaScenesFor } from './yasaLongform.js'
 import { YASA_STORY_DNA_SCHEMA, yasaPlanInstructions, yasaScriptBrief } from '../story/yasaStoryDna.js'
 
-export type YasaColdOpenInput = { brief: LongformBrief; outline: any; sections: Array<{ id: string; heading: string; scenes: any[]; sentences: any[] }>; targetChars: number; repair?: string[] }
+export type YasaColdOpenInput = { brief: LongformBrief; outline: any; sections: Array<{ id: string; heading: string; scenes: any[]; sentences: any[] }>; candidates?: Array<{ id: string; at: number; act: number; preferred: boolean }>; targetChars: number; repair?: string[] }
 export type YasaPlanner = LongformPlanner & {
   dna: (brief: LongformBrief, apiKey: string, repair?: string[]) => Promise<any>
   coldOpen: (i: YasaColdOpenInput, apiKey: string) => Promise<{ sentences: any[] }>
@@ -48,7 +48,7 @@ export const openAiYasaPlanner = (f: typeof fetch = fetch): YasaPlanner => ({
       `You write act ${index + 1} of ${outline.sections.length} of the 숨은야담 drama "${outline.title}". ${VOICE}`,
       `THIS act's job: ${YASA_ACTS[index]?.role ?? ''}`,
       `Its narration ("say" fields joined) should be about ${targetChars} Korean characters.`,
-      index === 0 ? 'The main story starts right after a separate cold open: begin naturally inside the story (the people and the strange event), never with background ("옛날 ○○시대에는…"), never a recap of the cold open.' : 'Continue naturally from the previous act (no greeting, no recap).',
+      index === 0 ? 'The main story starts right after a separate cold open (a later moment of the story): begin naturally from the real beginning of the story (the people and the strange event), never with background ("옛날 ○○시대에는…"), never a recap of the cold open. If it helps, the first sentence may carry a short natural time cue back to before that moment (e.g. 사흘 전 / 며칠 전 / 그 일이 있기 전 — your own words, not a fixed phrase).' : 'Continue naturally from the previous act (no greeting, no recap).',
       'Length comes only from real story progress (relationship, misunderstanding, small kindness, pressure, worsening, proof, crisis, false ending, truth, further results, reframe). Never repeat a hardship, an explanation or a conflict; no empty dialogue; no padding with background.',
       last ? 'This is the LAST act: close with the emotional reward and a short afterglow.' : 'Do not end the story here and do not reveal more than this act allows.',
       'Every sentence has "scene": the id of the scene it is told over. Use the scenes in their order (never go back) and use every scene.',
@@ -60,18 +60,22 @@ export const openAiYasaPlanner = (f: typeof fetch = fetch): YasaPlanner => ({
     return respond(apiKey, 'yasa_longform_act', schema, instructions, input + repairNote(repair), f)
   },
   // the COLD OPEN: written after the main story, over the main story's own pictures (no new image), never the answer
-  async coldOpen({ brief, outline, sections, targetChars, repair }, apiKey) {
-    const dna = dnaOf(brief), scenes = sections.flatMap((s) => s.scenes)
+  async coldOpen({ brief, outline, sections, candidates, targetChars, repair }, apiKey) {
+    const dna = dnaOf(brief), all = sections.flatMap((s) => s.scenes)
+    // only the allowed scenes (past the first 10%, before the reveal), the story's middle (15~65%) listed first
+    const ok = candidates?.length ? candidates : all.map((x: any) => ({ id: String(x.id), at: 0, act: 0, preferred: false }))
+    const byId = new Map(all.map((x: any) => [String(x.id), x]))
+    const scenes = [...ok.filter((c) => c.preferred), ...ok.filter((c) => !c.preferred)].map((c) => ({ ...byId.get(c.id), id: c.id, preferred: c.preferred, at: c.at })).filter((x: any) => x.place !== undefined)
     const schema = { type: 'object', additionalProperties: false, required: ['sentences'], properties: { sentences: { type: 'array', minItems: COLD_OPEN.beats.min, maxItems: COLD_OPEN.beats.max, items: { type: 'object', additionalProperties: false, required: ['scene', 'say', 'show', 'accent', 'color'], properties: { scene: { type: 'string', enum: scenes.map((x: any) => x.id) }, say: str, show: { type: 'array', minItems: 2, maxItems: 3, items: str }, accent: str, color: { type: 'string', enum: CARD_COLORS } } } } } }
     const instructions = [
       `You write the COLD OPEN of the 숨은야담 drama "${outline.title}": the first ${COLD_OPEN.seconds.min}~${COLD_OPEN.seconds.max} seconds, BEFORE the main story starts. ${VOICE}`,
       `${COLD_OPEN.beats.min}~${COLD_OPEN.beats.max} sentences; each sentence is one visual beat on a DIFFERENT picture than the previous one (scene = one of the main story's scene ids). The narration ("say" joined) is about ${targetChars} Korean characters.`,
-      'Show first: the strangest action (strangeAction), the worst danger of the story (majorCrisis, without its outcome), the concreteProp, and the biggest question (mainQuestion). The first sentence is the strange event itself (never background). End on the open question so the viewer must know WHY.',
-      'NEVER reveal: the trueMeaning, the majorReveal, how anything is solved, the payoff. Never copy a sentence of the main story; say it anew.',
+      'Pick the moments a viewer would be MOST curious about from the middle of the story (the strangeAction, the worst crisis without its outcome, the concreteProp, the mystery): most beats on the scenes marked [middle]. Never the story\'s opening scenes (the main story starts there right after this) and never anything from the reveal or the ending. The first sentence is the strange event itself (never background). End on the open question so the viewer must know WHY.',
+      'NEVER reveal: the majorReveal, the trueMeaning, the firstResolution, the emotionalReframe, the payoff, how anything is solved or ends. Never copy or closely paraphrase a sentence of the main story; say it anew.',
       'Subtitles: "show" are the 2-3 short lines shown at the bottom of the screen for that sentence.', CARD_RULES,
       yasaScriptBrief(dna, 'longform')
     ].join('\n')
-    const input = [`Story: ${brief.text}`, `Main story scenes (pick from these): ${scenes.map((x: any) => `${x.id}: ${x.place}, ${x.time}, ${x.action} (${x.mood})`).join(' | ')}`, `Main story acts: ${sections.map((x) => x.heading).join(' / ')}`].join('\n')
+    const input = [`Story: ${brief.text}`, `Main story scenes you may use (pick from these only): ${scenes.map((x: any) => `${x.id}${x.preferred ? ' [middle]' : ''}: ${x.place}, ${x.time}, ${x.action} (${x.mood})`).join(' | ')}`, `Main story acts: ${sections.map((x) => x.heading).join(' / ')}`].join('\n')
     return respond(apiKey, 'yasa_longform_cold_open', schema, instructions, input + repairNote(repair), f)
   },
   metadata: (i, apiKey) => openAiLongformPlanner(f).metadata(i, apiKey)
