@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { validateYasaStoryDna, yasaScriptBrief, isYasa } from '../lib/story/yasaStoryDna.js'
+import { validateYasaStoryDna, yasaScriptBrief, isYasa, yasaLongformMinutes, yasaChapterCount } from '../lib/story/yasaStoryDna.js'
 
 function setCors(_req: Request, res: Response) {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -400,8 +400,9 @@ export default async function handler(req: Request, res: Response) {
       return res.status(200).json({ ok:true, provider:'Anthropic', model:data?.model || model, text, usage:data?.usage || null })
     }
 
-    const targetMinutes = Math.max(5, Math.min(30, Number(input?.targetMinutes || 15)))
-    const chapterCount = Math.max(3, Math.min(10, Number(input?.chapterCount || 6)))
+    // 숨은야사 keeps the length the user chose (10..120 min, ~3 min per chapter); other families keep 5..30 / 3..10
+    const targetMinutes = isYasa(input) ? yasaLongformMinutes(input?.targetMinutes) : Math.max(5, Math.min(30, Number(input?.targetMinutes || 15)))
+    const chapterCount = isYasa(input) ? yasaChapterCount(targetMinutes, input?.chapterCount) : Math.max(3, Math.min(10, Number(input?.chapterCount || 6)))
 
     if (String(req.body?.mode || '') === 'chapter') {
       // 숨은야사: a chapter is only written from a valid STORY DNA PLAN, which then overrides the explainer rules

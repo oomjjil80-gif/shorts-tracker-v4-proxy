@@ -120,5 +120,10 @@ export function checkYasaScript(script: string, dna: any): { ok: boolean; errors
   return { ok: e.length === 0, errors: e }
 }
 
+// 숨은야사 longform length: whole minutes 10..120, about 3 minutes per chapter (other families keep their own limits)
+export const YASA_LONGFORM_MINUTES = { min: 10, max: 120 } as const
+export const yasaLongformMinutes = (v: unknown) => Math.max(YASA_LONGFORM_MINUTES.min, Math.min(YASA_LONGFORM_MINUTES.max, Math.round(Number(v) || 25)))
+export const yasaChapterCount = (minutes: number, requested?: unknown) => Math.max(3, Math.min(40, Math.round(Number(requested) || minutes / 3)))
+
 export const isYasa = (input: any) => String(input?.contentFamily || input?.family || '').trim() === 'yasa'
 export const yasaFormatOf = (input: any): YasaFormat => (String(input?.contentFormat || input?.format || '') === 'longform' ? 'longform' : 'shorts')

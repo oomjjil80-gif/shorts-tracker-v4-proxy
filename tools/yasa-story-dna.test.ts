@@ -141,3 +141,16 @@ test('7: other families: same input -> same prompts and results as before (no PL
   const general = await call(storyHandler, { taskType: 'story_draft', input: { topic: '금리', seriesType: 'freeform', contentFamily: 'general' } }, [SHORT_DRAFT('a')])
   assert.equal(general.calls[0].body.instructions, base.calls[0].body.instructions)
 })
+
+test('yasa longform keeps the chosen length (25 / 60 min, ~3 min per chapter); other families keep 5..30 / 3..10', async () => {
+  for (const [minutes, chapters] of [[25, 8], [60, 20]] as const) {
+    const input = { title: 't', contentFamily: 'yasa', contentFormat: 'longform', targetMinutes: minutes, chapterCount: chapters, yasaStoryDNA: DNA }
+    const r = await call(claudeStoryHandler, { mode: 'chapter', chapterNo: chapters, totalChapters: chapters, input }, [CHAPTER('썩은 메주')])
+    assert.equal(r.status, 200, JSON.stringify(r.json)); assert.equal(r.json.chapterNo ?? chapters, chapters)
+    const sent = r.calls[0].body.messages[0].content
+    assert.match(sent, new RegExp(`전체 ${chapters}개 챕터 중 \\*\\*${chapters}번 챕터`), `${minutes} min -> chapter ${chapters} of ${chapters}`)
+    assert.match(sent, /80~100% 구간|95~100% 구간|94~100% 구간|88~100% 구간/)
+  }
+  const other = await call(claudeStoryHandler, { mode: 'chapter', chapterNo: 20, totalChapters: 20, input: { title: 't', targetMinutes: 60, chapterCount: 20 } }, [CHAPTER('x')])
+  assert.match(other.calls[0].body.messages[0].content, /전체 20개 챕터 중 \*\*10번 챕터/, 'non-yasa still clamps to 10 chapters')
+})
