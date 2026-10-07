@@ -11,8 +11,7 @@ import { validateReferenceProfile, stableHash } from '../reference/contracts.js'
 import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
 import { buildReferenceProductionBrief } from '../reference/profile.js'
 import { normalizeGenerativeBrief, generativeBriefHash } from '../generative/contracts.js'
-import { normalizeLongformBrief, longformBriefHash } from '../generative/longform.js'
-import { yadamRemasterBrief } from '../generative/yasaLongform.js'
+import { normalizeLongformBrief, longformBriefHash, longformRemasterBrief } from '../generative/longform.js'
 import { derivedSourceText, type DerivedShortsDoc } from '../generative/derivedShorts.js'
 import { createVoicePreview, PreviewError } from '../generative/voicePreview.js'
 import { createTrackerTts, TrackerTtsError } from '../generative/trackerTts.js'
@@ -43,7 +42,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster_yasa'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -224,14 +223,25 @@ export function createJobsHttp(deps: JobsDeps) {
 
       const body: any = input
 
-      // 숨은야담 REMASTER: a NEW child job made from an earlier 숨은야담 job (kept as it is) with a chosen 그림체 — the
-      // source's script, main narration (TTS) and upload text are reused; only the cold open, pictures, captions and the
-      // render are made again
+      // Generic REMASTER entry point. It always makes a NEW child job on the source's own profile and keeps the
+      // source immutable. The "changes" object says what changed; cache identity then reuses everything unaffected.
+      // job_remaster_yasa remains only as a backwards-compatible alias and translates into the same shared contract.
       if (taskType === 'job_remaster_yasa') {
-        const sourceJobId = need(String(body.sourceJobId || ''), 'sourceJobId is required'), style = String(body.visualStyleProfile ?? 'auto')
-        body.taskType = 'job_create'; body.profile = 'yasa_longform'
-        body.idempotencyKey = body.idempotencyKey ?? `yasa-remaster-${sourceJobId.replace(/[^A-Za-z0-9]/g, '').slice(-40)}-${style}`.slice(0, 128)
-        body.input = { remasterOf: { sourceJobId }, visualStyleProfile: style }
+        body.taskType = 'job_remaster'
+        body.changes = { visualStyleProfile: String(body.visualStyleProfile ?? 'auto'), refreshColdOpen: true }
+        taskType = 'job_remaster'
+      }
+      if (taskType === 'job_remaster') {
+        const sourceJobId = need(String(body.sourceJobId || ''), 'sourceJobId is required')
+        const src = await store.getJob(sourceJobId, workspaceId)
+        if (!src) throw new JobError('NOT_FOUND', 'source job not found')
+        need(getProfile(src.profile).input === 'longform_brief', 'this remaster adapter currently supports Longform profiles')
+        const changes = body.changes === undefined ? {} : body.changes
+        need(changes && typeof changes === 'object' && !Array.isArray(changes), 'changes must be an object')
+        const changeHash = createHash('sha256').update(canonicalize(changes)).digest('hex').slice(0, 16)
+        body.taskType = 'job_create'; body.profile = src.profile
+        body.idempotencyKey = body.idempotencyKey ?? `remaster-${sourceJobId.replace(/[^A-Za-z0-9]/g, '').slice(-40)}-${changeHash}`.slice(0, 128)
+        body.input = { remasterOf: { sourceJobId }, changes }
         taskType = 'job_create'
       }
       if (taskType === 'job_create') {
@@ -260,12 +270,11 @@ export function createJobsHttp(deps: JobsDeps) {
           }
           const remasterOf = longform && body.input?.remasterOf ? body.input.remasterOf : null
           if (remasterOf) {
-            need(profile === 'yasa_longform', 'a remaster is made from a 숨은야담 Longform job')
             const src = await store.getJob(need(String(remasterOf.sourceJobId || ''), 'remasterOf.sourceJobId is required'), workspaceId)
-            if (!src || src.profile !== 'yasa_longform') throw new JobError('NOT_FOUND', 'source 숨은야담 job not found')
+            if (!src || src.profile !== profile) throw new JobError('NOT_FOUND', 'source Longform job not found on this profile')
             const plan = latest(await store.listStageRuns(src.id), 'PLAN'), scriptRef = String((plan?.result as any)?.scriptRef || '')
             if (!scriptRef) throw new JobError('PREREQUISITE_MISSING', 'the source job has no finished script (PLAN)')
-            try { brief = yadamRemasterBrief(src.planRef ? await deps.blobs.getJson(src.planRef) : null, { sourceJobId: src.id, scriptRef, visualStyleProfile: body.input.visualStyleProfile }) } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
+            try { brief = longformRemasterBrief(src.planRef ? await deps.blobs.getJson(src.planRef) : null, { sourceJobId: src.id, sourceScriptRef: scriptRef, changes: body.input.changes }) } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
           } else
           try { brief = longform ? normalizeLongformBrief(body.input, profile as any) : normalizeGenerativeBrief(body.input) } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
           if (derivedFrom) (brief as any).derivedFrom = derivedFrom

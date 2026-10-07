@@ -9,7 +9,7 @@ import { thumbnailCopyErrors } from './wisdomThumbnail.js'
 import { uploadMetadataErrors, uploadPackageText } from './uploadPackage.js'
 import { thinkerFor } from './wisdom.js'
 import { type LongformVoiceChoice, type LongformVoiceKey } from './voiceProfile.js'
-import { resolveCreativeProfile, type CreativeProfile } from './creativeProfile.js'
+import { creativeStylesFor, resolveCreativeProfile, type CreativeProfile } from './creativeProfile.js'
 import { composeImagePrompt, type VisualStyleProfile } from './visualStyle.js'
 import { characterBibleErrors, seniorActErrors, SENIOR } from './seniorLongform.js'
 import { yasaScriptErrors } from './yasaLongform.js'
@@ -45,7 +45,22 @@ export type AccentColor = keyof typeof ACCENTS
 // Longform briefs: Wisdom Longform (one image) and Senior Longform (story scenes) share the engine. `creative` holds the
 // requested + resolved voice/style; `voice` only exists on briefs made before Creative Settings (kept as they were).
 export type LongformProfileId = 'wisdom_longform' | 'senior_longform' | 'yasa_longform'
-export type LongformBrief = { schema: 'generative-brief/1'; profile: LongformProfileId; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; creative?: CreativeProfile; yasaStoryDNA?: any; deriveShorts?: false; voice?: { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
+export type LongformRemasterChanges = {
+  visualStyleProfile?: string
+  voiceProfile?: string
+  voiceTone?: string
+  voiceSpeed?: number
+  // Profile-specific content repair. Today only 숨은야담 owns a cold open; the generic remaster envelope itself stays shared.
+  refreshColdOpen?: boolean
+}
+export type LongformRemaster = {
+  schema: 'longform-remaster/1'
+  sourceJobId: string
+  parentJobId: string
+  sourceScriptRef: string
+  changes: LongformRemasterChanges
+}
+export type LongformBrief = { schema: 'generative-brief/1'; profile: LongformProfileId; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; creative?: CreativeProfile; yasaStoryDNA?: any; deriveShorts?: false; remaster?: LongformRemaster; voice?: { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
 // one narration sentence and the card shown while it is spoken
 export type LongformSentence = { say: string; show: string[]; accent: string; color: AccentColor }
 export type LongformScript = {
@@ -80,6 +95,46 @@ export function normalizeLongformBrief(input: any, profile: LongformProfileId = 
   const noDerive = profile === 'wisdom_longform' && input?.deriveShorts === false
   return { schema: 'generative-brief/1', profile, kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds: Math.round(targetSeconds), ...(sample ? { sample: true as const } : {}), creative, ...(yasaStoryDNA ? { yasaStoryDNA } : {}), ...(noDerive ? { deriveShorts: false as const } : {}) }
 }
+// Generic Longform REMASTER envelope. A remaster is a new child job on the SAME profile: it reuses the stored
+// script and lets cache identity decide the minimum paid work. Same voice/text => TTS HIT; same picture prompt => image
+// HIT; a renderer/caption-only change can therefore reuse both. The source job is immutable.
+// New change kinds belong in this one contract instead of adding another job_remaster_<profile> endpoint.
+export function longformRemasterBrief(source: LongformBrief | null | undefined, o: { sourceJobId: string; sourceScriptRef: string; changes?: unknown }): LongformBrief {
+  if (!source || source.schema !== 'generative-brief/1' || !LONGFORM_MODES[source.profile]) throw new Error('the source job has no Longform brief')
+  const raw = o.changes && typeof o.changes === 'object' && !Array.isArray(o.changes) ? o.changes as Record<string, unknown> : {}
+  const allowed = new Set(['visualStyleProfile', 'voiceProfile', 'voiceTone', 'voiceSpeed', 'refreshColdOpen'])
+  const unknown = Object.keys(raw).filter((k) => !allowed.has(k))
+  if (unknown.length) throw new Error(`unknown remaster changes: ${unknown.join(', ')}`)
+  const changes: LongformRemasterChanges = {
+    ...(raw.visualStyleProfile !== undefined ? { visualStyleProfile: String(raw.visualStyleProfile) } : {}),
+    ...(raw.voiceProfile !== undefined ? { voiceProfile: String(raw.voiceProfile) } : {}),
+    ...(raw.voiceTone !== undefined ? { voiceTone: String(raw.voiceTone) } : {}),
+    ...(raw.voiceSpeed !== undefined ? { voiceSpeed: Number(raw.voiceSpeed) } : {}),
+    ...(raw.refreshColdOpen !== undefined ? { refreshColdOpen: raw.refreshColdOpen === true } : {})
+  }
+  if (changes.refreshColdOpen && source.profile !== 'yasa_longform') throw new Error('refreshColdOpen is only available for 숨은야담 Longform')
+  if (changes.visualStyleProfile && changes.visualStyleProfile !== 'auto') {
+    const styles = creativeStylesFor(source.profile)
+    if (!(styles as readonly string[]).includes(changes.visualStyleProfile)) throw new Error(`visualStyleProfile must be auto or one of ${styles.join(', ')}`)
+  }
+  const creativeChange = changes.visualStyleProfile !== undefined || changes.voiceProfile !== undefined || changes.voiceTone !== undefined || changes.voiceSpeed !== undefined
+  let creative = source.creative
+  if (creativeChange) {
+    if (!source.creative?.requested || !source.creative?.resolved) throw new Error('this source predates Creative Settings; rerender is supported, creative changes are not')
+    const requested: any = { ...source.creative.requested }
+    if (changes.visualStyleProfile !== undefined) requested.visualStyleProfile = changes.visualStyleProfile
+    if (changes.voiceProfile !== undefined) requested.voiceProfile = changes.voiceProfile
+    if (changes.voiceTone !== undefined) requested.voiceTone = changes.voiceTone
+    if (changes.voiceSpeed !== undefined) requested.voiceSpeed = changes.voiceSpeed
+    creative = resolveCreativeProfile(source.profile, requested, source.text)
+  }
+  return {
+    ...source,
+    ...(creative ? { creative } : {}),
+    remaster: { schema: 'longform-remaster/1', sourceJobId: o.sourceJobId, parentJobId: o.sourceJobId, sourceScriptRef: o.sourceScriptRef, changes }
+  }
+}
+
 export const longformBriefHash = (b: LongformBrief) => createHash('sha256').update(canonicalize(b)).digest('hex')
 
 export const sentencesOf = (s: LongformScript) => [...(s.coldOpen?.sentences ?? []), ...s.sections.flatMap((x) => x.sentences)]
