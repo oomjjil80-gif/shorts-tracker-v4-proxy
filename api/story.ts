@@ -8,7 +8,7 @@ import { extractSourceFrame, extractSourceFrames, extractSourceContactSheet, par
 import { ingestReferenceBytes } from '../lib/reference/ingest.js'
 import { analyzeRegisteredReference } from '../lib/reference/serverPipeline.js'
 
-function setCors(req: Request, res: Response) {
+export function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
   const configuredOrigin = String(process.env.TRACKER_WEB_ORIGIN || '').trim().replace(/\/$/, '')
   const allowed =
