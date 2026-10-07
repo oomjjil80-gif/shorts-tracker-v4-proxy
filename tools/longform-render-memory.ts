@@ -38,8 +38,8 @@ for (let i = 0; i < N; i++) { // detailed 1536x1024 pictures (noise + gradients 
 async function assFor(name: string, seconds: number) {
   const n = Math.ceil(seconds / 5)
   const script: any = { title: 't', sections: [{ id: 'a', heading: 'h', sentences: Array.from({ length: n }, (_, k) => ({ say: `며느리는 썩은 메주를 끝까지 지고 갔다 ${k}`, show: ['썩은 메주를', `지고 간 날 ${k}`], accent: '썩은 메주', color: 'red' })) }] }
-  const tl = Array.from({ length: n }, (_, k) => ({ start: k * 5, end: Math.min(seconds, (k + 1) * 5) }))
-  const f = join(d, `${name}.ass`); await writeFile(f, longformCardsAss(script, tl as any, 'bottom').ass); return f
+  const tl = Array.from({ length: n }, (_, k) => ({ start: k * 5, end: Math.min(seconds, (k + 1) * 5), k }))
+  const f = join(d, `${name}.ass`); await writeFile(f, longformCardsAss(script, tl, 'bottom').ass); return f
 }
 async function segment(name: string, runs: Array<{ seconds: number; cold?: boolean }>, from: number) {
   const starts: number[] = []; let t = 0
