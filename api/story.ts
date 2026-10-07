@@ -7,6 +7,7 @@ import { getSourceAsset, listSourceAssets } from '../lib/sourceAssetRegistry.js'
 import { extractSourceFrame, extractSourceFrames, extractSourceContactSheet, parseSecondsList } from '../lib/sourceFrames.js'
 import { ingestReferenceBytes } from '../lib/reference/ingest.js'
 import { analyzeRegisteredReference } from '../lib/reference/serverPipeline.js'
+import { YASA_STORY_DNA_SCHEMA, validateYasaStoryDna, yasaPlanInstructions, yasaScriptBrief, checkYasaScript, isYasa, yasaFormatOf } from '../lib/story/yasaStoryDna.js'
 
 export function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
@@ -142,6 +143,21 @@ function systemPrompt(seriesType: string, targetSeconds: number, targetCutCount:
   ].join('\n')
 }
 
+// one OpenAI Responses call with a strict JSON schema (the same call the story tasks already make)
+async function openAiJson(o: { model: string; instructions?: string; input: string; name: string; schema: any; reasoning?: string }) {
+  const payload: any = { model: o.model, input: o.input, text: { format: { type: 'json_schema', name: o.name, strict: true, schema: o.schema } } }
+  if (o.instructions) payload.instructions = o.instructions
+  if (o.reasoning) payload.reasoning = { effort: o.reasoning }
+  const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+  const raw = await response.text()
+  let data: any = {}
+  try { data = raw ? JSON.parse(raw) : {} } catch {}
+  if (!response.ok) return { ok: false as const, status: response.status, error: data?.error?.message || raw || 'OpenAI API request failed' }
+  const out = extractText(data)
+  if (!out) return { ok: false as const, status: 502, error: 'OpenAI response had no text output' }
+  try { return { ok: true as const, json: JSON.parse(out), data } } catch { return { ok: false as const, status: 502, error: 'OpenAI returned invalid JSON' } }
+}
+
 function extractText(data: any) {
   if (typeof data?.output_text === 'string') return data.output_text
   for (const item of data?.output || []) {
@@ -252,7 +268,35 @@ export default async function handler(req: Request, res: Response) {
   const body = req.body || {}
   const input = body.input || {}
 
+  // 숨은야사 PLAN: the YASA STORY DNA comes first; without a valid one no yasa script is written
+  if (body.taskType === 'yasa_story_plan') {
+    const topic = String(input.topic || input.title || '').trim()
+    if (!topic) return res.status(400).json({ ok: false, error: { code: 'BAD_REQUEST', message: 'topic is required' } })
+    const format = yasaFormatOf(input)
+    const targetSeconds = format === 'longform' ? Math.max(60, Number(input.targetMinutes || 15) * 60) : Math.max(10, Math.min(180, Number(input.targetSeconds) || 45))
+    const model = String(body.modelId || process.env.OPENAI_MODEL || 'gpt-5-mini')
+    const material = ['[소재]', topic, input.summary ? `[요약]\n${String(input.summary)}` : '', Array.isArray(input.sources) && input.sources.length ? `[출처]\n${JSON.stringify(input.sources).slice(0, 4000)}` : ''].filter(Boolean).join('\n\n')
+    let repair: string[] = []
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await openAiJson({ model, reasoning: 'low', instructions: yasaPlanInstructions(format, targetSeconds), input: material + (repair.length ? `\n\n[수정 필요 — 이전 PLAN이 구조 검사에서 실패]\n- ${repair.join('\n- ')}` : ''), name: 'yasa_story_dna', schema: YASA_STORY_DNA_SCHEMA })
+      if (!r.ok) return res.status(r.status).json({ ok: false, error: { code: 'PLAN_FAILED', message: r.error } })
+      const v = validateYasaStoryDna(r.json, format)
+      if (v.ok) return res.status(200).json({ ok: true, dna: r.json, format, validation: v, scriptBrief: yasaScriptBrief(r.json, format), meta: { provider: 'openai', model, attempts: attempt + 1, usage: r.data?.usage || null } })
+      repair = v.errors
+    }
+    return res.status(422).json({ ok: false, error: { code: 'YASA_DNA_INVALID', message: '숨은야사 STORY DNA가 구조 검사를 통과하지 못했습니다.', errors: repair } })
+  }
+
+  // a yasa script is only written from a valid PLAN
+  const yasaDnaError = (format: 'shorts' | 'longform') => {
+    if (!isYasa(input)) return null
+    const v = validateYasaStoryDna(input.yasaStoryDNA, format)
+    return v.ok ? null : { ok: false, error: { code: input.yasaStoryDNA ? 'YASA_DNA_INVALID' : 'YASA_DNA_REQUIRED', message: '숨은야사 대본은 STORY DNA PLAN이 먼저 필요합니다.', errors: v.errors } }
+  }
+
   if (body.taskType === 'longform_chapter') {
+    const yasaError = yasaDnaError('longform')
+    if (yasaError) return res.status(422).json(yasaError)
     const chapterNo = Math.max(1, Number(body.chapterNo || 1))
     const totalChapters = Math.max(chapterNo, Number(body.totalChapters || input?.chapterCount || 6))
     const targetMinutes = Math.max(1, Math.round(Number(input?.targetMinutes || 15) / totalChapters))
@@ -271,8 +315,9 @@ export default async function handler(req: Request, res: Response) {
       '[검증 사실]\n' + JSON.stringify(input.verifiedFacts || []),
       '[확인 필요]\n' + JSON.stringify(input.claimsToVerify || []),
       '[출처]\n' + JSON.stringify(input.sources || []),
-      '[이전 챕터]\n' + JSON.stringify(previous || {})
-    ].join('\n\n')
+      '[이전 챕터]\n' + JSON.stringify(previous || {}),
+      isYasa(input) ? yasaScriptBrief(input.yasaStoryDNA, 'longform') + `\n\n[이번 챕터 위치] 전체 ${totalChapters}개 중 ${chapterNo}번 — 전체 진행률 약 ${Math.round(((chapterNo - 1) / totalChapters) * 100)}~${Math.round((chapterNo / totalChapters) * 100)}% 구간의 구조를 따른다.` : ''
+    ].filter(Boolean).join('\n\n')
     const payload:any = {
       model: longformModel,
       input: prompt,
@@ -319,10 +364,12 @@ export default async function handler(req: Request, res: Response) {
   const targetSeconds = Math.max(10, Math.min(180, Number(input.targetSeconds) || 45))
   const targetCutCount = Math.max(1, Math.min(30, Number(input.targetCutCount) || 8))
   const reasoningEffort = ['minimal', 'low', 'medium', 'high'].includes(body.reasoningEffort) ? body.reasoningEffort : 'low'
+  const yasaError = yasaDnaError('shorts')
+  if (yasaError) return res.status(422).json({ error: yasaError.error })
   const payload = {
     model,
     reasoning: { effort: reasoningEffort },
-    instructions: systemPrompt(String(input.seriesType || 'freeform'), targetSeconds, targetCutCount, String(input.imageStyleNote || '')),
+    instructions: systemPrompt(String(input.seriesType || 'freeform'), targetSeconds, targetCutCount, String(input.imageStyleNote || '')) + (isYasa(input) ? '\n\n' + yasaScriptBrief(input.yasaStoryDNA, 'shorts') : ''),
     input: topic,
     text: { format: { type: 'json_schema', name: 'story_draft', strict: true, schema: STORY_SCHEMA } }
   }
@@ -340,6 +387,12 @@ export default async function handler(req: Request, res: Response) {
     const text = extractText(data)
     if (!text) return res.status(502).json({ error: { message: 'OpenAI response had no text output' } })
     const draft = JSON.parse(text)
+    if (isYasa(input)) {
+      // the written script must still carry the PLAN (deterministic; no second AI call)
+      const check = checkYasaScript((Array.isArray(draft?.cuts) ? draft.cuts : []).map((c: any) => c?.narration || '').join('\n'), input.yasaStoryDNA)
+      if (!check.ok) return res.status(422).json({ error: { code: 'YASA_SCRIPT_INVALID', message: '대본이 숨은야사 STORY DNA를 따르지 않았습니다. 다시 생성해 주세요.', errors: check.errors } })
+      draft.yasaStoryDNA = input.yasaStoryDNA
+    }
     return res.status(200).json({ draft, meta: { provider: 'openai', model, responseId: data?.id || null, usage: data?.usage || null } })
   } catch (error: any) {
     return res.status(500).json({ error: { message: error?.message || String(error) } })
