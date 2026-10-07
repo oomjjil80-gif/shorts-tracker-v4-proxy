@@ -16,7 +16,7 @@ import { createJobsHttp } from '../lib/jobs/http.js'
 import { runOnce } from '../worker/runJob.js'
 import { runOk, probe } from '../lib/media/ffmpeg.js'
 import { withLongform, createLongformPlanExecutor, createLongformAssetExecutor, longformRenderExecutor, longformPackageExecutor } from '../worker/stages/longform.js'
-import { LONGFORM, normalizeLongformBrief, sentencesOf, cardTimeline, validateLongformScript, longformCardsAss, yasaCaptionChunks, yasaCaptionsAss } from '../lib/generative/longform.js'
+import { LONGFORM, normalizeLongformBrief, longformRemasterBrief, sentencesOf, cardTimeline, validateLongformScript, longformCardsAss, yasaCaptionChunks, yasaCaptionsAss } from '../lib/generative/longform.js'
 import { YASA_ACTS, YASA_REVEAL_ACT, YASA_REVEAL_WINDOW, COLD_OPEN, YADAM_STORYTELLER, yasaActChars, yasaRevealAt, yasaScriptErrors, coldOpenErrors, revealWords, coldOpenCandidates } from '../lib/generative/yasaLongform.js'
 import { characterLine, sceneRuns, seniorVideoArgv } from '../lib/generative/seniorLongform.js'
 import { VISUAL_STYLE_PROFILES } from '../lib/generative/visualStyle.js'
@@ -85,6 +85,26 @@ async function scenePicture(d: string, n: number) {
   await runOk(['-y', '-f', 'lavfi', '-i', `color=c=0x${((n * 2654435761) >>> 8 & 0xffffff).toString(16).padStart(6, '0')}:s=1536x1024,drawgrid=w=96:h=96:t=6:c=white@0.85`, '-frames:v', '1', '-q:v', '3', f])
   return { bytes: await readFile(f), contentType: 'image/jpeg', provider: 'standin', model: 'scene' }
 }
+
+test('Generic Longform remaster contract: one job_remaster shape works for Wisdom, Senior and YADAM; only changed creative settings are re-resolved', () => {
+  const profiles = ['wisdom_longform', 'senior_longform', 'yasa_longform'] as const
+  for (const profile of profiles) {
+    const source = normalizeLongformBrief({ kind: 'topic', text: '사람의 선택이 운명을 바꾸는 이야기', targetSeconds: 900, voiceSpeed: 1 }, profile)
+    const same = longformRemasterBrief(source, { sourceJobId: 'job_source_12345678', sourceScriptRef: 'generative-scripts/source.json', changes: {} })
+    assert.equal(same.profile, profile); assert.deepEqual(same.creative, source.creative)
+    assert.deepEqual(same.remaster, { schema: 'longform-remaster/1', sourceJobId: 'job_source_12345678', parentJobId: 'job_source_12345678', sourceScriptRef: 'generative-scripts/source.json', changes: {} })
+  }
+  const senior = normalizeLongformBrief({ kind: 'topic', text: '어머니와 아들의 오래된 약속', targetSeconds: 900 }, 'senior_longform')
+  const restyled = longformRemasterBrief(senior, { sourceJobId: 'job_source_12345678', sourceScriptRef: 'generative-scripts/source.json', changes: { visualStyleProfile: 'historical-dramatic' } })
+  assert.equal(restyled.creative!.resolved.visualStyleProfile, 'historical-dramatic')
+  assert.equal(restyled.creative!.resolved.voiceProfileId, senior.creative!.resolved.voiceProfileId, 'style-only keeps the voice')
+  const wisdom = normalizeLongformBrief({ kind: 'topic', text: '쇼펜하우어의 관계 조언', targetSeconds: 900 }, 'wisdom_longform')
+  const voiced = longformRemasterBrief(wisdom, { sourceJobId: 'job_source_12345678', sourceScriptRef: 'generative-scripts/source.json', changes: { voiceSpeed: 1.1 } })
+  assert.equal(voiced.creative!.resolved.voiceSpeed, 1.1)
+  assert.equal(voiced.creative!.resolved.visualStyleProfile, wisdom.creative!.resolved.visualStyleProfile, 'voice-only keeps the picture style')
+  assert.throws(() => longformRemasterBrief(senior, { sourceJobId: 'job_source_12345678', sourceScriptRef: 'x', changes: { refreshColdOpen: true } }), /only available for 숨은야담/)
+  assert.throws(() => longformRemasterBrief(wisdom, { sourceJobId: 'job_source_12345678', sourceScriptRef: 'x', changes: { magicChange: true } }), /unknown remaster changes/)
+})
 
 test('YADAM profile: shared Longform engine, scenes mode; AUTO = grandmother storyteller (female-senior, calm, 1.0x) + 고급 사극 일러스트; 8 acts = the DNA structure', () => {
   assert.deepEqual(PROFILES.yasa_longform.stages, ['PLAN', 'ASSET', 'RENDER', 'PACKAGE'])
@@ -322,9 +342,11 @@ test('YADAM quality: cold open from the middle (never the first 10% / the reveal
 
   // 8: REMASTER — a new child job from the source (kept as it is) with a new 그림체
   const before = { prompts: prompts.length, tts: ttsTexts.length }
-  assert.equal((await call({ taskType: 'job_remaster_yasa', sourceJobId: sourceId, visualStyleProfile: 'senior-warm-watercolor' })).status, 400, 'only the 숨은야담 그림체')
-  assert.equal((await call({ taskType: 'job_remaster_yasa', sourceJobId: 'job_nope' })).status, 404)
-  const rm = await call({ taskType: 'job_remaster_yasa', sourceJobId: sourceId, visualStyleProfile: 'webtoon_historical' })
+  assert.equal((await call({ taskType: 'job_remaster', sourceJobId: sourceId, changes: { visualStyleProfile: 'senior-warm-watercolor', refreshColdOpen: true } })).status, 400, 'only the content profile\'s picture styles')
+  assert.equal((await call({ taskType: 'job_remaster', sourceJobId: 'job_nope', changes: {} })).status, 404)
+  // legacy alias stays compatible, but production code and future UI use job_remaster.
+  assert.equal((await call({ taskType: 'job_remaster_yasa', sourceJobId: sourceId, visualStyleProfile: 'webtoon_historical', idempotencyKey: 'legacy-alias-check-1' })).status, 201)
+  const rm = await call({ taskType: 'job_remaster', sourceJobId: sourceId, changes: { visualStyleProfile: 'webtoon_historical', refreshColdOpen: true }, idempotencyKey: 'generic-remaster-check-1' })
   assert.equal(rm.status, 201, JSON.stringify(rm.json)); const childId = rm.json.job.id
   assert.notEqual(childId, sourceId)
   // the remaster writes ONLY a new cold open (a different one); DNA / outline / acts / upload text are never asked for
