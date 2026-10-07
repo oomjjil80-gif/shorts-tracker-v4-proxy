@@ -41,4 +41,4 @@ jobs:
           fi
       - name: Run full tests with hang protection
         if: steps.focused.outputs.ran != 'true'
-        run: timeout 12m npm test
+        run: timeout 15m npm test

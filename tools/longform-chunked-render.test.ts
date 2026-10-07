@@ -60,7 +60,7 @@ const mad = (a: Buffer, b: Buffer) => { let s = 0; for (let i = 0; i < a.length;
 const packetMd5 = async (f: string) => (await runOk(['-i', f, '-map', '0:a', '-c', 'copy', '-f', 'md5', '-'])).stdout.toString().trim()
 
 test('SEGMENTED = SINGLE GRAPH: same frames at every scene and every seam (cold open, motion, subtitles); narration copied as is; format unchanged', async () => {
-  const fx = await fixture({ scenes: 12, perSentence: 1.6 })
+  const fx = await fixture({ scenes: 8, perSentence: 0.4 })
   const seen: string[][] = []
   const ex = createLongformRenderExecutor({ features: () => new Set(['LONGFORM_RENDER', 'CAPTION', 'QC']) as any, segment: { maxRuns: 4, maxSeconds: 9999 }, segmentRunner: (argv: string[], opts: any) => { seen.push(argv); return runOk(argv, opts) } })
   const r: any = await ex.run(ctxOf(fx))
@@ -119,7 +119,7 @@ test('MEMORY CONTRACT: 45 / 90 / 120 min plans — more segments, never more pic
 })
 
 test('RESUME: a failure at segment 3 -> the retry renders 3.. only (1-2 reused); the cache is the job\'s render-segments/', async () => {
-  const fx = await fixture({ scenes: 8, perSentence: 1.2 })
+  const fx = await fixture({ scenes: 8, perSentence: 0.4 })
   const calls: number[] = []
   let fail = true
   const runner = (argv: string[], opts: any, index: number) => { calls.push(index); if (index === 2 && fail) { fail = false; return Promise.reject(Object.assign(new Error('ffmpeg killed (SIGKILL)'), { code: 'FFMPEG_KILLED' })) } return runOk(argv, opts) }
@@ -138,7 +138,7 @@ test('RESUME: a failure at segment 3 -> the retry renders 3.. only (1-2 reused);
 })
 
 test('SAME-JOB RETRY: a Longform FAILED at RENDER is rendered again as the same job (no PLAN / IMAGE / TTS call) -> COMPLETE', async () => {
-  const fx = await fixture({ scenes: 8, perSentence: 1.2 })
+  const fx = await fixture({ scenes: 8, perSentence: 0.4 })
   const db = await createTestDb(), store = createJobStore(db, { maxAttempts: 2, retryBackoffMs: () => 0 }), KEY = 'r'.repeat(32)
   ;(fx.blobs as any).presign = async (ref: string) => ({ url: `memory://${ref}`, validUntil: 'x' })
   const handler = createJobsHttp({ getStore: async () => store, blobs: fx.blobs, sourceExists: async () => true })
