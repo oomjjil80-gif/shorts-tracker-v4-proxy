@@ -7,6 +7,7 @@ import {
   parseLongformTone, parseLongformSpeed, toneInstruction, type LongformVoiceKey, type LongformVoiceTone, type LongformVoiceSpeed, type VoiceProfile
 } from './voiceProfile.js'
 import { VISUAL_STYLE_PROFILES, parseVisualStyle, type VisualStyleKey, type VisualStyleProfile } from './visualStyle.js'
+import { YADAM_VOICE, YADAM_STORYTELLER } from './voiceProfile.js'
 
 // Server Job profiles (wisdom, wisdom_longform, senior_longform, source_shorts) and the Story Writer content types (a
 // content family x format, made in the browser: CUT images through /api/image, narration through CapCut).
@@ -32,7 +33,8 @@ export type CreativeProfile = { schema: 'creative-profile/1'; content: CreativeC
 //  voice: 'house' keeps the content's established voice; 'topic' picks one of the 6 voices from the topic (`fallback` when
 //         no topic rule matches); 'topic-mature' does the same but never a young voice.
 //  style: the AUTO picture style; `native` is the style the content's existing prompts already draw (no prompt change).
-type ContentRule = { voice: 'house' | 'topic' | 'topic-mature'; house?: VoiceProfile; fallback?: LongformVoiceKey; style: VisualStyleKey | null; native?: VisualStyleKey }
+//  'fixed' = one AUTO voice for the content (`fixed`); `speed` = the AUTO speed when the request names none.
+type ContentRule = { voice: 'house' | 'topic' | 'topic-mature' | 'fixed'; house?: VoiceProfile; fallback?: LongformVoiceKey; fixed?: LongformVoiceKey; speed?: LongformVoiceSpeed; style: VisualStyleKey | null; native?: VisualStyleKey }
 const CONTENT_RULES: Readonly<Record<CreativeContent, ContentRule>> = {
   wisdom: { voice: 'house', house: DEFAULT_VOICE_PROFILE, style: 'wisdom-painterly', native: 'wisdom-painterly' },
   wisdom_longform: { voice: 'topic', style: 'wisdom-painterly', native: 'wisdom-painterly' },
@@ -40,7 +42,8 @@ const CONTENT_RULES: Readonly<Record<CreativeContent, ContentRule>> = {
   source_shorts: { voice: 'house', house: GENERAL_SHORTS_DEFAULT_VOICE_PROFILE, style: null },
   senior_shorts: { voice: 'topic-mature', style: 'senior-warm-watercolor' },
   yasa_shorts: { voice: 'topic-mature', fallback: 'male-middle', style: 'historical-dramatic' },
-  yasa_longform: { voice: 'topic-mature', fallback: 'male-middle', style: 'historical-dramatic' },
+  // 숨은야담 롱폼: an old tale told by a grandmother (female-senior, calm, 0.9x, the storyteller reading)
+  yasa_longform: { voice: 'fixed', fixed: YADAM_VOICE.key, speed: YADAM_VOICE.speed, style: 'historical-dramatic' },
   general_shorts: { voice: 'topic', style: 'bright-editorial' },
   general_longform: { voice: 'topic', style: 'bright-editorial' },
   // the economy channel bible already draws a premium documentary/editorial look: AUTO keeps its prompts as they are
@@ -50,8 +53,9 @@ const CONTENT_RULES: Readonly<Record<CreativeContent, ContentRule>> = {
 export const isCreativeContent = (c: unknown): c is CreativeContent => typeof c === 'string' && Object.prototype.hasOwnProperty.call(CONTENT_RULES, c)
 
 function autoVoice(content: CreativeContent, topic: string): LongformVoiceKey | 'house' {
-  const { voice: rule, fallback } = CONTENT_RULES[content]
+  const { voice: rule, fallback, fixed } = CONTENT_RULES[content]
   if (rule === 'house') return 'house'
+  if (rule === 'fixed' && fixed) return fixed
   const k = recommendLongformVoice(topic, fallback)
   return rule === 'topic-mature' && k.endsWith('-young') ? (k.replace('-young', '-middle') as LongformVoiceKey) : k
 }
@@ -66,8 +70,8 @@ export function resolveCreativeProfile(content: CreativeContent, input: any, top
   if (!isCreativeContent(content)) throw new Error(`no creative settings for ${content}`)
   const choice = String(input?.voiceProfile ?? 'auto')
   if (!(LONGFORM_VOICE_CHOICES as readonly string[]).includes(choice)) throw new Error(`voiceProfile must be one of ${LONGFORM_VOICE_CHOICES.join(', ')}`)
-  const voiceTone = parseLongformTone(input?.voiceTone), voiceSpeed = parseLongformSpeed(input?.voiceSpeed), style = parseVisualStyle(input?.visualStyleProfile)
   const rule = CONTENT_RULES[content]
+  const voiceTone = parseLongformTone(input?.voiceTone), voiceSpeed = parseLongformSpeed(input?.voiceSpeed ?? rule.speed), style = parseVisualStyle(input?.visualStyleProfile)
   const voiceProfile = choice === 'auto' ? autoVoice(content, topic) : (choice as LongformVoiceKey)
   const visualStyleProfile = rule.style === null ? null : style === 'auto' ? rule.style : style
   const resolved: ResolvedCreativeProfile = { voiceProfile, voiceTone, voiceSpeed, voiceProfileId: '', visualStyleProfile }
@@ -77,7 +81,11 @@ export function resolveCreativeProfile(content: CreativeContent, input: any, top
 
 // The narration voice of a resolved profile (provider values stay on the server).
 export function creativeVoiceFor(content: CreativeContent, r: ResolvedCreativeProfile): VoiceProfile {
-  return r.voiceProfile === 'house' ? houseVoice(content, r.voiceTone, r.voiceSpeed) : resolveLongformRuntimeVoice({ voiceKey: r.voiceProfile, tone: r.voiceTone, speed: r.voiceSpeed })
+  if (r.voiceProfile === 'house') return houseVoice(content, r.voiceTone, r.voiceSpeed)
+  const v = resolveLongformRuntimeVoice({ voiceKey: r.voiceProfile, tone: r.voiceTone, speed: r.voiceSpeed })
+  // 숨은야담 롱폼 with its grandmother voice reads like an old tale (its own id, so its audio is cached apart)
+  if (content === 'yasa_longform' && r.voiceProfile === YADAM_VOICE.key) return { ...v, id: v.id.replace(/-v2$/, '-yadam-v1'), instructions: `${YADAM_STORYTELLER} ${v.instructions}` }
+  return v
 }
 export const creativeVoice = (c: CreativeProfile) => creativeVoiceFor(c.content, c.resolved)
 // The picture style to compose with, or null when the content's own (native) prompts already draw this style and must

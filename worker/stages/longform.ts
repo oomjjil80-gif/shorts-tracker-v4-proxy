@@ -11,8 +11,9 @@ import { openAiLongformImage, openAiTts } from '../../lib/generative/providers.j
 import { openAiLongformPlanner, type LongformPlanner, type LongformOutline, type LongformSectionDraft, type LongformMetadataDraft } from '../../lib/generative/longformPlanner.js'
 import { openAiSeniorPlanner } from '../../lib/generative/seniorPlanner.js'
 import { openAiYasaPlanner, type YasaPlanner } from '../../lib/generative/yasaPlanner.js'
-import { YASA_ACTS, yasaActChars, yasaActErrors, yasaRevealAt, yasaScenePrompt } from '../../lib/generative/yasaLongform.js'
+import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaScenePrompt, coldOpenErrors } from '../../lib/generative/yasaLongform.js'
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
+import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
 import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, seniorVideoArgv, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { VISUAL_STYLE_PROFILES } from '../../lib/generative/visualStyle.js'
@@ -104,8 +105,8 @@ export async function longformResearchFor(o: { blobs: JobBlobStore; topic: strin
 // PLAN: research (once per topic, cached) -> outline -> each section -> upload text. Every step is stored as a checkpoint (keyed by the brief + planner
 // version) the moment it passes its checks; a retry reuses every stored step and only writes what is missing, so a long
 // script is never regenerated from the start. targetSeconds only sizes the script (number and length of sections).
-export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: LongformPlanner; research?: LongformResearcher; log?: (line: string) => void } = {}): StageExecutor {
-  const apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? '', researcher = deps.research ?? openAiLongformResearcher()
+export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: LongformPlanner; research?: LongformResearcher; derive?: typeof openAiDeriveShorts; log?: (line: string) => void } = {}): StageExecutor {
+  const apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? '', researcher = deps.research ?? openAiLongformResearcher(), derive = deps.derive ?? openAiDeriveShorts
   const log = deps.log ?? ((line: string) => console.log(line))
   return {
     stage: 'PLAN', estimateUsd: () => 0.3,
@@ -117,9 +118,9 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       if (!apiKey) throw new StageError('PROVIDER_DOWN', 'the longform script needs the planner (OPENAI_API_KEY)', true)
       const mode = longformMode(job.profile), scenes = mode.images === 'scenes', yasa = job.profile === 'yasa_longform'
       const planner = deps.planner ?? (yasa ? openAiYasaPlanner() : scenes ? openAiSeniorPlanner() : openAiLongformPlanner())
-      // Senior / 숨은야사: six acts (one section per act); Wisdom: sections sized by the running time
-      const size = scenes ? (() => { const p = seniorScenePlan(brief.targetSeconds); return { sections: p.acts, charsPerSection: p.charsPerAct } })() : sectionPlan(brief.targetSeconds)
-      // 숨은야사: each act sized by its share of the story (the reveal act starts at ~80% of the narration)
+      // Senior: six acts; 숨은야담: the DNA's eight acts (one section per act); Wisdom: sections sized by the running time
+      const size = yasa ? { sections: YASA_ACTS.length, charsPerSection: 0 } : scenes ? (() => { const p = seniorScenePlan(brief.targetSeconds); return { sections: p.acts, charsPerSection: p.charsPerAct } })() : sectionPlan(brief.targetSeconds)
+      // 숨은야담: each act sized by its share of the story (the reveal act starts at ~80% of the narration)
       const actChars = yasa ? yasaActChars(Math.round(brief.targetSeconds * LONGFORM.charsPerSecond)) : null
       const targetOf = (i: number) => actChars?.[i] ?? size.charsPerSection
       const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}`)}`
@@ -139,10 +140,10 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       }
       // research gathers wisdom sources (Wisdom Longform only; a Senior story is not researched)
       const { research, ref: rRef, log: rLog } = mode.research ? await longformResearchFor({ blobs, topic: brief.text, sections: size.sections, apiKey, researcher, log, signal }) : { research: null, ref: null, log: { cache: 'OFF' } as Record<string, unknown> }
-      // 숨은야사: the STORY DNA first (sent in with the brief, else made once and checkpointed); every later step sees it
+      // 숨은야담: the STORY DNA first (sent in with the brief, else made once and checkpointed); every later step sees it
       let dnaSource: 'brief' | 'plan' | null = null, pbrief: any = brief
       if (yasa) {
-        const dna = brief.yasaStoryDNA ?? await step<any>('dna', 'DNA_INVALID', (r) => (planner as YasaPlanner).dna(brief, apiKey, r), (d) => validateYasaStoryDna(d, 'longform').errors)
+        const dna = brief.yasaStoryDNA ?? await step<any>('dna', 'DNA_INVALID', (r) => (planner as YasaPlanner).dna(brief, apiKey, r), (d) => validateYasaStoryDna(d, 'longform', { layers: true }).errors)
         dnaSource = brief.yasaStoryDNA ? 'brief' : 'plan'; pbrief = { ...brief, yasaStoryDNA: dna }
       }
       const outline = await step<LongformOutline>('outline', 'OUTLINE_INVALID', (r) => planner.outline(pbrief, size.sections, apiKey, r, research), (o) => [...outlineErrors(o, size.sections), ...(scenes ? seniorOutlineErrors(o) : [])])
@@ -157,9 +158,19 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         sections.push(scenes ? { id: String(outline.sections[i].id || `a${i + 1}`), heading: outline.sections[i].heading, ...(yasa ? { act: YASA_ACTS[i]?.key } : {}), ...mergeSameScenes({ scenes: actScenes, sentences: d.sentences as any }) } : { id: String(outline.sections[i].id || `s${i + 1}`), sentences: d.sentences })
         tail = d.sentences.slice(-2).map((x) => x.say)
       }
+      // 숨은야담: the COLD OPEN, written last over the main story's own pictures (45~60 s at the voice's speed, 5~8 beats)
+      let coldOpen: any = null
+      if (yasa) {
+        const speed = Number(brief.creative?.resolved?.voiceSpeed) || 1, sceneIds = new Set<string>(sections.flatMap((x: any) => x.scenes.map((y: any) => String(y.id))))
+        const mainSentences = sections.flatMap((x: any) => x.sentences.map((y: any) => String(y.say || '')))
+        const targetChars = Math.round(COLD_OPEN.seconds.target * LONGFORM.charsPerSecond * speed)
+        const d = await step<any>('cold-open', 'COLD_OPEN_INVALID', (r) => (planner as YasaPlanner).coldOpen({ brief: pbrief, outline, sections, targetChars, repair: r }, apiKey),
+          (d) => [...sectionErrors(d), ...coldOpenErrors(d?.sentences, { dna: pbrief.yasaStoryDNA, sceneIds, mainSentences, speed, charsPerSecond: LONGFORM.charsPerSecond })])
+        coldOpen = { sentences: d.sentences }
+      }
       // a figure the topic names (the Buddha, a named thinker) stays that person (Wisdom); Senior: the main character
       const figure = scenes ? outline.figure : { name: outline.figure.name, imagePrompt: longformFigure(brief.text, outline.figure.imagePrompt) }
-      const body: any = { schema: mode.script, title: outline.title, hook: outline.hook, figure, thumbnail: outline.thumbnail, ...(scenes ? { characters: (outline as any).characters } : {}), ...(yasa ? { yasaStoryDNA: pbrief.yasaStoryDNA } : {}), sections }
+      const body: any = { schema: mode.script, title: outline.title, hook: outline.hook, figure, thumbnail: outline.thumbnail, ...(scenes ? { characters: (outline as any).characters } : {}), ...(yasa ? { yasaStoryDNA: pbrief.yasaStoryDNA, coldOpen } : {}), sections }
       const narration = narrationOf({ ...body, metadata: { description: '', tags: [], hashtags: [], pinnedComment: '' } })
       const meta = await step<LongformMetadataDraft>('metadata', 'METADATA_INVALID', (r) => planner.metadata({ brief: pbrief, title: outline.title, headings: outline.sections.map((x) => x.heading), narration, repair: r }, apiKey),
         (m) => [...uploadMetadataErrors(m, { narration, format: 'longform' }), ...thumbnailCopyErrors(outline.thumbnail.lines as any, String(m?.title || '')).map((x) => `thumbnail.${x}`)])
@@ -167,7 +178,21 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       const errors = validateLongformScript(script, brief)
       if (errors.length) throw new StageError('SCRIPT_INVALID', errors.join(','))
       const stored = await putAddressed(blobs, 'generative-scripts', script)
-      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(yasa ? { yasa: { dna: dnaSource, revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, validation: errors } }
+      // Wisdom Longform -> derived Shorts: ONE checkpointed text call over the finished script and the research already
+      // made (no new research), before any image / voice is paid. Never stops the Longform: a failure is only recorded.
+      let derived: Record<string, unknown> | undefined
+      if (job.profile === 'wisdom_longform') {
+        if ((brief as any).deriveShorts === false) derived = { status: 'off' }
+        else {
+          try {
+            const raw = await step<any>('derive-shorts', 'DERIVE_INVALID', (r) => derive({ script, research, repair: r }, apiKey), deriveErrors)
+            const pick = selectDerivedShorts(raw, script)
+            const doc = await putAddressed(blobs, 'derived-shorts', { schema: 'derived-shorts/1', parentLongformJobId: job.id, parentLongformTitle: script.title, model: DERIVE_MODEL(), candidates: pick.candidates, excluded: pick.excluded })
+            derived = { status: pick.candidates.length ? 'ready' : 'none', ref: doc.path, count: pick.candidates.length, considered: Array.isArray(raw?.ideas) ? raw.ideas.length : 0 }
+          } catch (e: any) { derived = { status: 'failed', error: String(e?.message || e).slice(0, 200) } }
+        }
+      }
+      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, ...(derived ? { derived } : {}), sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(yasa ? { yasa: { dna: dnaSource, acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars, coldOpen: { beats: coldOpen.sentences.length, estimatedSeconds: Number(([...coldOpen.sentences.map((x: any) => x.say).join(' ')].length / (LONGFORM.charsPerSecond * (Number(brief.creative?.resolved?.voiceSpeed) || 1))).toFixed(1)) } } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, validation: errors } }
     }
   }
 }
@@ -346,7 +371,7 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver 
         const pics = (assets.images ?? []) as Array<{ sceneId: string; ref: string }>
         const files: string[] = []
         for (const [i, x] of pics.entries()) { const b = await blobs.getBytes(x.ref); if (!b) throw new StageError('ASSET_BYTES_MISSING', `scene picture ${x.sceneId} is missing`); const f = join(work, `scene${i}.jpg`); await writeFile(f, b); files.push(f) }
-        const runs = sceneRuns(script as unknown as SeniorScript, timeline).map((r, i, all) => ({ image: pics.findIndex((x) => x.sceneId === r.sceneId), seconds: (i === all.length - 1 ? seconds : all[i + 1].start) - r.start }))
+        const runs = sceneRuns(script as unknown as SeniorScript, timeline).map((r, i, all) => ({ image: pics.findIndex((x) => x.sceneId === r.sceneId), seconds: (i === all.length - 1 ? seconds : all[i + 1].start) - r.start, ...(r.cold ? { cold: true } : {}) }))
         if (runs.some((r) => r.image < 0)) throw new StageError('LONGFORM_CONTRACT', 'a scene has no picture')
         await runOk(seniorVideoArgv({ images: files, runs, audio, ass: assPath, fontsDir: FONTS_DIR, out, seconds, threads: VIDEO_ENCODER_THREADS }), { signal, timeoutMs: longformRenderTimeoutMs(seconds) * 2, env: ffmpegEnv })
       } else {

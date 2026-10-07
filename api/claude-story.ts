@@ -400,15 +400,15 @@ export default async function handler(req: Request, res: Response) {
       return res.status(200).json({ ok:true, provider:'Anthropic', model:data?.model || model, text, usage:data?.usage || null })
     }
 
-    // 숨은야사 keeps the length the user chose (10..120 min, ~3 min per chapter); other families keep 5..30 / 3..10
+    // 숨은야담 keeps the length the user chose (10..120 min, ~3 min per chapter); other families keep 5..30 / 3..10
     const targetMinutes = isYasa(input) ? yasaLongformMinutes(input?.targetMinutes) : Math.max(5, Math.min(30, Number(input?.targetMinutes || 15)))
     const chapterCount = isYasa(input) ? yasaChapterCount(targetMinutes, input?.chapterCount) : Math.max(3, Math.min(10, Number(input?.chapterCount || 6)))
 
     if (String(req.body?.mode || '') === 'chapter') {
-      // 숨은야사: a chapter is only written from a valid STORY DNA PLAN, which then overrides the explainer rules
+      // 숨은야담: a chapter is only written from a valid STORY DNA PLAN, which then overrides the explainer rules
       if (isYasa(input)) {
         const v = validateYasaStoryDna(input?.yasaStoryDNA, 'longform')
-        if (!v.ok) return res.status(422).json({ ok:false, error:{ code: input?.yasaStoryDNA ? 'YASA_DNA_INVALID' : 'YASA_DNA_REQUIRED', message:'숨은야사 대본은 STORY DNA PLAN이 먼저 필요합니다.', errors:v.errors } })
+        if (!v.ok) return res.status(422).json({ ok:false, error:{ code: input?.yasaStoryDNA ? 'YASA_DNA_INVALID' : 'YASA_DNA_REQUIRED', message:'숨은야담 대본은 STORY DNA PLAN이 먼저 필요합니다.', errors:v.errors } })
       }
       const chapterNo = Math.max(1, Math.min(chapterCount, Number(req.body?.chapterNo || 1)))
       const totalChapters = Math.max(chapterCount, Number(req.body?.totalChapters || chapterCount))
@@ -420,7 +420,7 @@ export default async function handler(req: Request, res: Response) {
         model,
         max_tokens: 7000,
         system: isYasa(input)
-          ? [buildSystemPrompt(), '', '[숨은야사 우선 규칙] 이 원고는 경제·생활 설명형이 아니라 숨은야사 드라마형 야사 스토리다. 아래 STORY DNA가 위 채널 규칙보다 우선한다.'].join('\n')
+          ? [buildSystemPrompt(), '', '[숨은야담 우선 규칙] 이 원고는 경제·생활 설명형이 아니라 숨은야담 드라마형 야담 스토리다. 아래 STORY DNA가 위 채널 규칙보다 우선한다.'].join('\n')
           : buildSystemPrompt(),
         messages: [{
           role:'user',

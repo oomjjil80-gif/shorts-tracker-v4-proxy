@@ -268,7 +268,7 @@ export default async function handler(req: Request, res: Response) {
   const body = req.body || {}
   const input = body.input || {}
 
-  // 숨은야사 PLAN: the YASA STORY DNA comes first; without a valid one no yasa script is written
+  // 숨은야담 PLAN: the YASA STORY DNA comes first; without a valid one no yasa script is written
   if (body.taskType === 'yasa_story_plan') {
     const topic = String(input.topic || input.title || '').trim()
     if (!topic) return res.status(400).json({ ok: false, error: { code: 'BAD_REQUEST', message: 'topic is required' } })
@@ -280,18 +280,18 @@ export default async function handler(req: Request, res: Response) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const r = await openAiJson({ model, reasoning: 'low', instructions: yasaPlanInstructions(format, targetSeconds), input: material + (repair.length ? `\n\n[수정 필요 — 이전 PLAN이 구조 검사에서 실패]\n- ${repair.join('\n- ')}` : ''), name: 'yasa_story_dna', schema: YASA_STORY_DNA_SCHEMA })
       if (!r.ok) return res.status(r.status).json({ ok: false, error: { code: 'PLAN_FAILED', message: r.error } })
-      const v = validateYasaStoryDna(r.json, format)
+      const v = validateYasaStoryDna(r.json, format, { layers: true })
       if (v.ok) return res.status(200).json({ ok: true, dna: r.json, format, validation: v, scriptBrief: yasaScriptBrief(r.json, format), meta: { provider: 'openai', model, attempts: attempt + 1, usage: r.data?.usage || null } })
       repair = v.errors
     }
-    return res.status(422).json({ ok: false, error: { code: 'YASA_DNA_INVALID', message: '숨은야사 STORY DNA가 구조 검사를 통과하지 못했습니다.', errors: repair } })
+    return res.status(422).json({ ok: false, error: { code: 'YASA_DNA_INVALID', message: '숨은야담 STORY DNA가 구조 검사를 통과하지 못했습니다.', errors: repair } })
   }
 
   // a yasa script is only written from a valid PLAN
   const yasaDnaError = (format: 'shorts' | 'longform') => {
     if (!isYasa(input)) return null
     const v = validateYasaStoryDna(input.yasaStoryDNA, format)
-    return v.ok ? null : { ok: false, error: { code: input.yasaStoryDNA ? 'YASA_DNA_INVALID' : 'YASA_DNA_REQUIRED', message: '숨은야사 대본은 STORY DNA PLAN이 먼저 필요합니다.', errors: v.errors } }
+    return v.ok ? null : { ok: false, error: { code: input.yasaStoryDNA ? 'YASA_DNA_INVALID' : 'YASA_DNA_REQUIRED', message: '숨은야담 대본은 STORY DNA PLAN이 먼저 필요합니다.', errors: v.errors } }
   }
 
   if (body.taskType === 'longform_chapter') {
@@ -390,7 +390,7 @@ export default async function handler(req: Request, res: Response) {
     if (isYasa(input)) {
       // the written script must still carry the PLAN (deterministic; no second AI call)
       const check = checkYasaScript((Array.isArray(draft?.cuts) ? draft.cuts : []).map((c: any) => c?.narration || '').join('\n'), input.yasaStoryDNA)
-      if (!check.ok) return res.status(422).json({ error: { code: 'YASA_SCRIPT_INVALID', message: '대본이 숨은야사 STORY DNA를 따르지 않았습니다. 다시 생성해 주세요.', errors: check.errors } })
+      if (!check.ok) return res.status(422).json({ error: { code: 'YASA_SCRIPT_INVALID', message: '대본이 숨은야담 STORY DNA를 따르지 않았습니다. 다시 생성해 주세요.', errors: check.errors } })
       draft.yasaStoryDNA = input.yasaStoryDNA
     }
     return res.status(200).json({ draft, meta: { provider: 'openai', model, responseId: data?.id || null, usage: data?.usage || null } })

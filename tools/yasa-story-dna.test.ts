@@ -1,4 +1,4 @@
-// 숨은야사 YASA STORY DNA: the PLAN comes first and is checked deterministically; every yasa script call (shorts
+// 숨은야담 YASA STORY DNA: the PLAN comes first and is checked deterministically; every yasa script call (shorts
 // story_draft, longform chapter on GPT and Claude, QC, revise) carries it; other families are untouched.
 // fetch is stubbed — no paid AI call.
 import test from 'node:test'
@@ -21,6 +21,7 @@ const DNA = {
   pressure: { immediateLoss: '친정 식구들 앞에서 체면을 잃는다', humiliationOrMisunderstanding: '이웃들이 시댁의 박대를 비웃는다', antagonistOrPressure: '빚쟁이가 친정집을 압류하러 온다', worseningEvents: ['고갯길에서 메주를 버리라는 조롱', '친정 오빠가 메주를 마당에 던진다', '빚쟁이가 친정어머니를 끌어내려 한다'] },
   reveal: { partialProof: '깨진 메주 틈에서 반짝이는 것이 보인다', majorCrisis: '친정집이 빚으로 넘어가기 직전', majorReveal: '메주 속에 시어머니가 평생 모은 금가락지가 들어 있었다', emotionalReframe: '모질던 시어머니가 사실 가장 큰 편이었다' },
   payoff: { externalRewardOrResolution: '빚을 갚고 친정을 지킨다', emotionalReward: '며느리가 시어머니를 처음으로 어머니라 부른다', finalAfterglow: '그 집안은 해마다 메주를 쑤어 친정에 보냈다' },
+  aftermath: { firstResolution: '금가락지로 빚을 갚아 친정집을 지킨다', postRevealLayers: ['빚쟁이의 장부 조작이 드러나 마을의 다른 집들도 빚에서 풀려난다', '며느리가 시어머니가 젊은 날 같은 일을 겪었다는 것을 알게 된다'], lifeLesson: '' },
   propArc: ['짐', '모욕', '수상한 물건', '친정을 지킨 열쇠'],
 }
 const clone = (x: any) => JSON.parse(JSON.stringify(x))
@@ -101,7 +102,7 @@ test('8: yasa shorts story_draft needs the PLAN, carries it to the script AI, an
   assert.equal(none.status, 422); assert.equal(none.json.error.code, 'YASA_DNA_REQUIRED'); assert.equal(none.calls.length, 0, 'no paid call without a PLAN')
   const ok = await call(storyHandler, { taskType: 'story_draft', input: { ...base, yasaStoryDNA: DNA } }, [SHORT_DRAFT('"이걸 친정까지 지고 가거라." 시어머니가 썩은 메주를 내밀었다.')])
   assert.equal(ok.status, 200, JSON.stringify(ok.json)); assert.deepEqual(ok.json.draft.yasaStoryDNA, DNA)
-  assert.match(ok.calls[0].body.instructions, /숨은야사 STORY DNA — 이 PLAN을 그대로 따른다/); assert.ok(ok.calls[0].body.instructions.includes(DNA.mystery.trueMeaning))
+  assert.match(ok.calls[0].body.instructions, /숨은야담 STORY DNA — 이 PLAN을 그대로 따른다/); assert.ok(ok.calls[0].body.instructions.includes(DNA.mystery.trueMeaning))
   const lost = await call(storyHandler, { taskType: 'story_draft', input: { ...base, yasaStoryDNA: DNA } }, [SHORT_DRAFT('옛날 조선시대에는 며느리가 있었다. 그녀는 친정에 갔다.')])
   assert.equal(lost.status, 422); assert.equal(lost.json.error.code, 'YASA_SCRIPT_INVALID'); assert.ok(lost.json.error.errors.some((e: string) => /concreteProp/.test(e)) && lost.json.error.errors.some((e: string) => /opening/.test(e)))
 })
@@ -117,7 +118,7 @@ test('8: yasa longform chapters (GPT fallback and Claude) need the PLAN and carr
   const claude = await call(claudeStoryHandler, { mode: 'chapter', chapterNo: 1, totalChapters: 5, input: { ...input, yasaStoryDNA: DNA } }, [CHAPTER('"이걸 친정까지 지고 가거라." 썩은 메주였다.')])
   assert.equal(claude.status, 200, JSON.stringify(claude.json))
   const sent = claude.calls[0].body
-  assert.match(sent.system, /숨은야사 우선 규칙/); assert.match(sent.messages[0].content, /이 PLAN을 그대로 따른다/); assert.match(sent.messages[0].content, /0~20% 구간/)
+  assert.match(sent.system, /숨은야담 우선 규칙/); assert.match(sent.messages[0].content, /이 PLAN을 그대로 따른다/); assert.match(sent.messages[0].content, /0~20% 구간/)
 })
 
 test('QC: a yasa draft that lost its PLAN is sent back to revision (deterministic), a faithful one is not touched', async () => {
@@ -133,9 +134,9 @@ test('QC: a yasa draft that lost its PLAN is sent back to revision (deterministi
 test('7: other families: same input -> same prompts and results as before (no PLAN needed, no DNA text, no extra check)', async () => {
   for (const contentFamily of [undefined, 'general', 'economy', 'senior', 'wisdom']) {
     const r = await call(storyHandler, { taskType: 'story_draft', input: { topic: '금리', seriesType: 'freeform', ...(contentFamily ? { contentFamily } : {}) } }, [SHORT_DRAFT('옛날 조선시대에는')])
-    assert.equal(r.status, 200, String(contentFamily)); assert.doesNotMatch(r.calls[0].body.instructions, /숨은야사/); assert.equal(r.json.draft.yasaStoryDNA, undefined)
+    assert.equal(r.status, 200, String(contentFamily)); assert.doesNotMatch(r.calls[0].body.instructions, /숨은야담/); assert.equal(r.json.draft.yasaStoryDNA, undefined)
     const c = await call(claudeStoryHandler, { mode: 'chapter', chapterNo: 1, totalChapters: 3, input: { title: 't', chapterCount: 3, ...(contentFamily ? { contentFamily } : {}) } }, [CHAPTER('x')])
-    assert.equal(c.status, 200); assert.doesNotMatch(c.calls[0].body.system + c.calls[0].body.messages[0].content, /숨은야사/)
+    assert.equal(c.status, 200); assert.doesNotMatch(c.calls[0].body.system + c.calls[0].body.messages[0].content, /숨은야담/)
   }
   const base = await call(storyHandler, { taskType: 'story_draft', input: { topic: '금리', seriesType: 'freeform' } }, [SHORT_DRAFT('a')])
   const general = await call(storyHandler, { taskType: 'story_draft', input: { topic: '금리', seriesType: 'freeform', contentFamily: 'general' } }, [SHORT_DRAFT('a')])

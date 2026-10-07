@@ -40,7 +40,7 @@ test('production profiles: feature selection is exactly the existing behaviour a
   // Senior Longform runs the same Longform modules and features (its scenes mode is chosen inside the engine)
   assert.deepEqual(PROFILES.senior_longform.features, PROFILES.wisdom_longform.features)
   assert.deepEqual(PROFILES.senior_longform.modules, PROFILES.wisdom_longform.modules)
-  // 숨은야사 Longform too (its DNA-planned scenes mode is chosen inside the engine)
+  // 숨은야담 Longform too (its DNA-planned scenes mode is chosen inside the engine)
   assert.deepEqual(PROFILES.yasa_longform.features, PROFILES.wisdom_longform.features)
   assert.deepEqual(PROFILES.yasa_longform.modules, PROFILES.wisdom_longform.modules)
   assert.deepEqual(Object.values(PROFILES).map((p) => p.stages.length), [8, 9, 4, 4, 4]) // job stages unchanged

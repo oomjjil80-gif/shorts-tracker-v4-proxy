@@ -12,6 +12,7 @@ import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
 import { buildReferenceProductionBrief } from '../reference/profile.js'
 import { normalizeGenerativeBrief, generativeBriefHash } from '../generative/contracts.js'
 import { normalizeLongformBrief, longformBriefHash } from '../generative/longform.js'
+import { derivedSourceText, type DerivedShortsDoc } from '../generative/derivedShorts.js'
 import { createVoicePreview, PreviewError } from '../generative/voicePreview.js'
 import { createTrackerTts, TrackerTtsError } from '../generative/trackerTts.js'
 import { creativeContentFor, resolveCreativeProfile, imageStyleFor, visualStyleWrap } from '../generative/creativeProfile.js'
@@ -41,7 +42,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -58,6 +59,17 @@ const STATUS_BY_CODE: Record<string, number> = {
 }
 
 const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
+// Wisdom Longform -> derived Shorts: the parent's recommendation (written by its PLAN) and the children made from it
+// (parent/child relation kept next to the recommendation; no new table)
+const childrenRef = (parentId: string) => `derived-shorts-children/${parentId}.json`
+async function derivedOf(store: JobStore, blobs: JobBlobStore, parentId: string, workspaceId: string) {
+  const parent = await store.getJob(parentId, workspaceId)
+  if (!parent || parent.profile !== 'wisdom_longform') throw new JobError('NOT_FOUND', 'parent Wisdom Longform job not found')
+  const plan = latest(await store.listStageRuns(parent.id), 'PLAN'), d: any = (plan?.result as any)?.derived ?? null
+  const doc = d?.ref ? ((await blobs.getJson(d.ref)) as DerivedShortsDoc | null) : null
+  const children: Array<{ candidateId: string; jobId: string }> = ((await blobs.getJson(childrenRef(parent.id)).catch(() => null)) as any)?.children ?? []
+  return { parent, status: !plan ? 'pending' : String(d?.status || 'off'), doc, children }
+}
 const referenceReasons = (gate: any): string[] => (gate?.checks || []).filter((c: any) => c.status !== 'PASS').map((c: any) => `${c.status}: ${c.featureId}`)
 
 // What the phone needs: one progress line, the variants, and (later) the final file. No logs, no JSON.
@@ -145,7 +157,7 @@ export function createJobsHttp(deps: JobsDeps) {
         try { const r = await voicePreview(input); return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache }) }
         catch (e: any) { if (e instanceof PreviewError) throw new JobError(e.code as any, e.message); throw e }
       }
-      const expectedMethod = taskType === 'job_get' || taskType === 'job_preview' || taskType === 'job_package' ? 'GET' : 'POST'
+      const expectedMethod = taskType === 'job_get' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' ? 'GET' : 'POST'
       if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)
       if (req.method !== expectedMethod) throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires ${expectedMethod}`)
 
@@ -170,6 +182,14 @@ export function createJobsHttp(deps: JobsDeps) {
           previews.push({ variantId: v.variantId, label: v.label, durationSec: v.duration ?? null, qc: v.gate?.decision ?? null, qcReasons: v.gate?.reasons ?? [], contentQc: v.contentGate?.decision ?? null, contentQcReasons: v.contentGate?.reasons ?? [], referenceQc: v.referenceGate?.decision ?? null, referenceQcReasons: referenceReasons(v.referenceGate), referenceQcChecks: v.referenceGate?.checks ?? [], publishable: v.publishable === true, recommended: v.variantId === recommended, approved: !!job.approvedManifestHash && v.manifestHash === job.approvedManifestHash, url: signed.url, validUntil: signed.validUntil, posterUrl: sheet?.url ?? null })
         }
         return res.status(200).json({ ok: true, jobId: job.id, status: job.status, stage: job.stage, previews })
+      }
+
+      if (taskType === 'job_derived') {
+        // the parent's derived Shorts: recommended candidates (none / not yet / off are answers too) and the children made
+        const d = await derivedOf(store, deps.blobs, need(String(req.query?.id || ''), 'id is required'), workspaceId)
+        const children = []
+        for (const c of d.children) { const j = await store.getJob(c.jobId, workspaceId); if (j) children.push({ candidateId: c.candidateId, jobId: j.id, status: j.status, stage: j.stage, shortTitle: d.doc?.candidates.find((x) => x.id === c.candidateId)?.shortTitle ?? '' }) }
+        return res.status(200).json({ ok: true, status: d.status, parent: { id: d.parent.id, title: d.doc?.parentLongformTitle ?? null, status: d.parent.status }, candidates: (d.doc?.candidates ?? []).map(({ source, score, ...c }) => c), children })
       }
 
       if (taskType === 'job_package') {
@@ -215,7 +235,20 @@ export function createJobsHttp(deps: JobsDeps) {
           need(body.plan === undefined, 'wisdom plan is server-owned')
           need(body.referenceAssetIds === undefined, 'Reference-conditioned synthesis belongs to P2.5; P2 wisdom does not accept references')
           let brief
+          // a derived Wisdom Short: its brief is built HERE from the parent's stored recommendation (the parent script
+          // is the source of truth; the caller only names the parent and the candidate)
+          const from = !longform && body.input?.derivedFrom ? body.input.derivedFrom : null
+          let derivedFrom: any = null
+          if (from) {
+            need(profile === 'wisdom', 'derived Shorts are made with the wisdom profile')
+            const d = await derivedOf(store, deps.blobs, need(String(from.parentJobId || ''), 'derivedFrom.parentJobId is required'), workspaceId)
+            const c = d.doc?.candidates.find((x) => x.id === String(from.candidateId || ''))
+            if (!d.doc || !c) throw new JobError('NOT_FOUND', 'derived Shorts candidate not found on the parent')
+            derivedFrom = { parentLongformJobId: d.parent.id, parentLongformTitle: d.doc.parentLongformTitle, parentLongformUrl: null, candidateId: c.id, shortTitle: c.shortTitle, hook: c.hook, corePoint: c.corePoint, payoff: c.payoff, sourceClaim: c.sourceClaim, sourceRefs: c.sourceRefs }
+            body.input = { ...body.input, kind: 'text', text: derivedSourceText(c, d.doc.parentLongformTitle), derivedFrom: undefined }
+          }
           try { brief = longform ? normalizeLongformBrief(body.input, profile as any) : normalizeGenerativeBrief(body.input) } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
+          if (derivedFrom) (brief as any).derivedFrom = derivedFrom
           generativeHash = longform ? longformBriefHash(brief as any) : generativeBriefHash(brief as any)
           const storedBrief = await putAddressed(deps.blobs, 'generative-briefs', brief)
           generativeBriefRef = storedBrief.path
@@ -259,6 +292,12 @@ export function createJobsHttp(deps: JobsDeps) {
         }
         if (generativeBriefRef) planRef = generativeBriefRef
         const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, referenceProfileRef, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}|${referenceProfileHash}|${generativeHash}` })
+        // a derived Short is recorded on its parent (one child per candidate)
+        const derivedParent = body.input?.derivedFrom === undefined && generativeBriefRef ? ((await deps.blobs.getJson(generativeBriefRef)) as any)?.derivedFrom : null
+        if (derivedParent?.parentLongformJobId) {
+          const ref = childrenRef(derivedParent.parentLongformJobId), cur: any = (await deps.blobs.getJson(ref).catch(() => null)) ?? { children: [] }
+          if (!cur.children.some((x: any) => x.candidateId === derivedParent.candidateId)) await deps.blobs.putJson(ref, { children: [...cur.children, { candidateId: derivedParent.candidateId, jobId: job.id }] }, { overwrite: true })
+        }
         return res.status(created ? 201 : 200).json({ ok: true, created, job: view(job, await store.listStageRuns(job.id)) })
       }
 

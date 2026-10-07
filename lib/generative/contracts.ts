@@ -12,6 +12,8 @@ export type GenerativeBrief = {
   aspectRatio: '9:16'
   targetSeconds: number
   creative?: CreativeProfile
+  // a Short derived from a Wisdom Longform (set by job_create from the parent's stored recommendation)
+  derivedFrom?: { parentLongformJobId: string; parentLongformTitle: string; parentLongformUrl: string | null; candidateId: string; shortTitle: string; hook: string; corePoint: string; payoff: string; sourceClaim: string; sourceRefs: Array<{ section: number; sentence: number }> }
 }
 export type WisdomProfile = {
   schema: 'generative-profile/1'

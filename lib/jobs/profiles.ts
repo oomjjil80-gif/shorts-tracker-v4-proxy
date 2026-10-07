@@ -55,7 +55,7 @@ export const PROFILES: Readonly<Record<ProfileId, ProfileSpec>> = {
     features: ['PLAN', 'IMAGE', 'TTS', 'CAPTION', 'LONGFORM_RENDER', 'THUMBNAIL', 'QC', 'PACKAGE'],
     modules: { PLAN: 'longform.plan', ASSET: 'longform.asset', RENDER: 'longform.render', PACKAGE: 'longform.package' }
   },
-  // 16:9 숨은야사 Longform: the same engine and modules in the story scenes mode, planned from the YASA STORY DNA
+  // 16:9 숨은야담 Longform: the same engine and modules in the story scenes mode, planned from the YASA STORY DNA
   yasa_longform: {
     id: 'yasa_longform', input: 'longform_brief', provides: ['brief'], packageView: 'longform',
     stages: ['PLAN', 'ASSET', 'RENDER', 'PACKAGE'],
