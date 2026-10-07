@@ -23,7 +23,7 @@ test('matrix: every family x format resolves through the one resolver; AUTO styl
   for (const fam of CONTENT_FAMILIES) for (const fmt of FORMATS) {
     const content = creativeContentFor(fam, fmt)
     const auto = resolveCreativeProfile(content, {}, '평범한 이야기').resolved
-    assert.equal(auto.visualStyleProfile, AUTO_STYLE[fam], `${fam}/${fmt}`)
+    assert.equal(auto.visualStyleProfile, content === 'yasa_longform' ? 'korean_drama_illustration' : AUTO_STYLE[fam], `${fam}/${fmt}`)
     const mine = resolveCreativeProfile(content, { voiceProfile: 'female-middle', voiceTone: 'neutral', voiceSpeed: 1.1, visualStyleProfile: 'senior-warm-watercolor' }, '').resolved
     assert.deepEqual([mine.voiceProfile, mine.voiceTone, mine.voiceSpeed, mine.visualStyleProfile], ['female-middle', 'neutral', 1.1, 'senior-warm-watercolor'], `${fam}/${fmt}`)
   }
@@ -56,8 +56,8 @@ test('creative_resolve: the browser asks the server (keys in, resolved profile o
   // economy AUTO keeps its own (native) look: nothing is added to a hand-copied prompt either
   assert.equal(r.json.styleWrap, null)
   const yasa = await http(handler, { taskType: 'creative_resolve', family: 'yasa', format: 'longform', topic: '조선 왕실' })
-  assert.ok(yasa.json.styleWrap.head.includes(VISUAL_STYLE_PROFILES['historical-dramatic'].promptPrefix) && yasa.json.styleWrap.tail.includes(VISUAL_STYLE_PROFILES['historical-dramatic'].negativePrompt))
-  assert.equal(withVisualStyle('P', VISUAL_STYLE_PROFILES['historical-dramatic']), [yasa.json.styleWrap.head, '', 'P', '', yasa.json.styleWrap.tail].join('\n')) // the same text as /api/image
+  assert.ok(yasa.json.styleWrap.head.includes(VISUAL_STYLE_PROFILES['korean_drama_illustration'].promptPrefix) && yasa.json.styleWrap.tail.includes(VISUAL_STYLE_PROFILES['korean_drama_illustration'].negativePrompt))
+  assert.equal(withVisualStyle('P', VISUAL_STYLE_PROFILES['korean_drama_illustration']), [yasa.json.styleWrap.head, '', 'P', '', yasa.json.styleWrap.tail].join('\n')) // the same text as /api/image
   const econWater = await http(handler, { taskType: 'creative_resolve', family: 'economy', format: 'shorts', visualStyleProfile: 'senior-warm-watercolor' })
   assert.ok(econWater.json.styleWrap.head.includes('senior-warm-watercolor'))
   for (const bad of [{ family: 'horror', format: 'shorts' }, { family: 'yasa', format: 'shorts', voiceSpeed: 1.3 }, { family: 'yasa', format: 'shorts', visualStyleProfile: 'anime' }]) assert.equal((await http(handler, { taskType: 'creative_resolve', ...bad })).status, 400)
@@ -66,7 +66,7 @@ test('creative_resolve: the browser asks the server (keys in, resolved profile o
 test('/api/image style: legacy Episodes unchanged; AUTO per family; explicit wins; stored resolved wins; economy AUTO keeps its prompts', () => {
   assert.equal(imageStyleFor(undefined), null) // an Episode from before Creative Settings
   const c = (family: string, format: string, requested: any = {}, resolved?: any) => imageStyleFor({ family, format, requested, ...(resolved ? { resolved } : {}) })?.id ?? null
-  assert.equal(c('general', 'shorts'), 'bright-editorial'); assert.equal(c('yasa', 'longform'), 'historical-dramatic'); assert.equal(c('senior', 'shorts'), 'senior-warm-watercolor')
+  assert.equal(c('general', 'shorts'), 'bright-editorial'); assert.equal(c('yasa', 'longform'), 'korean_drama_illustration'); assert.equal(c('yasa', 'shorts'), 'historical-dramatic'); assert.equal(c('senior', 'shorts'), 'senior-warm-watercolor')
   assert.equal(c('economy', 'shorts'), null); assert.equal(c('economy', 'longform'), null) // native: the economy bible already draws it
   assert.equal(c('wisdom', 'shorts'), null) // Wisdom Shorts native style
   assert.equal(c('economy', 'shorts', { visualStyleProfile: 'senior-warm-watercolor' }), 'senior-warm-watercolor')

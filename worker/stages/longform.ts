@@ -15,7 +15,7 @@ import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaSc
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
 import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
-import { briefVoice, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
+import { briefVoice, creativeStyle, creativeStyleOverride, YADAM_AUTO_STYLE, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { VISUAL_STYLE_PROFILES } from '../../lib/generative/visualStyle.js'
 import { VIDEO_ENCODER_THREADS } from '../../lib/media/render.js'
 import { openAiLongformResearcher, researchPath, researchErrors, sectionFragments, RESEARCH_MODEL, type LongformResearcher, type ResearchBundle } from '../../lib/generative/longformResearch.js'
@@ -234,7 +234,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       // Wisdom: the one picture; a style the user picked replaces only its style line (AUTO = the prompt as before).
       const sceneList = scenes ? seniorScenes(script as unknown as SeniorScript) : []
       const yasa = job.profile === 'yasa_longform'
-      const sceneStyle = scenes ? ((brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES[yasa ? 'historical-dramatic' : 'senior-warm-watercolor']) : null
+      const sceneStyle = scenes ? ((brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES[yasa ? YADAM_AUTO_STYLE : 'senior-warm-watercolor']) : null
       const scenePrompts = sceneList.map((sc) => (yasa ? yasaScenePrompt : seniorScenePrompt)(script as unknown as SeniorScript, sc, sceneStyle!))
       const prompt = scenes ? scenePrompts[0] : longformImagePrompt(script, creativeStyleOverride(brief?.creative)), chunks = ttsChunks(script)
       // paid calls only on a cache miss (an ASSET rerun reuses every picture and every narration chunk); the prompt (and so

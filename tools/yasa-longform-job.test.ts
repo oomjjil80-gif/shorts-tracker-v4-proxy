@@ -40,7 +40,7 @@ const CAST = [
   { id: 'bride', name: '윤씨', role: '며느리', gender: 'female', age: '28', face: 'gentle oval face, tired eyes', hair: 'neat Joseon chignon with a wooden binyeo', build: 'slender', outfit: 'faded indigo hanbok', colors: 'indigo, cream' },
   { id: 'mil', name: '최씨 부인', role: '시어머니', gender: 'female', age: '60', face: 'stern lined face', hair: 'grey chignon', build: 'small', outfit: 'grey hanbok with a dark jeogori', colors: 'grey, charcoal' }
 ]
-const MINUTES = 45, SECONDS = MINUTES * 60, SPEED = 0.9
+const MINUTES = 45, SECONDS = MINUTES * 60, SPEED = 1
 // a main-story sentence of ~300 characters (every act long enough; the reveal act names the prop)
 const say = (act: number, k: number) => {
   const core = act === YASA_REVEAL_ACT && k === 0 ? '마침내 썩은 메주가 갈라지자 그 속에서 금가락지와 땅문서가 나왔다.' : `${act + 1}막 ${k + 1}번째 장면에서 며느리는 썩은 메주를 지고 걷는다.`
@@ -53,13 +53,13 @@ const actScenes = (a: number): any[] => {
   return a === YASA_ACTS.length - 1 ? [{ ...actScenes(0)[0], id: `a${a + 1}s1` }, sc[1]] : sc
 }
 // the cold open: 6 beats on 6 different main-story pictures, the strange act / the danger / the prop / the question,
-// never the answer (no 금가락지 / 땅문서 / 빚을 갚 ...), never a main-story sentence; ~300 chars = ~54 s at 0.9x
+// never the answer (no 금가락지 / 땅문서 / 빚을 갚 ...), never a main-story sentence; ~330 chars = ~53 s at 1.0x
 const COLD = [
   ['a2s1', '"이걸 친정까지 지고 가거라." 오 년 만의 친정길, 시어머니가 내민 것은 썩은 메주 한 덩이였다.'],
-  ['a3s1', '고갯길 사람들은 냄새 나는 짐을 진 며느리를 손가락질하며 마을 밖으로 쫓아냈다.'],
+  ['a3s1', '고갯길 사람들은 고약한 냄새 나는 짐을 진 젊은 며느리를 손가락질하며 마을 밖으로 매몰차게 쫓아냈다.'],
   ['a3s2', '주막에서는 도둑이라는 누명까지 쓰고 찬 이슬 내리는 마당에 밤새 꿇어앉아야 했다.'],
   ['a5s1', '그리고 마침내 탐관오리의 거친 손이 그 메주 보따리를 향해 천천히 뻗어 왔다.'],
-  ['a4s1', '며느리는 이상하게 무거운 그 짐을 품에 끌어안고 끝내 놓지 않았다.'],
+  ['a4s1', '그래도 며느리는 이상하게 무거운 그 짐을 품에 꼭 끌어안고 끝내 단 한 번도 놓지 않았다.'],
   ['a5s2', '도대체 시어머니는 왜, 하필 썩은 메주 한 덩이를 지워 보냈던 걸까요?']
 ]
 function fakePlanner(calls: Record<string, any[]>, o: { coldOpen?: (i: any) => any } = {}) {
@@ -86,12 +86,12 @@ async function scenePicture(d: string, n: number) {
   return { bytes: await readFile(f), contentType: 'image/jpeg', provider: 'standin', model: 'scene' }
 }
 
-test('YADAM profile: shared Longform engine, scenes mode; AUTO = grandmother storyteller (female-senior, calm, 0.9x); 8 acts = the DNA structure', () => {
+test('YADAM profile: shared Longform engine, scenes mode; AUTO = grandmother storyteller (female-senior, calm, 1.0x) + 고급 사극 일러스트; 8 acts = the DNA structure', () => {
   assert.deepEqual(PROFILES.yasa_longform.stages, ['PLAN', 'ASSET', 'RENDER', 'PACKAGE'])
   assert.deepEqual(PROFILES.yasa_longform.features, ['PLAN', 'IMAGE', 'TTS', 'CAPTION', 'LONGFORM_RENDER', 'THUMBNAIL', 'QC', 'PACKAGE'])
   const b = normalizeLongformBrief({ kind: 'topic', text: TOPIC, targetSeconds: SECONDS }, 'yasa_longform')
-  assert.equal(b.targetSeconds, 2700); assert.equal(b.creative!.resolved.visualStyleProfile, 'historical-dramatic')
-  assert.deepEqual([b.creative!.resolved.voiceProfile, b.creative!.resolved.voiceTone, b.creative!.resolved.voiceSpeed], ['female-senior', 'calm', 0.9])
+  assert.equal(b.targetSeconds, 2700); assert.equal(b.creative!.resolved.visualStyleProfile, 'korean_drama_illustration')
+  assert.deepEqual([b.creative!.resolved.voiceProfile, b.creative!.resolved.voiceTone, b.creative!.resolved.voiceSpeed], ['female-senior', 'calm', 1])
   // the user's choice wins
   const mine = normalizeLongformBrief({ kind: 'topic', text: TOPIC, targetSeconds: SECONDS, voiceProfile: 'male-middle', voiceSpeed: 1.1 }, 'yasa_longform')
   assert.deepEqual([mine.creative!.resolved.voiceProfile, mine.creative!.resolved.voiceSpeed], ['male-middle', 1.1])
@@ -151,7 +151,7 @@ test('YADAM 45-minute job: job_create -> PLAN (DNA, 8 acts, cold open) -> ASSET 
   assert.deepEqual(yasaScriptErrors(script, { speed: SPEED }), [])
   const at = yasaRevealAt(script.sections); assert.ok(at >= 0.8 && at <= 0.92, `reveal at ${at}`); assert.equal(ok('PLAN').result.yasa.revealAt, Number(at.toFixed(3)))
   assert.ok(script.sections[YASA_REVEAL_ACT + 1].sentences.length >= 1 && script.sections[YASA_REVEAL_ACT + 2].sentences.length >= 1, 'aftermath + payoff acts after the reveal')
-  // the cold open: before the main story, 5~8 beats, 45~60 s at 0.9x, no answer, no main-story sentence
+  // the cold open: before the main story, 5~8 beats, 45~60 s at 1.0x, no answer, no main-story sentence
   const cold = script.coldOpen.sentences
   assert.ok(cold.length >= 5 && cold.length <= 8)
   const coldSec = [...cold.map((x: any) => x.say).join(' ')].length / (LONGFORM.charsPerSecond * SPEED)
@@ -163,13 +163,13 @@ test('YADAM 45-minute job: job_create -> PLAN (DNA, 8 acts, cold open) -> ASSET 
   // repeated scene is made once; the cold open adds no picture
   const scenes = script.sections.flatMap((s: any) => s.scenes)
   assert.equal(scenes.length, 16); assert.equal(prompts.length, 15, 'the repeated opening picture is generated once; the cold open reuses main-story pictures')
-  const hd = VISUAL_STYLE_PROFILES['historical-dramatic']
-  assert.ok(prompts.every((p) => p.includes(hd.promptPrefix) && p.includes('Setting: 조선, 후기 (18세기)') && p.includes(characterLine(CAST[0] as any)) && /another country or era/.test(p)))
+  const hd = VISUAL_STYLE_PROFILES['korean_drama_illustration']
+  assert.ok(prompts.every((p) => p.includes(hd.promptPrefix) && p.includes('조선, 후기 (18세기)') && p.includes('Joseon hanbok') && p.includes('Qing queue') && /photorealistic/.test(p) && p.includes(characterLine(CAST[0] as any)) && /another country or era/.test(p)))
   assert.ok(prompts.filter((p) => p.includes('"썩은 메주" looks exactly the same')).length === 7)
   // narration: one Tracker TTS call per sentence (cold open + main story), the grandmother storyteller voice
   const sentences = sentencesOf(script).length
   assert.equal(voices.length, sentences); assert.equal(sentences, cold.length + counts.reduce((a, b) => a + b, 0))
-  assert.ok(voices.every((v) => v.id === 'ko-lf-female-senior-calm-0.9-yadam-v1' && v.speed === 0.9 && v.voice === 'sage' && v.instructions.startsWith(YADAM_STORYTELLER)))
+  assert.ok(voices.every((v) => v.id === 'ko-lf-female-senior-calm-1.0-yadam-v1' && v.speed === 1 && v.voice === 'sage' && v.instructions.startsWith(YADAM_STORYTELLER)))
 
   // the package: final MP4 (16:9, narration, the measured length) + thumbnail + upload text
   const pk = (await call('GET', { query: { taskType: 'job_package', id: jobId } })).json
