@@ -1,0 +1,77 @@
+{
+ "order": [
+  "joseon_clean_watercolor",
+  "korean_drama_illustration",
+  "oriental_painterly",
+  "webtoon_historical",
+  "fairytale_illustration"
+ ],
+ "errors": {},
+ "report": {
+  "joseon_clean_watercolor": {
+   "label": "선명한 조선 수채화",
+   "brightness": 149,
+   "saturation": 0.466,
+   "contrast": 45,
+   "palette": [
+    "#e0a060",
+    "#a0a060",
+    "#e0e0a0",
+    "#a06020",
+    "#606020"
+   ]
+  },
+  "korean_drama_illustration": {
+   "label": "고급 사극 일러스트",
+   "brightness": 110,
+   "saturation": 0.606,
+   "contrast": 47,
+   "palette": [
+    "#a06020",
+    "#606020",
+    "#602020",
+    "#e0a060",
+    "#202020"
+   ]
+  },
+  "oriental_painterly": {
+   "label": "감성 동양화풍",
+   "brightness": 160,
+   "saturation": 0.466,
+   "contrast": 46,
+   "palette": [
+    "#e0e0a0",
+    "#e0a060",
+    "#a0a060",
+    "#606020",
+    "#e0e060"
+   ]
+  },
+  "webtoon_historical": {
+   "label": "웹툰형 사극풍",
+   "brightness": 127,
+   "saturation": 0.483,
+   "contrast": 49,
+   "palette": [
+    "#606020",
+    "#e0a060",
+    "#a0a060",
+    "#a06020",
+    "#602020"
+   ]
+  },
+  "fairytale_illustration": {
+   "label": "동화풍 채색 일러스트",
+   "brightness": 133,
+   "saturation": 0.6,
+   "contrast": 50,
+   "palette": [
+    "#e0a060",
+    "#a06020",
+    "#606020",
+    "#602020",
+    "#a0a020"
+   ]
+  }
+ }
+}
