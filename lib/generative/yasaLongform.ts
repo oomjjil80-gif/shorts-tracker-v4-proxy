@@ -100,15 +100,16 @@ export function nearSame(a: string, b: string): number {
 export const NEAR_REPEAT = 0.6
 // the cold open, before it is stored: 5~8 beats, 45~60 s at the voice's speed, no background start, the prop, a beat change
 // on every sentence, only main-story pictures, never the answer, never a main-story sentence repeated
-export function coldOpenErrors(sentences: any[], o: { dna: any; sceneIds: Set<string>; mainSentences: string[]; speed: number; charsPerSecond: number; candidates?: ReturnType<typeof coldOpenCandidates> }): string[] {
+export function coldOpenErrors(sentences: any[], o: { dna: any; sceneIds: Set<string>; mainSentences: string[]; speed: number; charsPerSecond: number; candidates?: ReturnType<typeof coldOpenCandidates>; avoidScenes?: Set<string> }): string[] {
   const list = Array.isArray(sentences) ? sentences : [], e: string[] = [], t = textOf(list)
   if (list.length < COLD_OPEN.beats.min || list.length > COLD_OPEN.beats.max) e.push(`cold_open.beats ${list.length} (${COLD_OPEN.beats.min}~${COLD_OPEN.beats.max})`)
   const seconds = [...t].length / (o.charsPerSecond * o.speed)
-  if (seconds < COLD_OPEN.seconds.min || seconds > COLD_OPEN.seconds.max) e.push(`cold_open.length about ${Math.round(seconds)}s (${COLD_OPEN.seconds.min}~${COLD_OPEN.seconds.max}s)`)
+  if (seconds < COLD_OPEN.seconds.min || seconds > COLD_OPEN.seconds.max) e.push(`cold_open.length about ${seconds.toFixed(1)}s (${COLD_OPEN.seconds.min}~${COLD_OPEN.seconds.max}s; aim for ${COLD_OPEN.seconds.target}s)`)
   e.push(...checkYasaScript(t, o.dna).errors.map((x) => `cold_open.${x}`))
   for (const [i, x] of list.entries()) {
     if (!o.sceneIds.has(String(x?.scene || ''))) e.push(`cold_open[${i}].scene: must be one of the main story's scenes`)
     if (i && String(x?.scene) === String(list[i - 1]?.scene)) e.push(`cold_open[${i}].scene: every beat shows a different picture`)
+    if (o.avoidScenes?.has(String(x?.scene || ''))) e.push(`cold_open[${i}].scene ${String(x?.scene)}: rejected before (it led to the answer); pick another middle scene`)
     if (o.candidates && o.sceneIds.has(String(x?.scene || '')) && !o.candidates.allowed.has(String(x?.scene || ''))) e.push(`cold_open[${i}].scene ${String(x?.scene)}: not from the first 10% of the story nor from the reveal / ending`)
   }
   // most beats from the middle of the story (15~65%) when it has enough pictures there
@@ -175,4 +176,31 @@ export function yadamRemasterBrief(source: any, o: { sourceJobId: string; script
   const resolvedStyle = style === 'auto' ? YADAM_AUTO_STYLE : style
   const c = source.creative
   return { ...source, creative: { ...c, requested: { ...c.requested, visualStyleProfile: style }, resolved: { ...c.resolved, visualStyleProfile: resolvedStyle } }, remaster: { sourceJobId: o.sourceJobId, parentJobId: o.sourceJobId, scriptRef: o.scriptRef } }
+}
+
+// What earlier cold-open attempts were rejected for, so the next attempt cannot make the same mistake (generic: any
+// profile whose cold open is checked by coldOpenErrors). From every rejected attempt (kept across stage retries):
+//   terms     the answer words it leaked ("cold_open.reveals_answer: …"), never to be used again
+//   sentences what it said (never to be reused or lightly reworded)
+//   scenes    the pictures of the beats that carried a leaked term
+//   avoidScenes  those scenes once the SAME term leaked twice: then the scene itself is replaced, not just the wording
+export type ColdOpenAttempt = { errors: string[]; sentences?: Array<{ scene?: string; say?: string }> }
+export function coldOpenRejections(history: ColdOpenAttempt[] | null | undefined, o: { allowed?: Set<string>; keepAtLeast?: number } = {}) {
+  const list = Array.isArray(history) ? history : []
+  const termCount = new Map<string, number>(), sentences: string[] = [], scenes = new Set<string>(), repeatScenes = new Set<string>()
+  const leaksOf = (a: ColdOpenAttempt) => (a.errors ?? []).flatMap((x) => { const m = /cold_open\.reveals_answer:\s*(.+)$/.exec(String(x)); return m ? m[1].split(',').map((w) => w.trim()).filter(Boolean) : [] })
+  for (const a of list) for (const t of new Set(leaksOf(a))) termCount.set(t, (termCount.get(t) ?? 0) + 1)
+  const repeated = new Set([...termCount].filter(([, n]) => n >= 2).map(([t]) => t))
+  for (const a of list) {
+    const leaks = leaksOf(a)
+    for (const b of a.sentences ?? []) {
+      const say = String(b?.say || '').trim(); if (say && !sentences.includes(say)) sentences.push(say)
+      const hit = leaks.filter((t) => say.includes(t))
+      if (hit.length && b?.scene) { scenes.add(String(b.scene)); if (hit.some((t) => repeated.has(t))) repeatScenes.add(String(b.scene)) }
+    }
+  }
+  // never narrow the choice below what a cold open needs (then the wording rules alone apply)
+  const left = o.allowed ? [...o.allowed].filter((x) => !repeatScenes.has(x)).length : Infinity
+  const avoidScenes = left >= (o.keepAtLeast ?? 3) ? repeatScenes : new Set<string>()
+  return { terms: [...termCount.keys()], repeatedTerms: [...repeated], sentences: sentences.slice(-24), scenes: [...scenes], avoidScenes }
 }
