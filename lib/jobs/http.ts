@@ -240,7 +240,14 @@ export function createJobsHttp(deps: JobsDeps) {
         need(changes && typeof changes === 'object' && !Array.isArray(changes), 'changes must be an object')
         const changeHash = createHash('sha256').update(canonicalize(changes)).digest('hex').slice(0, 16)
         body.taskType = 'job_create'; body.profile = src.profile
-        body.idempotencyKey = body.idempotencyKey ?? `remaster-${sourceJobId.replace(/[^A-Za-z0-9]/g, '').slice(-40)}-${changeHash}`.slice(0, 128)
+        // the same request while one is queued / running / complete is the same job; a FAILED one is never handed back:
+        // the next free key (…-r2, -r3, …) makes a NEW child job (the source and the failed job stay as they are)
+        if (body.idempotencyKey === undefined) {
+          const base = `remaster-${sourceJobId.replace(/[^A-Za-z0-9]/g, '').slice(-40)}-${changeHash}`.slice(0, 120)
+          let key = base
+          for (let n = 2; n < 100; n++) { const prior = await store.getJobByIdempotencyKey(workspaceId, key); if (!prior || prior.status !== 'FAILED') break; key = `${base}-r${n}` }
+          body.idempotencyKey = key
+        }
         body.input = { remasterOf: { sourceJobId }, changes }
         taskType = 'job_create'
       }
