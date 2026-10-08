@@ -1,0 +1,39 @@
+name: make 야담 style examples (one-off, approved)
+# Runs ONLY on a push to the branch style-examples/make (never on main, never deploys). Uses the repository secret
+# OPENAI_API_KEY (never printed), draws the 5 example pictures once (files that exist are kept) and commits them +
+# report.json + a new-vs-old comparison sheet back to this branch for review.
+on:
+  push:
+    branches: ['style-examples/make']
+permissions:
+  contents: write
+concurrency: { group: make-style-examples, cancel-in-progress: false }
+jobs:
+  make:
+    if: "!contains(github.event.head_commit.message, '[examples-made]')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Key present?
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then echo "::error::repository secret OPENAI_API_KEY is not set (Settings > Secrets and variables > Actions)"; exit 1; fi
+          echo "key present"
+      - name: Draw the examples (gpt-image-1, high, 1536x1024)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: npx tsx tools/make-yadam-style-examples.ts assets/style-examples/yadam assets/style-examples/yadam-legacy-2026-10
+      - name: Commit the pictures back to this branch
+        run: |
+          git config user.name "style-examples-bot"
+          git config user.email "style-examples-bot@users.noreply.github.com"
+          git add assets/style-examples/yadam
+          git commit -m "yadam style examples made [examples-made]" || echo "nothing new"
+          git push

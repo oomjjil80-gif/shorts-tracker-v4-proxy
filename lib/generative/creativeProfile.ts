@@ -37,7 +37,7 @@ export type CreativeProfile = { schema: 'creative-profile/1'; content: CreativeC
 //  styles: the 그림체 this content offers the user (none = the shared list)
 type ContentRule = { voice: 'house' | 'topic' | 'topic-mature' | 'fixed'; house?: VoiceProfile; fallback?: LongformVoiceKey; fixed?: LongformVoiceKey; speed?: LongformVoiceSpeed; style: VisualStyleKey | null; native?: VisualStyleKey; styles?: readonly VisualStyleKey[] }
 // 숨은야담 AUTO 그림체 (one place to change the recommendation)
-export const YADAM_AUTO_STYLE: VisualStyleKey = 'korean_drama_illustration'
+export const YADAM_AUTO_STYLE: VisualStyleKey = 'joseon_clean_watercolor'
 const CONTENT_RULES: Readonly<Record<CreativeContent, ContentRule>> = {
   wisdom: { voice: 'house', house: DEFAULT_VOICE_PROFILE, style: 'wisdom-painterly', native: 'wisdom-painterly' },
   wisdom_longform: { voice: 'topic', style: 'wisdom-painterly', native: 'wisdom-painterly' },
