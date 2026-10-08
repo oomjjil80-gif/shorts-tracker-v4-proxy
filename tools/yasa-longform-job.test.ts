@@ -477,7 +477,7 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   const off = await (async () => { const f = join(d, 'off.jpg'); await runOk(['-y', '-f', 'lavfi', '-i', 'color=c=0x0a3d0a:s=1536x1024', '-frames:v', '1', '-q:v', '3', f]); return { bytes: await readFile(f), contentType: 'image/jpeg', provider: 'standin', model: 'off-style' } })()
   const asset = createLongformAssetExecutor({ apiKey: 'k',
     image: async () => { calls.image++; return scenePicture(d, 500 + calls.image) },
-    imageRef: async (p: string, ref: Buffer) => { if (p.startsWith('STYLE EXAMPLE ATTACHED')) { calls.example++; exampleSeen.push(ref); return scenePicture(d, 700 + calls.example) } calls.ref++; refSeen.push(ref); refPrompts.push(p); return refMode === 'same' ? { bytes: ref, contentType: 'image/jpeg', provider: 'standin', model: 'ref' } : off },
+    imageRef: async (p: string, ref: Buffer) => { if (p.startsWith('STYLE EXAMPLE ATTACHED')) { calls.example++; exampleSeen.push(ref); const f = join(d, `ex${calls.example}.jpg`); await runOk(['-y', '-f', 'lavfi', '-i', `testsrc2=s=1536x1024,hue=h=${calls.example * 40}`, '-frames:v', '1', '-q:v', '3', f]); return { bytes: await readFile(f), contentType: 'image/jpeg', provider: 'standin', model: 'example' } } calls.ref++; refSeen.push(ref); refPrompts.push(p); return refMode === 'same' ? { bytes: ref, contentType: 'image/jpeg', provider: 'standin', model: 'ref' } : off },
     tts: async () => { calls.tts++; return shortTts() },
     styleJudge: async () => { judged.push(1); return { same: true, score: 92, differences: [] } },
     copyWriter: async () => { throw new Error('the copy passes its checks: no rewrite call') } } as any)
@@ -532,6 +532,18 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   assert.equal(judged.length, 1, 'one judge call for the representative that passed the free checks')
   const pics = manifest.images.length, refCalls = calls.ref
   assert.ok(refCalls >= pics, `${refCalls} reference calls for ${pics} pictures`)
+  // RENDER: the delivered thumbnail = the APPROVED background + the video's FINAL title, exactly
+  const { composeTitleThumbnail } = await import('../lib/generative/titleThumbnail.js')
+  const scriptNow: any = await blobs.getJson((runs.find((r: any) => r.stage === 'PLAN' && r.status === 'SUCCEEDED') as any).result.scriptRef)
+  const { longformTitleThumbnail } = await import('../worker/stages/longform.js')
+  const want = await composeTitleThumbnail({ background: approvedBg, title: scriptNow.title })
+  const picture = async () => { throw new Error('the approved background is used, not a scene picture') }
+  assert.ok((await longformTitleThumbnail({ jobId, blobs, assets: manifest, title: scriptNow.title, picture })).equals(want.bytes), 'approved background + exact title')
+  // a manifest written before this change (no backgroundRef): the approval record names the background
+  assert.ok((await longformTitleThumbnail({ jobId, blobs, assets: { approvedThumbnail: { ref: manifest.approvedThumbnail.ref } }, title: scriptNow.title, picture })).equals(want.bytes))
+  assert.equal(want.lines.join(' '), scriptNow.title)
+  st = (await call('GET', { query: { taskType: 'job_style', id: jobId } })).json.style
+  assert.equal(st.copy.join(' '), scriptNow.title, 'the approval screen shows the same title')
   // 8 + 9: running ASSET again (a restart) keeps the approval and pays for nothing
   const before = { ...calls }
   const again: any = await asset.run({ job: { ...(await store.getJob(jobId)), stage: 'ASSET' }, blobs, previous: async (s: string) => (runs.filter((r: any) => r.stage === s && r.status === 'SUCCEEDED').at(-1) as any) ?? null, signal: new AbortController().signal } as any)

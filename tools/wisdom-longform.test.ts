@@ -313,7 +313,12 @@ test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 M
   assert.ok(accents.every((a) => Object.entries(a).some(([k, v]) => k !== 'white' && v > 400)), `every card has a coloured key phrase: ${JSON.stringify(report.accentPixelsPerCard)}`)
   assert.ok(accents.every((a) => a.white > 2000), 'the rest of the card is white')
   assert.deepEqual([tinfo.width, tinfo.height], [1280, 720])
-  assertThumbnail(thumbM, 'longform'); void thumbAccents; void thumbLines
+  // the Longform thumbnail IS the video title (exact words, wrapped, inside the frame) on the video's own picture
+  const { composeTitleThumbnail } = await import('../lib/generative/titleThumbnail.js')
+  const expected = await composeTitleThumbnail({ background: blobs.binaries.get(assets.image.ref)!, title: SAMPLE.title })
+  assert.equal(expected.lines.join(' '), SAMPLE.title, 'the title, word for word'); assert.ok(expected.ink.x0 >= 32 && expected.ink.x1 <= 1248 && expected.ink.y0 >= 28 && expected.ink.y1 <= 692, JSON.stringify(expected.ink))
+  assert.ok((await (await import('node:fs/promises')).readFile(thumb)).equals(expected.bytes), 'the delivered thumbnail is exactly that composition')
+  void thumbM; void assertThumbnail; void thumbAccents; void thumbLines
   assert.ok(sync.every((x) => x.voiceOnset !== null && x.cardChange !== null), `every card changes where its sentence is voiced: ${JSON.stringify(sync)}`)
   assert.ok(lines.every((l) => l.length >= 2 && l.length <= 3), 'every card 2-3 lines')
 })
