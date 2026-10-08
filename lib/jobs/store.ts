@@ -71,8 +71,15 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
     async createJob(input: {
       workspaceId: string; profile: string; sourceAssetId: string; idempotencyKey: string
       budgetUsd?: number; planRef?: string | null; referenceProfileRef?: string | null; requestFingerprint?: string
+      reuseActiveSamePlan?: boolean
     }): Promise<{ job: Job; created: boolean }> {
       const now = clock()
+      // the SAME generated brief (content-addressed planRef) already being made in this workspace: hand back that job
+      // instead of paying for the same script / pictures / narration twice (a double tap, a retry while it still runs)
+      if (input.reuseActiveSamePlan && input.planRef) {
+        const act = await db.query(`SELECT * FROM production_jobs WHERE workspace_id=$1 AND profile=$2 AND plan_ref=$3 AND status IN ('QUEUED','RUNNING','WAITING_USER') AND NOT cancel_requested ORDER BY created_at DESC LIMIT 1`, [input.workspaceId, input.profile, input.planRef])
+        if (act.rows[0]) return { job: mapJob(act.rows[0]), created: false }
+      }
       const hasPlan = !!input.planRef
       const stage = firstStage(input.profile, hasPlan)
       const requestHash = createHash('sha256').update(input.requestFingerprint ?? `${input.profile}|${input.sourceAssetId}`).digest('hex')
@@ -220,11 +227,11 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
     },
 
     // retryable failures go back to QUEUED with backoff until maxAttempts; then FAILED.
-    async failStage(input: { jobId: string; workerId: string; attempt: number; kind?: StageRunKind; error: unknown; retryable?: boolean; costUsd?: number; provider?: string | null; model?: string | null }): Promise<Job> {
+    async failStage(input: { jobId: string; workerId: string; attempt: number; kind?: StageRunKind; error: unknown; retryable?: boolean; costUsd?: number; usage?: unknown; provider?: string | null; model?: string | null }): Promise<Job> {
       const now = clock()
       return db.transaction(async (tx) => {
         const job = await leasedJob(tx, input.jobId, input.workerId, now)
-        await insertRun(tx, { jobId: job.id, stage: job.stage, kind: input.kind, attempt: input.attempt, status: 'FAILED', error: input.error, costUsd: input.costUsd, provider: input.provider, model: input.model, finishedAt: now })
+        await insertRun(tx, { jobId: job.id, stage: job.stage, kind: input.kind, attempt: input.attempt, status: 'FAILED', error: input.error, usage: input.usage, costUsd: input.costUsd, provider: input.provider, model: input.model, finishedAt: now })
         const retry = !job.cancelRequested && input.retryable !== false && input.attempt < maxAttempts
         const status = job.cancelRequested ? 'CANCELLED' : retry ? 'QUEUED' : 'FAILED'
         const runAfter = retry ? iso(new Date(now.getTime() + backoff(input.attempt))) : null

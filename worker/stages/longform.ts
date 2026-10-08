@@ -138,8 +138,14 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         const hit = (await blobs.getJson(`${ck}/${name}.json`).catch(() => null)) as T | null
         if (hit && !errorsOf(hit, history).length) { reused.push(name); return hit }
         let errs: string[] = []
+        // paid tries of this step for THIS job, across stage retries: at most 2x the per-attempt tries (act 4, cold open 6,
+        // was 6 / 9 with three stage attempts); then the job stops instead of paying for the same failing step again
+        const triesRef = `${ck}/${name}.tries.${job.id}.json`, cap = (o.tries ?? 2) * 2
+        let spent = Number(((await blobs.getJson(triesRef).catch(() => null)) as any)?.paid ?? 0)
         for (let attempt = 0; attempt < (o.tries ?? 2); attempt++) {
           if (signal?.aborted) throw new Error('aborted')
+          if (spent >= cap) throw new StageError(code, `${name}: retry limit reached (${spent} paid tries for this job): ${(errs.length ? errs : history.at(-1)?.errors ?? []).slice(0, 12).join(', ')}`, false)
+          spent++; await blobs.putJson(triesRef, { paid: spent }, { overwrite: true })
           let v: T | undefined
           try { v = await make(attempt || history.length ? (errs.length ? errs : history.at(-1)?.errors) : undefined, history); errs = errorsOf(v, history); if (!errs.length) { await blobs.putJson(`${ck}/${name}.json`, v, { overwrite: true }); made.push(name); return v } }
           catch (e: any) { if (e?.stop) throw stopError(e); errs = [String(e?.message || e)] }

@@ -112,8 +112,24 @@ function view(job: Job, runs: StageRun[]) {
     manifest: compile ? { hash: compile.outputHash, ref: compile.outputRef, gate: (compile.result as any)?.gate ?? null } : null,
     final: pkg ? { packageRef: (pkg.result as any)?.packageRef ?? null, renderHash: (pkg.result as any)?.renderHash ?? null, durationSec: (pkg.result as any)?.durationSec ?? null, publishable: (pkg.result as any)?.publishable === true } : null,
     error: job.status === 'FAILED' ? (lastFail?.error as any)?.message ?? 'failed' : null,
-    runs: runs.map((r) => ({ stage: r.stage, kind: r.kind, attempt: r.attempt, status: r.status, error: r.error, finishedAt: r.finishedAt }))
+    // paid calls of this job so far (every attempt, failed ones too): estimated USD + call counts per stage / model
+    cost: jobCost(runs),
+    runs: runs.map((r) => ({ stage: r.stage, kind: r.kind, attempt: r.attempt, status: r.status, error: r.error, finishedAt: r.finishedAt, paidCalls: usageOfRun(r)?.paidCalls ?? 0, estUsd: usageOfRun(r)?.estUsd ?? 0 }))
   }
+}
+const usageOfRun = (r: StageRun): any => { const u: any = r.usage; return u?.schema === 'usage/1' ? u : u?.ledger?.schema === 'usage/1' ? u.ledger : null }
+export function jobCost(runs: StageRun[]) {
+  const byStage: Record<string, { paidCalls: number; estUsd: number; attempts: number }> = {}, byModel: Record<string, { calls: number; estUsd: number | null; outputTokens: number; reasoningTokens: number }> = {}
+  let paidCalls = 0, estUsd = 0
+  const unpriced = new Set<string>()
+  for (const r of runs) {
+    const u = usageOfRun(r); if (!u) continue
+    const s = (byStage[r.stage] ??= { paidCalls: 0, estUsd: 0, attempts: 0 }); s.attempts++; s.paidCalls += u.paidCalls; s.estUsd = Number((s.estUsd + (u.estUsd ?? 0)).toFixed(4))
+    paidCalls += u.paidCalls; estUsd += u.estUsd ?? 0
+    for (const [m, x] of Object.entries<any>(u.byModel ?? {})) { const t = (byModel[m] ??= { calls: 0, estUsd: 0, outputTokens: 0, reasoningTokens: 0 }); t.calls += x.calls; t.outputTokens += x.outputTokens; t.reasoningTokens += x.reasoningTokens; t.estUsd = t.estUsd === null || x.estUsd === null ? null : Number((t.estUsd + x.estUsd).toFixed(4)) }
+    for (const m of u.unpricedModels ?? []) unpriced.add(m)
+  }
+  return { paidCalls, estUsd: Number(estUsd.toFixed(4)), byStage, byModel, unpricedModels: [...unpriced] }
 }
 
 function matching(value: unknown, re: RegExp, message: string): string {
@@ -319,6 +335,7 @@ export function createJobsHttp(deps: JobsDeps) {
         const longform = getProfile(profile).input === 'longform_brief'
         const generative = getProfile(profile).input !== 'source_asset'
         let generativeBriefRef: string | null = null
+        let reuseActive = false // a new (non-remaster) brief: the same one still running is handed back, never paid twice
         let generativeHash = ''
         let sourceAssetId: string
         if (generative) {
@@ -350,6 +367,7 @@ export function createJobsHttp(deps: JobsDeps) {
           generativeHash = longform ? longformBriefHash(brief as any) : generativeBriefHash(brief as any)
           const storedBrief = await putAddressed(deps.blobs, 'generative-briefs', brief)
           generativeBriefRef = storedBrief.path
+          reuseActive = !(brief as any).remaster
           sourceAssetId = `${longform ? 'src_genlf_' : 'src_gen_'}${generativeHash.slice(0,32)}`
         } else {
           sourceAssetId = matching(body.sourceAssetId, /^src_[A-Za-z0-9_]{8,120}$/, 'sourceAssetId is invalid')
@@ -389,7 +407,7 @@ export function createJobsHttp(deps: JobsDeps) {
           await putAddressed(deps.blobs,'production-briefs',bundle.brief)
         }
         if (generativeBriefRef) planRef = generativeBriefRef
-        const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, referenceProfileRef, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}|${referenceProfileHash}|${generativeHash}` })
+        const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, referenceProfileRef, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}|${referenceProfileHash}|${generativeHash}`, reuseActiveSamePlan: !!generativeBriefRef && reuseActive })
         // a derived Short is recorded on its parent (one child per candidate)
         const derivedParent = body.input?.derivedFrom === undefined && generativeBriefRef ? ((await deps.blobs.getJson(generativeBriefRef)) as any)?.derivedFrom : null
         if (derivedParent?.parentLongformJobId) {
