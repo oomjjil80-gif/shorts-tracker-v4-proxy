@@ -16,6 +16,7 @@ import { thumbnailArgv, LONGFORM_THUMB, type ThumbLine } from '../../lib/generat
 import { imageStyleFeatures, styleApprovalRef, styleDistance, styleFeatureText, textureDistance, thumbnailCopyIssues, thumbnailImageIssues, STYLE_JUDGE_MIN, STYLE_MATCH, TEXTURE_MATCH, type StyleApprovalRecord, type StyleFeatures, type StyleJudge, type StyleJudgement } from '../../lib/generative/styleApproval.js'
 import type { GeneratedBinary } from '../../lib/generative/providers.js'
 import { StageError } from '../types.js'
+import { composeTitleThumbnail, normTitle } from '../../lib/generative/titleThumbnail.js'
 import { styleExamplePrompt, type StyleExample } from '../../lib/generative/styleExamples.js'
 
 export type DrawFn = (prompt: string, apiKey: string) => Promise<GeneratedBinary>
@@ -47,28 +48,26 @@ export async function styleGate(o: { jobId: string; blobs: JobBlobStore; script:
   if (!o.apiKey) throw new StageError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured', true)
   const work = await mkdtemp(join(tmpdir(), 'style-gate-'))
   try {
-    // the copy: checked; rewritten ONCE when it fails (the story's own click line, never the answer)
-    let lines: ThumbLine[] = o.script?.thumbnail?.lines ?? [], copyIssues = thumbnailCopyIssues(o.script, o.profile)
-    if (copyIssues.length && o.copyWriter) {
-      const again = await o.copyWriter(o.script, copyIssues, o.apiKey).catch(() => null)
-      if (Array.isArray(again)) { const left = thumbnailCopyIssues({ ...o.script, thumbnail: { lines: again } }, o.profile); if (left.length < copyIssues.length) { lines = again; copyIssues = left } }
-    }
+    // the words: the video's final title, exactly (never rewritten, shortened or summarised) — see titleThumbnail.ts
+    const title = normTitle(o.script?.title)
+    if (!title) throw new StageError('THUMB_TITLE_MISSING', 'the script has no title for the thumbnail', false)
+    let lines: ThumbLine[] = [], copyIssues: string[] = []
     // the picture: one background, the copy composited as real text (1280x720); a blank / too dark picture is drawn once more
     // the style the user chose, as the real example picture (image edit): the thumbnail starts in exactly that look
     let example: StyleExample | null = null
     try { example = o.example ? await o.example() : null }
     catch (e: any) { throw new StageError('STYLE_EXAMPLE_MISSING', `STYLE_EXAMPLE_MISSING: ${String(e?.message || e)}`, false) }
     if (example && !o.drawRef) throw new StageError('STYLE_EXAMPLE_MISSING', 'the style example needs the reference image drawer', false)
-    const env = await fontsEnv(work)
     let bg: GeneratedBinary | null = null, imageIssues: string[] = [], thumbBytes: Buffer | null = null
     for (let t = 0; t < 2; t++) {
       if (o.signal?.aborted) throw new Error('aborted')
       bg = example ? await o.drawRef!(styleExamplePrompt(o.backgroundPrompt), example.bytes, o.apiKey) : await o.draw(o.backgroundPrompt, o.apiKey)
-      const bgPath = join(work, `bg${t}.jpg`), thumb = join(work, `thumb${t}.jpg`), ass = join(work, `thumb${t}.ass`)
-      await writeFile(bgPath, bg.bytes)
-      const a = thumbnailArgv({ image: bgPath, lines, assPath: ass, fontsDir: FONTS_DIR, out: thumb, canvas: LONGFORM_THUMB })
-      await writeFile(ass, a.ass, 'utf8'); await runOk(a.argv, { env })
-      thumbBytes = await readFile(thumb); imageIssues = await thumbnailImageIssues(thumb)
+      const bgPath = join(work, `bg${t}.jpg`); await writeFile(bgPath, bg.bytes)
+      // a muddy / too dark / blank background is drawn once more (measured on the picture itself, no AI)
+      imageIssues = await thumbnailImageIssues(bgPath)
+      let tt: Awaited<ReturnType<typeof composeTitleThumbnail>>
+      try { tt = await composeTitleThumbnail({ background: bg.bytes, title }) } catch (e: any) { throw new StageError(e?.code || 'THUMB_TITLE_OVERFLOW', `${e?.code || 'THUMB_TITLE_OVERFLOW'}: ${String(e?.message || e)}`, false) }
+      thumbBytes = tt.bytes; lines = tt.lines.map((text, i) => ({ text, color: i === tt.lines.length - 1 && tt.lines.length > 1 ? 'yellow' : 'white' }))
       if (!imageIssues.length) break
     }
     const bgRef = `style-approval/images/${sha256(bg!.bytes)}.jpg`, thRef = `style-approval/thumbnails/${sha256(thumbBytes!)}.jpg`

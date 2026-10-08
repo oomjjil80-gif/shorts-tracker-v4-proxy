@@ -29,6 +29,8 @@ import { styleApprovalWanted } from '../../lib/generative/styleApproval.js'
 import { openAiThumbnailCopyWriter } from '../../lib/generative/thumbnailCopyWriter.js'
 import { openAiStyleJudge } from '../../lib/generative/styleJudge.js'
 import { loadStyleExample, styleExampleFor } from '../../lib/generative/styleExamples.js'
+import { composeTitleThumbnail, thumbnailBackgroundPrompt, titleSceneIndex } from '../../lib/generative/titleThumbnail.js'
+import { styleApprovalRef } from '../../lib/generative/styleApproval.js'
 import type { StyleJudge } from '../../lib/generative/styleApproval.js'
 import { uploadMetadataErrors } from '../../lib/generative/uploadPackage.js'
 import { ttsCacheIdentity } from '../../lib/generative/voiceProfile.js'
@@ -280,6 +282,15 @@ export async function subjectSide(imagePath: string): Promise<{ left: number; ri
 // mono WAV (exact measured length; ~1/4 of the old stereo temp size), and the concat timeout scales with the length.
 export const LONGFORM_LOUDNORM = NARRATION_LOUDNORM // the one narration engine's loudness pass
 export const longformConcatTimeoutMs = narrationConcatTimeoutMs
+// every Longform's delivered thumbnail: the approved background (style lock) or the video's own picture + the FINAL title
+export async function longformTitleThumbnail(o: { jobId: string; blobs: any; assets: any; title: string; picture: () => Promise<Buffer> }): Promise<Buffer> {
+  let bgRef: string | null = o.assets?.approvedThumbnail?.backgroundRef ?? null
+  if (o.assets?.approvedThumbnail?.ref && !bgRef) bgRef = (((await o.blobs.getJson(styleApprovalRef(o.jobId)).catch(() => null)) as any)?.approved?.backgroundRef) ?? null
+  const bg = bgRef ? await o.blobs.getBytes(bgRef) : await o.picture()
+  if (!bg) throw new StageError('THUMB_BACKGROUND_MISSING', `the approved thumbnail background ${bgRef} is missing`, false)
+  try { return (await composeTitleThumbnail({ background: bg, title: o.title })).bytes }
+  catch (e: any) { throw new StageError(e?.code || 'THUMB_TITLE_OVERFLOW', `${e?.code || 'THUMB_TITLE_OVERFLOW'}: ${String(e?.message || e)}`, false) }
+}
 export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver; imageRef?: DrawRefFn; copyWriter?: CopyWriter; styleJudge?: StyleJudge; styleExample?: typeof loadStyleExample } = {}): StageExecutor {
   const image = deps.image ?? openAiLongformImage, tts = deps.tts ?? openAiTts, apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? ''
   const imageRef = deps.imageRef ?? openAiImageWithReference
@@ -310,7 +321,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       const repIndex = scenes ? Math.min(sceneList.length - 1, Math.floor(sceneList.length * 0.4)) : -1
       let styleLock: StyleReference | null = null, approval: any = null
       if (styleApprovalWanted(job.profile, brief)) {
-        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, backgroundPrompt: scenes ? scenePrompts[repIndex] : prompt, draw: image, drawRef: imageRef, example: async () => { const k = styleExampleFor(sceneStyle?.id); return k ? (deps.styleExample ?? loadStyleExample)(k) : null }, copyWriter: deps.copyWriter ?? openAiThumbnailCopyWriter(), signal })
+        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, backgroundPrompt: thumbnailBackgroundPrompt(script.title, scenes ? scenePrompts[titleSceneIndex(script.title, sceneList.map((sc: any) => ({ id: sc.id, text: [sc.visual, sc.action, ...((script as any).sections ?? []).flatMap((x: any) => (x.sentences ?? []).filter((y: any) => y.scene === sc.id).map((y: any) => y.say))].join(' ') })), repIndex)] : prompt), draw: image, drawRef: imageRef, example: async () => { const k = styleExampleFor(sceneStyle?.id); return k ? (deps.styleExample ?? loadStyleExample)(k) : null }, copyWriter: deps.copyWriter ?? openAiThumbnailCopyWriter(), signal })
         if (gate.wait) return { result: { styleApproval: { status: 'pending', attempt: gate.record.attempts.length, thumbnailRef: gate.record.attempts.at(-1)?.thumbnailRef ?? null } }, wait: 'DECISION' }
         styleLock = gate.reference; approval = gate.record
       }
@@ -405,7 +416,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
         // a 2-hour narration is ~150 MB: hashed and uploaded as a stream, never read whole into memory
         const nsha = await sha256File(narration), narrationRef = `generative-assets/audio/${nsha}.m4a`
         await blobs.putFile(narrationRef, narration, 'audio/mp4')
-        const manifest = { schema: 'longform-assets/1', profile: job.profile, scriptRef, voiceProfileId: voice.id, ...(styleLock ? { approvedThumbnail: { ref: styleLock.thumbnailRef }, styleReference: { sha256: styleLock.sha, features: styleLock.features } } : {}), image: { ref: imageRef, sha256: imgSha, prompt, subjectSide: side, mirrored: side?.side === 'left' }, ...(scenes ? { images: sceneImages.map(({ bytes, ...x }) => x) } : {}), narration: { ref: narrationRef, sha256: nsha, seconds: narrationSeconds, loudness: LONGFORM_LOUDNORM }, chunks: parts }
+        const manifest = { schema: 'longform-assets/1', profile: job.profile, scriptRef, voiceProfileId: voice.id, ...(styleLock ? { approvedThumbnail: { ref: styleLock.thumbnailRef, backgroundRef: approval?.approved?.backgroundRef ?? null }, styleReference: { sha256: styleLock.sha, features: styleLock.features } } : {}), image: { ref: imageRef, sha256: imgSha, prompt, subjectSide: side, mirrored: side?.side === 'left' }, ...(scenes ? { images: sceneImages.map(({ bytes, ...x }) => x) } : {}), narration: { ref: narrationRef, sha256: nsha, seconds: narrationSeconds, loudness: LONGFORM_LOUDNORM }, chunks: parts }
         const stored = await putAddressed(blobs, 'generative-assets', manifest)
         return { outputRef: stored.path, outputHash: stored.sha256, result: { assetSpecRef: stored.path, images: scenes ? sceneImages.length : 1, chunks: parts.length, totalSeconds, voiceProfileId: voice.id, generated, reused }, provider: 'openai', model: 'gpt-image-1-mini+gpt-4o-mini-tts' }
       } finally { await rm(work, { recursive: true, force: true }) }
@@ -508,12 +519,9 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver;
       // click thumbnail: the same single image (figure RIGHT), the planner's re-written punch lines on the LEFT
       if (withThumbnail) {
         // the thumbnail the user approved (style lock) is THE thumbnail; otherwise it is composed here as before
-        const approvedThumb = assets.approvedThumbnail?.ref ? await blobs.getBytes(assets.approvedThumbnail.ref) : null
-        if (approvedThumb) await writeFile(thumb, approvedThumb)
-        else {
-          const t = thumbnailArgv({ image, lines: script.thumbnail.lines, assPath: thumbAss, fontsDir: FONTS_DIR, out: thumb, canvas: LONGFORM_THUMB })
-          await writeFile(thumbAss, t.ass, 'utf8'); await runOk(t.argv, { signal, env: ffmpegEnv })
-        }
+        // every Longform: the background (the approved one, else the video's own picture) + the video's FINAL title, exactly
+        await writeFile(thumb, await longformTitleThumbnail({ jobId: job.id, blobs, assets, title: script.title, picture: () => readFile(image) }))
+        void thumbAss
       }
       // fatal-only output checks (broken file / wrong canvas / missing narration / wrong length)
       const info = await probe(out), tinfo = withThumbnail ? await probe(thumb) : null

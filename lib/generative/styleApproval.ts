@@ -119,8 +119,10 @@ export function styleFeatureText(f: StyleFeatures): string {
 // mobile check of a composed thumbnail: not blank, not too dark, readable (no AI)
 export async function thumbnailImageIssues(path: string): Promise<string[]> {
   const f = await imageStyleFeatures(path), e: string[] = []
-  if (f.brightness < 35) e.push('image.too_dark')
-  if (f.contrast < 12) e.push('image.flat_or_blank')
+  if (f.brightness < 70) e.push('image.too_dark')
+  if (f.contrast < 18) e.push('image.flat_or_blank')
+  // muddy: little colour AND not bright (the grey-brown haze a thumbnail must not have)
+  if (f.saturation < 0.16 && f.brightness < 120) e.push('image.muddy')
   return e
 }
 export const readBytes = (p: string) => readFile(p)

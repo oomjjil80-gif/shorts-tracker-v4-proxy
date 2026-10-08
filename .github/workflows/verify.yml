@@ -38,7 +38,7 @@ jobs:
           NON_TEST="$(printf '%s\n' "$CHANGED" | grep -Ev '^(tools/.*\.test\.(ts|mjs)|\.github/workflows/verify\.yml)$' || true)"
           TESTS="$(printf '%s\n' "$CHANGED" | grep -E '^tools/.*\.test\.(ts|mjs)$' || true)"
           WORKFLOW_ONLY="$(printf '%s\n' "$CHANGED" | grep -Ev '^\.github/workflows/verify\.yml$' || true)"
-          YADAM_STYLE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/visualStyle\.ts|lib/generative/creativeProfile\.ts|lib/generative/longform\.ts|lib/generative/yasaPlanner\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|lib/generative/voiceProfile\.ts|lib/generative/yasaLongform\.ts|lib/generative/styleApproval\.ts|lib/generative/thumbnailCopyWriter\.ts|lib/generative/providers\.ts|worker/stages/styleGate\.ts|worker/runJob\.ts|worker/index\.ts|lib/generative/usageLedger\.ts|tools/cost-ledger\.test\.ts|lib/generative/styleJudge\.ts|tools/style-match\.test\.ts|assets/style-examples/yadam/[a-z_]+\.jpg|lib/generative/styleExamples\.ts|tools/style-example\.test\.ts|worker/stages/longform\.ts|tools/creative-profile\.test\.ts|tools/creative-all-content\.test\.ts|tools/yasa-longform-job\.test\.ts|tools/make-yadam-style-previews\.ts|\.github/workflows/verify\.yml)$' || true)"
+          YADAM_STYLE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/visualStyle\.ts|lib/generative/creativeProfile\.ts|lib/generative/longform\.ts|lib/generative/yasaPlanner\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|lib/generative/voiceProfile\.ts|lib/generative/yasaLongform\.ts|lib/generative/styleApproval\.ts|lib/generative/thumbnailCopyWriter\.ts|lib/generative/providers\.ts|worker/stages/styleGate\.ts|worker/runJob\.ts|worker/index\.ts|lib/generative/usageLedger\.ts|tools/cost-ledger\.test\.ts|lib/generative/styleJudge\.ts|tools/style-match\.test\.ts|assets/style-examples/yadam/[a-z_]+\.jpg|lib/generative/styleExamples\.ts|lib/generative/titleThumbnail\.ts|tools/title-thumbnail\.test\.ts|tools/wisdom-longform\.test\.ts|tools/style-example\.test\.ts|worker/stages/longform\.ts|tools/creative-profile\.test\.ts|tools/creative-all-content\.test\.ts|tools/yasa-longform-job\.test\.ts|tools/make-yadam-style-previews\.ts|\.github/workflows/verify\.yml)$' || true)"
 
           if [ -z "$LONGFORM_RENDER_OTHER" ]; then
             echo "mode=longform-render" >> "$GITHUB_OUTPUT"
@@ -77,7 +77,7 @@ jobs:
             tools/creative-profile.test.ts \
             tools/creative-all-content.test.ts \
             tools/longform-voice.test.ts \
-            tools/yasa-longform-job.test.ts tools/style-match.test.ts tools/style-example.test.ts tools/cost-ledger.test.ts \
+            tools/yasa-longform-job.test.ts tools/style-match.test.ts tools/style-example.test.ts tools/title-thumbnail.test.ts tools/cost-ledger.test.ts \
             tools/wisdom-longform.test.ts \
             tools/jobs-api.test.ts \
             tools/jobs-store.test.ts
