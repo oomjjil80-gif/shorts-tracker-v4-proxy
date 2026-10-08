@@ -7,6 +7,7 @@ import { createJobStore } from '../lib/jobs/store.js'
 import { createVercelJobBlobStore } from '../lib/jobs/blobs.js'
 import { getSourceAsset } from '../lib/sourceAssetRegistry.js'
 import { runOnce } from './runJob.js'
+import { runStyleExamplesOnce } from './oneoffStyleExamples.js'
 import { installUsageMeter } from '../lib/generative/usageLedger.js'
 import { runStartupRechecks } from './startupRechecks.js'
 import { get as blobGet } from '../lib/objectStorage.js'
@@ -65,6 +66,8 @@ async function main() {
   }
 
   const blobs = createVercelJobBlobStore()
+  // ONE-OFF (operator, STYLE_EXAMPLES_RUN): the candidate 그림체 example pictures, in the background; never touches jobs
+  void runStyleExamplesOnce({ env: process.env, blobs, workerId, log: (line) => console.log(`[worker ${workerId}] ${line}`) }).catch((e) => console.log(`[worker ${workerId}] [style-examples] stopped: ${String(e?.message || e).replace(/sk-[A-Za-z0-9_-]+/g, '[key]')}`))
   const verifyFinalJobId = String(process.env.FINAL_VERIFY_JOB_ID || '').trim()
   if (verifyFinalJobId) {
     try {
