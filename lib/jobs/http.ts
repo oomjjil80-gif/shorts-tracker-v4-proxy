@@ -42,7 +42,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -157,7 +157,7 @@ export function createJobsHttp(deps: JobsDeps) {
         try { const r = await voicePreview(input); return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache }) }
         catch (e: any) { if (e instanceof PreviewError) throw new JobError(e.code as any, e.message); throw e }
       }
-      const expectedMethod = taskType === 'job_get' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' ? 'GET' : 'POST'
+      const expectedMethod = taskType === 'job_get' || taskType === 'job_list' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' ? 'GET' : 'POST'
       if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)
       if (req.method !== expectedMethod) throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires ${expectedMethod}`)
 
@@ -218,7 +218,20 @@ export function createJobsHttp(deps: JobsDeps) {
         const id = need(String(req.query?.id || ''), 'id is required')
         const job = await store.getJob(id, workspaceId)
         if (!job) throw new JobError('NOT_FOUND', 'job not found')
-        return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)) })
+        // a remaster child names its source job (the screen links back to it)
+        const brief: any = job.planRef ? await deps.blobs.getJson(job.planRef).catch(() => null) : null
+        return res.status(200).json({ ok: true, job: { ...view(job, await store.listStageRuns(job.id)), remasterOf: brief?.remaster?.sourceJobId ?? null } })
+      }
+
+      // this workspace's jobs, newest first: id, kind, state, title (the brief's topic) and the source of a remaster.
+      // The phone merges it into its own list, so a finished job on the server is never lost from the screen.
+      if (taskType === 'job_list') {
+        const jobs = await store.listJobs(workspaceId, Number(req.query?.limit) || 50)
+        const out = await Promise.all(jobs.map(async (j) => {
+          const brief: any = getProfile(j.profile).input !== 'source_asset' ? (j.planRef ? await deps.blobs.getJson(j.planRef).catch(() => null) : null) : null
+          return { id: j.id, profile: j.profile, status: j.status, stage: j.stage, sourceAssetId: j.sourceAssetId, createdAt: j.createdAt, updatedAt: j.updatedAt, title: typeof brief?.text === 'string' ? brief.text.slice(0, 80) : null, remasterOf: brief?.remaster?.sourceJobId ?? null }
+        }))
+        return res.status(200).json({ ok: true, jobs: out })
       }
 
       const body: any = input
