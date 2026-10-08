@@ -90,6 +90,12 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       return { job, created: false }
     },
 
+    // this workspace's jobs, newest first (the phone keeps only a local list; this is how it finds them again)
+    async listJobs(workspaceId: string, limit = 50): Promise<Job[]> {
+      const r = await db.query('SELECT * FROM production_jobs WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT $2', [workspaceId, Math.max(1, Math.min(200, Math.floor(limit)))])
+      return r.rows.map(mapJob)
+    },
+
     async getJobByIdempotencyKey(workspaceId: string, idempotencyKey: string): Promise<Job | null> {
       const r = await db.query('SELECT * FROM production_jobs WHERE workspace_id = $1 AND idempotency_key = $2', [workspaceId, idempotencyKey])
       return r.rows[0] ? mapJob(r.rows[0]) : null

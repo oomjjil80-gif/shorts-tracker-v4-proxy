@@ -439,3 +439,26 @@ test('REMASTER RETRY: the same remaster after a FAILED child makes a NEW child j
   const brief: any = await blobs.getJson((await store.getJob(b.json.job.id))!.planRef!)
   assert.equal(brief.remaster.sourceJobId, sourceId)
 })
+
+test('JOB LIST: the server lists this workspace\'s jobs (a COMPLETE source + its FAILED remaster child), never another workspace\'s; job_get names a child\'s source', async () => {
+  const db: any = await createTestDb(), store = createJobStore(db), blobs: any = createMemoryBlobStore()
+  const handler = createJobsHttp({ getStore: async () => store, blobs, sourceExists: async () => true })
+  const call = async (method: string, o: { body?: any; query?: any; key?: string } = {}) => { let status = 0, json: any = null; const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } }; await handler({ method, headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': o.key ?? KEY }, query: o.query || {}, body: o.body } as any, res); return { status, json } }
+  const src = await call('POST', { body: { taskType: 'job_create', profile: 'yasa_longform', idempotencyKey: 'yadam-list-src-01', budgetUsd: 5, input: { kind: 'topic', text: TOPIC, targetSeconds: SECONDS } } })
+  const sourceId = src.json.job.id
+  await runOnce({ store, blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner({}) as any })]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
+  await db.query(`UPDATE production_jobs SET status = 'COMPLETE', stage = 'PACKAGE' WHERE id = $1`, [sourceId])
+  const child = await call('POST', { body: { taskType: 'job_remaster', sourceJobId: sourceId, changes: { visualStyleProfile: 'webtoon_historical', refreshColdOpen: true } } })
+  await db.query(`UPDATE production_jobs SET status = 'FAILED' WHERE id = $1`, [child.json.job.id])
+  await call('POST', { key: 'z'.repeat(32), body: { taskType: 'job_create', profile: 'yasa_longform', idempotencyKey: 'other-ws-job-01', budgetUsd: 5, input: { kind: 'topic', text: '다른 작업 공간의 이야기', targetSeconds: SECONDS } } })
+  const list = await call('GET', { query: { taskType: 'job_list' } })
+  assert.equal(list.status, 200, JSON.stringify(list.json))
+  const byId = new Map(list.json.jobs.map((j: any) => [j.id, j]))
+  assert.equal(list.json.jobs.length, 2, 'only this workspace')
+  const s: any = byId.get(sourceId), c: any = byId.get(child.json.job.id)
+  assert.deepEqual([s.status, s.profile, s.title, s.remasterOf], ['COMPLETE', 'yasa_longform', TOPIC, null])
+  assert.deepEqual([c.status, c.remasterOf], ['FAILED', sourceId])
+  assert.equal((await call('GET', { query: { taskType: 'job_get', id: child.json.job.id } })).json.job.remasterOf, sourceId)
+  assert.equal((await call('GET', { query: { taskType: 'job_get', id: sourceId } })).json.job.remasterOf, null)
+  assert.equal((await call('POST', { body: { taskType: 'job_list' } })).status, 405, 'GET only')
+})
