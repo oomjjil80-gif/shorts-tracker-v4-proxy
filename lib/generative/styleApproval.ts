@@ -29,7 +29,7 @@ export type StyleFeatures = { brightness: number; saturation: number; contrast: 
 export type StyleApprovalRecord = {
   schema: 'style-approval/1'
   status: 'pending' | 'approved'
-  attempts: Array<{ n: number; backgroundRef: string; thumbnailRef: string; lines: ThumbLine[]; copyIssues: string[]; imageIssues: string[]; at: string }>
+  attempts: Array<{ n: number; backgroundRef: string; thumbnailRef: string; lines: ThumbLine[]; copyIssues: string[]; imageIssues: string[]; example?: { style: string; file: string; sha: string }; at: string }>
   regenerate?: boolean
   redrawRepresentative?: boolean
   approved?: { n: number; backgroundRef: string; thumbnailRef: string; features: StyleFeatures; at: string }
