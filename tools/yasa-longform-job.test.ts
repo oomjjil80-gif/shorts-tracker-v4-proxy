@@ -17,7 +17,7 @@ import { runOnce } from '../worker/runJob.js'
 import { runOk, probe } from '../lib/media/ffmpeg.js'
 import { withLongform, createLongformPlanExecutor, createLongformAssetExecutor, longformRenderExecutor, longformPackageExecutor } from '../worker/stages/longform.js'
 import { LONGFORM, normalizeLongformBrief, longformRemasterBrief, sentencesOf, cardTimeline, validateLongformScript, longformCardsAss, yasaCaptionChunks, yasaCaptionsAss } from '../lib/generative/longform.js'
-import { YASA_ACTS, YASA_REVEAL_ACT, YASA_REVEAL_WINDOW, COLD_OPEN, YADAM_STORYTELLER, yasaActChars, yasaRevealAt, yasaScriptErrors, coldOpenErrors, revealWords, coldOpenCandidates } from '../lib/generative/yasaLongform.js'
+import { YASA_ACTS, YASA_REVEAL_ACT, YASA_REVEAL_WINDOW, COLD_OPEN, YADAM_STORYTELLER, yasaActChars, yasaRevealAt, yasaScriptErrors, coldOpenErrors, revealWords, coldOpenCandidates, coldOpenRejections } from '../lib/generative/yasaLongform.js'
 import { characterLine, sceneRuns, seniorVideoArgv } from '../lib/generative/seniorLongform.js'
 import { VISUAL_STYLE_PROFILES } from '../lib/generative/visualStyle.js'
 import { PROFILES } from '../lib/jobs/profiles.js'
@@ -231,10 +231,13 @@ test('YADAM checks: opening, prop in the reveal, reveal 80~92%, lecture ending, 
   // a cold open that gives the answer away is repaired once, then fails
   const leak: Record<string, any[]> = {}
   await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner(leak, { coldOpen: () => ({ sentences: COLD.map(([scene, s], i) => ({ scene, say: i === 5 ? '그 메주 속에는 금가락지와 땅문서가 들어 있었다.' : s, show: ['썩은 메주', '왜?'], accent: '썩은 메주', color: 'red' })) }) }) as any }).run(ctx()), (e: any) => e.code === 'COLD_OPEN_INVALID' && /reveals_answer: .*(금가락지|땅문서)/.test(e.message))
-  assert.equal(leak.coldOpen.length, 2); assert.equal(leak.dna, undefined, 'DNA reused'); assert.equal(leak.section.length, 8, 'each act written once (none had passed before)')
-  // the retry reuses the stored DNA + outline + acts; only the cold open is written again
+  assert.equal(leak.coldOpen.length, 3, 'up to 3 tries per stage attempt'); assert.equal(leak.dna, undefined, 'DNA reused'); assert.equal(leak.section.length, 8, 'each act written once (none had passed before)')
+  // the retry reuses the stored DNA + outline + acts; only the cold open is written again — told what was refused (the
+  // scene that carried the answer three times is replaced)
   const again: Record<string, any[]> = {}
-  const out: any = await createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner(again) as any }).run(ctx())
+  const told: any[] = []
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner(again, { coldOpen: (i: any) => { told.push(i.rejected); return { sentences: COLD.map(([scene, s]) => ({ scene: i.rejected.avoidScenes.includes(scene) ? 'a4s2' : scene, say: s, show: ['썩은 메주', '왜'], accent: '썩은 메주', color: 'red' })) } } }) as any }).run(ctx())
+  assert.deepEqual(told[0].avoidScenes, ['a5s2']); assert.ok(told[0].terms.length > 0)
   assert.deepEqual([again.dna, again.outline, again.section, again.coldOpen?.length], [undefined, undefined, undefined, 1])
   const script: any = await blobs.getJson(out.result.scriptRef)
   assert.deepEqual(validateLongformScript(script, brief), [])
@@ -367,4 +370,47 @@ test('YADAM quality: cold open from the middle (never the first 10% / the reveal
   assert.ok(childPrompts.length > 0 && childPrompts.every((p) => p.includes(VISUAL_STYLE_PROFILES.webtoon_historical.promptPrefix)))
   // the source job keeps its own script
   assert.equal(((await store.listStageRuns(sourceId)).find((r: any) => r.stage === 'PLAN' && r.status === 'SUCCEEDED') as any).result.scriptRef, splan.result.scriptRef)
+})
+
+test('COLD OPEN REPAIR MEMORY: a refused answer word, sentence and scene are carried into every next attempt (also across stage retries); same word twice -> the scene is replaced; the checks stay as strict', async () => {
+  const blobs: any = createMemoryBlobStore()
+  const brief = normalizeLongformBrief({ kind: 'topic', text: TOPIC, targetSeconds: SECONDS }, 'yasa_longform')
+  const stored = await putAddressed(blobs, 'generative-briefs', brief)
+  const job = { id: 'ymem', profile: 'yasa_longform', planRev: 1, planRef: stored.path }
+  const ctx = () => ({ job, blobs, previous: async () => null, signal: new AbortController().signal } as any)
+  const word = revealWords(DNA)[0] // a word of the answer (never allowed in a cold open)
+  const beats = (leakAt: number | null, scene3 = 'a5s1') => COLD.map(([scene, s], i) => ({ scene: i === 3 ? scene3 : scene, say: i === leakAt ? `${s.slice(0, -1)} ${word}.` : s, show: ['썩은 메주', '왜'], accent: '썩은 메주', color: 'red' }))
+  const seen: any[] = []
+  // A: try 1 leaks the word, try 2 leaks it AGAIN on the same scene, try 3 (given the memory) uses another middle scene
+  const plan: any = fakePlanner({}, { coldOpen: (i: any) => { seen.push(i.rejected); const n = seen.length; return { sentences: n <= 2 ? beats(3) : beats(null, i.rejected.avoidScenes.includes('a5s1') ? 'a4s2' : 'a5s1') } } })
+  const out: any = await createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: plan }).run(ctx())
+  assert.equal(seen.length, 3, 'FAIL, FAIL, PASS within one stage attempt')
+  // B: what the next attempt was told
+  assert.deepEqual([seen[0].terms, seen[0].sentences], [[], []], 'the first attempt has nothing to avoid')
+  assert.deepEqual(seen[1].terms, [word]); assert.ok(seen[1].sentences.some((x: string) => x.includes(word))); assert.deepEqual(seen[1].avoidScenes, [], 'one failure: the wording changes')
+  assert.deepEqual(seen[2].terms, [word]); assert.deepEqual(seen[2].avoidScenes, ['a5s1'], 'the same word twice: the scene that carried it is replaced')
+  const script: any = await blobs.getJson(out.result.scriptRef)
+  assert.equal(script.coldOpen.sentences[3].scene, 'a4s2'); assert.ok(!script.coldOpen.sentences.some((x: any) => x.say.includes(word)))
+  assert.deepEqual(validateLongformScript(script, brief), [], 'the passing cold open meets every rule')
+
+  // B (across stage retries): every try of a stage attempt fails -> the NEXT stage attempt starts with that memory
+  const blobs2: any = createMemoryBlobStore(), stored2 = await putAddressed(blobs2, 'generative-briefs', brief)
+  const ctx2 = () => ({ job: { ...job, id: 'ymem2', planRef: stored2.path }, blobs: blobs2, previous: async () => null, signal: new AbortController().signal } as any)
+  const first: any[] = []
+  await assert.rejects(() => createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner({}, { coldOpen: (i: any) => { first.push(i.rejected); return { sentences: beats(3) } } }) as any }).run(ctx2()), (e: any) => e.code === 'COLD_OPEN_INVALID' && e.message.includes(`reveals_answer: ${word}`) && e.retryable)
+  assert.equal(first.length, 3)
+  const retry: any[] = []
+  const again: any = await createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner({}, { coldOpen: (i: any) => { retry.push(i.rejected); return { sentences: beats(null, i.rejected.avoidScenes.includes('a5s1') ? 'a4s2' : 'a5s1') } } }) as any }).run(ctx2())
+  assert.equal(retry.length, 1); assert.deepEqual([retry[0].terms, retry[0].avoidScenes], [[word], ['a5s1']], 'the stage retry knows what was refused before')
+  assert.ok(again.result.scriptRef)
+
+  // C: the checks are as strict as before — the same leak is refused with or without memory, an avoided scene too
+  const ids = new Set<string>(script.sections.flatMap((s: any) => s.scenes.map((x: any) => x.id))), main = script.sections.flatMap((s: any) => s.sentences.map((x: any) => x.say))
+  const co = (sents: any[], avoid?: Set<string>) => coldOpenErrors(sents, { dna: DNA, sceneIds: ids, mainSentences: main, speed: 1, charsPerSecond: LONGFORM.charsPerSecond, candidates: coldOpenCandidates(script.sections), avoidScenes: avoid }).join(';')
+  assert.match(co(beats(3)), new RegExp(`reveals_answer: ${word}`))
+  assert.match(co(beats(null), new Set(['a5s1'])), /cold_open\[3\]\.scene a5s1: rejected before/)
+  assert.equal(co(beats(null, 'a4s2'), new Set(['a5s1'])), '')
+  // never narrowed below what a cold open needs: with too few scenes left the scene rule is not applied (the wording rules are)
+  const r = coldOpenRejections([{ errors: [`cold_open.reveals_answer: ${word}`], sentences: beats(3) }, { errors: [`cold_open.reveals_answer: ${word}`], sentences: beats(3) }], { allowed: new Set(['a5s1', 'a4s2']) })
+  assert.deepEqual([r.terms, [...r.avoidScenes]], [[word], []])
 })

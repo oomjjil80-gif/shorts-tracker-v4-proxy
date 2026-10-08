@@ -7,7 +7,7 @@ import { openAiLongformPlanner, respond, repairNote, str, CARD_COLORS, CARD_RULE
 import { YASA_ACTS, COLD_OPEN, yasaScenesFor } from './yasaLongform.js'
 import { YASA_STORY_DNA_SCHEMA, yasaPlanInstructions, yasaScriptBrief } from '../story/yasaStoryDna.js'
 
-export type YasaColdOpenInput = { brief: LongformBrief; outline: any; sections: Array<{ id: string; heading: string; scenes: any[]; sentences: any[] }>; candidates?: Array<{ id: string; at: number; act: number; preferred: boolean }>; targetChars: number; repair?: string[] }
+export type YasaColdOpenInput = { brief: LongformBrief; outline: any; sections: Array<{ id: string; heading: string; scenes: any[]; sentences: any[] }>; candidates?: Array<{ id: string; at: number; act: number; preferred: boolean }>; targetChars: number; repair?: string[]; rejected?: { terms: string[]; sentences: string[]; scenes: string[]; avoidScenes?: string[] } }
 export type YasaPlanner = LongformPlanner & {
   dna: (brief: LongformBrief, apiKey: string, repair?: string[]) => Promise<any>
   coldOpen: (i: YasaColdOpenInput, apiKey: string) => Promise<{ sentences: any[] }>
@@ -60,12 +60,13 @@ export const openAiYasaPlanner = (f: typeof fetch = fetch): YasaPlanner => ({
     return respond(apiKey, 'yasa_longform_act', schema, instructions, input + repairNote(repair), f)
   },
   // the COLD OPEN: written after the main story, over the main story's own pictures (no new image), never the answer
-  async coldOpen({ brief, outline, sections, candidates, targetChars, repair }, apiKey) {
+  async coldOpen({ brief, outline, sections, candidates, targetChars, repair, rejected }, apiKey) {
     const dna = dnaOf(brief), all = sections.flatMap((s) => s.scenes)
     // only the allowed scenes (past the first 10%, before the reveal), the story's middle (15~65%) listed first
     const ok = candidates?.length ? candidates : all.map((x: any) => ({ id: String(x.id), at: 0, act: 0, preferred: false }))
     const byId = new Map(all.map((x: any) => [String(x.id), x]))
-    const scenes = [...ok.filter((c) => c.preferred), ...ok.filter((c) => !c.preferred)].map((c) => ({ ...byId.get(c.id), id: c.id, preferred: c.preferred, at: c.at })).filter((x: any) => x.place !== undefined)
+    const skip = new Set(rejected?.avoidScenes ?? [])
+    const scenes = [...ok.filter((c) => c.preferred && !skip.has(c.id)), ...ok.filter((c) => !c.preferred && !skip.has(c.id))].map((c) => ({ ...byId.get(c.id), id: c.id, preferred: c.preferred, at: c.at })).filter((x: any) => x.place !== undefined)
     const schema = { type: 'object', additionalProperties: false, required: ['sentences'], properties: { sentences: { type: 'array', minItems: COLD_OPEN.beats.min, maxItems: COLD_OPEN.beats.max, items: { type: 'object', additionalProperties: false, required: ['scene', 'say', 'show', 'accent', 'color'], properties: { scene: { type: 'string', enum: scenes.map((x: any) => x.id) }, say: str, show: { type: 'array', minItems: 2, maxItems: 3, items: str }, accent: str, color: { type: 'string', enum: CARD_COLORS } } } } } }
     const instructions = [
       `You write the COLD OPEN of the 숨은야담 drama "${outline.title}": the first ${COLD_OPEN.seconds.min}~${COLD_OPEN.seconds.max} seconds, BEFORE the main story starts. ${VOICE}`,
@@ -76,7 +77,16 @@ export const openAiYasaPlanner = (f: typeof fetch = fetch): YasaPlanner => ({
       yasaScriptBrief(dna, 'longform')
     ].join('\n')
     const input = [`Story: ${brief.text}`, `Main story scenes you may use (pick from these only): ${scenes.map((x: any) => `${x.id}${x.preferred ? ' [middle]' : ''}: ${x.place}, ${x.time}, ${x.action} (${x.mood})`).join(' | ')}`, `Main story acts: ${sections.map((x) => x.heading).join(' / ')}`].join('\n')
-    return respond(apiKey, 'yasa_longform_cold_open', schema, instructions, input + repairNote(repair), f)
+    // earlier attempts the checks refused (kept across retries): their answer words, sentences and scenes never come back
+    const avoid = new Set(rejected?.avoidScenes ?? [])
+    const memory = rejected && (rejected.terms.length || rejected.sentences.length) ? [
+      '\n[REJECTED BEFORE — the checks refused these earlier cold opens; do not repeat them]',
+      ...(rejected.terms.length ? [`- These words give the answer away: ${rejected.terms.map((t) => `"${t}"`).join(', ')}. Never use them, any form of them, or any expression tied to the reveal / answer (the ending, the solution, the true meaning, how it is resolved).`] : []),
+      ...(rejected.scenes.length ? [`- These scenes carried the answer: ${rejected.scenes.join(', ')}. ${avoid.size ? `Do NOT use ${[...avoid].join(', ')} at all; pick other safe middle scenes.` : 'Prefer other safe middle scenes.'}`] : []),
+      '- Do not reuse or lightly reword these rejected sentences; write new ones about other moments:',
+      ...rejected.sentences.slice(-12).map((x) => `  · ${x}`)
+    ].join('\n') : ''
+    return respond(apiKey, 'yasa_longform_cold_open', schema, instructions, input + repairNote(repair) + memory, f)
   },
   metadata: (i, apiKey) => openAiLongformPlanner(f).metadata(i, apiKey)
 })

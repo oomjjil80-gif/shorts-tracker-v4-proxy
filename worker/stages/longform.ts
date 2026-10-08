@@ -11,7 +11,7 @@ import { openAiLongformImage, openAiTts } from '../../lib/generative/providers.j
 import { openAiLongformPlanner, type LongformPlanner, type LongformOutline, type LongformSectionDraft, type LongformMetadataDraft } from '../../lib/generative/longformPlanner.js'
 import { openAiSeniorPlanner } from '../../lib/generative/seniorPlanner.js'
 import { openAiYasaPlanner, type YasaPlanner } from '../../lib/generative/yasaPlanner.js'
-import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaScenePrompt, coldOpenErrors, coldOpenCandidates } from '../../lib/generative/yasaLongform.js'
+import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaScenePrompt, coldOpenErrors, coldOpenCandidates, coldOpenRejections } from '../../lib/generative/yasaLongform.js'
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
 import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
@@ -125,17 +125,35 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}`)}`
       const made: string[] = [], reused: string[] = []
       // one checkpointed step: reuse the stored result, else make it (one free repair with the exact errors) and store it
-      async function step<T>(name: string, code: string, make: (repair?: string[]) => Promise<T>, errorsOf: (v: T) => string[]): Promise<T> {
+      // memory: every rejected attempt (its errors + what it wrote) is kept next to the checkpoint, ACROSS stage retries,
+      // and handed to the next attempt, so a refused answer word / sentence / scene is never produced again.
+      async function step<T>(name: string, code: string, make: (repair?: string[], history?: Array<{ errors: string[]; value: any }>) => Promise<T>, errorsOf: (v: T, history?: Array<{ errors: string[]; value: any }>) => string[], o: { tries?: number; memory?: boolean } = {}): Promise<T> {
+        const memRef = `${ck}/${name}.rejected.json`
+        const history: Array<{ errors: string[]; value: any }> = o.memory ? (((await blobs.getJson(memRef).catch(() => null)) as any)?.attempts ?? []) : []
         const hit = (await blobs.getJson(`${ck}/${name}.json`).catch(() => null)) as T | null
-        if (hit && !errorsOf(hit).length) { reused.push(name); return hit }
+        if (hit && !errorsOf(hit, history).length) { reused.push(name); return hit }
         let errs: string[] = []
-        for (let attempt = 0; attempt < 2; attempt++) {
+        for (let attempt = 0; attempt < (o.tries ?? 2); attempt++) {
           if (signal?.aborted) throw new Error('aborted')
-          try { const v = await make(attempt ? errs : undefined); errs = errorsOf(v); if (!errs.length) { await blobs.putJson(`${ck}/${name}.json`, v, { overwrite: true }); made.push(name); return v } }
+          let v: T | undefined
+          try { v = await make(attempt || history.length ? (errs.length ? errs : history.at(-1)?.errors) : undefined, history); errs = errorsOf(v, history); if (!errs.length) { await blobs.putJson(`${ck}/${name}.json`, v, { overwrite: true }); made.push(name); return v } }
           catch (e: any) { if (e?.stop) throw stopError(e); errs = [String(e?.message || e)] }
+          if (o.memory) { history.push({ errors: errs.slice(0, 30), value: v ?? null }); await blobs.putJson(memRef, { attempts: history.slice(-8) }, { overwrite: true }) }
         }
         // retryable: the stage retry resumes from the stored steps
         throw new StageError(code, `${name}: ${errs.slice(0, 20).join(', ')}`, true)
+      }
+      // 숨은야담 COLD OPEN (new script or a remaster refresh): only middle scenes before the reveal; up to 3 tries per stage
+      // attempt; every refused attempt is remembered (answer words, sentences, scenes) and kept out of the next one —
+      // after the same answer word leaks twice the scene that carried it is replaced, not just reworded. The checks
+      // themselves (coldOpenErrors) are the same for every attempt.
+      const coldOpenStep = (pb: any, outline: any, sections: any[], dna: any) => {
+        const speed = Number(brief.creative?.resolved?.voiceSpeed) || 1, sceneIds = new Set<string>(sections.flatMap((x: any) => x.scenes.map((y: any) => String(y.id))))
+        const mainSentences = sections.flatMap((x: any) => x.sentences.map((y: any) => String(y.say || '')))
+        const candidates = coldOpenCandidates(sections), targetChars = Math.round(COLD_OPEN.seconds.target * LONGFORM.charsPerSecond * speed)
+        const rejectionsOf = (h?: Array<{ errors: string[]; value: any }>) => coldOpenRejections((h ?? []).map((a) => ({ errors: a.errors, sentences: Array.isArray(a.value?.sentences) ? a.value.sentences : [] })), { allowed: candidates.allowed })
+        return step<any>('cold-open', 'COLD_OPEN_INVALID', (r, h) => { const rj = rejectionsOf(h); return (planner as YasaPlanner).coldOpen({ brief: pb, outline, sections, candidates: candidates.list, targetChars, repair: r, rejected: { terms: rj.terms, sentences: rj.sentences, scenes: rj.scenes, avoidScenes: [...rj.avoidScenes] } }, apiKey) },
+          (d, h) => [...sectionErrors(d), ...coldOpenErrors(d?.sentences, { dna, sceneIds, mainSentences, speed, charsPerSecond: LONGFORM.charsPerSecond, candidates, avoidScenes: rejectionsOf(h).avoidScenes })], { tries: 3, memory: true })
       }
       // Generic Longform REMASTER: every profile enters through the same child-job contract. The source script is
       // immutable and reused by default. Creative changes alter only cache identities downstream:
@@ -152,12 +170,8 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
           if (!apiKey) throw new StageError('PROVIDER_DOWN', 'the cold-open refresh needs the planner (OPENAI_API_KEY)', true)
           if (src.sections.length !== YASA_ACTS.length || !src.yasaStoryDNA) throw new StageError('REMASTER_SOURCE_INVALID', `source job ${remaster.sourceJobId} has no usable 숨은야담 story`, false)
           const pb: any = { ...brief, yasaStoryDNA: src.yasaStoryDNA }, sections = src.sections
-          const speed = Number(brief.creative?.resolved?.voiceSpeed) || 1, sceneIds = new Set<string>(sections.flatMap((x: any) => x.scenes.map((y: any) => String(y.id))))
-          const mainSentences = sections.flatMap((x: any) => x.sentences.map((y: any) => String(y.say || '')))
-          const candidates = coldOpenCandidates(sections), targetChars = Math.round(COLD_OPEN.seconds.target * LONGFORM.charsPerSecond * speed)
           const outline = { title: src.title, hook: src.hook, figure: src.figure, thumbnail: src.thumbnail, characters: src.characters, sections: sections.map((x: any) => ({ id: x.id, heading: x.heading, points: [], scenes: x.scenes })) }
-          const d = await step<any>('cold-open', 'COLD_OPEN_INVALID', (r) => (planner as YasaPlanner).coldOpen({ brief: pb, outline, sections, candidates: candidates.list, targetChars, repair: r }, apiKey),
-            (d) => [...sectionErrors(d), ...coldOpenErrors(d?.sentences, { dna: src.yasaStoryDNA, sceneIds, mainSentences, speed, charsPerSecond: LONGFORM.charsPerSecond, candidates })])
+          const d = await coldOpenStep(pb, outline, sections, src.yasaStoryDNA)
           script = { ...src, coldOpen: { sentences: d.sentences } }
         }
         const errors = validateLongformScript(script, brief)
@@ -203,13 +217,8 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       // 숨은야담: the COLD OPEN, written last over the main story's own pictures (45~60 s at the voice's speed, 5~8 beats)
       let coldOpen: any = null
       if (yasa) {
-        const speed = Number(brief.creative?.resolved?.voiceSpeed) || 1, sceneIds = new Set<string>(sections.flatMap((x: any) => x.scenes.map((y: any) => String(y.id))))
-        const mainSentences = sections.flatMap((x: any) => x.sentences.map((y: any) => String(y.say || '')))
-        const targetChars = Math.round(COLD_OPEN.seconds.target * LONGFORM.charsPerSecond * speed)
         // only scenes past the first 10% and before the reveal (the middle 15~65% first): never the opening told twice
-        const candidates = coldOpenCandidates(sections)
-        const d = await step<any>('cold-open', 'COLD_OPEN_INVALID', (r) => (planner as YasaPlanner).coldOpen({ brief: pbrief, outline, sections, candidates: candidates.list, targetChars, repair: r }, apiKey),
-          (d) => [...sectionErrors(d), ...coldOpenErrors(d?.sentences, { dna: pbrief.yasaStoryDNA, sceneIds, mainSentences, speed, charsPerSecond: LONGFORM.charsPerSecond, candidates })])
+        const d = await coldOpenStep(pbrief, outline, sections, pbrief.yasaStoryDNA)
         coldOpen = { sentences: d.sentences }
       }
       // a figure the topic names (the Buddha, a named thinker) stays that person (Wisdom); Senior: the main character
