@@ -133,7 +133,7 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
            SELECT id FROM production_jobs
            WHERE NOT cancel_requested AND stage = ANY($4::text[])
              AND (run_after IS NULL OR run_after <= $3::timestamptz)
-             AND (status='QUEUED' OR (status='RUNNING' AND lease_until < $3::timestamptz))
+             AND (status='QUEUED' OR (status='RUNNING' AND (lease_until IS NULL OR lease_until < $3::timestamptz)))
            ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
          RETURNING *`,
         [input.workerId, iso(until), iso(now), [...input.stages]])
