@@ -544,7 +544,7 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   assert.equal(STYLE_APPROVAL.wisdom.enabled, false, 'Wisdom Shorts LOCK untouched')
 })
 
-test('COST: a cold open that never passes stops at 6 paid tries for the job (was 9), acts are never written twice, every paid call is counted per run and per job, the same brief while it runs is one job', async () => {
+test('COST: a failing cold open keeps exactly its normal chances (9 = 3 stage attempts x 3) and never more on a re-queue; provider errors are not counted; acts are never written twice; every paid call is counted per run and per job, the same brief while it runs is one job', async () => {
   const { meteredFetch } = await import('../lib/generative/usageLedger.js')
   const oldPrices = process.env.OPENAI_PRICES_JSON
   process.env.OPENAI_PRICES_JSON = JSON.stringify({ 'gpt-5.6': { in: 1.25, cached: 0.125, out: 10 } })
@@ -566,13 +566,26 @@ test('COST: a cold open that never passes stops at 6 paid tries for the job (was
     const outcomes: string[] = []
     for (let i = 0; i < 5; i++) { const r: any = await tick(); if (!r.ran) break; outcomes.push(r.outcome) }
     assert.deepEqual(outcomes, ['retry', 'retry', 'failed'])
-    assert.equal(calls.coldOpen.length, 6, 'at most 6 paid cold-open tries for this job (3 stage attempts x 3 would be 9)')
+    assert.equal(calls.coldOpen.length, 9, 'the same chances as before the cap: completion rate unchanged')
     assert.deepEqual([calls.dna.length, calls.outline.length, calls.section.length], [1, 1, 8], 'DNA, outline and every act written once; retries reuse them')
     const j = (await call('GET', { query: { taskType: 'job_get', id: a.json.job.id } })).json.job
-    assert.equal(j.status, 'FAILED'); assert.match(j.error, /retry limit reached/)
-    assert.equal(j.cost.paidCalls, 16); assert.deepEqual(j.cost.byStage.PLAN, { paidCalls: 16, estUsd: 0.0928, attempts: 3 })
-    assert.deepEqual(j.cost.byModel['gpt-5.6'], { calls: 16, estUsd: 0.0928, outputTokens: 8000, reasoningTokens: 3200 }); assert.equal(j.cost.estUsd, 0.0928)
-    assert.deepEqual(j.runs.filter((r: any) => r.status === 'FAILED').map((r: any) => r.paidCalls), [10 + 3, 3, 0], JSON.stringify(j.runs))
+    assert.equal(j.status, 'FAILED'); assert.match(j.error, /COLD_OPEN|cold-open/)
+    assert.equal(j.cost.paidCalls, 19); assert.deepEqual(j.cost.byStage.PLAN, { paidCalls: 19, estUsd: 0.1102, attempts: 3 })
+    assert.deepEqual(j.cost.byModel['gpt-5.6'], { calls: 19, estUsd: 0.1102, outputTokens: 9500, reasoningTokens: 3800 }); assert.equal(j.cost.estUsd, 0.1102)
+    assert.deepEqual(j.runs.filter((r: any) => r.status === 'FAILED').map((r: any) => r.paidCalls), [10 + 3, 3, 3], JSON.stringify(j.runs))
+    // a 4th run of the same PLAN (an operator re-queue / a lease loss): the step has used its chances -> stops, pays nothing
+    const exec = createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner }), jobRow = await store.getJob(a.json.job.id)
+    await assert.rejects(() => exec.run({ job: jobRow, blobs, previous: async () => null, signal: new AbortController().signal } as any), (e: any) => /retry limit reached/.test(e.message) && e.retryable === false)
+    assert.equal(calls.coldOpen.length, 9, 'no paid call past the normal chances')
+    // provider errors (nothing answered) never use up a chance: 9 errors then a good cold open still completes
+    const blobs2: any = createMemoryBlobStore(), store2 = createJobStore(await createTestDb(), { retryBackoffMs: () => 0 })
+    const brief2 = normalizeLongformBrief(input, 'yasa_longform'), ref2 = (await putAddressed(blobs2, 'generative-briefs', brief2)).path
+    let errorsLeft = 9; const calls2: Record<string, any[]> = {}, p2: any = fakePlanner(calls2), okCold = p2.coldOpen
+    p2.coldOpen = async (x: any) => { if (errorsLeft-- > 0) throw new Error('OpenAI 503'); return okCold(x) }
+    const ctx2 = { job: { id: 'job-errors', profile: 'yasa_longform', planRev: 1, planRef: ref2 }, blobs: blobs2, previous: async () => null, signal: new AbortController().signal } as any
+    const e2 = createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: p2 })
+    for (let k = 0; k < 3; k++) await assert.rejects(() => e2.run(ctx2), (e: any) => e.retryable === true)
+    assert.ok((await e2.run(ctx2) as any).result.scriptRef, 'completes after transient errors'); void store2
     // a finished (failed) job no longer blocks the same brief: a new request makes a new job
     const c = await call('POST', { body: { taskType: 'job_create', profile: 'yasa_longform', idempotencyKey: 'cost-job-3', budgetUsd: 5, input } })
     assert.notEqual(c.json.job.id, a.json.job.id); assert.equal(c.json.created, true)

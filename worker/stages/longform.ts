@@ -32,6 +32,7 @@ import type { StyleJudge } from '../../lib/generative/styleApproval.js'
 import { uploadMetadataErrors } from '../../lib/generative/uploadPackage.js'
 import { ttsCacheIdentity } from '../../lib/generative/voiceProfile.js'
 import { StageError, type StageExecutor } from '../types.js'
+import { DEFAULT_MAX_ATTEMPTS } from '../../lib/jobs/store.js'
 import { profileFeatures, needFeatures, type FeatureResolver } from '../modules/features.js'
 import { cacheEntryIsCanonical } from '../../lib/generative/cache.js'
 import { guardedTts, clipToWav, assembleNarration, NARRATION_LOUDNORM, narrationConcatTimeoutMs, type TtsFn } from '../../lib/generative/narration.js'
@@ -138,16 +139,17 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         const hit = (await blobs.getJson(`${ck}/${name}.json`).catch(() => null)) as T | null
         if (hit && !errorsOf(hit, history).length) { reused.push(name); return hit }
         let errs: string[] = []
-        // paid tries of this step for THIS job, across stage retries: at most 2x the per-attempt tries (act 4, cold open 6,
-        // was 6 / 9 with three stage attempts); then the job stops instead of paying for the same failing step again
-        const triesRef = `${ck}/${name}.tries.${job.id}.json`, cap = (o.tries ?? 2) * 2
+        // answered (billed) tries of this step for THIS job, across every stage run: never more than the three normal stage
+        // attempts allow (act 6, cold open 9 — the same chances as before, so quality checks and completion are unchanged);
+        // a re-queue past that (recheck, lease loss, restart) stops instead of paying for the same failing step again.
+        // Provider errors / aborted calls returned nothing and do not count.
+        const triesRef = `${ck}/${name}.tries.${job.id}.json`, cap = (o.tries ?? 2) * DEFAULT_MAX_ATTEMPTS
         let spent = Number(((await blobs.getJson(triesRef).catch(() => null)) as any)?.paid ?? 0)
         for (let attempt = 0; attempt < (o.tries ?? 2); attempt++) {
           if (signal?.aborted) throw new Error('aborted')
           if (spent >= cap) throw new StageError(code, `${name}: retry limit reached (${spent} paid tries for this job): ${(errs.length ? errs : history.at(-1)?.errors ?? []).slice(0, 12).join(', ')}`, false)
-          spent++; await blobs.putJson(triesRef, { paid: spent }, { overwrite: true })
           let v: T | undefined
-          try { v = await make(attempt || history.length ? (errs.length ? errs : history.at(-1)?.errors) : undefined, history); errs = errorsOf(v, history); if (!errs.length) { await blobs.putJson(`${ck}/${name}.json`, v, { overwrite: true }); made.push(name); return v } }
+          try { v = await make(attempt || history.length ? (errs.length ? errs : history.at(-1)?.errors) : undefined, history); spent++; await blobs.putJson(triesRef, { paid: spent }, { overwrite: true }); errs = errorsOf(v, history); if (!errs.length) { await blobs.putJson(`${ck}/${name}.json`, v, { overwrite: true }); made.push(name); return v } }
           catch (e: any) { if (e?.stop) throw stopError(e); errs = [String(e?.message || e)] }
           if (o.memory) { history.push({ errors: errs.slice(0, 30), value: v ?? null }); await blobs.putJson(memRef, { attempts: history.slice(-8) }, { overwrite: true }) }
         }
