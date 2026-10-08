@@ -1,3 +1,7 @@
+import { styleApprovalRef, imageStyleFeatures } from '../generative/styleApproval.js'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Request, Response } from 'express'
 import { createHash } from 'node:crypto'
 import { canonicalize } from '../tracker-core/renderManifest.js'
@@ -42,7 +46,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -55,7 +59,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
   JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503,
-  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, PREREQUISITE_MISSING: 409
+  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409
 }
 
 const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
@@ -157,7 +161,7 @@ export function createJobsHttp(deps: JobsDeps) {
         try { const r = await voicePreview(input); return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache }) }
         catch (e: any) { if (e instanceof PreviewError) throw new JobError(e.code as any, e.message); throw e }
       }
-      const expectedMethod = taskType === 'job_get' || taskType === 'job_list' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' ? 'GET' : 'POST'
+      const expectedMethod = taskType === 'job_get' || taskType === 'job_list' || taskType === 'job_style' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' ? 'GET' : 'POST'
       if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)
       if (req.method !== expectedMethod) throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires ${expectedMethod}`)
 
@@ -223,6 +227,24 @@ export function createJobsHttp(deps: JobsDeps) {
         return res.status(200).json({ ok: true, job: { ...view(job, await store.listStageRuns(job.id)), remasterOf: brief?.remaster?.sourceJobId ?? null } })
       }
 
+      // THUMBNAIL FIRST: the thumbnail waiting for approval (or the approved one) and the representative check, for the phone
+      if (taskType === 'job_style') {
+        const id = need(String(req.query?.id || ''), 'id is required')
+        const job = await store.getJob(id, workspaceId)
+        if (!job) throw new JobError('NOT_FOUND', 'job not found')
+        const rec: any = await deps.blobs.getJson(styleApprovalRef(job.id)).catch(() => null)
+        if (!rec) return res.status(200).json({ ok: true, style: null })
+        const cur = rec.status === 'approved' ? rec.approved : rec.attempts?.at(-1)
+        const url = async (ref?: string) => (ref && deps.blobs.presign ? (await deps.blobs.presign(ref).catch(() => null))?.url ?? null : null)
+        const awaiting = job.status === 'WAITING_USER' && job.waitReason === 'DECISION' && job.stage === 'ASSET'
+        return res.status(200).json({ ok: true, style: {
+          status: rec.status, awaiting, attempt: cur?.n ?? 0, attempts: rec.attempts?.length ?? 0, thumbnailUrl: await url(cur?.thumbnailRef),
+          copy: (rec.attempts?.at(-1)?.lines ?? []).map((l: any) => String(l?.text || '')), issues: [...(rec.attempts?.at(-1)?.copyIssues ?? []), ...(rec.attempts?.at(-1)?.imageIssues ?? [])],
+          regenerating: rec.regenerate === true, redrawingRepresentative: rec.redrawRepresentative === true,
+          representative: rec.representative ? { status: rec.representative.status, distance: rec.representative.distance, url: await url(rec.representative.ref) } : null
+        } })
+      }
+
       // this workspace's jobs, newest first: id, kind, state, title (the brief's topic) and the source of a remaster.
       // The phone merges it into its own list, so a finished job on the server is never lost from the screen.
       if (taskType === 'job_list') {
@@ -235,6 +257,33 @@ export function createJobsHttp(deps: JobsDeps) {
       }
 
       const body: any = input
+
+      // 승인 / 다시 생성 of the thumbnail: the SAME job continues (approve -> the pictures in that style; regenerate -> one
+      // new thumbnail). Only a job waiting for its thumbnail; the decision names the attempt the user saw.
+      if (taskType === 'job_style_decision') {
+        const jobId = need(String(body.jobId || ''), 'jobId is required'), action = String(body.action || '')
+        need(action === 'approve' || action === 'regenerate' || action === 'representative', 'action must be approve, regenerate or representative')
+        const job = await store.getJob(jobId, workspaceId)
+        if (!job) throw new JobError('NOT_FOUND', 'job not found')
+        if (job.status !== 'WAITING_USER' || job.waitReason !== 'DECISION' || job.stage !== 'ASSET') throw new JobError('NOT_AWAITING_THUMBNAIL', `job is ${job.status}/${job.stage}/${job.waitReason}`)
+        const rec: any = await deps.blobs.getJson(styleApprovalRef(job.id)).catch(() => null), cur = rec?.attempts?.at(-1)
+        // after approval the job waits only when the representative did not match: redraw it, or start over from a new thumbnail
+        const mismatch = rec?.status === 'approved' && rec?.representative?.status === 'mismatch'
+        if (mismatch && action === 'representative') rec.redrawRepresentative = true
+        else if (mismatch && action === 'regenerate') { rec.status = 'pending'; delete rec.approved; delete rec.representative; rec.regenerate = true }
+        else if (!rec || rec.status !== 'pending' || !cur || action === 'representative') throw new JobError('NO_THUMBNAIL', 'no thumbnail is waiting')
+        if (!mismatch && body.attempt !== undefined && Number(body.attempt) !== cur.n) throw new JobError('NO_THUMBNAIL', `attempt ${body.attempt} is not the current thumbnail (${cur.n})`)
+        if (mismatch) { /* handled above */ } else if (action === 'approve') {
+          const bg = await deps.blobs.getBytes(cur.backgroundRef)
+          if (!bg) throw new JobError('NO_THUMBNAIL', 'the thumbnail picture is missing')
+          const dir = await mkdtemp(join(tmpdir(), 'style-approve-')), f = join(dir, 'bg.jpg')
+          try { await writeFile(f, bg); rec.approved = { n: cur.n, backgroundRef: cur.backgroundRef, thumbnailRef: cur.thumbnailRef, features: await imageStyleFeatures(f), at: new Date().toISOString() } } finally { await rm(dir, { recursive: true, force: true }) }
+          rec.status = 'approved'
+        } else rec.regenerate = true
+        await deps.blobs.putJson(styleApprovalRef(job.id), rec, { overwrite: true })
+        const next = await store.resumeStyleApproval({ jobId: job.id, workspaceId })
+        return res.status(200).json({ ok: true, job: view(next, await store.listStageRuns(next.id)), style: { status: rec.status, attempt: cur.n } })
+      }
 
       // Generic REMASTER entry point. It always makes a NEW child job on the source's own profile and keeps the
       // source immutable. The "changes" object says what changed; cache identity then reuses everything unaffected.

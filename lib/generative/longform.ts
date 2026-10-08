@@ -13,6 +13,7 @@ import { creativeStylesFor, resolveCreativeProfile, type CreativeProfile } from 
 import { composeImagePrompt, type VisualStyleProfile } from './visualStyle.js'
 import { characterBibleErrors, seniorActErrors, SENIOR } from './seniorLongform.js'
 import { yasaScriptErrors } from './yasaLongform.js'
+import { styleApprovalOn } from './styleApproval.js'
 import { validateYasaStoryDna } from '../story/yasaStoryDna.js'
 
 export const LONGFORM_PROFILE_ID = 'wisdom_longform'
@@ -93,7 +94,7 @@ export function normalizeLongformBrief(input: any, profile: LongformProfileId = 
   }
   // Wisdom Longform recommends derived Shorts by default; only an explicit "off" is stored (other briefs stay byte-identical)
   const noDerive = profile === 'wisdom_longform' && input?.deriveShorts === false
-  return { schema: 'generative-brief/1', profile, kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds: Math.round(targetSeconds), ...(sample ? { sample: true as const } : {}), creative, ...(yasaStoryDNA ? { yasaStoryDNA } : {}), ...(noDerive ? { deriveShorts: false as const } : {}) }
+  return { schema: 'generative-brief/1', profile, kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds: Math.round(targetSeconds), ...(sample ? { sample: true as const } : {}), creative, ...(yasaStoryDNA ? { yasaStoryDNA } : {}), ...(noDerive ? { deriveShorts: false as const } : {}), ...(input?.thumbnailFirst === true && styleApprovalOn(profile) ? { thumbnailFirst: true as const } : {}) }
 }
 // Generic Longform REMASTER envelope. A remaster is a new child job on the SAME profile: it reuses the stored
 // script and lets cache identity decide the minimum paid work. Same voice/text => TTS HIT; same picture prompt => image
