@@ -35,3 +35,18 @@ test('one-off examples: off without the variable; 5 single calls; a second start
   assert.equal(YADAM_AUTO_STYLE, 'korean_drama_illustration'); assert.ok(!(YADAM_STYLE_KEYS as readonly string[]).includes('joseon_clean_watercolor'))
   assert.equal(YADAM_STYLE_CANDIDATES.length, 5)
 })
+
+test('V3: exactly one image-edit call with the 2 benchmark pictures (never v2-1), never again for the same id', async () => {
+  const d = await mkdtemp(join(tmpdir(), 'oneoff3-')), pic = join(d, 'p.jpg')
+  await runOk(['-y', '-f', 'lavfi', '-i', 'testsrc2=s=1536x1024', '-frames:v', '1', pic]); const bytes = await readFile(pic)
+  const calls: any[] = [], blobs: any = createMemoryBlobStore()
+  await blobs.putBytes('style-examples/candidates/v2-1/joseon_clean_watercolor.jpg', bytes, 'image/jpeg')
+  const fetchImpl: any = async (url: string, init: any) => { const fd = init.body as FormData; calls.push({ url, model: fd.get('model'), quality: fd.get('quality'), size: fd.get('size'), refs: fd.getAll('image[]').map((x: any) => x.name), prompt: String(fd.get('prompt')) }); return new Response(JSON.stringify({ data: [{ b64_json: bytes.toString('base64') }] }), { headers: { 'content-type': 'application/json' } }) }
+  const env = { STYLE_EXAMPLES_RUN: 'v3-1', OPENAI_API_KEY: 'sk-x' }
+  assert.equal(await runStyleExamplesOnce({ env, blobs, log: () => {}, fetchImpl, workerId: 'w1' }), 'done')
+  assert.equal(calls.length, 1); assert.deepEqual([calls[0].url.endsWith('/v1/images/edits'), calls[0].model, calls[0].quality, calls[0].size], [true, 'gpt-image-1', 'high', '1536x1024'])
+  assert.deepEqual(calls[0].refs, ['webtoon_historical.png', 'korean_drama_illustration.png']); assert.match(calls[0].prompt, /Joseon/); assert.match(calls[0].prompt, /NEVER: sepia/)
+  const rec: any = await blobs.getJson('style-examples/candidates/v3-1/run.json')
+  assert.ok(await blobs.getBytes(rec.files['v3-representative'])); assert.ok(await blobs.getBytes(rec.files['compare-v3-left-v2-right-benchmark-below']))
+  assert.equal(await runStyleExamplesOnce({ env, blobs, log: () => {}, fetchImpl, workerId: 'w2' }), 'already'); assert.equal(calls.length, 1)
+})
