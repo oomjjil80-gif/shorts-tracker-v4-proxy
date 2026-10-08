@@ -252,6 +252,30 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       })
     },
 
+    // Operator recovery for a Longform stranded after paid ASSET work. This is deliberately narrow:
+    // PLAN + ASSET must already have succeeded, the job must still be at ASSET/RENDER, and completed/cancelled jobs are refused.
+    // It only clears stale execution state and queues RENDER, so no PLAN / IMAGE / TTS work is repeated.
+    async recoverLongformRender(input: { jobId: string }): Promise<Job> {
+      const now = clock()
+      return db.transaction(async (tx) => {
+        const job = await lockedJob(tx, input.jobId)
+        if (!['wisdom_longform', 'senior_longform', 'yasa_longform'].includes(job.profile) ||
+            !['ASSET', 'RENDER'].includes(job.stage) ||
+            ['COMPLETE', 'CANCELLED'].includes(job.status)) {
+          throw new JobError('NOT_LONGFORM_RENDER_RECOVERABLE', `job is ${job.profile} ${job.status}/${job.stage}`)
+        }
+        for (const st of ['PLAN', 'ASSET']) {
+          const ok = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage=$2 AND status='SUCCEEDED' LIMIT 1`, [job.id, st])
+          if (!ok.rows[0]) throw new JobError('PREREQUISITE_MISSING', `RENDER recovery requires a successful ${st}`)
+        }
+        const r = await tx.query(
+          `UPDATE production_jobs SET stage='RENDER', status='QUEUED', wait_reason=NULL, run_after=NULL, cancel_requested=FALSE, ${cleared}, updated_at=$2::timestamptz WHERE id=$1 RETURNING *`,
+          [job.id, iso(now)]
+        )
+        return mapJob(r.rows[0])
+      })
+    },
+
     // Same-job RENDER retry for a Longform that FAILED at RENDER after PLAN and ASSET succeeded: the job goes back to
     // RENDER (QUEUED) and reuses every stored script, picture and narration — no PLAN / IMAGE / TTS call is made again,
     // and segments already rendered are reused (render-segments/<job>/...). One attempt per request.
