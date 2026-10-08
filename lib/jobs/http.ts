@@ -46,7 +46,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -177,7 +177,7 @@ export function createJobsHttp(deps: JobsDeps) {
         try { const r = await voicePreview(input); return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache }) }
         catch (e: any) { if (e instanceof PreviewError) throw new JobError(e.code as any, e.message); throw e }
       }
-      const expectedMethod = taskType === 'job_get' || taskType === 'job_list' || taskType === 'job_style' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' ? 'GET' : 'POST'
+      const expectedMethod = taskType === 'job_get' || taskType === 'job_list' || taskType === 'job_style' || taskType === 'job_style_examples' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' ? 'GET' : 'POST'
       if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)
       if (req.method !== expectedMethod) throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires ${expectedMethod}`)
 
@@ -244,6 +244,20 @@ export function createJobsHttp(deps: JobsDeps) {
       }
 
       // THUMBNAIL FIRST: the thumbnail waiting for approval (or the approved one) and the representative check, for the phone
+      // ONE-OFF publish of the candidate 그림체 examples the worker already drew (STYLE_EXAMPLES_RUN): short links to
+      // exactly the files its run record names (no other path, no picture is made). confirm=1 marks the run published,
+      // after which this answers 410 for good.
+      if (taskType === 'job_style_examples') {
+        const run = String(req.query?.run || '')
+        need(/^[a-z0-9-]{1,32}$/.test(run), 'run is required')
+        const base = `style-examples/candidates/${run}`, rec: any = await deps.blobs.getJson(`${base}/run.json`).catch(() => null)
+        if (!rec || rec.status !== 'done') throw new JobError('NOT_FOUND', 'no finished example run')
+        if (await deps.blobs.getJson(`${base}/published.json`).catch(() => null)) return res.status(410).json({ ok: false, error: { code: 'ALREADY_PUBLISHED', message: 'this run was already published' } })
+        if (String(req.query?.confirm || '') === '1') { await deps.blobs.putJson(`${base}/published.json`, { at: new Date().toISOString() }, { overwrite: false }); return res.status(200).json({ ok: true, published: true }) }
+        const files: Record<string, string> = {}
+        for (const [k, ref] of Object.entries<string>(rec.files ?? {})) { if (!String(ref).startsWith(`${base}/`)) continue; const s = await deps.blobs.presign?.(ref, 30 * 60_000).catch(() => null); if (s) files[k] = s.url }
+        return res.status(200).json({ ok: true, run, order: rec.order ?? [], errors: rec.errors ?? {}, report: rec.report ?? {}, files })
+      }
       if (taskType === 'job_style') {
         const id = need(String(req.query?.id || ''), 'id is required')
         const job = await store.getJob(id, workspaceId)
