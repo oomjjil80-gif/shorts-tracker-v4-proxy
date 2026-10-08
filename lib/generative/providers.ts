@@ -44,3 +44,15 @@ export async function openAiLongformImage(prompt:string,apiKey:string,f:FetchLik
  if(!b64)throw new Error('image generation returned no b64_json')
  return {bytes:Buffer.from(b64,'base64'),contentType:'image/jpeg',provider:'openai',model:'gpt-image-1-mini'}
 }
+// Style-locked picture: drawn FROM the approved reference image (image-to-image), so the art style is carried by the
+// picture itself, not only by words. 16:9 landscape like every Longform picture.
+export async function openAiImageWithReference(prompt:string,reference:Buffer,apiKey:string,f:FetchLike=fetch):Promise<GeneratedBinary>{
+ if(!apiKey)throw new Error('OPENAI_API_KEY is not configured')
+ const form=new FormData()
+ form.append('model','gpt-image-1');form.append('prompt',prompt);form.append('size','1536x1024');form.append('quality','medium');form.append('output_format','jpeg');form.append('n','1')
+ form.append('image[]',new Blob([new Uint8Array(reference)],{type:'image/jpeg'}),'reference.jpg')
+ const r=await checked(await f('https://api.openai.com/v1/images/edits',{method:'POST',headers:{Authorization:`Bearer ${apiKey}`},body:form}),'style-locked image generation')
+ const j:any=await r.json();const b64=j?.data?.[0]?.b64_json
+ if(!b64)throw new Error('image generation returned no b64_json')
+ return {bytes:Buffer.from(b64,'base64'),contentType:'image/jpeg',provider:'openai',model:'gpt-image-1'}
+}

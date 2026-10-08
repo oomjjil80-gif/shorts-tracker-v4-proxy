@@ -90,6 +90,18 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       return { job, created: false }
     },
 
+    // THUMBNAIL FIRST: the user approved or asked for a new thumbnail -> the same job continues its ASSET stage
+    async resumeStyleApproval(input: { jobId: string; workspaceId: string }): Promise<Job> {
+      const now = clock()
+      return db.transaction(async (tx) => {
+        const job = await lockedJob(tx, input.jobId)
+        if (job.workspaceId !== input.workspaceId) throw new JobError('NOT_FOUND', 'job not found')
+        if (job.status !== 'WAITING_USER' || job.waitReason !== 'DECISION' || job.stage !== 'ASSET') throw new JobError('NOT_AWAITING_THUMBNAIL', `job is ${job.status}/${job.stage}/${job.waitReason}`)
+        const r = await tx.query(`UPDATE production_jobs SET status='QUEUED', wait_reason=NULL, run_after=NULL, updated_at=$2::timestamptz WHERE id=$1 RETURNING *`, [job.id, iso(now)])
+        return mapJob(r.rows[0])
+      })
+    },
+
     // this workspace's jobs, newest first (the phone keeps only a local list; this is how it finds them again)
     async listJobs(workspaceId: string, limit = 50): Promise<Job[]> {
       const r = await db.query('SELECT * FROM production_jobs WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT $2', [workspaceId, Math.max(1, Math.min(200, Math.floor(limit)))])

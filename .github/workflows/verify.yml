@@ -38,7 +38,7 @@ jobs:
           NON_TEST="$(printf '%s\n' "$CHANGED" | grep -Ev '^(tools/.*\.test\.(ts|mjs)|\.github/workflows/verify\.yml)$' || true)"
           TESTS="$(printf '%s\n' "$CHANGED" | grep -E '^tools/.*\.test\.(ts|mjs)$' || true)"
           WORKFLOW_ONLY="$(printf '%s\n' "$CHANGED" | grep -Ev '^\.github/workflows/verify\.yml$' || true)"
-          YADAM_STYLE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/visualStyle\.ts|lib/generative/creativeProfile\.ts|lib/generative/longform\.ts|lib/generative/yasaPlanner\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|lib/generative/voiceProfile\.ts|lib/generative/yasaLongform\.ts|worker/stages/longform\.ts|tools/creative-profile\.test\.ts|tools/creative-all-content\.test\.ts|tools/yasa-longform-job\.test\.ts|tools/make-yadam-style-previews\.ts|\.github/workflows/verify\.yml)$' || true)"
+          YADAM_STYLE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/visualStyle\.ts|lib/generative/creativeProfile\.ts|lib/generative/longform\.ts|lib/generative/yasaPlanner\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|lib/generative/voiceProfile\.ts|lib/generative/yasaLongform\.ts|lib/generative/styleApproval\.ts|lib/generative/thumbnailCopyWriter\.ts|lib/generative/providers\.ts|worker/stages/styleGate\.ts|worker/stages/longform\.ts|tools/creative-profile\.test\.ts|tools/creative-all-content\.test\.ts|tools/yasa-longform-job\.test\.ts|tools/make-yadam-style-previews\.ts|\.github/workflows/verify\.yml)$' || true)"
 
           if [ -z "$LONGFORM_RENDER_OTHER" ]; then
             echo "mode=longform-render" >> "$GITHUB_OUTPUT"

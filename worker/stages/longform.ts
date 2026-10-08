@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { sha256, sha256File, putAddressed, type JobBlobStore } from '../../lib/jobs/blobs.js'
 import { runOk, probe } from '../../lib/media/ffmpeg.js'
 import { FONTS_DIR } from '../../lib/media/ass.js'
-import { openAiLongformImage, openAiTts } from '../../lib/generative/providers.js'
+import { openAiLongformImage, openAiImageWithReference, openAiTts } from '../../lib/generative/providers.js'
 import { openAiLongformPlanner, type LongformPlanner, type LongformOutline, type LongformSectionDraft, type LongformMetadataDraft } from '../../lib/generative/longformPlanner.js'
 import { openAiSeniorPlanner } from '../../lib/generative/seniorPlanner.js'
 import { openAiYasaPlanner, type YasaPlanner } from '../../lib/generative/yasaPlanner.js'
@@ -24,6 +24,9 @@ import {
   longformCardsAss, yasaCaptionsAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
 } from '../../lib/generative/longform.js'
 import { thumbnailArgv, thumbnailCopyErrors, LONGFORM_THUMB } from '../../lib/generative/wisdomThumbnail.js'
+import { styleGate, representativeCheck, type StyleReference, type DrawRefFn, type CopyWriter } from './styleGate.js'
+import { styleApprovalWanted } from '../../lib/generative/styleApproval.js'
+import { openAiThumbnailCopyWriter } from '../../lib/generative/thumbnailCopyWriter.js'
 import { uploadMetadataErrors } from '../../lib/generative/uploadPackage.js'
 import { ttsCacheIdentity } from '../../lib/generative/voiceProfile.js'
 import { StageError, type StageExecutor } from '../types.js'
@@ -266,8 +269,9 @@ export async function subjectSide(imagePath: string): Promise<{ left: number; ri
 // mono WAV (exact measured length; ~1/4 of the old stereo temp size), and the concat timeout scales with the length.
 export const LONGFORM_LOUDNORM = NARRATION_LOUDNORM // the one narration engine's loudness pass
 export const longformConcatTimeoutMs = narrationConcatTimeoutMs
-export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver } = {}): StageExecutor {
+export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver; imageRef?: DrawRefFn; copyWriter?: CopyWriter } = {}): StageExecutor {
   const image = deps.image ?? openAiLongformImage, tts = deps.tts ?? openAiTts, apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? ''
+  const imageRef = deps.imageRef ?? openAiImageWithReference
   return {
     stage: 'ASSET', estimateUsd: () => 1.0,
     inputHash: (job) => sha256(`longform-asset|${job.id}|${job.planRev}|wisdom_longform/1`),
@@ -290,10 +294,21 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       const sceneStyle = scenes ? ((brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES[yasa ? YADAM_AUTO_STYLE : 'senior-warm-watercolor']) : null
       const scenePrompts = sceneList.map((sc) => (yasa ? yasaScenePrompt : seniorScenePrompt)(script as unknown as SeniorScript, sc, sceneStyle!))
       const prompt = scenes ? scenePrompts[0] : longformImagePrompt(script, creativeStyleOverride(brief?.creative)), chunks = ttsChunks(script)
+      // THUMBNAIL FIRST + STYLE LOCK (profiles switched on in STYLE_APPROVAL, briefs that ask for it): before approval only
+      // the thumbnail is made and the job waits; after approval every picture is drawn FROM the approved picture
+      const repIndex = scenes ? Math.min(sceneList.length - 1, Math.floor(sceneList.length * 0.4)) : -1
+      let styleLock: StyleReference | null = null, approval: any = null
+      if (styleApprovalWanted(job.profile, brief)) {
+        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, backgroundPrompt: scenes ? scenePrompts[repIndex] : prompt, draw: image, copyWriter: deps.copyWriter ?? openAiThumbnailCopyWriter(), signal })
+        if (gate.wait) return { result: { styleApproval: { status: 'pending', attempt: gate.record.attempts.length, thumbnailRef: gate.record.attempts.at(-1)?.thumbnailRef ?? null } }, wait: 'DECISION' }
+        styleLock = gate.reference; approval = gate.record
+      }
+      const draw = (p: string) => (styleLock ? imageRef(`${p}\n\n${styleLock.text}`, styleLock.bytes, apiKey) : image(p, apiKey))
       // paid calls only on a cache miss (an ASSET rerun reuses every picture and every narration chunk); the prompt (and so
-      // the style) is part of every image key
-      const ik = sha256('longform-image-v1|' + prompt)
-      const sceneKeys = scenePrompts.map((x) => sha256('longform-scene-image-v1|' + x))
+      // the style, and the approved reference picture) is part of every image key
+      const lockTag = styleLock ? `|ref:${styleLock.sha}` : ''
+      const ik = sha256((styleLock ? 'longform-image-ref-v1|' : 'longform-image-v1|') + prompt + lockTag)
+      const sceneKeys = scenePrompts.map((x) => sha256((styleLock ? 'longform-scene-image-ref-v1|' : 'longform-scene-image-v1|') + x + lockTag))
       const sceneMeta = await Promise.all(sceneKeys.map((k) => meta('image', k)))
       let im: any = scenes ? null : await withBytes(await meta('image', ik)), generated = 0, reused = 0
       const ttsKeys = chunks.map((c) => sha256(ttsCacheIdentity(voice, c.text)))
@@ -301,11 +316,19 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       const needKey = (!scenes && !im) || sceneMeta.some((x) => !x) || ttsMeta.some((x) => !x)
       if (needKey && !apiKey) throw new StageError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured', true)
       const sceneImages: any[] = [], madeNow = new Map<string, any>()
+      // the representative picture first: drawn from the reference and compared with it; only a match unlocks the rest
+      if (styleLock) {
+        const key = scenes ? sceneKeys[repIndex] : ik, cached = await withBytes(await meta('image', key))
+        const x = await representativeCheck({ jobId: job.id, blobs, record: approval, reference: styleLock, prompt: scenes ? scenePrompts[repIndex] : prompt, sceneId: scenes ? sceneList[repIndex].id : null, apiKey, drawRef: imageRef, cached })
+        if (!x) return { result: { styleApproval: { status: 'approved', representative: approval.representative ?? null } }, wait: 'DECISION' as const }
+        if (x !== cached) generated++
+        if (scenes) madeNow.set(key, x); else im = x
+      }
       for (const [i, sc] of sceneList.entries()) {
         if (signal.aborted) throw new Error('aborted')
         // the same picture twice in one video (same prompt) is generated once
         let x: any = madeNow.get(sceneKeys[i]) ?? (sceneMeta[i] ? await withBytes(sceneMeta[i]) : null)
-        if (x) reused++; else { x = await image(scenePrompts[i], apiKey); generated++ }
+        if (x) reused++; else { x = await draw(scenePrompts[i]); generated++ }
         madeNow.set(sceneKeys[i], x)
         const h = sha256(x.bytes), ref = `generative-assets/images/${h}.jpg`
         if (!cacheEntryIsCanonical(x, ref, h)) {
@@ -315,7 +338,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
         sceneImages.push({ sceneId: sc.id, ref, sha256: h, prompt: scenePrompts[i], bytes: x.bytes })
       }
       if (scenes) im = { ...sceneImages[0], bytes: sceneImages[0].bytes }
-      else if (im) reused++; else { im = await image(prompt, apiKey); generated++ }
+      else if (im) reused++; else { im = await draw(prompt); generated++ }
       const work = await mkdtemp(join(tmpdir(), 'longform-asset-'))
       try {
         // the single picture: the figure is kept on the RIGHT (mirrored when the model drew it on the left); scene pictures
@@ -371,7 +394,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
         // a 2-hour narration is ~150 MB: hashed and uploaded as a stream, never read whole into memory
         const nsha = await sha256File(narration), narrationRef = `generative-assets/audio/${nsha}.m4a`
         await blobs.putFile(narrationRef, narration, 'audio/mp4')
-        const manifest = { schema: 'longform-assets/1', profile: job.profile, scriptRef, voiceProfileId: voice.id, image: { ref: imageRef, sha256: imgSha, prompt, subjectSide: side, mirrored: side?.side === 'left' }, ...(scenes ? { images: sceneImages.map(({ bytes, ...x }) => x) } : {}), narration: { ref: narrationRef, sha256: nsha, seconds: narrationSeconds, loudness: LONGFORM_LOUDNORM }, chunks: parts }
+        const manifest = { schema: 'longform-assets/1', profile: job.profile, scriptRef, voiceProfileId: voice.id, ...(styleLock ? { approvedThumbnail: { ref: styleLock.thumbnailRef }, styleReference: { sha256: styleLock.sha, features: styleLock.features } } : {}), image: { ref: imageRef, sha256: imgSha, prompt, subjectSide: side, mirrored: side?.side === 'left' }, ...(scenes ? { images: sceneImages.map(({ bytes, ...x }) => x) } : {}), narration: { ref: narrationRef, sha256: nsha, seconds: narrationSeconds, loudness: LONGFORM_LOUDNORM }, chunks: parts }
         const stored = await putAddressed(blobs, 'generative-assets', manifest)
         return { outputRef: stored.path, outputHash: stored.sha256, result: { assetSpecRef: stored.path, images: scenes ? sceneImages.length : 1, chunks: parts.length, totalSeconds, voiceProfileId: voice.id, generated, reused }, provider: 'openai', model: 'gpt-image-1-mini+gpt-4o-mini-tts' }
       } finally { await rm(work, { recursive: true, force: true }) }
@@ -473,8 +496,13 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver;
       }
       // click thumbnail: the same single image (figure RIGHT), the planner's re-written punch lines on the LEFT
       if (withThumbnail) {
-        const t = thumbnailArgv({ image, lines: script.thumbnail.lines, assPath: thumbAss, fontsDir: FONTS_DIR, out: thumb, canvas: LONGFORM_THUMB })
-        await writeFile(thumbAss, t.ass, 'utf8'); await runOk(t.argv, { signal, env: ffmpegEnv })
+        // the thumbnail the user approved (style lock) is THE thumbnail; otherwise it is composed here as before
+        const approvedThumb = assets.approvedThumbnail?.ref ? await blobs.getBytes(assets.approvedThumbnail.ref) : null
+        if (approvedThumb) await writeFile(thumb, approvedThumb)
+        else {
+          const t = thumbnailArgv({ image, lines: script.thumbnail.lines, assPath: thumbAss, fontsDir: FONTS_DIR, out: thumb, canvas: LONGFORM_THUMB })
+          await writeFile(thumbAss, t.ass, 'utf8'); await runOk(t.argv, { signal, env: ffmpegEnv })
+        }
       }
       // fatal-only output checks (broken file / wrong canvas / missing narration / wrong length)
       const info = await probe(out), tinfo = withThumbnail ? await probe(thumb) : null
