@@ -38,4 +38,5 @@ jobs:
           git commit -m "야담 style examples v2-1 (made by the worker) [examples-published]"
           git push
       - name: Close the one-off endpoint
-        run: curl -fsS -H "X-Sync-Key: publish-$(openssl rand -hex 16)" "https://tracker-api-continuity-production.up.railway.app/api/story?taskType=job_style_examples&run=v2-1&confirm=1"
+        run: |
+          curl -fsS -H "X-Sync-Key: publish-$(openssl rand -hex 16)" "https://tracker-api-continuity-production.up.railway.app/api/story?taskType=job_style_examples&run=v2-1&confirm=1"
