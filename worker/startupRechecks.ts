@@ -9,6 +9,7 @@ const RECHECKS: Recheck[] = [
   { env: 'PLAN_RECHECK_JOB_ID', stage: 'PLAN', run: (s, jobId) => s.recheckPlan({ jobId }) },
   { env: 'ASSET_RECHECK_JOB_ID', stage: 'ASSET', run: (s, jobId) => s.recheckAsset({ jobId }) },
   { env: 'COMPILE_RECHECK_JOB_ID', stage: 'COMPILE', run: (s, jobId) => s.recheckCompile({ jobId }) },
+  { env: 'LONGFORM_RENDER_RECOVERY_JOB_ID', stage: 'RENDER', run: (s, jobId) => s.recoverLongformRender({ jobId }) },
   { env: 'RENDER_RECHECK_JOB_ID', stage: 'RENDER', run: (s, jobId) => s.recheckRender({ jobId }) },
   { env: 'QC_RECHECK_JOB_ID', stage: 'AUTO_QC', run: (s, jobId) => s.recheckQc({ jobId }) },
 ]
