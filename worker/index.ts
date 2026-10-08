@@ -7,6 +7,7 @@ import { createJobStore } from '../lib/jobs/store.js'
 import { createVercelJobBlobStore } from '../lib/jobs/blobs.js'
 import { getSourceAsset } from '../lib/sourceAssetRegistry.js'
 import { runOnce } from './runJob.js'
+import { installUsageMeter } from '../lib/generative/usageLedger.js'
 import { runStartupRechecks } from './startupRechecks.js'
 import { get as blobGet } from '../lib/objectStorage.js'
 import { createBlobSourceFileResolver } from './sourceFile.js'
@@ -22,6 +23,8 @@ import { withWisdomThumbnail } from './stages/wisdomThumbnail.js'
 import { createModuleRegistry, stageExecutorsFor } from './modules/registry.js'
 import { createLongformPlanExecutor, createLongformAssetExecutor, longformRenderExecutor, longformPackageExecutor } from './stages/longform.js'
 
+// every paid OpenAI call is metered (model, tokens, estimated USD) per job stage: see lib/generative/usageLedger.ts
+installUsageMeter()
 const workerId = process.env.WORKER_ID || `${hostname()}-${process.pid}`
 const pollMs = Number(process.env.WORKER_POLL_MS || 2000)
 // Model-assisted planning is a paid external call, so it is explicit opt-in even if a provider key exists.
