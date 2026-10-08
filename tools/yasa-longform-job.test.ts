@@ -414,3 +414,28 @@ test('COLD OPEN REPAIR MEMORY: a refused answer word, sentence and scene are car
   const r = coldOpenRejections([{ errors: [`cold_open.reveals_answer: ${word}`], sentences: beats(3) }, { errors: [`cold_open.reveals_answer: ${word}`], sentences: beats(3) }], { allowed: new Set(['a5s1', 'a4s2']) })
   assert.deepEqual([r.terms, [...r.avoidScenes]], [[word], []])
 })
+
+test('REMASTER RETRY: the same remaster after a FAILED child makes a NEW child job; a queued / complete one is still the same job; the source never changes', async () => {
+  const db: any = await createTestDb(), store = createJobStore(db), blobs: any = createMemoryBlobStore()
+  const handler = createJobsHttp({ getStore: async () => store, blobs, sourceExists: async () => true })
+  const call = async (body: any) => { let status = 0, json: any = null; const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } }; await handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': KEY }, query: {}, body } as any, res); return { status, json } }
+  const src = await call({ taskType: 'job_create', profile: 'yasa_longform', idempotencyKey: 'yadam-retry-src-01', budgetUsd: 5, input: { kind: 'topic', text: TOPIC, targetSeconds: SECONDS } })
+  const sourceId = src.json.job.id
+  await runOnce({ store, blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner({}) as any })]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
+  const before = await store.getJob(sourceId)
+  const ask = () => call({ taskType: 'job_remaster', sourceJobId: sourceId, changes: { visualStyleProfile: 'webtoon_historical', refreshColdOpen: true } })
+  const a = await ask(); assert.equal(a.status, 201, JSON.stringify(a.json))
+  const again = await ask(); assert.equal(again.json.job.id, a.json.job.id, 'queued: the same request is the same job')
+  await db.query(`UPDATE production_jobs SET status = 'FAILED' WHERE id = $1`, [a.json.job.id])
+  const b = await ask()
+  assert.equal(b.status, 201); assert.notEqual(b.json.job.id, a.json.job.id, 'after a FAILED remaster the same request makes a NEW child')
+  assert.equal((await store.getJob(a.json.job.id))!.status, 'FAILED', 'the failed child is kept as it is')
+  assert.equal((await ask()).json.job.id, b.json.job.id, 'the new child is again the same job while it runs')
+  await db.query(`UPDATE production_jobs SET status = 'COMPLETE' WHERE id = $1`, [b.json.job.id])
+  assert.equal((await ask()).json.job.id, b.json.job.id, 'a COMPLETE remaster is still returned (policy unchanged)')
+  const after = await store.getJob(sourceId)
+  assert.deepEqual([after!.status, after!.stage, after!.planRef], [before!.status, before!.stage, before!.planRef], 'the source job never changes')
+  // the child still reuses the source script (the unchanged-asset reuse contract)
+  const brief: any = await blobs.getJson((await store.getJob(b.json.job.id))!.planRef!)
+  assert.equal(brief.remaster.sourceJobId, sourceId)
+})

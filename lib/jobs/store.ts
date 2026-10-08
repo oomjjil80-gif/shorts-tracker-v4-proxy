@@ -90,6 +90,11 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       return { job, created: false }
     },
 
+    async getJobByIdempotencyKey(workspaceId: string, idempotencyKey: string): Promise<Job | null> {
+      const r = await db.query('SELECT * FROM production_jobs WHERE workspace_id = $1 AND idempotency_key = $2', [workspaceId, idempotencyKey])
+      return r.rows[0] ? mapJob(r.rows[0]) : null
+    },
+
     async getJob(id: string, workspaceId?: string): Promise<Job | null> {
       const r = await db.query('SELECT * FROM production_jobs WHERE id = $1' + (workspaceId ? ' AND workspace_id = $2' : ''), workspaceId ? [id, workspaceId] : [id])
       return r.rows[0] ? mapJob(r.rows[0]) : null
