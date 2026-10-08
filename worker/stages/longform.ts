@@ -28,6 +28,7 @@ import { styleGate, representativeCheck, type StyleReference, type DrawRefFn, ty
 import { styleApprovalWanted } from '../../lib/generative/styleApproval.js'
 import { openAiThumbnailCopyWriter } from '../../lib/generative/thumbnailCopyWriter.js'
 import { openAiStyleJudge } from '../../lib/generative/styleJudge.js'
+import { loadStyleExample, styleExampleFor } from '../../lib/generative/styleExamples.js'
 import type { StyleJudge } from '../../lib/generative/styleApproval.js'
 import { uploadMetadataErrors } from '../../lib/generative/uploadPackage.js'
 import { ttsCacheIdentity } from '../../lib/generative/voiceProfile.js'
@@ -279,7 +280,7 @@ export async function subjectSide(imagePath: string): Promise<{ left: number; ri
 // mono WAV (exact measured length; ~1/4 of the old stereo temp size), and the concat timeout scales with the length.
 export const LONGFORM_LOUDNORM = NARRATION_LOUDNORM // the one narration engine's loudness pass
 export const longformConcatTimeoutMs = narrationConcatTimeoutMs
-export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver; imageRef?: DrawRefFn; copyWriter?: CopyWriter; styleJudge?: StyleJudge } = {}): StageExecutor {
+export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver; imageRef?: DrawRefFn; copyWriter?: CopyWriter; styleJudge?: StyleJudge; styleExample?: typeof loadStyleExample } = {}): StageExecutor {
   const image = deps.image ?? openAiLongformImage, tts = deps.tts ?? openAiTts, apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? ''
   const imageRef = deps.imageRef ?? openAiImageWithReference
   return {
@@ -309,7 +310,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       const repIndex = scenes ? Math.min(sceneList.length - 1, Math.floor(sceneList.length * 0.4)) : -1
       let styleLock: StyleReference | null = null, approval: any = null
       if (styleApprovalWanted(job.profile, brief)) {
-        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, backgroundPrompt: scenes ? scenePrompts[repIndex] : prompt, draw: image, copyWriter: deps.copyWriter ?? openAiThumbnailCopyWriter(), signal })
+        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, backgroundPrompt: scenes ? scenePrompts[repIndex] : prompt, draw: image, drawRef: imageRef, example: async () => { const k = styleExampleFor(sceneStyle?.id); return k ? (deps.styleExample ?? loadStyleExample)(k) : null }, copyWriter: deps.copyWriter ?? openAiThumbnailCopyWriter(), signal })
         if (gate.wait) return { result: { styleApproval: { status: 'pending', attempt: gate.record.attempts.length, thumbnailRef: gate.record.attempts.at(-1)?.thumbnailRef ?? null } }, wait: 'DECISION' }
         styleLock = gate.reference; approval = gate.record
       }

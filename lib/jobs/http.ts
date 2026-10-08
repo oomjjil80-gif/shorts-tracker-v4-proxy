@@ -256,6 +256,7 @@ export function createJobsHttp(deps: JobsDeps) {
         return res.status(200).json({ ok: true, style: {
           status: rec.status, awaiting, attempt: cur?.n ?? 0, attempts: rec.attempts?.length ?? 0, thumbnailUrl: await url(cur?.thumbnailRef),
           copy: (rec.attempts?.at(-1)?.lines ?? []).map((l: any) => String(l?.text || '')), issues: [...(rec.attempts?.at(-1)?.copyIssues ?? []), ...(rec.attempts?.at(-1)?.imageIssues ?? [])],
+          example: rec.attempts?.at(-1)?.example?.style ?? null,
           regenerating: rec.regenerate === true, redrawingRepresentative: rec.redrawRepresentative === true,
           representative: rec.representative ? { status: rec.representative.status, distance: rec.representative.distance, url: await url(rec.representative.ref) } : null
         } })
