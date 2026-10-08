@@ -160,3 +160,14 @@ test('StageError carries retryability', () => {
   assert.equal(new StageError('X', 'm').retryable, false)
   assert.equal(new StageError('X', 'm', true).retryable, true)
 })
+
+
+test('orphan recovery: RUNNING job with a null lease is reclaimable instead of staying stuck forever', async () => {
+  const { db, store, submit, run } = await setup()
+  const job = await submit('idem-null-lease-01')
+  await db.query(`UPDATE production_jobs SET status='RUNNING', lease_owner=NULL, lease_until=NULL, heartbeat_at=NULL WHERE id=$1`, [job.id])
+  const out = await run('recovery-worker')
+  assert.equal(out.ran && out.outcome, 'completed')
+  const after = (await store.getJob(job.id))!
+  assert.deepEqual([after.status, after.stage], ['QUEUED', 'RENDER'])
+})
