@@ -13,7 +13,7 @@ import { sha256, type JobBlobStore } from '../../lib/jobs/blobs.js'
 import { runOk } from '../../lib/media/ffmpeg.js'
 import { FONTS_DIR } from '../../lib/media/ass.js'
 import { thumbnailArgv, LONGFORM_THUMB, type ThumbLine } from '../../lib/generative/wisdomThumbnail.js'
-import { imageStyleFeatures, styleApprovalRef, styleDistance, styleFeatureText, thumbnailCopyIssues, thumbnailImageIssues, STYLE_MATCH, type StyleApprovalRecord, type StyleFeatures } from '../../lib/generative/styleApproval.js'
+import { imageStyleFeatures, styleApprovalRef, styleDistance, styleFeatureText, textureDistance, thumbnailCopyIssues, thumbnailImageIssues, STYLE_JUDGE_MIN, STYLE_MATCH, TEXTURE_MATCH, type StyleApprovalRecord, type StyleFeatures, type StyleJudge, type StyleJudgement } from '../../lib/generative/styleApproval.js'
 import type { GeneratedBinary } from '../../lib/generative/providers.js'
 import { StageError } from '../types.js'
 
@@ -75,24 +75,32 @@ export async function styleGate(o: { jobId: string; blobs: JobBlobStore; script:
 // After approval: the ONE representative picture, drawn from the reference and compared with it before anything else.
 // A mismatch never fails the job (no paid automatic retries): the job waits for the user, who redraws only the representative
 // (or a new thumbnail). Returns null = wait.
-export async function representativeCheck(o: { jobId: string; blobs: JobBlobStore; record: StyleApprovalRecord; reference: StyleReference; prompt: string; sceneId: string | null; apiKey: string; drawRef: DrawRefFn; cached?: GeneratedBinary | null; tries?: number }): Promise<GeneratedBinary | null> {
+export async function representativeCheck(o: { jobId: string; blobs: JobBlobStore; record: StyleApprovalRecord; reference: StyleReference; prompt: string; sceneId: string | null; apiKey: string; drawRef: DrawRefFn; judge?: StyleJudge; cached?: GeneratedBinary | null; tries?: number }): Promise<GeneratedBinary | null> {
+  // the representative already passed (a retry / restart): reuse it, no check and no call again
+  if (o.cached && o.record.representative?.status === 'match') return o.cached
   if (o.record.representative?.status === 'mismatch' && !o.record.redrawRepresentative) return null // still waiting for the user
   const work = await mkdtemp(join(tmpdir(), 'style-rep-'))
   try {
-    const measure = async (x: GeneratedBinary) => { const p = join(work, `r${sha256(x.bytes).slice(0, 8)}.jpg`); await writeFile(p, x.bytes); return styleDistance(o.reference.features, await imageStyleFeatures(p)) }
-    if (o.cached) { const d = await measure(o.cached); if (d <= STYLE_MATCH) return o.cached }
-    let best = Infinity, x: GeneratedBinary | null = null
-    const tries = o.tries ?? 2
-    for (let t = 0; t < tries; t++) {
-      x = await o.drawRef(`${o.prompt}\n\n${o.reference.text}`, o.reference.bytes, o.apiKey)
-      best = await measure(x)
-      if (best <= STYLE_MATCH) break
+    // 1) free: colour + texture (a clearly different picture stops here); 2) one vision judgement (the only way to PASS)
+    const check = async (x: GeneratedBinary) => {
+      const p = join(work, `r${sha256(x.bytes).slice(0, 8)}.jpg`); await writeFile(p, x.bytes)
+      const f = await imageStyleFeatures(p), distance = styleDistance(o.reference.features, f), tex = textureDistance(o.reference.features.texture, f.texture)
+      let judge: StyleJudgement | null = null
+      if (distance <= STYLE_MATCH && tex <= TEXTURE_MATCH && o.judge) judge = await o.judge(o.reference.bytes, x.bytes, o.apiKey).catch(() => null)
+      return { distance, tex, judge, ok: distance <= STYLE_MATCH && tex <= TEXTURE_MATCH && !!judge?.same && judge.score >= STYLE_JUDGE_MIN }
     }
-    const ok = best <= STYLE_MATCH, ref = `style-approval/representative/${sha256(x!.bytes)}.jpg`
+    const tries = o.tries ?? 2
+    let x: GeneratedBinary | null = null, r: Awaited<ReturnType<typeof check>> | null = null
+    for (let t = 0; t < tries; t++) {
+      x = t === 0 && o.cached ? o.cached : await o.drawRef(`${o.prompt}\n\n${o.reference.text}`, o.reference.bytes, o.apiKey)
+      r = await check(x)
+      if (r.ok) break
+    }
+    const ref = `style-approval/representative/${sha256(x!.bytes).slice(0, 64)}.jpg`
     await o.blobs.putBytes(ref, x!.bytes, 'image/jpeg')
-    o.record.representative = { sceneId: o.sceneId, ref, distance: Number(best.toFixed(3)), status: ok ? 'match' : 'mismatch', tries: (o.record.representative?.tries ?? 0) + tries }
+    o.record.representative = { sceneId: o.sceneId, ref, distance: r!.distance, textureDistance: r!.tex, judge: r!.judge, status: r!.ok ? 'match' : 'mismatch', tries: (o.record.representative?.tries ?? 0) + tries }
     delete o.record.redrawRepresentative
     await save(o.blobs, o.jobId, o.record)
-    return ok ? x! : null // mismatch: no other picture is drawn
+    return r!.ok ? x! : null // mismatch: no other picture is drawn
   } finally { await rm(work, { recursive: true, force: true }) }
 }

@@ -22,7 +22,10 @@ export const styleApprovalOn = (profile: string) => STYLE_APPROVAL[profile]?.ena
 // a brief asks for it explicitly (new jobs from the app); briefs from before (and remasters of them) are unchanged
 export const styleApprovalWanted = (profile: string, brief: any) => styleApprovalOn(profile) && brief?.thumbnailFirst === true
 
-export type StyleFeatures = { brightness: number; saturation: number; contrast: number; hue: number[]; palette: string[] }
+// texture = how it is drawn (edges, fine detail, outlines, flat fills, colour variation); colour alone cannot tell two
+// art styles apart (measured on the 5 real 그림체 previews: 9 of 10 different-style pairs were within STYLE_MATCH on colour)
+export type StyleTexture = { edge: number; strong: number; detail: number; lines: number; flat: number; satSd: number }
+export type StyleFeatures = { brightness: number; saturation: number; contrast: number; hue: number[]; palette: string[]; texture?: StyleTexture }
 export type StyleApprovalRecord = {
   schema: 'style-approval/1'
   status: 'pending' | 'approved'
@@ -30,8 +33,12 @@ export type StyleApprovalRecord = {
   regenerate?: boolean
   redrawRepresentative?: boolean
   approved?: { n: number; backgroundRef: string; thumbnailRef: string; features: StyleFeatures; at: string }
-  representative?: { sceneId: string | null; ref: string; distance: number; status: 'match' | 'mismatch'; tries: number }
+  representative?: { sceneId: string | null; ref: string; distance: number; textureDistance?: number; judge?: StyleJudgement | null; status: 'match' | 'mismatch'; tries: number }
 }
+export type StyleJudgement = { same: boolean; score: number; differences: string[] }
+// the final word on "same art style": one small vision call with both pictures (only after the free checks passed)
+export type StyleJudge = (reference: Buffer, candidate: Buffer, apiKey: string) => Promise<StyleJudgement>
+export const STYLE_JUDGE_MIN = 75
 export const styleApprovalRef = (jobId: string) => `style-approval/${jobId}.json`
 
 // ---- the copy: deterministic checks (format, the title, broken Hangul, spoilers of the answer) ----
@@ -71,7 +78,31 @@ export async function imageStyleFeatures(path: string): Promise<StyleFeatures> {
   }
   const mean = sumL / Math.max(1, n)
   const palette = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k]) => '#' + [...k].map((d) => (Number(d) * 64 + 32).toString(16).padStart(2, '0')).join(''))
-  return { brightness: Math.round(mean), saturation: Number((sumS / Math.max(1, n)).toFixed(3)), contrast: Math.round(Math.sqrt(Math.max(0, sumL2 / Math.max(1, n) - mean * mean))), hue: hue.map((x) => Number((wHue ? x / wHue : 0).toFixed(3))), palette }
+  return { texture: await imageTextureFeatures(path), brightness: Math.round(mean), saturation: Number((sumS / Math.max(1, n)).toFixed(3)), contrast: Math.round(Math.sqrt(Math.max(0, sumL2 / Math.max(1, n) - mean * mean))), hue: hue.map((x) => Number((wHue ? x / wHue : 0).toFixed(3))), palette }
+}
+// the drawing itself at a fixed pixel scale (height 256): gradients, fine detail, thin dark outlines, flat fills
+export async function imageTextureFeatures(path: string): Promise<StyleTexture> {
+  const ppm = (await runOk(['-i', path, '-vf', 'scale=-2:256', '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'ppm', '-'])).stdout as Buffer
+  const m = ppm.toString('latin1', 0, 40).match(/^P6\s+(\d+)\s+(\d+)\s+255\s/)
+  if (!m) throw new Error('texture: unexpected ppm header')
+  const W = Number(m[1]), H = Number(m[2]), off = m[0].length, L = new Float32Array(W * H), S = new Float32Array(W * H)
+  for (let i = 0; i < W * H; i++) { const r = ppm[off + i * 3], g = ppm[off + i * 3 + 1], b = ppm[off + i * 3 + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b); L[i] = 0.299 * r + 0.587 * g + 0.114 * b; S[i] = mx ? (mx - mn) / mx : 0 }
+  let edges = 0, strong = 0, detail = 0, lines = 0, flat = 0, n = 0
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x, g = Math.hypot(L[i + 1] - L[i - 1], L[i + W] - L[i - W]), avg = (L[i - 1] + L[i + 1] + L[i - W] + L[i + W]) / 4
+    n++; detail += Math.abs(L[i] - avg); if (g > 20) edges++; if (g > 60) strong++; if (L[i] < 70 && avg - L[i] > 18) lines++; if (g < 3) flat++
+  }
+  let sm = 0; for (const v of S) sm += v; sm /= Math.max(1, S.length); let sv = 0; for (const v of S) sv += (v - sm) ** 2
+  const r4 = (x: number) => Number(x.toFixed(4)), N = Math.max(1, n)
+  return { edge: r4(edges / N), strong: r4(strong / N), detail: r4(detail / N), lines: r4(lines / N), flat: r4(flat / N), satSd: r4(Math.sqrt(sv / Math.max(1, S.length))) }
+}
+// 0 = drawn the same way. Same picture, other composition: <= 0.23; different styles of the same scene: >= 0.23 (real previews).
+// So it is a free PREFILTER only (above TEXTURE_MATCH = clearly another style, no AI call); a pass still needs the judge.
+export const TEXTURE_MATCH = 0.3
+const TEXTURE_KEYS: Array<keyof StyleTexture> = ['edge', 'strong', 'detail', 'lines', 'flat', 'satSd']
+export function textureDistance(a?: StyleTexture, b?: StyleTexture): number {
+  if (!a || !b) return Infinity
+  return Number((TEXTURE_KEYS.reduce((s, k) => s + Math.abs(Math.log((a[k] + 0.004) / (b[k] + 0.004))), 0) / TEXTURE_KEYS.length).toFixed(3))
 }
 // 0 = the same look; the representative scene must stay under STYLE_MATCH of the approved picture
 export const STYLE_MATCH = 0.35

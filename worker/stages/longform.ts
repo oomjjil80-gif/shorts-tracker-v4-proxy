@@ -27,6 +27,8 @@ import { thumbnailArgv, thumbnailCopyErrors, LONGFORM_THUMB } from '../../lib/ge
 import { styleGate, representativeCheck, type StyleReference, type DrawRefFn, type CopyWriter } from './styleGate.js'
 import { styleApprovalWanted } from '../../lib/generative/styleApproval.js'
 import { openAiThumbnailCopyWriter } from '../../lib/generative/thumbnailCopyWriter.js'
+import { openAiStyleJudge } from '../../lib/generative/styleJudge.js'
+import type { StyleJudge } from '../../lib/generative/styleApproval.js'
 import { uploadMetadataErrors } from '../../lib/generative/uploadPackage.js'
 import { ttsCacheIdentity } from '../../lib/generative/voiceProfile.js'
 import { StageError, type StageExecutor } from '../types.js'
@@ -269,7 +271,7 @@ export async function subjectSide(imagePath: string): Promise<{ left: number; ri
 // mono WAV (exact measured length; ~1/4 of the old stereo temp size), and the concat timeout scales with the length.
 export const LONGFORM_LOUDNORM = NARRATION_LOUDNORM // the one narration engine's loudness pass
 export const longformConcatTimeoutMs = narrationConcatTimeoutMs
-export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver; imageRef?: DrawRefFn; copyWriter?: CopyWriter } = {}): StageExecutor {
+export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver; imageRef?: DrawRefFn; copyWriter?: CopyWriter; styleJudge?: StyleJudge } = {}): StageExecutor {
   const image = deps.image ?? openAiLongformImage, tts = deps.tts ?? openAiTts, apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? ''
   const imageRef = deps.imageRef ?? openAiImageWithReference
   return {
@@ -319,7 +321,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       // the representative picture first: drawn from the reference and compared with it; only a match unlocks the rest
       if (styleLock) {
         const key = scenes ? sceneKeys[repIndex] : ik, cached = await withBytes(await meta('image', key))
-        const x = await representativeCheck({ jobId: job.id, blobs, record: approval, reference: styleLock, prompt: scenes ? scenePrompts[repIndex] : prompt, sceneId: scenes ? sceneList[repIndex].id : null, apiKey, drawRef: imageRef, cached })
+        const x = await representativeCheck({ jobId: job.id, blobs, record: approval, reference: styleLock, prompt: scenes ? scenePrompts[repIndex] : prompt, sceneId: scenes ? sceneList[repIndex].id : null, apiKey, drawRef: imageRef, judge: deps.styleJudge ?? openAiStyleJudge(), cached })
         if (!x) return { result: { styleApproval: { status: 'approved', representative: approval.representative ?? null } }, wait: 'DECISION' as const }
         if (x !== cached) generated++
         if (scenes) madeNow.set(key, x); else im = x

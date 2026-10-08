@@ -472,13 +472,14 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   const d = await mkdtemp(join(tmpdir(), 'style-lock-'))
   const created = await call('POST', { body: { taskType: 'job_create', profile: 'yasa_longform', idempotencyKey: 'yadam-style-lock-01', budgetUsd: 5, input: { kind: 'topic', text: TOPIC, targetSeconds: SECONDS, thumbnailFirst: true } } })
   const jobId = created.json.job.id
-  const calls = { image: 0, ref: 0, tts: 0 }, refSeen: Buffer[] = [], refPrompts: string[] = []
+  const calls = { image: 0, ref: 0, tts: 0 }, judged: number[] = [], refSeen: Buffer[] = [], refPrompts: string[] = []
   let refMode: 'off' | 'same' = 'off'
   const off = await (async () => { const f = join(d, 'off.jpg'); await runOk(['-y', '-f', 'lavfi', '-i', 'color=c=0x0a3d0a:s=1536x1024', '-frames:v', '1', '-q:v', '3', f]); return { bytes: await readFile(f), contentType: 'image/jpeg', provider: 'standin', model: 'off-style' } })()
   const asset = createLongformAssetExecutor({ apiKey: 'k',
     image: async () => { calls.image++; return scenePicture(d, 500 + calls.image) },
     imageRef: async (p: string, ref: Buffer) => { calls.ref++; refSeen.push(ref); refPrompts.push(p); return refMode === 'same' ? { bytes: ref, contentType: 'image/jpeg', provider: 'standin', model: 'ref' } : off },
     tts: async () => { calls.tts++; return shortTts() },
+    styleJudge: async () => { judged.push(1); return { same: true, score: 92, differences: [] } },
     copyWriter: async () => { throw new Error('the copy passes its checks: no rewrite call') } } as any)
   const tick = () => runOnce({ store, blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner({}) as any }), asset]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
   const job = async () => (await call('GET', { query: { taskType: 'job_get', id: jobId } })).json.job
@@ -506,6 +507,7 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   j = await job()
   assert.deepEqual([j.status, j.waitReason, j.stage], ['WAITING_USER', 'DECISION', 'ASSET'], 'a mismatch waits for the user (no paid automatic retries)')
   assert.deepEqual(calls, { image: 2, ref: 2, tts: 0 }, 'only the representative (twice), no other picture, no narration')
+  assert.equal(judged.length, 0, 'a picture that fails the free colour / texture checks never costs a judge call')
   assert.equal((await tick() as any).ran, false)
   st = (await call('GET', { query: { taskType: 'job_style', id: jobId } })).json.style
   assert.equal(st.representative.status, 'mismatch'); assert.match(st.representative.url, /^memory:\/\/style-approval\/representative\//)
@@ -524,12 +526,13 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   const manifest: any = await blobs.getJson(last.result.assetSpecRef)
   assert.equal(manifest.approvedThumbnail.ref, rec.approved.thumbnailRef, 'the approved thumbnail is the video thumbnail')
   assert.equal(calls.image, 2, 'no picture without the reference after approval')
+  assert.equal(judged.length, 1, 'one judge call for the representative that passed the free checks')
   const pics = manifest.images.length, refCalls = calls.ref
   assert.ok(refCalls >= pics, `${refCalls} reference calls for ${pics} pictures`)
   // 8 + 9: running ASSET again (a restart) keeps the approval and pays for nothing
   const before = { ...calls }
   const again: any = await asset.run({ job: { ...(await store.getJob(jobId)), stage: 'ASSET' }, blobs, previous: async (s: string) => (runs.filter((r: any) => r.stage === s && r.status === 'SUCCEEDED').at(-1) as any) ?? null, signal: new AbortController().signal } as any)
-  assert.ok(again.result.assetSpecRef); assert.deepEqual(calls, before, 'no image / reference / narration call again')
+  assert.ok(again.result.assetSpecRef); assert.deepEqual(calls, before, 'no image / reference / narration call again'); assert.equal(judged.length, 1, 'no judge call again')
   assert.equal((await blobs.getJson(styleApprovalRef(jobId))).status, 'approved')
   // copy checks (no AI): a spoiler of the answer, broken Hangul; a job without thumbnailFirst is unchanged (no flag, no wait)
   const plan: any = runs.find((r: any) => r.stage === 'PLAN' && r.status === 'SUCCEEDED'), script: any = await blobs.getJson(plan.result.scriptRef)
