@@ -50,8 +50,10 @@ test('every 야담 image request: Gemini, native 16:9, the 3 frames first (+ the
 
 test('nothing of the old 야담 styles is left on a production path; the other contents\' styles are byte-for-byte the same', async () => {
   // one 야담 style id, offered to 야담 only
-  assert.deepEqual([...creativeStylesFor('yasa_longform')], [YADAM_STYLE_ID]); assert.deepEqual([...creativeStylesFor('yasa_shorts')], [YADAM_STYLE_ID])
-  assert.deepEqual([...VISUAL_STYLE_KEYS], ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial', YADAM_STYLE_ID])
+  // 야담: its one style + the user-approved Golden 1~5 (issue #179), nothing else
+  const yasaStyles = [YADAM_STYLE_ID, 'golden-1', 'golden-2', 'golden-3', 'golden-4', 'golden-5']
+  assert.deepEqual([...creativeStylesFor('yasa_longform')], yasaStyles); assert.deepEqual([...creativeStylesFor('yasa_shorts')], yasaStyles)
+  assert.deepEqual([...VISUAL_STYLE_KEYS], ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial', YADAM_STYLE_ID, 'golden-1', 'golden-2', 'golden-3', 'golden-4', 'golden-5'])
   // senior / wisdom / general / economy styles: exactly the definitions on main before this change
   const keep = ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial']
   assert.equal(createHash('sha256').update(JSON.stringify(keep.map((k) => (VISUAL_STYLE_PROFILES as any)[k]))).digest('hex'), 'ac092f3b1d1ccdd0313c1055ef383c918b7c4ff1ef6465d2082cea80f8a214d1')

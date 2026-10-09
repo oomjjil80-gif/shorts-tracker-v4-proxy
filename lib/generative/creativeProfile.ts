@@ -2,6 +2,7 @@
 // tone and speed, and in which picture style. ONE resolver: job_create turns the user's choices into a resolved profile
 // that is stored in the brief ({ requested, resolved }); PLAN / ASSET / RENDER only read `resolved` and never guess again.
 // What a user picks always wins; only 'auto' items are decided here, by the content type's rule below (and the topic).
+import { GOLDEN_STYLE_IDS, goldenSpec, isGoldenStyle, type GoldenSpec } from './goldenStyle.js'
 import {
   DEFAULT_VOICE_PROFILE, GENERAL_SHORTS_DEFAULT_VOICE_PROFILE, LONGFORM_VOICE_CHOICES, LONGFORM_VOICE_PROFILES, recommendLongformVoice, resolveLongformRuntimeVoice,
   parseLongformTone, parseLongformSpeed, toneInstruction, type LongformVoiceKey, type LongformVoiceTone, type LongformVoiceSpeed, type VoiceProfile
@@ -27,7 +28,9 @@ export function creativeContentFor(family: unknown, format: unknown): CreativeCo
 export type CreativeSettings = { voiceProfile: string; voiceTone: LongformVoiceTone; voiceSpeed: LongformVoiceSpeed; visualStyleProfile: string }
 // 'house' = the content type's own established voice (Wisdom Shorts, source Shorts): kept byte-for-byte under AUTO.
 // visualStyleProfile null = the content type makes no pictures (a source video is never restyled).
-export type ResolvedCreativeProfile = { voiceProfile: LongformVoiceKey | 'house'; voiceTone: LongformVoiceTone; voiceSpeed: LongformVoiceSpeed; voiceProfileId: string; visualStyleProfile: VisualStyleKey | null }
+// golden: a Golden Style (goldenStyle.ts) is stored with its locked reference hash + prompt version, so the job draws with
+// exactly that version for its whole life (a resume, a retry, a remaster child)
+export type ResolvedCreativeProfile = { voiceProfile: LongformVoiceKey | 'house'; voiceTone: LongformVoiceTone; voiceSpeed: LongformVoiceSpeed; voiceProfileId: string; visualStyleProfile: VisualStyleKey | null; golden?: GoldenSpec }
 export type CreativeProfile = { schema: 'creative-profile/1'; content: CreativeContent; requested: CreativeSettings; resolved: ResolvedCreativeProfile }
 
 // The AUTO rules, per content type, in one table.
@@ -44,9 +47,9 @@ const CONTENT_RULES: Readonly<Record<CreativeContent, ContentRule>> = {
   source_shorts: { voice: 'house', house: GENERAL_SHORTS_DEFAULT_VOICE_PROFILE, style: null },
   senior_shorts: { voice: 'topic-mature', style: 'senior-warm-watercolor' },
   // 야담 (쇼츠 and 롱폼): the ONE reference style contract (yadamStyle.ts); no other 야담 style can be chosen
-  yasa_shorts: { voice: 'topic-mature', fallback: 'male-middle', style: YADAM_STYLE_ID, styles: [YADAM_STYLE_ID] },
+  yasa_shorts: { voice: 'topic-mature', fallback: 'male-middle', style: YADAM_STYLE_ID, styles: [YADAM_STYLE_ID, ...GOLDEN_STYLE_IDS] },
   // 숨은야담 롱폼: an old tale told by a grandmother (female-senior, calm, 1.0x, the storyteller reading)
-  yasa_longform: { voice: 'fixed', fixed: YADAM_VOICE.key, speed: YADAM_VOICE.speed, style: YADAM_STYLE_ID, styles: [YADAM_STYLE_ID] },
+  yasa_longform: { voice: 'fixed', fixed: YADAM_VOICE.key, speed: YADAM_VOICE.speed, style: YADAM_STYLE_ID, styles: [YADAM_STYLE_ID, ...GOLDEN_STYLE_IDS] },
   general_shorts: { voice: 'topic', style: 'bright-editorial' },
   general_longform: { voice: 'topic', style: 'bright-editorial' },
   // the economy channel bible already draws a premium documentary/editorial look: AUTO keeps its prompts as they are
@@ -54,7 +57,7 @@ const CONTENT_RULES: Readonly<Record<CreativeContent, ContentRule>> = {
   economy_longform: { voice: 'topic', fallback: 'male-middle', style: 'realistic-documentary', native: 'realistic-documentary' }
 }
 // the 그림체 list a content offers (UI); AUTO resolves to rule.style
-export const creativeStylesFor = (content: CreativeContent): readonly VisualStyleKey[] => CONTENT_RULES[content].styles ?? ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial']
+export const creativeStylesFor = (content: CreativeContent): readonly VisualStyleKey[] => CONTENT_RULES[content].styles ?? ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial', ...GOLDEN_STYLE_IDS]
 export const isCreativeContent = (c: unknown): c is CreativeContent => typeof c === 'string' && Object.prototype.hasOwnProperty.call(CONTENT_RULES, c)
 
 function autoVoice(content: CreativeContent, topic: string): LongformVoiceKey | 'house' {
@@ -81,7 +84,7 @@ export function resolveCreativeProfile(content: CreativeContent, input: any, top
   // a content with its own fixed list (야담) never takes another style
   if (rule.styles && style !== 'auto' && !(rule.styles as readonly string[]).includes(style)) throw new Error(`visualStyleProfile must be auto or one of ${rule.styles.join(', ')}`)
   const visualStyleProfile = rule.style === null ? null : style === 'auto' ? rule.style : style
-  const resolved: ResolvedCreativeProfile = { voiceProfile, voiceTone, voiceSpeed, voiceProfileId: '', visualStyleProfile }
+  const resolved: ResolvedCreativeProfile = { voiceProfile, voiceTone, voiceSpeed, voiceProfileId: '', visualStyleProfile, ...(isGoldenStyle(visualStyleProfile) ? { golden: goldenSpec(visualStyleProfile) } : {}) }
   resolved.voiceProfileId = creativeVoiceFor(content, resolved).id
   return { schema: 'creative-profile/1', content, requested: { voiceProfile: choice, voiceTone, voiceSpeed, visualStyleProfile: style }, resolved }
 }
@@ -101,6 +104,13 @@ export function creativeStyleOverride(c: CreativeProfile | null | undefined): Vi
   const k = c?.resolved?.visualStyleProfile
   if (!c || !k || k === CONTENT_RULES[c.content].native) return null
   return VISUAL_STYLE_PROFILES[k]
+}
+// the Golden Style a job draws with (the version stored at job_create), or null
+export function creativeGolden(c: CreativeProfile | null | undefined): GoldenSpec | null {
+  const k = c?.resolved?.visualStyleProfile
+  if (!isGoldenStyle(k)) return null
+  const g = c!.resolved.golden
+  return g && g.id === k ? g : goldenSpec(k)
 }
 export const creativeStyle = (c: CreativeProfile): VisualStyleProfile | null => (c.resolved.visualStyleProfile ? VISUAL_STYLE_PROFILES[c.resolved.visualStyleProfile] : null)
 // what AUTO would pick for a content type (the phone shows it next to "자동 추천")

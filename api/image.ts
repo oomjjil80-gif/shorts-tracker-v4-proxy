@@ -2,7 +2,8 @@ import type { Request, Response } from 'express'
 import { handleBenchmarkCloneDiagnostic } from '../lib/benchmarkCloneDiagnostic.js'
 import { imageStyleFor, withVisualStyle } from '../lib/generative/creativeProfile.js'
 import { YADAM_STYLE_ID, yadamImagePrompt, yadamReferenceBlocks } from '../lib/generative/yadamStyle.js'
-import { GEMINI_IMAGE_MODEL, GEMINI_INTERACTIONS_URL } from '../lib/generative/geminiImage.js'
+import { GEMINI_IMAGE_MODEL, GEMINI_INTERACTIONS_URL, geminiImagePayload, type GeminiAspect } from '../lib/generative/geminiImage.js'
+import { GOLDEN_IDENTITY_VERSION, goldenImageRequest, goldenSpec, identityOf } from '../lib/generative/goldenStyle.js'
 import type { VisualStyleProfile } from '../lib/generative/visualStyle.js'
 import { handleBenchmarkRef01Diagnostic } from '../lib/benchmarkRef01Diagnostic.js'
 
@@ -104,17 +105,19 @@ export default async function handler(req: Request, res: Response) {
   try { style = imageStyleFor(input.creative) } catch (e: any) { return res.status(400).json({ error: { message: String(e?.message || e) } }) }
   // 야담: the ONE style contract — its text wraps the CUT prompt and its 3 reference frames go in FIRST as images
   const yadam = style?.id === YADAM_STYLE_ID
-  const prompt = yadam ? yadamImagePrompt(basePrompt) : withVisualStyle(basePrompt, style)
+  // Golden Style 1~5: the locked text around the CUT prompt + the ONE locked reference picture, nothing else (goldenStyle.ts)
+  const golden = style?.golden ? goldenSpec(style.golden) : null
+  const prompt = yadam ? yadamImagePrompt(basePrompt) : golden ? basePrompt : withVisualStyle(basePrompt, style)
 
   const profile = String(input.profile || '').trim()
-  const economyLongform = profile === 'economy-longform-v01'
+  const economyLongform = profile === 'economy-longform-v01' && !golden
   const requestedRatio = String(input.aspectRatio || '9:16')
-  const ratio = economyLongform ? '16:9' : requestedRatio
+  const ratio = economyLongform || profile === 'economy-longform-v01' ? '16:9' : requestedRatio
   const size = String(input.imageSize || '1K')
   const ratios = new Set(['1:1','2:3','3:2','3:4','4:3','4:5','5:4','9:16','16:9','21:9','1:4','4:1','1:8','8:1'])
   const sizes = new Set(['0.5K','1K','2K','4K'])
 
-  const rawReferences = Array.isArray(input.references) ? input.references.slice(0, yadam ? 3 : 4) : []
+  const rawReferences = golden ? [] : Array.isArray(input.references) ? input.references.slice(0, yadam ? 3 : 4) : []
   const referenceBlocks = rawReferences
     .map((ref: any) => ({
       type: 'image',
@@ -149,7 +152,19 @@ export default async function handler(req: Request, res: Response) {
     ? 'Use provided reference images only as style/identity anchors when they do not conflict with the ECONOMY LONGFORM V0.1 server style lock. The server style lock always wins.'
     : 'Use the provided reference images as identity/style anchors. Preserve face, hair, beard, age, clothing, body proportions, and core character design unless the prompt explicitly requests a scene-type transformation such as the established SD version.'
 
-  const interactionInput = referenceBlocks.length
+  const effectiveRatioEarly = ratios.has(ratio) ? ratio : (economyLongform ? '16:9' : '9:16')
+  let goldenInput: any[] | null = null, goldenLock: { sha256: string } | null = null
+  if (golden) {
+    // FIRST-IMAGE CHARACTER LOCK: the browser sends the episode's first CUT picture as input.identityLock for every later
+    // CUT (role: the people); the first CUT goes without it (the Golden reference alone = the approved 1-image request)
+    const lockData = String(input.identityLock?.data || '').replace(/^data:[^;]+;base64,/, '')
+    const identity = lockData ? identityOf(Buffer.from(lockData, 'base64'), String(input.identityLock?.mimeType || input.identityLock?.mime_type || 'image/png')) : null
+    if (identity && input.identityLock?.sha256 && input.identityLock.sha256 !== identity.sha256) return res.status(400).json({ error: { code: 'GOLDEN_LOCK_CHANGED', message: 'identityLock bytes do not match its sha256' } })
+    goldenLock = identity ? { sha256: identity.sha256 } : null
+    try { const g = await goldenImageRequest(golden, basePrompt, effectiveRatioEarly as GeminiAspect, identity); goldenInput = geminiImagePayload(g, { oneImageLine: false }).input }
+    catch (e: any) { return res.status(503).json({ error: { code: e?.code || 'GOLDEN_REFERENCE_MISSING', message: String(e?.message || e) } }) }
+  }
+  const interactionInput = goldenInput ? goldenInput : referenceBlocks.length
     ? [
         {
           type: 'text',
@@ -213,6 +228,7 @@ export default async function handler(req: Request, res: Response) {
         profile: economyLongform ? 'economy-longform-v01' : '',
         effectiveAspectRatio: effectiveRatio,
         visualStyleProfile: style?.id ?? null,
+        ...(golden ? { golden, identityLock: goldenLock, identityVersion: goldenLock ? GOLDEN_IDENTITY_VERSION : null } : {}),
         referenceCount: referenceBlocks.length
       }
     })

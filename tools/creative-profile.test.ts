@@ -85,7 +85,8 @@ test('B11-12: AUTO picture style per content type; an explicit style always wins
   assert.equal(resolveCreativeProfile('source_shorts', { visualStyleProfile: 'senior-warm-watercolor' }, '').resolved.visualStyleProfile, null)
   assert.equal(PROFILES.source_shorts.features.includes('IMAGE'), false)
   // every style has the registry fields; no planner writes a style of its own
-  for (const s of Object.values(VISUAL_STYLE_PROFILES)) for (const k of ['id', 'label', 'promptPrefix', 'negativePrompt', 'compositionHints']) assert.ok(String((s as any)[k]).length >= 2, `${s.id}.${k}`)
+  // every text style has its words; a Golden Style has none (its locked reference picture is the style: goldenStyle.ts)
+  for (const s of Object.values(VISUAL_STYLE_PROFILES)) for (const k of s.golden ? ['id', 'label'] : ['id', 'label', 'promptPrefix', 'negativePrompt', 'compositionHints']) assert.ok(String((s as any)[k]).length >= 2, `${s.id}.${k}`)
 })
 
 const wisdomFixture = () => {
@@ -141,12 +142,12 @@ test('voice preview resolves through the same resolver: AUTO follows the content
   assert.throws(() => previewVoice({ profile: 'nope' }), /no voice preview/)
 })
 
-test('야담 그림체: ONE style (the reference contract), no other 야담 style can be chosen; the scene prompt says only what is shown, with the Joseon LOCK', async () => {
+test('야담 그림체: the reference contract by default (+ Golden 1~5), no other 야담 style can be chosen; the scene prompt says only what is shown, with the Joseon LOCK', async () => {
   const { creativeStylesFor } = await import('../lib/generative/creativeProfile.js')
   const { YADAM_STYLE_ID } = await import('../lib/generative/yadamStyle.js')
   const { yasaScenePrompt, JOSEON_LOCK, JOSEON_FORBIDDEN } = await import('../lib/generative/yasaLongform.js')
   for (const c of ['yasa_longform', 'yasa_shorts'] as const) {
-    assert.deepEqual([...creativeStylesFor(c)], [YADAM_STYLE_ID]); assert.equal(creativeAutoDefaults(c).visualStyleProfile, YADAM_STYLE_ID)
+    assert.deepEqual([...creativeStylesFor(c)], [YADAM_STYLE_ID, 'golden-1', 'golden-2', 'golden-3', 'golden-4', 'golden-5']); assert.equal(creativeAutoDefaults(c).visualStyleProfile, YADAM_STYLE_ID)
     for (const old of ['korean_drama_illustration', 'webtoon_historical', 'historical-dramatic', 'senior-warm-watercolor']) assert.throws(() => resolveCreativeProfile(c, { visualStyleProfile: old }, ''), /visualStyleProfile/)
   }
   assert.deepEqual(creativeAutoDefaults('yasa_longform'), { voiceProfile: 'female-senior', voiceTone: 'calm', voiceSpeed: 1, voiceProfileId: 'ko-lf-female-senior-calm-1.0-yadam-v1', visualStyleProfile: YADAM_STYLE_ID })

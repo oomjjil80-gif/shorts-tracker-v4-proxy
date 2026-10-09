@@ -8,7 +8,8 @@ import { join } from 'node:path'
 import { runOk, probe } from '../../lib/media/ffmpeg.js'
 import { geminiWisdomImage, openAiTts } from '../../lib/generative/providers.js'
 import { openAiWisdomPlan, applyVisualBible, styledVisualBible } from '../../lib/generative/planner.js'
-import { briefVoice, creativeStyleOverride } from '../../lib/generative/creativeProfile.js'
+import { briefVoice, creativeGolden, creativeStyleOverride } from '../../lib/generative/creativeProfile.js'
+import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, readGoldenLock, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
 import { ttsCacheIdentity } from '../../lib/generative/voiceProfile.js'
 import { evaluateWisdomSemanticQc } from '../../lib/generative/semanticQc.js'
 import { SHORTS_SCREEN_DNA, screenDnaSegmentArgv, screenDnaSegmentFilter, type AssetGeometryReceipt } from '../../lib/media/screenDna.js'
@@ -100,7 +101,7 @@ export const generativePlanExecutor=createGenerativePlanExecutor()
 
 // Feature modules inside this stage: IMAGE (deps.image) and TTS (deps.tts), both needed to compose the beats, and
 // CAPTION (the timed caption events). A feature the profile does not select is never called.
-export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:string; image?:typeof geminiWisdomImage; tts?:typeof openAiTts; features?:FeatureResolver}={}):StageExecutor {
+export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:string; imageFetch?:typeof fetch; image?:typeof geminiWisdomImage; tts?:typeof openAiTts; features?:FeatureResolver}={}):StageExecutor {
  const image=deps.image??geminiWisdomImage, tts=deps.tts??openAiTts, apiKey=deps.apiKey??process.env.OPENAI_API_KEY??''
  // pictures: Gemini with its own key; narration stays on OpenAI
  const imageKey=deps.imageKey??process.env.GEMINI_API_KEY??''
@@ -117,7 +118,17 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:st
   const prior=await previous('ASSET')
   // the narration voice resolved at job_create (AUTO = the Wisdom Shorts house voice, request and cache key as before)
   const planBriefRef=String((p?.result as any)?.briefRef||'')
-  const voice=briefVoice(planBriefRef?await blobs.getJson(planBriefRef).catch(()=>null) as any:null,'wisdom')
+  const planBrief:any=planBriefRef?await blobs.getJson(planBriefRef).catch(()=>null):null
+  const voice=briefVoice(planBrief,'wisdom')
+  // Golden Style (stored at job_create with its locked version): every beat picture = the locked reference + text;
+  // otherwise exactly as before (the Wisdom Shorts LOCK: same prompt, same model call, same cache key)
+  const golden=creativeGolden(planBrief?.creative), gTag=golden?goldenCacheTag(golden):''
+  // FIRST-IMAGE CHARACTER LOCK: beat 1 is drawn with the Golden reference alone and becomes the job's lock (stored before
+  // any later beat); every later beat = the Golden reference (style) + beat 1 (the people). A resume reads the same lock.
+  let identity:GoldenIdentity|null=golden?await readGoldenLock(blobs as any,job.id,golden):null
+  const drawBeat=(p:string,k:string,i:number)=>golden?goldenImage(golden,p,'2:3',k,deps.imageFetch??fetch,i===0?null:identity):image(p,k)
+  // beat 1's key: the Golden version; every later beat's key also carries the lock (no lock yet = nothing cached for it)
+  const imageKeyOf=(b:any,i:number)=>!golden||i===0?sha256('image-v1|'+b.imagePrompt+gTag):identity?sha256('image-v1|'+b.imagePrompt+gTag+goldenLockTag(identity)):null
   // New PLANs already contain identity locks. For legacy already-paid ASSET reruns, preserve the
   // old paid prompts except the one deterministic named-thinker anchor so an upgrade never silently re-buys media.
   const opening=[planned.title,planned.hook,...(planned.beats||[]).slice(0,2).map((b:any)=>b?.narration)].join(' ')
@@ -130,9 +141,9 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:st
   const items:any[]=[]; let bytes=0, generated=0, reused=0
   const cached:Array<{im:any,au:any}>=[]
   for(const b of script.beats){
-   const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256(ttsCacheIdentity(voice,b.narration))
+   const ik=imageKeyOf(b,cached.length), ak=sha256(ttsCacheIdentity(voice,b.narration))
    let im:any=null, au:any=null
-   try{const m:any=await blobs.getJson('generative-cache/image/'+ik+'.json');const z=m?.ref?await blobs.getBytes(m.ref):null;if(z)im={...m,bytes:z}}catch{}
+   if(ik)try{const m:any=await blobs.getJson('generative-cache/image/'+ik+'.json');const z=m?.ref?await blobs.getBytes(m.ref):null;if(z)im={...m,bytes:z}}catch{}
    try{const m:any=await blobs.getJson('generative-cache/tts/'+ak+'.json');const z=m?.ref?await blobs.getBytes(m.ref):null;if(z)au={...m,bytes:z}}catch{}
    cached.push({im,au})
   }
@@ -150,9 +161,13 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:st
   }
   for(const [i,b] of script.beats.entries()){
    if(signal.aborted)throw new Error('aborted')
-   let {im,au}=cached[i]; const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256(ttsCacheIdentity(voice,b.narration))
+   let {im,au}=cached[i]
+   if(golden&&i>0&&!identity)throw new StageError('GOLDEN_LOCK_MISSING','the first picture (character lock) must exist before any later picture',false)
+   const ik=imageKeyOf(b,i)!, ak=sha256(ttsCacheIdentity(voice,b.narration))
    const imageCacheHit=!!im, ttsCacheHit=!!au
-   if(im)reused++;else{im=await image(b.imagePrompt,imageKey);generated++}
+   if(im)reused++;else{im=await drawBeat(b.imagePrompt,imageKey,i);generated++}
+   // beat 1 decided: it is the character lock of this job from now on (create-once; a resume reads it back)
+   if(golden&&i===0&&!identity)identity=(await goldenLockFor(blobs as any,job.id,golden,async()=>im,'first-beat')).identity
    if(au)reused++;else{au=await tts(b.narration,apiKey,voice);generated++}
    const ih=sha256(im.bytes), ah=sha256(au.bytes)
    const ip=`generative-assets/images/${ih}.jpg`, ap=`generative-assets/audio/${ah}.mp3`
