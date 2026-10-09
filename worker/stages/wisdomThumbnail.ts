@@ -2,7 +2,7 @@
 // the YouTube upload text, both from the actual script. Non-blocking: each part that fails or does not pass its rules is
 // left out (recorded in the result), and the package stays exactly as the Shorts PACKAGE stage wrote it otherwise.
 import { creativeGolden } from '../../lib/generative/creativeProfile.js'
-import { goldenCacheTag, goldenImage } from '../../lib/generative/goldenStyle.js'
+import { goldenCacheTag, goldenImage, goldenLockTag, readGoldenLock } from '../../lib/generative/goldenStyle.js'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -73,10 +73,14 @@ export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string;
             const style = bible && !golden ? ` Style matching the video: ${bible.style}; palette ${bible.palette}; lighting ${bible.lighting}.` : ''
             // 9:16 portrait thumbnail (the Shorts video itself is not touched): portrait picture, person below the text band
             const prompt = figureBelowPrompt(thumbnailFigure(topic, made.figure)) + style
-            const ik = sha256('wisdom-thumb-image-v2-portrait|' + prompt + (golden ? goldenCacheTag(golden) : ''))
+            // a later picture of a Golden job: the Golden reference (style) + the job's character lock (beat 1); no lock = no
+            // thumbnail picture (the first picture must exist first; a failing thumbnail never blocks the package)
+            const identity = golden ? await readGoldenLock(blobs as any, job.id, golden) : null
+            if (golden && !identity) throw Object.assign(new Error('GOLDEN_LOCK_MISSING: the first picture (character lock) does not exist yet'), { code: 'GOLDEN_LOCK_MISSING' })
+            const ik = sha256('wisdom-thumb-image-v2-portrait|' + prompt + (golden ? goldenCacheTag(golden) + goldenLockTag(identity) : ''))
             let im: any = null
             try { const m: any = await blobs.getJson(`generative-cache/image/${ik}.json`); const b = m?.ref ? await blobs.getBytes(m.ref) : null; if (b) im = { ...m, bytes: b } } catch {}
-            if (!im) { im = golden ? await goldenImage(golden, prompt, '9:16', imageKey, deps.imageFetch ?? fetch) : await image(prompt, imageKey); const ref = `generative-assets/images/${sha256(im.bytes)}.jpg`; await blobs.putBytes(ref, im.bytes, im.contentType); await blobs.putJson(`generative-cache/image/${ik}.json`, { ref, sha256: sha256(im.bytes), contentType: im.contentType }) }
+            if (!im) { im = golden ? await goldenImage(golden, prompt, '9:16', imageKey, deps.imageFetch ?? fetch, identity) : await image(prompt, imageKey); const ref = `generative-assets/images/${sha256(im.bytes)}.jpg`; await blobs.putBytes(ref, im.bytes, im.contentType); await blobs.putJson(`generative-cache/image/${ik}.json`, { ref, sha256: sha256(im.bytes), contentType: im.contentType }) }
             const img = join(work, 'img.jpg'), assPath = join(work, 't.ass'), out = join(work, 'thumb.jpg')
             await writeFile(img, im.bytes)
             const t = thumbnailArgv({ image: img, lines: made.lines, assPath, fontsDir: FONTS_DIR, out, canvas: SHORTS_THUMB })

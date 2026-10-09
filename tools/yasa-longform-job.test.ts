@@ -611,8 +611,8 @@ test('COST: a failing cold open keeps exactly its normal chances (9 = 3 stage at
   } finally { if (oldPrices === undefined) delete process.env.OPENAI_PRICES_JSON; else process.env.OPENAI_PRICES_JSON = oldPrices }
 })
 
-test('Golden Style (issue #179): a 야담 longform job with Golden 2 draws every scene with Gemini + the ONE locked reference (not the 야담 contract), content-only scenes, 16:9; AUTO stays the 야담 contract', async () => {
-  const { goldenPrompt, GOLDEN_REFERENCE_DIR } = await import('../lib/generative/goldenStyle.js')
+test('Golden Style + FIRST-IMAGE CHARACTER LOCK: a 야담 longform job with Golden 2 — scene 1 = Golden alone, every later scene = [Golden, scene 1] (not the 야담 contract), content-only scenes, 16:9', async () => {
+  const { goldenPrompt, goldenIdentityPrompt, goldenLockPath, GOLDEN_REFERENCE_DIR } = await import('../lib/generative/goldenStyle.js')
   const { YADAM_STYLE_CONTRACT } = await import('../lib/generative/yadamStyle.js')
   const { readFile: rf } = await import('node:fs/promises')
   const d = await mkdtemp(join(tmpdir(), 'yadam-golden-'))
@@ -628,10 +628,15 @@ test('Golden Style (issue #179): a 야담 longform job with Golden 2 draws every
   const imageFetch: any = async (url: string, init: any) => { sent.push({ url, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'image', data: pic.bytes.toString('base64'), mime_type: 'image/jpeg' }] }] }), { status: 200 }) }
   const out: any = await createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', imageFetch, image: async () => { throw new Error('no default drawer') }, yadam: async () => { throw new Error('a Golden 야담 job does not use the 야담 contract') }, tts: async () => shortTts() } as any).run(ctx())
   const m: any = await blobs.getJson(out.result.assetSpecRef)
-  assert.ok(sent.length > 0 && sent.length === new Set(m.images.map((x: any) => x.prompt ?? x.sha256)).size, 'one Golden call per distinct scene picture (a repeated scene is drawn once)')
+  // one call per distinct picture: scene 1 (the lock) + each distinct later scene (a later repeat of scene 1 carries the lock)
+  const prompts = m.images.map((x: any) => x.prompt)
+  assert.ok(sent.length > 1 && sent.length === 1 + new Set(prompts.slice(1)).size, `${sent.length} calls`)
   const ref2 = (await rf(join(GOLDEN_REFERENCE_DIR, 'ref-2.jpg'))).toString('base64')
-  for (const x of sent) {
-    assert.deepEqual([x.body.model, x.body.response_format[0].aspect_ratio, x.body.input.length, x.body.input[1].data], ['gemini-3.1-flash-image', '16:9', 2, ref2])
-    const t = x.body.input[0].text; assert.equal(t, goldenPrompt(t.split('장면: ')[1].split('\n\n')[0], '16:9')); assert.ok(!t.includes(YADAM_STYLE_CONTRACT))
+  // FIRST-IMAGE CHARACTER LOCK: scene 1 = Golden alone (the lock); every later scene = [Golden (style), scene 1 (the people)]
+  for (const [i, x] of sent.entries()) {
+    assert.deepEqual([x.body.model, x.body.response_format[0].aspect_ratio, x.body.input.length, x.body.input[1].data], ['gemini-3.1-flash-image', '16:9', i === 0 ? 2 : 3, ref2])
+    if (i > 0) assert.equal(x.body.input[2].data, pic.bytes.toString('base64'))
+    const t = x.body.input[0].text; assert.equal(t, (i === 0 ? goldenPrompt : goldenIdentityPrompt)(t.split('장면: ')[1].split('\n\n')[0], '16:9')); assert.ok(!t.includes(YADAM_STYLE_CONTRACT))
   }
+  assert.equal(((await blobs.getJson(goldenLockPath('yg1'))) as any).source, 'first-scene')
 })

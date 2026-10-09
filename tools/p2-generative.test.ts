@@ -242,11 +242,11 @@ test('Wisdom ASSET rerun reuses every cached image/TTS except the anchored think
 })
 
 
-test('Golden Style (stored in the brief at job_create): every Wisdom Shorts beat picture = Gemini + the ONE locked reference, 2:3, the beat prompt as the scene; a Golden cache never feeds the default',async()=>{
+test('Golden Style + FIRST-IMAGE CHARACTER LOCK (stored in the brief at job_create): beat 1 = Gemini + the Golden reference alone, every later beat = [Golden (style), beat 1 (the people)], 2:3; the lock is stored and a resume draws nothing',async()=>{
  const {createGenerativeAssetExecutor}=await import('../worker/stages/generative.js')
  const {createMemoryBlobStore,putAddressed}=await import('../lib/jobs/blobs.js')
  const {resolveCreativeProfile}=await import('../lib/generative/creativeProfile.js')
- const {goldenPrompt,GOLDEN_REFERENCE_DIR,goldenCacheTag,goldenSpec}=await import('../lib/generative/goldenStyle.js')
+ const {goldenPrompt,goldenIdentityPrompt,GOLDEN_REFERENCE_DIR,goldenCacheTag,goldenLockTag,goldenSpec,readGoldenLock}=await import('../lib/generative/goldenStyle.js')
  const {runOk}=await import('../lib/media/ffmpeg.js')
  const {readFile}=await import('node:fs/promises'); const {join}=await import('node:path'); const {createHash}=await import('node:crypto')
  const h=(x:string)=>createHash('sha256').update(x).digest('hex')
@@ -263,15 +263,22 @@ test('Golden Style (stored in the brief at job_create): every Wisdom Shorts beat
  assert.ok(out.result.assetSpecRef); assert.equal(defaultCalls.length,0); assert.equal(sent.length,4)
  const ref2=(await readFile(join(GOLDEN_REFERENCE_DIR,'ref-2.jpg'))).toString('base64')
  for(const [i,x] of sent.entries()){
-  assert.deepEqual([x.body.model,x.body.response_format[0].aspect_ratio,x.body.input.length,x.body.input[1].data],['gemini-3.1-flash-image','2:3',2,ref2])
+  // beat 1 = the Golden reference alone; every later beat = [Golden (style), beat 1 (the people)]
+  assert.deepEqual([x.body.model,x.body.response_format[0].aspect_ratio,x.body.input.length,x.body.input[1].data],['gemini-3.1-flash-image','2:3',i===0?2:3,ref2])
+  if(i>0)assert.equal(x.body.input[2].data,jpg.toString('base64'),'the first beat picture is the character lock')
   const t=x.body.input[0].text, scene=t.split('장면: ')[1].split('\n\n')[0]
-  assert.equal(t,goldenPrompt(scene,'2:3')); assert.ok(scene.startsWith(script.beats[i].imagePrompt),'the scene = the beat prompt (+ the existing identity lock)')
+  assert.equal(t,i===0?goldenPrompt(scene,'2:3'):goldenIdentityPrompt(scene,'2:3')); assert.ok(scene.startsWith(script.beats[i].imagePrompt),'the scene = the beat prompt (+ the existing identity lock)')
  }
  // the picture cache is per Golden version: the default key (no tag) is never written by a Golden job
  const tag=goldenCacheTag(goldenSpec('golden-2'))
  const keys=[...blobs.files.keys()].filter((k:string)=>k.startsWith('generative-cache/image/'))
  assert.equal(keys.length,4)
- for(const x of sent){const scene=x.body.input[0].text.split('장면: ')[1].split('\n\n')[0];assert.ok(keys.includes('generative-cache/image/'+h('image-v1|'+scene+tag)+'.json'));assert.ok(!keys.includes('generative-cache/image/'+h('image-v1|'+scene)+'.json'))}
+ const lock=await readGoldenLock(blobs,'j',goldenSpec('golden-2')); assert.ok(lock,'the character lock is stored with the job')
+ for(const [i,x] of sent.entries()){const scene=x.body.input[0].text.split('장면: ')[1].split('\n\n')[0];assert.ok(keys.includes('generative-cache/image/'+h('image-v1|'+scene+tag+(i===0?'':goldenLockTag(lock)))+'.json'));assert.ok(!keys.includes('generative-cache/image/'+h('image-v1|'+scene)+'.json'))}
+ // resume / retry: the same lock and every picture from the cache — nothing drawn again
+ const again:any[]=[], ex2=createGenerativeAssetExecutor({apiKey:'k',imageKey:'gk',imageFetch:(async(_u:string,init:any)=>{again.push(init);throw new Error('no call on resume')}) as any,image:async()=>{throw new Error('no default')},tts:async()=>({bytes:mp3,contentType:'audio/mpeg',provider:'s',model:'m'})})
+ await ex2.run({job:{id:'j',profile:'wisdom',planRev:1,sourceAssetId:'src_gen_g'} as any,blobs,previous:async(stage:string)=>(stage==='PLAN'?{result:{scriptRef:stored.path,briefRef:brief.path}}:null) as any,signal:new AbortController().signal} as any)
+ assert.equal(again.length,0)
 })
 
 

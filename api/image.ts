@@ -3,7 +3,7 @@ import { handleBenchmarkCloneDiagnostic } from '../lib/benchmarkCloneDiagnostic.
 import { imageStyleFor, withVisualStyle } from '../lib/generative/creativeProfile.js'
 import { YADAM_STYLE_ID, yadamImagePrompt, yadamReferenceBlocks } from '../lib/generative/yadamStyle.js'
 import { GEMINI_IMAGE_MODEL, GEMINI_INTERACTIONS_URL, geminiImagePayload, type GeminiAspect } from '../lib/generative/geminiImage.js'
-import { goldenImageRequest, goldenSpec } from '../lib/generative/goldenStyle.js'
+import { GOLDEN_IDENTITY_VERSION, goldenImageRequest, goldenSpec, identityOf } from '../lib/generative/goldenStyle.js'
 import type { VisualStyleProfile } from '../lib/generative/visualStyle.js'
 import { handleBenchmarkRef01Diagnostic } from '../lib/benchmarkRef01Diagnostic.js'
 
@@ -153,9 +153,15 @@ export default async function handler(req: Request, res: Response) {
     : 'Use the provided reference images as identity/style anchors. Preserve face, hair, beard, age, clothing, body proportions, and core character design unless the prompt explicitly requests a scene-type transformation such as the established SD version.'
 
   const effectiveRatioEarly = ratios.has(ratio) ? ratio : (economyLongform ? '16:9' : '9:16')
-  let goldenInput: any[] | null = null
+  let goldenInput: any[] | null = null, goldenLock: { sha256: string } | null = null
   if (golden) {
-    try { const g = await goldenImageRequest(golden, basePrompt, effectiveRatioEarly as GeminiAspect); goldenInput = geminiImagePayload(g, { oneImageLine: false }).input }
+    // FIRST-IMAGE CHARACTER LOCK: the browser sends the episode's first CUT picture as input.identityLock for every later
+    // CUT (role: the people); the first CUT goes without it (the Golden reference alone = the approved 1-image request)
+    const lockData = String(input.identityLock?.data || '').replace(/^data:[^;]+;base64,/, '')
+    const identity = lockData ? identityOf(Buffer.from(lockData, 'base64'), String(input.identityLock?.mimeType || input.identityLock?.mime_type || 'image/png')) : null
+    if (identity && input.identityLock?.sha256 && input.identityLock.sha256 !== identity.sha256) return res.status(400).json({ error: { code: 'GOLDEN_LOCK_CHANGED', message: 'identityLock bytes do not match its sha256' } })
+    goldenLock = identity ? { sha256: identity.sha256 } : null
+    try { const g = await goldenImageRequest(golden, basePrompt, effectiveRatioEarly as GeminiAspect, identity); goldenInput = geminiImagePayload(g, { oneImageLine: false }).input }
     catch (e: any) { return res.status(503).json({ error: { code: e?.code || 'GOLDEN_REFERENCE_MISSING', message: String(e?.message || e) } }) }
   }
   const interactionInput = goldenInput ? goldenInput : referenceBlocks.length
@@ -222,7 +228,7 @@ export default async function handler(req: Request, res: Response) {
         profile: economyLongform ? 'economy-longform-v01' : '',
         effectiveAspectRatio: effectiveRatio,
         visualStyleProfile: style?.id ?? null,
-        ...(golden ? { golden } : {}),
+        ...(golden ? { golden, identityLock: goldenLock, identityVersion: goldenLock ? GOLDEN_IDENTITY_VERSION : null } : {}),
         referenceCount: referenceBlocks.length
       }
     })

@@ -53,11 +53,53 @@ export function goldenReference(g: GoldenSpec | GoldenStyleId, dir = GOLDEN_REFE
   return cache.get(key)!
 }
 
+// FIRST-IMAGE CHARACTER LOCK (PR #180 blocker): the first picture of a job / episode is drawn with the Golden reference
+// alone (exactly the approved 1-image request); every later picture gets TWO images with separate roles — the Golden
+// reference (drawing style) first, the first picture (who the people are) second — and a text that says which is which.
+// Whether this 2-image request keeps the approved 1-image style quality is NOT verified yet (needs a paid check).
+export const GOLDEN_IDENTITY_VERSION = 'golden-identity/1'
+export const GOLDEN_IDENTITY_INSTRUCTION = '첫 번째 첨부 이미지는 그림체 참고용입니다. 첫 번째 첨부 이미지의 선화, 채색, 명암, 질감 등 시각적 표현 방식을 최대한 동일하게 재현하세요. 첫 번째 첨부 이미지의 인물과 구도는 복사하지 말고 새로운 장면을 그리세요. 실사 사진으로 만들지 마세요.\n\n두 번째 첨부 이미지는 인물 참고용입니다. 두 번째 첨부 이미지에 나온 인물의 얼굴, 나이, 머리 모양, 옷차림을 그대로 유지해 같은 사람으로 그리세요. 그림체는 두 번째 이미지가 아니라 첫 번째 이미지를 따르세요.'
+export const goldenIdentityPrompt = (scene: string, aspect: GeminiAspect) => `${GOLDEN_IDENTITY_INSTRUCTION}\n\n장면: ${String(scene).trim()}\n\n${goldenFrameLine(aspect)}`
+export type GoldenIdentity = { bytes: Buffer; mime: string; sha256: string }
+export const identityOf = (bytes: Buffer, mime = sniff(bytes)): GoldenIdentity => ({ bytes, mime, sha256: createHash('sha256').update(bytes).digest('hex') })
+const sniff = (b: Buffer) => (b.length >= 2 && b[0] === 0x89 && b[1] === 0x50 ? 'image/png' : b.length >= 2 && b[0] === 0x52 && b[1] === 0x49 ? 'image/webp' : 'image/jpeg')
+export const goldenLockTag = (lock: { sha256: string } | null | undefined) => (lock ? `|identity:${GOLDEN_IDENTITY_VERSION}:${lock.sha256}` : '')
+
 // the Gemini request of one Golden picture: the text, then the ONE reference picture (as the round-2 samples)
-export async function goldenImageRequest(g: GoldenSpec, scene: string, aspect: GeminiAspect) {
-  return { prompt: goldenPrompt(scene, aspect), aspectRatio: aspect, imageSize: '1K' as const, references: [{ bytes: await goldenReference(g), mime: 'image/jpeg' }] }
+// identity null = the FIRST picture (the approved 1-image request); identity = every later picture (style + character)
+export async function goldenImageRequest(g: GoldenSpec, scene: string, aspect: GeminiAspect, identity: GoldenIdentity | null = null) {
+  const style = { bytes: await goldenReference(g), mime: 'image/jpeg' }
+  if (!identity) return { prompt: goldenPrompt(scene, aspect), aspectRatio: aspect, imageSize: '1K' as const, references: [style] }
+  return { prompt: goldenIdentityPrompt(scene, aspect), aspectRatio: aspect, imageSize: '1K' as const, references: [style, { bytes: identity.bytes, mime: identity.mime }] }
 }
-export async function goldenImage(g: GoldenSpec, scene: string, aspect: GeminiAspect, apiKey: string, f: typeof fetch = fetch): Promise<GeneratedBinary> {
-  const made = await geminiImage(await goldenImageRequest(g, scene, aspect), apiKey, f, { oneImageLine: false })
-  return { ...made, model: `${made.model}+${g.id}+${g.promptVersion}` }
+export async function goldenImage(g: GoldenSpec, scene: string, aspect: GeminiAspect, apiKey: string, f: typeof fetch = fetch, identity: GoldenIdentity | null = null): Promise<GeneratedBinary> {
+  const made = await geminiImage(await goldenImageRequest(g, scene, aspect, identity), apiKey, f, { oneImageLine: false })
+  return { ...made, model: `${made.model}+${g.id}+${g.promptVersion}${identity ? `+${GOLDEN_IDENTITY_VERSION}` : ''}` }
+}
+
+// The job's character lock: which picture is the first one (its bytes in the blob store, its sha256), written once
+// before any later picture is drawn and read back on every resume / retry (the same bytes, or the job stops).
+export type GoldenLockRecord = { schema: 'golden-lock/1'; jobId: string; style: GoldenSpec; identityVersion: string; ref: string; sha256: string; source: string; createdAt: string }
+export const goldenLockPath = (jobId: string) => `golden-locks/${jobId}.json`
+type LockBlobs = { getJson(p: string): Promise<any>; putJson(p: string, v: any, o?: { overwrite?: boolean }): Promise<any>; getBytes(p: string): Promise<Buffer | null>; putBytes(p: string, b: Buffer, ct: string): Promise<any> }
+export async function readGoldenLock(blobs: LockBlobs, jobId: string, g: GoldenSpec): Promise<GoldenIdentity | null> {
+  const rec: GoldenLockRecord | null = await blobs.getJson(goldenLockPath(jobId)).catch(() => null)
+  if (!rec) return null
+  if (rec.style?.id !== g.id || rec.style?.refSha256 !== g.refSha256 || rec.style?.promptVersion !== g.promptVersion || rec.identityVersion !== GOLDEN_IDENTITY_VERSION) throw Object.assign(new Error(`job ${jobId}: its character lock was made with another Golden Style version`), { code: 'GOLDEN_LOCK_MISMATCH' })
+  const bytes = await blobs.getBytes(rec.ref).catch(() => null)
+  if (!bytes) throw Object.assign(new Error(`job ${jobId}: the first picture (character lock ${rec.ref}) is missing`), { code: 'GOLDEN_LOCK_MISSING' })
+  const id = identityOf(bytes)
+  if (id.sha256 !== rec.sha256) throw Object.assign(new Error(`job ${jobId}: the first picture changed (character lock ${rec.sha256.slice(0, 12)})`), { code: 'GOLDEN_LOCK_CHANGED' })
+  return id
+}
+// the lock for a job: the stored one, or `first()` draws / gives the first picture now and it is stored before anything
+// else is drawn (create-once: a concurrent writer never replaces it)
+export async function goldenLockFor(blobs: LockBlobs, jobId: string, g: GoldenSpec, first: () => Promise<{ bytes: Buffer; contentType?: string }>, source: string): Promise<{ identity: GoldenIdentity; created: boolean }> {
+  const have = await readGoldenLock(blobs, jobId, g)
+  if (have) return { identity: have, created: false }
+  const made = await first(), id = identityOf(made.bytes), ref = `generative-assets/images/${id.sha256}.jpg`
+  if (!(await blobs.getBytes(ref).catch(() => null))) await blobs.putBytes(ref, made.bytes, made.contentType ?? id.mime)
+  await blobs.putJson(goldenLockPath(jobId), { schema: 'golden-lock/1', jobId, style: g, identityVersion: GOLDEN_IDENTITY_VERSION, ref, sha256: id.sha256, source, createdAt: new Date().toISOString() } satisfies GoldenLockRecord, { overwrite: false }).catch(() => {})
+  const stored = await readGoldenLock(blobs, jobId, g)
+  return { identity: stored ?? id, created: true }
 }

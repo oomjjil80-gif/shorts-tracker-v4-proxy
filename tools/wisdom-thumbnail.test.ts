@@ -91,9 +91,9 @@ test('REAL: Wisdom SHORTS thumbnail (Schopenhauer topic) through the PACKAGE dec
   assert.equal(plain.result.thumbnailRef, undefined)
 })
 
-test('Golden Style (job_create choice in the brief): the Shorts thumbnail picture = Gemini + the ONE locked reference, 9:16, no style words; the default thumbnail is unchanged', async () => {
+test('Golden Style + FIRST-IMAGE CHARACTER LOCK: the Shorts thumbnail (a later picture) = Gemini [Golden reference (style), the job\'s first beat picture (the people)], 9:16, no style words; no lock = no thumbnail picture', async () => {
   const { resolveCreativeProfile } = await import('../lib/generative/creativeProfile.js')
-  const { goldenPrompt, GOLDEN_REFERENCE_DIR } = await import('../lib/generative/goldenStyle.js')
+  const { goldenIdentityPrompt, goldenLockFor, goldenSpec, GOLDEN_REFERENCE_DIR } = await import('../lib/generative/goldenStyle.js')
   const d = await mkdtemp(join(tmpdir(), 'wthumb-g-')), blobs: any = createMemoryBlobStore()
   const portrait = join(d, 'p.jpg'); await standInPortraitTall(portrait, { tint: [150, 165, 205], bg: [14, 20, 34] })
   const script = await putAddressed(blobs, 'generative-scripts', { schema: 'wisdom-script/1', title: '나이 들수록 혼자가 편한 이유', hook: '왜 혼자가 편할까', beats: [{ narration: '고독을 두려워하지 마세요' }] })
@@ -102,13 +102,19 @@ test('Golden Style (job_create choice in the brief): the Shorts thumbnail pictur
   const sent: any[] = [], oldImage: string[] = []
   const imageFetch: any = async (url: string, init: any) => { sent.push({ url, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'image', data: (await readFile(portrait)).toString('base64'), mime_type: 'image/jpeg' }] }] }), { status: 200 }) }
   const ex = withWisdomThumbnail(pkgExec, { apiKey: 'k', imageKey: 'gk', imageFetch, kit: async () => ({ lines: [{ text: '혼자가', color: 'white' }, { text: '편해지는', color: 'purple' }, { text: '진짜 이유', color: 'red' }], figure: 'old man', metadata: A_KIT.metadata }), image: async (p: string) => { oldImage.push(p); throw new Error('the default drawer is not used with a Golden Style') } })
-  const r: any = await ex.run({ job: { id: 'j', profile: 'wisdom', planRef: brief.path }, blobs, previous: async (s: string) => (s === 'PLAN' ? { result: { scriptRef: script.path, briefRef: brief.path, visualBibleRef: bible.path } } : null), signal: new AbortController().signal } as any)
+  const run = () => ex.run({ job: { id: 'j', profile: 'wisdom', planRef: brief.path }, blobs, previous: async (s: string) => (s === 'PLAN' ? { result: { scriptRef: script.path, briefRef: brief.path, visualBibleRef: bible.path } } : null), signal: new AbortController().signal } as any)
+  // no character lock yet (the first picture does not exist): no thumbnail picture is drawn, the package still goes out
+  const r0: any = await run()
+  assert.equal(sent.length, 0); assert.ok(!r0.result.thumbnailRef); assert.match(String(r0.result.thumbnailError), /GOLDEN_LOCK_MISSING/); assert.ok(r0.result.packageRef)
+  const firstBeat = await readFile(portrait)
+  await goldenLockFor(blobs, 'j', goldenSpec('golden-5'), async () => ({ bytes: firstBeat, contentType: 'image/jpeg' }), 'first-beat')
+  const r: any = await run()
   assert.ok(r.result.thumbnailRef, JSON.stringify(r.result)); assert.equal(oldImage.length, 0); assert.equal(sent.length, 1)
   const b = sent[0].body
-  assert.deepEqual([b.model, b.response_format[0].aspect_ratio, b.input.length], ['gemini-3.1-flash-image', '9:16', 2])
-  assert.equal(b.input[1].data, (await readFile(join(GOLDEN_REFERENCE_DIR, 'ref-5.jpg'))).toString('base64'))
+  assert.deepEqual([b.model, b.response_format[0].aspect_ratio, b.input.length], ['gemini-3.1-flash-image', '9:16', 3])
+  assert.equal(b.input[1].data, (await readFile(join(GOLDEN_REFERENCE_DIR, 'ref-5.jpg'))).toString('base64')); assert.equal(b.input[2].data, firstBeat.toString('base64'), 'the people: the first beat picture')
   assert.ok(b.input[0].text.endsWith('9:16 세로 화면, 글자 없음.')); assert.doesNotMatch(b.input[0].text, /painterly|Style matching the video/)
-  assert.equal(b.input[0].text, goldenPrompt(b.input[0].text.split('장면: ')[1].split('\n\n')[0], '9:16'))
+  assert.equal(b.input[0].text, goldenIdentityPrompt(b.input[0].text.split('장면: ')[1].split('\n\n')[0], '9:16'))
   const out = join(d, 'thumb.jpg'); writeFileSync(out, blobs.binaries.get(r.result.thumbnailRef)); const pi = await probe(out); assert.deepEqual([pi.width, pi.height], [1080, 1920], '9:16 layout kept')
 })
 
