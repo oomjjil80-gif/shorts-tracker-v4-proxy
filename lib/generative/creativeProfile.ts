@@ -6,7 +6,8 @@ import {
   DEFAULT_VOICE_PROFILE, GENERAL_SHORTS_DEFAULT_VOICE_PROFILE, LONGFORM_VOICE_CHOICES, LONGFORM_VOICE_PROFILES, recommendLongformVoice, resolveLongformRuntimeVoice,
   parseLongformTone, parseLongformSpeed, toneInstruction, type LongformVoiceKey, type LongformVoiceTone, type LongformVoiceSpeed, type VoiceProfile
 } from './voiceProfile.js'
-import { VISUAL_STYLE_PROFILES, YADAM_STYLE_KEYS, parseVisualStyle, type VisualStyleKey, type VisualStyleProfile } from './visualStyle.js'
+import { VISUAL_STYLE_PROFILES, parseVisualStyle, type VisualStyleKey, type VisualStyleProfile } from './visualStyle.js'
+import { YADAM_STYLE_ID, YADAM_STYLE_CONTRACT, YADAM_STYLE_RULES, YADAM_STYLE_TRAITS } from './yadamStyle.js'
 import { YADAM_VOICE, YADAM_STORYTELLER } from './voiceProfile.js'
 
 // Server Job profiles (wisdom, wisdom_longform, senior_longform, source_shorts) and the Story Writer content types (a
@@ -36,17 +37,16 @@ export type CreativeProfile = { schema: 'creative-profile/1'; content: CreativeC
 //  'fixed' = one AUTO voice for the content (`fixed`); `speed` = the AUTO speed when the request names none.
 //  styles: the 그림체 this content offers the user (none = the shared list)
 type ContentRule = { voice: 'house' | 'topic' | 'topic-mature' | 'fixed'; house?: VoiceProfile; fallback?: LongformVoiceKey; fixed?: LongformVoiceKey; speed?: LongformVoiceSpeed; style: VisualStyleKey | null; native?: VisualStyleKey; styles?: readonly VisualStyleKey[] }
-// 숨은야담 AUTO 그림체 (one place to change the recommendation)
-export const YADAM_AUTO_STYLE: VisualStyleKey = 'korean_drama_illustration'
 const CONTENT_RULES: Readonly<Record<CreativeContent, ContentRule>> = {
   wisdom: { voice: 'house', house: DEFAULT_VOICE_PROFILE, style: 'wisdom-painterly', native: 'wisdom-painterly' },
   wisdom_longform: { voice: 'topic', style: 'wisdom-painterly', native: 'wisdom-painterly' },
   senior_longform: { voice: 'topic-mature', style: 'senior-warm-watercolor' },
   source_shorts: { voice: 'house', house: GENERAL_SHORTS_DEFAULT_VOICE_PROFILE, style: null },
   senior_shorts: { voice: 'topic-mature', style: 'senior-warm-watercolor' },
-  yasa_shorts: { voice: 'topic-mature', fallback: 'male-middle', style: 'historical-dramatic' },
-  // 숨은야담 롱폼: an old tale told by a grandmother (female-senior, calm, 1.0x, the storyteller reading); AUTO 그림체 = 고급 사극 일러스트
-  yasa_longform: { voice: 'fixed', fixed: YADAM_VOICE.key, speed: YADAM_VOICE.speed, style: YADAM_AUTO_STYLE, styles: YADAM_STYLE_KEYS },
+  // 야담 (쇼츠 and 롱폼): the ONE reference style contract (yadamStyle.ts); no other 야담 style can be chosen
+  yasa_shorts: { voice: 'topic-mature', fallback: 'male-middle', style: YADAM_STYLE_ID, styles: [YADAM_STYLE_ID] },
+  // 숨은야담 롱폼: an old tale told by a grandmother (female-senior, calm, 1.0x, the storyteller reading)
+  yasa_longform: { voice: 'fixed', fixed: YADAM_VOICE.key, speed: YADAM_VOICE.speed, style: YADAM_STYLE_ID, styles: [YADAM_STYLE_ID] },
   general_shorts: { voice: 'topic', style: 'bright-editorial' },
   general_longform: { voice: 'topic', style: 'bright-editorial' },
   // the economy channel bible already draws a premium documentary/editorial look: AUTO keeps its prompts as they are
@@ -78,6 +78,8 @@ export function resolveCreativeProfile(content: CreativeContent, input: any, top
   const rule = CONTENT_RULES[content]
   const voiceTone = parseLongformTone(input?.voiceTone), voiceSpeed = parseLongformSpeed(input?.voiceSpeed ?? rule.speed), style = parseVisualStyle(input?.visualStyleProfile)
   const voiceProfile = choice === 'auto' ? autoVoice(content, topic) : (choice as LongformVoiceKey)
+  // a content with its own fixed list (야담) never takes another style
+  if (rule.styles && style !== 'auto' && !(rule.styles as readonly string[]).includes(style)) throw new Error(`visualStyleProfile must be auto or one of ${rule.styles.join(', ')}`)
   const visualStyleProfile = rule.style === null ? null : style === 'auto' ? rule.style : style
   const resolved: ResolvedCreativeProfile = { voiceProfile, voiceTone, voiceSpeed, voiceProfileId: '', visualStyleProfile }
   resolved.voiceProfileId = creativeVoiceFor(content, resolved).id
@@ -120,8 +122,11 @@ export function briefVoice(brief: { creative?: CreativeProfile; voice?: { key?: 
 export function imageStyleFor(creative: any): VisualStyleProfile | null {
   if (!creative || typeof creative !== 'object') return null
   const content = isCreativeContent(creative.content) ? creative.content : creativeContentFor(creative.family, creative.format)
-  const base = resolveCreativeProfile(content, creative.requested ?? {}, String(creative.topic || ''))
-  const stored = creative.resolved?.visualStyleProfile as VisualStyleKey | undefined
+  const offeredReq = CONTENT_RULES[content as CreativeContent]?.styles, req = creative.requested ?? {}
+  const base = resolveCreativeProfile(content, offeredReq && req.visualStyleProfile && !(offeredReq as readonly string[]).includes(req.visualStyleProfile) ? { ...req, visualStyleProfile: 'auto' } : req, String(creative.topic || ''))
+  // a stored style the content no longer offers (an old 야담 Episode) is never used: the content's own style is
+  const offered = CONTENT_RULES[content as CreativeContent]?.styles, storedRaw = creative.resolved?.visualStyleProfile as VisualStyleKey | undefined
+  const stored = storedRaw && (!offered || (offered as readonly string[]).includes(storedRaw)) ? storedRaw : undefined
   return creativeStyleOverride(stored && VISUAL_STYLE_PROFILES[stored] && base.resolved.visualStyleProfile !== null ? { ...base, resolved: { ...base.resolved, visualStyleProfile: stored } } : base)
 }
 // Visual Style Profile = the base art style (medium, brushwork, light); the channel/episode bible and the CUT scene
@@ -130,6 +135,9 @@ export function imageStyleFor(creative: any): VisualStyleProfile | null {
 // in memory there and never stored): the style block before, the style negatives after.
 export function visualStyleWrap(style: VisualStyleProfile | null): { head: string; tail: string } | null {
   if (!style) return null
+  // 야담: the one contract's own text (the same words /api/image and the jobs send); a hand-copied prompt also needs the
+  // 3 reference frames attached — the text alone is not the style
+  if (style.id === YADAM_STYLE_ID) return { head: [YADAM_STYLE_CONTRACT, YADAM_STYLE_TRAITS].join('\n\n'), tail: `${YADAM_STYLE_RULES}\n[ATTACH] the 3 야담 style reference frames (assets/style-reference/yadam/sent) as the style reference images.` }
   return {
     head: [
       `[VISUAL STYLE PROFILE — BASE ART STYLE: ${style.id}]`,

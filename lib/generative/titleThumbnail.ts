@@ -127,9 +127,10 @@ export function titleSceneIndex(title: string, scenes: Array<{ id: string; text:
   return best >= 0 ? best : Math.min(fallback, limit - 1)
 }
 // the image model draws the BACKGROUND only: this story's moment for this title, bright and clear, no text at all
-export const thumbnailBackgroundPrompt = (title: string, scenePrompt: string) => [
+// styleNeutral: the content's own style contract decides the look (야담): no colour / light words here
+export const thumbnailBackgroundPrompt = (title: string, scenePrompt: string, o: { styleNeutral?: boolean } = {}) => [
   `YouTube thumbnail BACKGROUND ARTWORK for a video about: ${normTitle(title)}. Show exactly this story moment (scene below), so the picture and the title tell the same story.`,
-  'Clean, bright, clearly lit picture with clear, lively (not muddy, not grey or brown haze, not dark) colours and well-lit attractive faces; the main person large and expressive on the RIGHT half; the LEFT half simpler and calmer (the title is added there later).',
+  o.styleNeutral ? 'The main person large and expressive on the RIGHT half; the LEFT half simpler and calmer (the title is added there later).' : 'Clean, bright, clearly lit picture with clear, lively (not muddy, not grey or brown haze, not dark) colours and well-lit attractive faces; the main person large and expressive on the RIGHT half; the LEFT half simpler and calmer (the title is added there later).',
   'ABSOLUTELY NO text, letters, words, numbers, calligraphy, captions, signs, logos or watermark anywhere in the picture.',
   '',
   scenePrompt

@@ -8,8 +8,6 @@
 //     that shows the strangest act, the worst danger, the prop and the question — never the answer
 //   - deterministic checks of every act, the cold open and the whole script against the DNA (no AI QC)
 //   - scene pictures keep the story's own country / era (costume, architecture, props) and the concrete prop's look
-import { YADAM_NO_PHOTO, YADAM_STYLE_KEYS, parseVisualStyle, type VisualStyleProfile } from './visualStyle.js'
-import { YADAM_AUTO_STYLE } from './creativeProfile.js'
 import { characterLine, type SeniorScene, type SeniorScript } from './seniorLongform.js'
 import { checkYasaScript, propKeyword, validateYasaStoryDna } from '../story/yasaStoryDna.js'
 
@@ -143,40 +141,29 @@ export function yasaScriptErrors(script: any, o: { speed?: number; charsPerSecon
   return e
 }
 
-// 조선 고증 LOCK: whatever 그림체 is chosen, a Korean story keeps Korea / Joseon in every picture (style != country)
+// 조선 고증 LOCK: a Korean story keeps Korea / Joseon in every picture (content, separate from the 그림체)
 export const JOSEON_LOCK = 'Korea, Joseon dynasty: Joseon hanbok, gat (horsehair hats), sangtu topknots, Joseon women\'s hairstyles (braids, chignon with binyeo), Joseon soldiers\' uniforms, hanok, thatched-roof choga houses, tiled giwa houses, jangdokdae crock terraces, Joseon everyday tools, Joseon village and street layout'
 export const JOSEON_FORBIDDEN = 'Chinese-style costumes, Qing queue hairstyle, Chinese official robes, Chinese palace architecture, Japanese kimono, Japanese chonmage topknot, torii gates, Japanese architecture'
 const KOREAN_SETTING = /조선|한국|고려|신라|백제|한양|korea|joseon|goryeo/i
 export const isKoreanSetting = (set: any) => { const t = `${set?.region || ''} ${set?.era || ''}`.trim(); return !t || KOREAN_SETTING.test(t) }
 
-// the scene picture, always in this order: 1 the scene, 2 the country/era LOCK, 3 the Character Bible, 4 the chosen
-// 그림체, 5 what never appears (style negatives + another country/era + never a photo)
-export function yasaScenePrompt(s: SeniorScript & { yasaStoryDNA?: any }, scene: SeniorScene, style: VisualStyleProfile): string {
+// WHAT a 야담 scene picture shows (content only): 1 the scene, 2 the country/era LOCK, 3 the Character Bible, 4 the
+// framing, 5 content that never appears. HOW it is drawn is never written here: yadamStyle.ts (the one 그림체 contract,
+// with the reference frames) wraps this text in every request.
+export function yasaScenePrompt(s: SeniorScript & { yasaStoryDNA?: any }, scene: SeniorScene): string {
   const dna = s.yasaStoryDNA ?? {}, set = dna.setting ?? {}, prop = String(dna.mystery?.concreteProp || '').trim()
   const people = scene.characters.map((id) => s.characters.find((c) => c.id === id)).filter(Boolean).map((c) => characterLine(c!))
   const showsProp = prop && hasProp(`${scene.visual} ${scene.action}`, dna)
   const korean = isKoreanSetting(set)
   return [
     `Content: ${scene.visual} Place: ${scene.place}. Time: ${scene.time}. Action: ${scene.action}. Mood: ${scene.mood}${showsProp ? `. The key object "${prop}" looks exactly the same in every picture` : ''}.`,
-    `Country and era (locked, the style never changes this): ${set.region || ''}, ${set.era || ''}${set.culturalNotes ? ` (${set.culturalNotes})` : ''} — clothing, hairstyles, architecture and objects belong to exactly this place and time${korean ? `; ${JOSEON_LOCK}` : ''}.`,
+    `Country and era (locked): ${set.region || ''}, ${set.era || ''}${set.culturalNotes ? ` (${set.culturalNotes})` : ''} — clothing, hairstyles, architecture and objects belong to exactly this place and time${korean ? `; ${JOSEON_LOCK}` : ''}.`,
     ...(people.length ? [`Characters (keep exactly this look in every picture — face, age, hair, clothing colors and shape, build, key props): ${people.join(' | ')}.`] : []),
-    `Style: ${style.promptPrefix}.`,
-    `Composition: Wide 16:9 story frame. Faces and the key action in the upper two thirds; the bottom quarter calm and simple (subtitles are added later). ${style.compositionHints}.`,
-    `Avoid: ${[style.negativePrompt, 'modern objects, costumes or buildings of another country or era', korean ? JOSEON_FORBIDDEN : '', YADAM_NO_PHOTO].filter(Boolean).join(', ')}.`
+    'Framing: wide 16:9 story frame; faces and the key action in the upper two thirds; the bottom quarter calm and simple (subtitles are added later).',
+    `Never show: ${['modern objects, costumes or buildings of another country or era', korean ? JOSEON_FORBIDDEN : ''].filter(Boolean).join(', ')}.`
   ].join(' ')
 }
 
-// 숨은야담 REMASTER brief: the source job's brief (its story, length and voice: the main narration's TTS is reused from
-// the cache because voice + text stay the same) with the new 그림체 and the link to the source job and its script.
-// The source job and its files are never changed.
-export function yadamRemasterBrief(source: any, o: { sourceJobId: string; scriptRef: string; visualStyleProfile?: unknown }): any {
-  if (!source || source.schema !== 'generative-brief/1' || source.profile !== 'yasa_longform' || !source.creative?.resolved) throw new Error('the source job has no 숨은야담 brief')
-  const style = parseVisualStyle(o.visualStyleProfile ?? 'auto')
-  if (style !== 'auto' && !(YADAM_STYLE_KEYS as readonly string[]).includes(style)) throw new Error(`visualStyleProfile must be auto or one of ${YADAM_STYLE_KEYS.join(', ')}`)
-  const resolvedStyle = style === 'auto' ? YADAM_AUTO_STYLE : style
-  const c = source.creative
-  return { ...source, creative: { ...c, requested: { ...c.requested, visualStyleProfile: style }, resolved: { ...c.resolved, visualStyleProfile: resolvedStyle } }, remaster: { sourceJobId: o.sourceJobId, parentJobId: o.sourceJobId, scriptRef: o.scriptRef } }
-}
 
 // What earlier cold-open attempts were rejected for, so the next attempt cannot make the same mistake (generic: any
 // profile whose cold open is checked by coldOpenErrors). From every rejected attempt (kept across stage retries):

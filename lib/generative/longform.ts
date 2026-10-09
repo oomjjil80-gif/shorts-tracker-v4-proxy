@@ -127,8 +127,14 @@ export function longformRemasterBrief(source: LongformBrief | null | undefined, 
     if (changes.voiceProfile !== undefined) requested.voiceProfile = changes.voiceProfile
     if (changes.voiceTone !== undefined) requested.voiceTone = changes.voiceTone
     if (changes.voiceSpeed !== undefined) requested.voiceSpeed = changes.voiceSpeed
+    // a content with ONE 그림체 (야담): an old style choice of the source is not offered any more -> AUTO (= that one style)
+    const offered = creativeStylesFor(source.profile)
+    if (requested.visualStyleProfile && requested.visualStyleProfile !== 'auto' && !(offered as readonly string[]).includes(requested.visualStyleProfile)) requested.visualStyleProfile = 'auto'
     creative = resolveCreativeProfile(source.profile, requested, source.text)
   }
+  // a 야담 child always names its one 그림체 (its pictures are drawn by yadamStyle.ts whatever the brief says)
+  const single = creativeStylesFor(source.profile)
+  if (creative?.resolved && single.length === 1 && creative.resolved.visualStyleProfile !== single[0]) creative = { ...creative, requested: { ...creative.requested, visualStyleProfile: 'auto' }, resolved: { ...creative.resolved, visualStyleProfile: single[0] } }
   return {
     ...source,
     ...(creative ? { creative } : {}),

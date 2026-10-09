@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express'
 import { handleBenchmarkCloneDiagnostic } from '../lib/benchmarkCloneDiagnostic.js'
 import { imageStyleFor, withVisualStyle } from '../lib/generative/creativeProfile.js'
+import { YADAM_STYLE_ID, yadamImagePrompt, yadamReferenceBlocks } from '../lib/generative/yadamStyle.js'
 import type { VisualStyleProfile } from '../lib/generative/visualStyle.js'
 import { handleBenchmarkRef01Diagnostic } from '../lib/benchmarkRef01Diagnostic.js'
 
@@ -100,7 +101,9 @@ export default async function handler(req: Request, res: Response) {
   // An Episode without creative settings (legacy) is drawn exactly as before.
   let style: VisualStyleProfile | null = null
   try { style = imageStyleFor(input.creative) } catch (e: any) { return res.status(400).json({ error: { message: String(e?.message || e) } }) }
-  const prompt = withVisualStyle(basePrompt, style)
+  // 야담: the ONE style contract — its text wraps the CUT prompt and its 3 reference frames go in FIRST as images
+  const yadam = style?.id === YADAM_STYLE_ID
+  const prompt = yadam ? yadamImagePrompt(basePrompt) : withVisualStyle(basePrompt, style)
 
   const profile = String(input.profile || '').trim()
   const economyLongform = profile === 'economy-longform-v01'
@@ -110,7 +113,7 @@ export default async function handler(req: Request, res: Response) {
   const ratios = new Set(['1:1','2:3','3:2','3:4','4:3','4:5','5:4','9:16','16:9','21:9','1:4','4:1','1:8','8:1'])
   const sizes = new Set(['0.5K','1K','2K','4K'])
 
-  const rawReferences = Array.isArray(input.references) ? input.references.slice(0, 4) : []
+  const rawReferences = Array.isArray(input.references) ? input.references.slice(0, yadam ? 3 : 4) : []
   const referenceBlocks = rawReferences
     .map((ref: any) => ({
       type: 'image',
@@ -118,6 +121,10 @@ export default async function handler(req: Request, res: Response) {
       mime_type: String(ref?.mimeType || ref?.mime_type || 'image/png')
     }))
     .filter((ref: any) => ref.data.length > 0)
+  if (yadam) {
+    try { referenceBlocks.unshift(...(await yadamReferenceBlocks())) }
+    catch (e: any) { return res.status(503).json({ error: { code: 'YADAM_REFERENCE_MISSING', message: String(e?.message || e) } }) }
+  }
 
   const semanticTarget = economyLongform ? extractSemanticTarget(prompt) : ''
   const guardedPrompt = economyLongform
@@ -135,7 +142,9 @@ export default async function handler(req: Request, res: Response) {
       ].join('\n')
     : prompt
 
-  const referenceInstruction = economyLongform
+  const referenceInstruction = yadam
+    ? 'The FIRST THREE images are the style reference (the one 야담 art style); any further images only fix the identity of this episode\'s characters.'
+    : economyLongform
     ? 'Use provided reference images only as style/identity anchors when they do not conflict with the ECONOMY LONGFORM V0.1 server style lock. The server style lock always wins.'
     : 'Use the provided reference images as identity/style anchors. Preserve face, hair, beard, age, clothing, body proportions, and core character design unless the prompt explicitly requests a scene-type transformation such as the established SD version.'
 
