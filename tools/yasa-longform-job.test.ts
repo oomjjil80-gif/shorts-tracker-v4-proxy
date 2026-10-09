@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { createTestDb } from './testDb.js'
 import { createJobStore } from '../lib/jobs/store.js'
 import { createMemoryBlobStore, putAddressed } from '../lib/jobs/blobs.js'
@@ -639,4 +640,86 @@ test('Golden Style + FIRST-IMAGE CHARACTER LOCK: a 야담 longform job with Gold
     const t = x.body.input[0].text; assert.equal(t, (i === 0 ? goldenPrompt : goldenIdentityPrompt)(t.split('장면: ')[1].split('\n\n')[0], '16:9')); assert.ok(!t.includes(YADAM_STYLE_CONTRACT))
   }
   assert.equal(((await blobs.getJson(goldenLockPath('yg1'))) as any).source, 'first-scene')
+})
+
+test('THUMBNAIL ONLY (Golden 3, the 「죽은 남편이 돌아온 밤」 stop): a dark approved thumbnail + a representative mismatch -> 문구만 바꾸기 (no AI) and 썸네일만 다시 생성 (ONE picture + ONE check vs the KEPT representative) -> the same job goes on; the lock, the approved picture and the representative are never redrawn or deleted', async () => {
+  const { styleApprovalRef, thumbnailOverrideRef, THUMBNAIL_BRIGHT_LINE } = await import('../lib/generative/styleApproval.js')
+  const { goldenLockPath } = await import('../lib/generative/goldenStyle.js')
+  const { longformTitleThumbnail } = await import('../worker/stages/longform.js')
+  const db: any = await createTestDb(), store = createJobStore(db), blobs: any = createMemoryBlobStore()
+  ;(blobs as any).presign = async (ref: string) => ({ url: `memory://${ref}`, validUntil: 'x' })
+  const handler = createJobsHttp({ getStore: async () => store, blobs, sourceExists: async () => true })
+  const call = async (method: string, o: { body?: any; query?: any } = {}) => { let status = 0, json: any = null; const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } }; await handler({ method, headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': KEY }, query: o.query || {}, body: o.body } as any, res); return { status, json } }
+  const decide = (b: any) => call('POST', { body: { taskType: 'job_style_decision', jobId, ...b } })
+  const d = await mkdtemp(join(tmpdir(), 'thumb-only-'))
+  const jpg = async (name: string, src: string) => { const f = join(d, `${name}.jpg`); await runOk(['-y', '-f', 'lavfi', '-i', src, '-frames:v', '1', '-q:v', '3', f]); return readFile(f) }
+  const night = await jpg('night', 'color=c=0x0a0c1e:s=1376x768'), bright = await jpg('bright', 'testsrc2=s=1376x768'), lit = await jpg('lit', 'testsrc2=s=1376x768,hue=h=200')
+  const created = await call('POST', { body: { taskType: 'job_create', profile: 'yasa_longform', idempotencyKey: 'yadam-thumb-only-01', budgetUsd: 5, input: { kind: 'topic', text: TOPIC, targetSeconds: SECONDS, visualStyleProfile: 'golden-3', thumbnailFirst: true } } })
+  const jobId = created.json.job.id
+  // every Gemini call: [text, Golden ref] (the first picture = the lock) or [text, Golden ref, the lock] (everything after)
+  const sent: Array<{ text: string; inputs: number; lock: string | null }> = []
+  let next: Buffer = night
+  const imageFetch: any = async (_u: string, init: any) => { const b = JSON.parse(init.body); sent.push({ text: b.input[0].text, inputs: b.input.length, lock: b.input[2]?.data ?? null }); return new Response(JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'image', data: next.toString('base64'), mime_type: 'image/jpeg' }] }] }), { status: 200 }) }
+  const judged: Array<{ people: boolean; same: boolean }> = []
+  let verdict = false
+  const asset = createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', imageFetch, image: async () => { throw new Error('no default drawer') }, yadam: async () => { throw new Error('Golden: never the 야담 contract') }, tts: async () => shortTts(),
+    styleJudge: async (_a: Buffer, _b: Buffer, _k: string, o: any = {}) => { judged.push({ people: !!o.people, same: verdict }); return { same: verdict, score: verdict ? 90 : 30, differences: verdict ? [] : ['night vs day'] } },
+    copyWriter: async () => { throw new Error('no copy rewrite') } } as any)
+  const tick = () => runOnce({ store, blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner({}) as any }), asset]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
+  const job = async () => (await call('GET', { query: { taskType: 'job_get', id: jobId } })).json.job
+  const style = async () => (await call('GET', { query: { taskType: 'job_style', id: jobId } })).json.style
+  await tick(); await tick() // PLAN, then the thumbnail (dark night: drawn twice by the gate, as before)
+  assert.equal((await decide({ action: 'approve', attempt: 1 })).status, 200)
+  next = bright; await tick() // the representative: Golden -> the judge alone decides (no colour / texture gate); it says no
+  let j = await job(), rec: any = await blobs.getJson(styleApprovalRef(jobId))
+  assert.deepEqual([j.status, j.stage, rec.representative.status], ['WAITING_USER', 'ASSET', 'mismatch'], 'the production stop, reproduced')
+  assert.deepEqual(judged.map((x) => x.people), [false, false], 'Golden: the representative is judged even though a night thumbnail fails the colour metric')
+  const approvedBg = rec.approved.backgroundRef, approvedThumb = rec.approved.thumbnailRef, repRef = rec.representative.ref, repBytes = await blobs.getBytes(repRef)
+  const lock = await blobs.getJson(goldenLockPath(jobId)), lockBytes = await blobs.getBytes(rec.approved.backgroundRef)
+  const callsAtStop = sent.length
+  // the old "썸네일 다시 생성" (regenerate) is NOT what the phone sends any more on a mismatch; the new actions keep everything
+  // 6 + 7: 문구만 바꾸기 — no Gemini call, no judge call, no job state change; the words are exactly the user's
+  assert.equal((await decide({ action: 'thumbnail_text', text: 'x' })).status, 400, 'too short')
+  const tx = await decide({ action: 'thumbnail_text', text: '죽은 남편이 돌아왔다 그런데 왼손잡이였다' })
+  assert.equal(tx.status, 200, JSON.stringify(tx.json)); assert.equal(tx.json.thumbnail.text, '죽은 남편이 돌아왔다 그런데 왼손잡이였다')
+  assert.deepEqual([sent.length, judged.length, (await job()).status], [callsAtStop, 2, 'WAITING_USER'], 'text only: no AI call at all, the job still waits')
+  let st = await style()
+  assert.equal(st.thumbnailText, '죽은 남편이 돌아왔다 그런데 왼손잡이였다'); assert.notEqual(st.thumbnailUrl, `memory://${approvedThumb}`); assert.equal(st.replacement.source, 'text')
+  const ov1: any = await blobs.getJson(thumbnailOverrideRef(jobId))
+  assert.equal(ov1.current.backgroundRef, approvedBg, 'the same picture, only the words changed'); assert.equal(ov1.history[0].source, 'approved')
+  // 4 + 5 + 8: 썸네일만 다시 생성 — ONE picture (the lock as the people reference + the bright-faces line), ONE check vs the kept representative
+  next = lit; verdict = false
+  assert.equal((await decide({ action: 'thumbnail_redraw' })).status, 200)
+  assert.notEqual((await decide({ action: 'thumbnail_text', text: '바뀌면 안 되는 문구' })).status, 200, 'no text edit while the picture is being drawn')
+  await tick()
+  assert.equal(sent.length, callsAtStop + 1, 'exactly one new picture'); const redraw = sent.at(-1)!
+  assert.ok(redraw.text.includes(THUMBNAIL_BRIGHT_LINE) && redraw.inputs === 3 && redraw.lock === lockBytes!.toString('base64'), 'drawn with Golden 3 + the character lock (the approved picture)')
+  assert.deepEqual(judged.at(-1), { people: true, same: false }, 'the check asks for the same art style AND the same people')
+  j = await job(); st = await style()
+  assert.deepEqual([j.status, j.stage, st.replacement.check.ok, st.representative.status], ['WAITING_USER', 'ASSET', false, 'mismatch'], 'a failed check waits again; nothing else is drawn')
+  assert.equal(st.thumbnailText, '죽은 남편이 돌아왔다 그런데 왼손잡이였다', 'the redraw keeps the user\'s words')
+  // the second redraw passes -> the job goes on from where it stopped: the KEPT representative, no redraw of it
+  verdict = true
+  assert.equal((await decide({ action: 'thumbnail_redraw' })).status, 200)
+  const beforeGo = sent.length
+  await tick()
+  j = await job()
+  assert.equal(j.stage, 'RENDER', JSON.stringify(j.runs?.slice(-2)))
+  rec = await blobs.getJson(styleApprovalRef(jobId))
+  assert.deepEqual([rec.approved.backgroundRef, rec.approved.thumbnailRef, rec.representative.ref, rec.representative.status], [approvedBg, approvedThumb, repRef, 'match'], 'approval + representative kept')
+  assert.deepEqual(await blobs.getJson(goldenLockPath(jobId)), lock, 'the first-image character lock never changes')
+  const runs = await store.listStageRuns(jobId), last: any = runs.filter((r: any) => r.stage === 'ASSET' && r.status === 'SUCCEEDED').at(-1)
+  const manifest: any = await blobs.getJson(last.result.assetSpecRef)
+  const scenePics = manifest.images.length, distinct = new Set(manifest.images.map((x: any) => x.prompt)).size
+  assert.equal(sent.length - beforeGo, 1 + distinct - 1, `one thumbnail + every distinct scene except the kept representative (${scenePics} scenes)`)
+  assert.ok(manifest.images.some((x: any) => x.sha256 === createHash('sha256').update(repBytes!).digest('hex')), 'the representative picture in the video is the kept one, byte for byte')
+  assert.ok(sent.slice(beforeGo + 1).every((x) => x.inputs === 3 && x.lock === lockBytes!.toString('base64')), 'every scene carries the original lock')
+  // 3: nothing deleted — the approved picture, the first thumbnail, the representative and every version are still there
+  const ov: any = await blobs.getJson(thumbnailOverrideRef(jobId))
+  assert.deepEqual(ov.history.map((x: any) => x.source), ['approved', 'text', 'redraw', 'redraw'])
+  for (const ref of [approvedBg, approvedThumb, repRef, ...ov.history.flatMap((x: any) => [x.backgroundRef, x.thumbnailRef])]) assert.ok(await blobs.getBytes(ref), ref)
+  // RENDER delivers the replacement (with the user's words), not the approved picture
+  const delivered = await longformTitleThumbnail({ jobId, blobs, assets: manifest, title: 'unused', picture: async () => { throw new Error('no scene picture') } })
+  assert.ok(delivered.equals(await blobs.getBytes(ov.current.thumbnailRef))); const f = join(d, 'out.jpg'); await writeFile(f, delivered); const i = await probe(f); assert.deepEqual([i.width, i.height], [1280, 720])
+  assert.equal((await decide({ action: 'thumbnail_redraw' })).status, 409, 'once the job goes on, no redraw')
 })

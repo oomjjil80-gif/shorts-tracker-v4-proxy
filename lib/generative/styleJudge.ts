@@ -12,12 +12,14 @@ async function small(bytes: Buffer): Promise<string> {
   try { await writeFile(join(d, 'i'), bytes); await runOk(['-y', '-i', join(d, 'i'), '-vf', 'scale=512:-2', '-q:v', '4', join(d, 'o.jpg')]); return (await readFile(join(d, 'o.jpg'))).toString('base64') }
   finally { await rm(d, { recursive: true, force: true }) }
 }
-export const openAiStyleJudge = (f: typeof fetch = fetch, model = process.env.OPENAI_STYLE_JUDGE_MODEL || 'gpt-5-mini'): StyleJudge => async (reference, candidate, apiKey): Promise<StyleJudgement> => {
+export const openAiStyleJudge = (f: typeof fetch = fetch, model = process.env.OPENAI_STYLE_JUDGE_MODEL || 'gpt-5-mini'): StyleJudge => async (reference, candidate, apiKey, o = {}): Promise<StyleJudgement> => {
   const schema = { type: 'object', additionalProperties: false, required: ['same', 'score', 'differences'], properties: { same: { type: 'boolean' }, score: { type: 'integer' }, differences: { type: 'array', items: { type: 'string' } } } }
   const text = [
     'Image 1 is the APPROVED art style. Image 2 must be drawn in exactly the same art style (the scene and people may differ).',
     'Compare ONLY the rendering: medium (watercolor / ink wash / digital cel / painterly oil / storybook gouache), line work (outline thickness, presence of ink outlines), shading method (flat cel vs soft gradients vs brush texture), texture and paper grain, level of detail, how faces and bodies are drawn (proportions, eyes, realism level).',
     'Similar colours or similar brightness do NOT make it the same style. If the medium, line work or face rendering differs, it is NOT the same style.',
+    // 썸네일만 다시 생성: the same story's people too (lighting and time of day may differ: night vs day is NOT a difference)
+    ...(o.people ? ['ALSO the main characters: the people who appear in both pictures must be the SAME people (face shape, hairstyle, headband / hair ornament, costume and its colours, age). Lighting, time of day (night vs day), weather and composition may differ and never count as a difference. same = true only when the art style AND the people are the same.'] : []),
     'score 0-100 = how certain the art style is identical. differences: short phrases, empty when identical.'
   ].join('\n')
   const res = await f('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model, input: [{ role: 'user', content: [{ type: 'input_text', text }, { type: 'input_image', image_url: `data:image/jpeg;base64,${await small(reference)}`, detail: 'low' }, { type: 'input_image', image_url: `data:image/jpeg;base64,${await small(candidate)}`, detail: 'low' }] }], text: { format: { type: 'json_schema', name: 'style_judgement', strict: true, schema } } }) })
