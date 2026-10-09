@@ -610,3 +610,28 @@ test('COST: a failing cold open keeps exactly its normal chances (9 = 3 stage at
     assert.notEqual(c.json.job.id, a.json.job.id); assert.equal(c.json.created, true)
   } finally { if (oldPrices === undefined) delete process.env.OPENAI_PRICES_JSON; else process.env.OPENAI_PRICES_JSON = oldPrices }
 })
+
+test('Golden Style (issue #179): a 야담 longform job with Golden 2 draws every scene with Gemini + the ONE locked reference (not the 야담 contract), content-only scenes, 16:9; AUTO stays the 야담 contract', async () => {
+  const { goldenPrompt, GOLDEN_REFERENCE_DIR } = await import('../lib/generative/goldenStyle.js')
+  const { YADAM_STYLE_CONTRACT } = await import('../lib/generative/yadamStyle.js')
+  const { readFile: rf } = await import('node:fs/promises')
+  const d = await mkdtemp(join(tmpdir(), 'yadam-golden-'))
+  const blobs: any = createMemoryBlobStore()
+  const brief = normalizeLongformBrief({ kind: 'topic', text: TOPIC, targetSeconds: SECONDS, visualStyleProfile: 'golden-2' }, 'yasa_longform')
+  assert.equal(brief.creative!.resolved.golden!.id, 'golden-2')
+  const stored = await putAddressed(blobs, 'generative-briefs', brief)
+  const job = { id: 'yg1', profile: 'yasa_longform', planRev: 1, planRef: stored.path }
+  const runs: any = {}
+  const ctx = () => ({ job, blobs, previous: async (st: string) => runs[st] ?? null, signal: new AbortController().signal } as any)
+  runs.PLAN = await createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner({}) as any }).run(ctx())
+  const pic = await scenePicture(d, 1), sent: any[] = []
+  const imageFetch: any = async (url: string, init: any) => { sent.push({ url, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'image', data: pic.bytes.toString('base64'), mime_type: 'image/jpeg' }] }] }), { status: 200 }) }
+  const out: any = await createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', imageFetch, image: async () => { throw new Error('no default drawer') }, yadam: async () => { throw new Error('a Golden 야담 job does not use the 야담 contract') }, tts: async () => shortTts() } as any).run(ctx())
+  const m: any = await blobs.getJson(out.result.assetSpecRef)
+  assert.ok(sent.length > 0 && sent.length === new Set(m.images.map((x: any) => x.prompt ?? x.sha256)).size, 'one Golden call per distinct scene picture (a repeated scene is drawn once)')
+  const ref2 = (await rf(join(GOLDEN_REFERENCE_DIR, 'ref-2.jpg'))).toString('base64')
+  for (const x of sent) {
+    assert.deepEqual([x.body.model, x.body.response_format[0].aspect_ratio, x.body.input.length, x.body.input[1].data], ['gemini-3.1-flash-image', '16:9', 2, ref2])
+    const t = x.body.input[0].text; assert.equal(t, goldenPrompt(t.split('장면: ')[1].split('\n\n')[0], '16:9')); assert.ok(!t.includes(YADAM_STYLE_CONTRACT))
+  }
+})

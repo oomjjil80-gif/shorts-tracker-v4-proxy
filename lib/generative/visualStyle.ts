@@ -1,14 +1,17 @@
 import { YADAM_STYLE_ID, YADAM_STYLE_LABEL, YADAM_STYLE_TRAITS, YADAM_STYLE_RULES } from './yadamStyle.js'
+import { GOLDEN_STYLES, type GoldenStyleId } from './goldenStyle.js'
 // The single place where picture styles (그림체) are defined, like voiceProfile.ts for voices. Planners never write a
 // style sentence of their own when a style is chosen: every generated image prompt is composed here, in one order:
 // BASE CONTENT -> VISUAL STYLE -> COMPOSITION -> CHARACTER CONSISTENCY -> NEGATIVE. UI strings carry only the key.
 // 야담 has exactly one style: the reference contract in yadamStyle.ts (its id is listed here so a 야담 brief can name it;
 // its pictures are never drawn from this text alone — every 야담 request goes through yadamStyle.ts with the frames).
-export const VISUAL_STYLE_KEYS = ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial', YADAM_STYLE_ID] as const
+// Golden Style 1~5 (goldenStyle.ts): the style is the ONE locked reference picture + the locked round-2 text, so their
+// entries here carry no style words at all (the content prompt stays content only; goldenStyle.ts draws the picture).
+export const VISUAL_STYLE_KEYS = ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial', YADAM_STYLE_ID, 'golden-1', 'golden-2', 'golden-3', 'golden-4', 'golden-5'] as const
 export type VisualStyleKey = (typeof VISUAL_STYLE_KEYS)[number]
 export const VISUAL_STYLE_CHOICES = ['auto', ...VISUAL_STYLE_KEYS] as const
 export type VisualStyleChoice = (typeof VISUAL_STYLE_CHOICES)[number]
-export type VisualStyleProfile = { id: VisualStyleKey; label: string; promptPrefix: string; negativePrompt: string; compositionHints: string }
+export type VisualStyleProfile = { id: VisualStyleKey; label: string; promptPrefix: string; negativePrompt: string; compositionHints: string; golden?: GoldenStyleId }
 
 const NO_TEXT = 'no text, letters, numbers, captions, signatures, logos or watermark'
 export const VISUAL_STYLE_PROFILES: Readonly<Record<VisualStyleKey, VisualStyleProfile>> = {
@@ -42,8 +45,10 @@ export const VISUAL_STYLE_PROFILES: Readonly<Record<VisualStyleKey, VisualStyleP
     negativePrompt: `dark muddy colors, cluttered details, photorealistic photo, ${NO_TEXT}`,
     compositionHints: 'one clear subject, readable silhouette'
   },
-  [YADAM_STYLE_ID]: { id: YADAM_STYLE_ID, label: YADAM_STYLE_LABEL, promptPrefix: YADAM_STYLE_TRAITS, negativePrompt: YADAM_STYLE_RULES, compositionHints: 'faces and the key action clearly readable' }
+  [YADAM_STYLE_ID]: { id: YADAM_STYLE_ID, label: YADAM_STYLE_LABEL, promptPrefix: YADAM_STYLE_TRAITS, negativePrompt: YADAM_STYLE_RULES, compositionHints: 'faces and the key action clearly readable' },
+  'golden-1': golden('golden-1'), 'golden-2': golden('golden-2'), 'golden-3': golden('golden-3'), 'golden-4': golden('golden-4'), 'golden-5': golden('golden-5')
 }
+function golden(id: GoldenStyleId): VisualStyleProfile { return { id, label: GOLDEN_STYLES[id].label, promptPrefix: '', negativePrompt: '', compositionHints: '', golden: id } }
 export function parseVisualStyle(v: unknown): VisualStyleChoice {
   const s = String(v ?? 'auto')
   if (!(VISUAL_STYLE_CHOICES as readonly string[]).includes(s)) throw new Error(`visualStyleProfile must be one of ${VISUAL_STYLE_CHOICES.join(', ')}`)
@@ -54,9 +59,10 @@ export function parseVisualStyle(v: unknown): VisualStyleChoice {
 export function composeImagePrompt(o: { content: string; style: VisualStyleProfile; composition: string; characters?: string[]; negative?: string }): string {
   return [
     `Content: ${o.content.trim()}.`,
-    `Style: ${o.style.promptPrefix}.`,
-    `Composition: ${o.composition.trim()} ${o.style.compositionHints}.`,
+    // a Golden Style has no style words (its reference picture is the style): no Style line, no style negatives
+    ...(o.style.golden ? [] : [`Style: ${o.style.promptPrefix}.`]),
+    o.style.golden ? `Composition: ${o.composition.trim()}` : `Composition: ${o.composition.trim()} ${o.style.compositionHints}.`,
     ...(o.characters?.length ? [`Characters (keep exactly this look): ${o.characters.join(' | ')}.`] : []),
-    `Avoid: ${[o.style.negativePrompt, o.negative].filter(Boolean).join(', ')}.`
+    ...(o.style.golden && !o.negative ? [] : [`Avoid: ${[o.style.negativePrompt, o.negative].filter(Boolean).join(', ')}.`])
   ].join(' ')
 }

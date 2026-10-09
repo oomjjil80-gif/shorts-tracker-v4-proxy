@@ -1,6 +1,8 @@
 // Wisdom SHORTS publishing kit, made after PACKAGE (the video is already final and untouched): the click thumbnail and
 // the YouTube upload text, both from the actual script. Non-blocking: each part that fails or does not pass its rules is
 // left out (recorded in the result), and the package stays exactly as the Shorts PACKAGE stage wrote it otherwise.
+import { creativeGolden } from '../../lib/generative/creativeProfile.js'
+import { goldenCacheTag, goldenImage } from '../../lib/generative/goldenStyle.js'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -24,7 +26,7 @@ import { profileFeatures, type FeatureResolver } from '../modules/features.js'
 
 // THUMBNAIL is a feature module: when the profile does not select it, no thumbnail image/render is made and the
 // thumbnail copy is not checked or repaired. The upload text is PACKAGE's and is made either way (same kit call).
-export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string; imageKey?: string; kit?: typeof openAiWisdomPublishKit; image?: typeof geminiPortraitImage; features?: FeatureResolver } = {}): StageExecutor {
+export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string; imageKey?: string; imageFetch?: typeof fetch; kit?: typeof openAiWisdomPublishKit; image?: typeof geminiPortraitImage; features?: FeatureResolver } = {}): StageExecutor {
   const apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? '', kit = deps.kit ?? openAiWisdomPublishKit, image = deps.image ?? geminiPortraitImage
   const imageKey = deps.imageKey ?? process.env.GEMINI_API_KEY ?? '' // the picture: Gemini
   return {
@@ -66,13 +68,15 @@ export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string;
         else notes.uploadError = 'upload text: ' + errs.upload.join(',')
         if (thumbnail && !errs.copy.length) {
           try {
-            const style = bible ? ` Style matching the video: ${bible.style}; palette ${bible.palette}; lighting ${bible.lighting}.` : ''
+            // Golden Style (from job_create): the locked reference is the style, so no style words; otherwise as before
+            const golden = creativeGolden(brief?.creative)
+            const style = bible && !golden ? ` Style matching the video: ${bible.style}; palette ${bible.palette}; lighting ${bible.lighting}.` : ''
             // 9:16 portrait thumbnail (the Shorts video itself is not touched): portrait picture, person below the text band
             const prompt = figureBelowPrompt(thumbnailFigure(topic, made.figure)) + style
-            const ik = sha256('wisdom-thumb-image-v2-portrait|' + prompt)
+            const ik = sha256('wisdom-thumb-image-v2-portrait|' + prompt + (golden ? goldenCacheTag(golden) : ''))
             let im: any = null
             try { const m: any = await blobs.getJson(`generative-cache/image/${ik}.json`); const b = m?.ref ? await blobs.getBytes(m.ref) : null; if (b) im = { ...m, bytes: b } } catch {}
-            if (!im) { im = await image(prompt, imageKey); const ref = `generative-assets/images/${sha256(im.bytes)}.jpg`; await blobs.putBytes(ref, im.bytes, im.contentType); await blobs.putJson(`generative-cache/image/${ik}.json`, { ref, sha256: sha256(im.bytes), contentType: im.contentType }) }
+            if (!im) { im = golden ? await goldenImage(golden, prompt, '9:16', imageKey, deps.imageFetch ?? fetch) : await image(prompt, imageKey); const ref = `generative-assets/images/${sha256(im.bytes)}.jpg`; await blobs.putBytes(ref, im.bytes, im.contentType); await blobs.putJson(`generative-cache/image/${ik}.json`, { ref, sha256: sha256(im.bytes), contentType: im.contentType }) }
             const img = join(work, 'img.jpg'), assPath = join(work, 't.ass'), out = join(work, 'thumb.jpg')
             await writeFile(img, im.bytes)
             const t = thumbnailArgv({ image: img, lines: made.lines, assPath, fontsDir: FONTS_DIR, out, canvas: SHORTS_THUMB })

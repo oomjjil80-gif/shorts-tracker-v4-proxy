@@ -753,3 +753,47 @@ test('SENIOR 18 + 23-25 + REAL RENDER: one picture per scene in ONE style with t
   assert.match(longformCardsAss(SAMPLE, cardTimeline(SAMPLE, ttsChunks(SAMPLE), ttsChunks(SAMPLE).map(() => 1))).ass, /\\an4\\pos\(100,540\)/)
   assert.equal(SENIOR.acts, 6)
 })
+
+test('Golden Style (issue #179): Wisdom Longform + Senior Longform draw every picture with Gemini + the ONE locked reference (16:9, content-only scene text); the version is stored at job_create and kept on resume', async () => {
+  const { goldenPrompt, GOLDEN_REFERENCE_DIR, GOLDEN_STYLES } = await import('../lib/generative/goldenStyle.js')
+  const { readFile: rf } = await import('node:fs/promises')
+  const d = await mkdtemp(join(tmpdir(), 'lf-golden-')), img = await standInImage(d)
+  const recorder = () => { const sent: any[] = []; const f: any = async (url: string, init: any) => { sent.push({ url, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'image', data: img.toString('base64'), mime_type: 'image/jpeg' }] }] }), { status: 200 }) }; return { sent, f } }
+  const noDefault = async () => { throw new Error('the default drawer is not used with a Golden Style') }
+  const check = async (sent: any[], id: 'golden-1' | 'golden-4', words: string[]) => {
+    const ref = (await rf(join(GOLDEN_REFERENCE_DIR, GOLDEN_STYLES[id].file))).toString('base64')
+    for (const x of sent) {
+      assert.deepEqual([x.url, x.body.model, x.body.response_format[0].aspect_ratio, x.body.input.length, x.body.input[1].data], ['https://generativelanguage.googleapis.com/v1beta/interactions', 'gemini-3.1-flash-image', '16:9', 2, ref])
+      const t = x.body.input[0].text, scene = t.split('장면: ')[1].split('\n\n')[0]
+      assert.equal(t, goldenPrompt(scene, '16:9'))
+      for (const w of words) assert.ok(!t.includes(w), `no style words in a Golden prompt: ${w}`)
+    }
+  }
+  // Wisdom Longform: the ONE picture
+  const blobs: any = createMemoryBlobStore()
+  const brief = await putAddressed(blobs, 'generative-briefs', normalizeLongformBrief({ kind: 'topic', text: '부처님이 말하는 마음 다스리는 법', targetSeconds: 3600, visualStyleProfile: 'golden-4' }))
+  const b: any = await blobs.getJson(brief.path)
+  assert.deepEqual(b.creative.resolved.golden, { id: 'golden-4', refSha256: GOLDEN_STYLES['golden-4'].sha256, promptVersion: 'golden-style/1' }, 'job_create stores the locked version')
+  const script = await putAddressed(blobs, 'generative-scripts', SAMPLE)
+  const ctx = () => ({ job: { id: 'j', profile: 'wisdom_longform', planRev: 1, planRef: brief.path }, blobs, previous: async () => ({ result: { scriptRef: script.path } }), signal: new AbortController().signal } as any)
+  const w = recorder(), tts = async () => ({ bytes: await mp3Tone(), contentType: 'audio/mpeg', provider: 's', model: 'm' })
+  const out: any = await createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', imageFetch: w.f, image: noDefault as any, tts: tts as any }).run(ctx())
+  assert.ok(out.result.assetSpecRef); assert.equal(w.sent.length, 1)
+  await check(w.sent, 'golden-4', ['Painterly realistic portrait', VISUAL_STYLE_PROFILES['wisdom-painterly'].promptPrefix])
+  // resume / retry: the same stored version, nothing paid again
+  const again = recorder(); await createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', imageFetch: again.f, image: noDefault as any, tts: tts as any }).run(ctx()); assert.equal(again.sent.length, 0)
+  // a job whose stored version is not the locked one stops before any call
+  const changed = { ...b, creative: { ...b.creative, resolved: { ...b.creative.resolved, golden: { ...b.creative.resolved.golden, refSha256: '0'.repeat(64) } } } }
+  const cb = await putAddressed(blobs, 'generative-briefs', changed), x = recorder()
+  await assert.rejects(() => createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', imageFetch: x.f, image: noDefault as any, tts: tts as any }).run({ ...ctx(), job: { id: 'j2', profile: 'wisdom_longform', planRev: 1, planRef: cb.path } }), /GOLDEN|another Golden Style version/)
+  assert.equal(x.sent.length, 0)
+  // Senior Longform: one picture per scene, every one Golden, no watercolor words, the Character Bible kept
+  const sj = await seniorJob({ visualStyleProfile: 'golden-1' })
+  sj.runs.PLAN = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, log: () => {}, planner: seniorPlanner() as any }).run(sj.ctx())
+  const s = recorder()
+  const so: any = await createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', imageFetch: s.f, image: noDefault as any, tts: async () => shortTts() }).run(sj.ctx())
+  const m: any = await sj.blobs.getJson(so.result.assetSpecRef)
+  assert.equal(s.sent.length, m.images.length); assert.equal(m.images.length, 27)
+  await check(s.sent, 'golden-1', [VISUAL_STYLE_PROFILES['senior-warm-watercolor'].promptPrefix, 'Style:'])
+  assert.ok(s.sent.every((x) => x.body.input[0].text.includes(characterLine(CAST[0] as any))), 'the same mother in every picture')
+})

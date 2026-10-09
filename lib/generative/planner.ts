@@ -26,8 +26,10 @@ export async function openAiWisdomPlan(brief:GenerativeBrief,apiKey:string,model
 // A picture style the user picked replaces the planner's own style line and adds its negatives (the Screen DNA framing,
 // character policy and scene stay); without one the bible is used exactly as planned.
 export function styledVisualBible(b:WisdomVisualBible,style:VisualStyleProfile|null):WisdomVisualBible{
+ // a Golden Style: no style words in the picture prompt (its locked reference picture is the style)
+ if(style?.golden)return {...b,style:'',palette:'',lighting:''}
  return style?{...b,style:style.promptPrefix,negative:`${b.negative}, ${style.negativePrompt}`}:b
 }
 export function applyVisualBible(script:WisdomScript,b:WisdomVisualBible):WisdomScript{
- return {...script,beats:script.beats.map(x=>({...x,imagePrompt:`${b.style}. Palette: ${b.palette}. Lighting: ${b.lighting}. Composition: center-safe for a 1080x1200 middle visual window; keep key faces and subjects inside the central area with breathing room. Character policy: ${b.characterPolicy}. Scene goal: ${x.visualGoal}. Scene: ${x.imagePrompt}. Avoid: ${b.negative}. no readable text, no watermark`}))}
+ return {...script,beats:script.beats.map(x=>({...x,imagePrompt:`${!b.style&&!b.palette&&!b.lighting?'':`${b.style}. Palette: ${b.palette}. Lighting: ${b.lighting}. `}Composition: center-safe for a 1080x1200 middle visual window; keep key faces and subjects inside the central area with breathing room. Character policy: ${b.characterPolicy}. Scene goal: ${x.visualGoal}. Scene: ${x.imagePrompt}. Avoid: ${b.negative}. no readable text, no watermark`}))}
 }
