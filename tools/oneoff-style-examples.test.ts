@@ -90,3 +90,38 @@ test('V4 request as sent: the 3 user captures (bars, subtitles and AI label remo
 })
 
 const bytes1024 = () => Buffer.from('not-a-picture-of-the-right-size')
+
+test('V5 request as sent: same 3 frames, face close-up first, input_fidelity=high, short trait prompt without the words that flattened V4; one call; V4 kept', async () => {
+  const { buildV5Request, V5_PROMPT, V5_ORDER } = await import('../lib/generative/yadamReferenceStyleV5.js')
+  const { buildV4Request, V4_PROMPT, V4_CONTRACT, V4_FRAMING } = await import('../lib/generative/yadamReferenceStyle.js')
+  const r = await buildV5Request(), v4 = await buildV4Request()
+  assert.deepEqual([r.endpoint, r.form.get('model'), r.form.get('size'), r.form.get('quality'), r.form.get('input_fidelity')], ['https://api.openai.com/v1/images/edits', 'gpt-image-1', '1536x1024', 'high', 'high'])
+  const imgs = r.form.getAll('image[]') as any[]
+  assert.deepEqual(imgs.map((x) => x.name), ['capture-2.png', 'capture-1.png', 'capture-3.png'], 'face close-up first'); assert.deepEqual([...V5_ORDER], ['capture-2.jpg', 'capture-1.jpg', 'capture-3.jpg'])
+  // the same pixels V4 sent (same crop), only re-ordered
+  const v4imgs = new Map((v4.form.getAll('image[]') as any[]).map((b) => [b.name, b]))
+  for (const b of imgs) assert.ok(Buffer.from(await b.arrayBuffer()).equals(Buffer.from(await v4imgs.get(b.name).arrayBuffer())))
+  assert.ok(r.inputs.every((x: any) => x.input.width === 1920 && x.input.height === 800))
+  const p = String(r.form.get('prompt'))
+  assert.equal(p, V5_PROMPT); assert.ok(p.startsWith(V4_CONTRACT) && p.endsWith(V4_FRAMING))
+  assert.ok(p.length <= V4_PROMPT.length * 0.8, `${p.length} vs V4 ${V4_PROMPT.length} characters`)
+  assert.doesNotMatch(p, /painterly|soft overcast|earth brown|harmonious|subtle gradient|muted|watercolor|storybook|folk|sepia|quality reference/i)
+  for (const t of [/bold black ink contour/, /line-weight variation/, /hard-edged two-tone cel shadows/, /catchlights/, /glossy black hair/, /saturated deep indigo/, /no yellow or beige cast/]) assert.match(p, t)
+  // the one-off: one call with exactly that request; never again for the same id; v4 results untouched
+  const d = await mkdtemp(join(tmpdir(), 'oneoff5-')), pic = join(d, 'p.jpg')
+  await runOk(['-y', '-f', 'lavfi', '-i', 'testsrc2=s=1536x1024', '-frames:v', '1', pic]); const bytes = await readFile(pic)
+  const calls: any[] = [], blobs: any = createMemoryBlobStore()
+  await blobs.putJson('style-examples/candidates/v4-1/run.json', { status: 'done', marker: 'v4' }, { overwrite: true })
+  const fetchImpl: any = async (url: string, init: any) => { const fd = init.body as FormData; calls.push({ url, fid: fd.get('input_fidelity'), refs: fd.getAll('image[]').map((x: any) => x.name), prompt: String(fd.get('prompt')) }); return new Response(JSON.stringify({ data: [{ b64_json: bytes.toString('base64') }] }), { headers: { 'content-type': 'application/json' } }) }
+  const env = { STYLE_EXAMPLES_RUN: 'v5-1', OPENAI_API_KEY: 'sk-x' }
+  assert.equal(await runStyleExamplesOnce({ env, blobs, log: () => {}, fetchImpl, workerId: 'w1' }), 'done')
+  assert.equal(calls.length, 1); assert.deepEqual([calls[0].fid, calls[0].refs, calls[0].prompt], ['high', ['capture-2.png', 'capture-1.png', 'capture-3.png'], V5_PROMPT])
+  const rec: any = await blobs.getJson('style-examples/candidates/v5-1/run.json')
+  assert.deepEqual([rec.report.variant, rec.report.inputFidelity, rec.report.final], ['v5', 'high', { width: 1536, height: 864, cutTop: 80, cutBottom: 80 }])
+  for (const k of ['v5-representative', 'v5-raw-3x2', 'compare-v5-top-references-below']) assert.ok(await blobs.getBytes(rec.files[k]), k)
+  assert.equal((await blobs.getJson('style-examples/candidates/v4-1/run.json')).marker, 'v4', 'V4 result untouched')
+  // a v4 id left in the worker variables does nothing (already done); the same v5 id never draws again
+  assert.equal(await runStyleExamplesOnce({ env: { STYLE_EXAMPLES_RUN: 'v4-1', OPENAI_API_KEY: 'sk-x' }, blobs, log: () => {}, fetchImpl }), 'already')
+  assert.equal(await runStyleExamplesOnce({ env, blobs, log: () => {}, fetchImpl, workerId: 'w2' }), 'already'); assert.equal(calls.length, 1)
+  assert.equal(YADAM_AUTO_STYLE, 'korean_drama_illustration', 'production AUTO unchanged')
+})
