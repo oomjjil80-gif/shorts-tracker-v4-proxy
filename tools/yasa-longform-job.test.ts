@@ -106,11 +106,11 @@ test('Generic Longform remaster contract: one job_remaster shape works for Wisdo
   assert.throws(() => longformRemasterBrief(wisdom, { sourceJobId: 'job_source_12345678', sourceScriptRef: 'x', changes: { magicChange: true } }), /unknown remaster changes/)
 })
 
-test('YADAM profile: shared Longform engine, scenes mode; AUTO = grandmother storyteller (female-senior, calm, 1.0x) + 고급 사극 일러스트; 8 acts = the DNA structure', () => {
+test('YADAM profile: shared Longform engine, scenes mode; AUTO = grandmother storyteller (female-senior, calm, 1.0x) + the one 야담 style; 8 acts = the DNA structure', () => {
   assert.deepEqual(PROFILES.yasa_longform.stages, ['PLAN', 'ASSET', 'RENDER', 'PACKAGE'])
   assert.deepEqual(PROFILES.yasa_longform.features, ['PLAN', 'IMAGE', 'TTS', 'CAPTION', 'LONGFORM_RENDER', 'THUMBNAIL', 'QC', 'PACKAGE'])
   const b = normalizeLongformBrief({ kind: 'topic', text: TOPIC, targetSeconds: SECONDS }, 'yasa_longform')
-  assert.equal(b.targetSeconds, 2700); assert.equal(b.creative!.resolved.visualStyleProfile, 'korean_drama_illustration')
+  assert.equal(b.targetSeconds, 2700); assert.equal(b.creative!.resolved.visualStyleProfile, 'yadam_reference')
   assert.deepEqual([b.creative!.resolved.voiceProfile, b.creative!.resolved.voiceTone, b.creative!.resolved.voiceSpeed], ['female-senior', 'calm', 1])
   // the user's choice wins
   const mine = normalizeLongformBrief({ kind: 'topic', text: TOPIC, targetSeconds: SECONDS, voiceProfile: 'male-middle', voiceSpeed: 1.1 }, 'yasa_longform')
@@ -149,7 +149,7 @@ test('YADAM 45-minute job: job_create -> PLAN (DNA, 8 acts, cold open) -> ASSET 
   const calls: Record<string, any[]> = {}, prompts: string[] = [], voices: any[] = []
   const executors = withLongform([], [
     createLongformPlanExecutor({ apiKey: 'k', research: async () => { throw new Error('a yadam story is not researched') }, log: () => {}, planner: fakePlanner(calls) as any }),
-    createLongformAssetExecutor({ apiKey: 'k', image: async (p: string) => { prompts.push(p); return scenePicture(d, prompts.length) }, tts: async (_t: string, _k: string, v: any) => { voices.push(v); return shortTts() } } as any),
+    createLongformAssetExecutor({ apiKey: 'k', image: async () => { throw new Error('a 야담 picture never bypasses the style contract') }, yadam: async (p: string) => { prompts.push(p); return scenePicture(d, prompts.length) }, tts: async (_t: string, _k: string, v: any) => { voices.push(v); return shortTts() } } as any),
     longformRenderExecutor, longformPackageExecutor
   ])
   let record: any = null
@@ -179,12 +179,12 @@ test('YADAM 45-minute job: job_create -> PLAN (DNA, 8 acts, cold open) -> ASSET 
   assert.ok(!revealWords(DNA).some((w) => cold.map((x: any) => x.say).join(' ').includes(w)), 'no trueMeaning / majorReveal in the cold open')
   assert.deepEqual(sentencesOf(script).slice(0, cold.length).map((x: any) => x.say), cold.map((x: any) => x.say), 'the cold open is told first')
 
-  // pictures: one per story scene through the shared IMAGE module, the 시대극 style, setting, Character Bible, prop; the
-  // repeated scene is made once; the cold open adds no picture
+  // pictures: one per story scene, all through the ONE 야담 style contract (the drawer gets only WHAT is shown: scene,
+  // setting, Character Bible, prop — never a style text); the repeated scene is made once; the cold open adds no picture
   const scenes = script.sections.flatMap((s: any) => s.scenes)
   assert.equal(scenes.length, 16); assert.equal(prompts.length, 15, 'the repeated opening picture is generated once; the cold open reuses main-story pictures')
-  const hd = VISUAL_STYLE_PROFILES['korean_drama_illustration']
-  assert.ok(prompts.every((p) => p.includes(hd.promptPrefix) && p.includes('조선, 후기 (18세기)') && p.includes('Joseon hanbok') && p.includes('Qing queue') && /photorealistic/.test(p) && p.includes(characterLine(CAST[0] as any)) && /another country or era/.test(p)))
+  assert.ok(prompts.every((p) => p.includes('조선, 후기 (18세기)') && p.includes('Joseon hanbok') && p.includes('Qing queue') && p.includes(characterLine(CAST[0] as any)) && /another country or era/.test(p)))
+  assert.ok(prompts.every((p) => !/Style:|watercolor|storybook|painterly|webtoon|illustration|sepia|muted/i.test(p)), 'no style words reach the drawer: the contract adds the style')
   assert.ok(prompts.filter((p) => p.includes('"썩은 메주" looks exactly the same')).length === 7)
   // narration: one Tracker TTS call per sentence (cold open + main story), the grandmother storyteller voice
   const sentences = sentencesOf(script).length
@@ -212,7 +212,7 @@ test('YADAM 45-minute job: job_create -> PLAN (DNA, 8 acts, cold open) -> ASSET 
   assert.ok(argv.includes('1+0.16*t') && argv.includes('1+0.06*t') === false && /scale=2380:1340/.test(argv), 'cold beats: stronger push-in; story scenes keep the gentle motion')
   // an ASSET retry pays for nothing (every picture and sentence is cached)
   prompts.length = 0; voices.length = 0
-  await createLongformAssetExecutor({ apiKey: 'k', image: async (p: string) => { prompts.push(p); return scenePicture(d, 99) }, tts: async (_t: string, _k: string, v: any) => { voices.push(v); return shortTts() } } as any).run({ job: record, blobs, previous: async (st: string) => ok(st), signal: new AbortController().signal } as any)
+  await createLongformAssetExecutor({ apiKey: 'k', image: async () => { throw new Error('a 야담 picture never bypasses the style contract') }, yadam: async (p: string) => { prompts.push(p); return scenePicture(d, 99) }, tts: async (_t: string, _k: string, v: any) => { voices.push(v); return shortTts() } } as any).run({ job: record, blobs, previous: async (st: string) => ok(st), signal: new AbortController().signal } as any)
   assert.deepEqual([prompts.length, voices.length], [0, 0])
 })
 
@@ -298,7 +298,7 @@ test('YADAM quality: cold open from the middle (never the first 10% / the reveal
   const calls: Record<string, any[]> = {}, prompts: string[] = [], ttsTexts: string[] = [], voiceIds: string[] = []
   let seen: any = null
   const planner: any = fakePlanner(calls, { coldOpen: (i: any) => { seen = i; return { sentences: COLD.map(([scene, s]) => ({ scene, say: s, show: ['썩은 메주', '왜'], accent: '썩은 메주', color: 'red' })) } } })
-  const tick = (pl: any) => runOnce({ store, blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: pl }), createLongformAssetExecutor({ apiKey: 'k', image: async (p: string) => { prompts.push(p); return scenePicture(d, prompts.length) }, tts: async (t: string, _k: string, v: any) => { ttsTexts.push(t); voiceIds.push(v.id); return shortTts() } } as any)]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
+  const tick = (pl: any) => runOnce({ store, blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: pl }), createLongformAssetExecutor({ apiKey: 'k', image: async () => { throw new Error('a 야담 picture never bypasses the style contract') }, yadam: async (p: string) => { prompts.push(p); return scenePicture(d, prompts.length) }, tts: async (t: string, _k: string, v: any) => { ttsTexts.push(t); voiceIds.push(v.id); return shortTts() } } as any)]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
   await tick(planner); await tick(planner) // source PLAN + ASSET
   const sourceRuns = await store.listStageRuns(sourceId), splan: any = sourceRuns.find((r: any) => r.stage === 'PLAN' && r.status === 'SUCCEEDED')
   const script: any = await blobs.getJson(splan.result.scriptRef)
@@ -343,13 +343,14 @@ test('YADAM quality: cold open from the middle (never the first 10% / the reveal
   const cards = longformCardsAss(script, tl, 'bottom')
   assert.equal(cards.cards.length, tl.length); assert.ok(cards.ass.includes('지고 간 며느리'))
 
-  // 8: REMASTER — a new child job from the source (kept as it is) with a new 그림체
+  // 8: REMASTER — a new child job from the source (kept as it is): a new cold open; 야담 has one 그림체, so no style change
   const before = { prompts: prompts.length, tts: ttsTexts.length }
   assert.equal((await call({ taskType: 'job_remaster', sourceJobId: sourceId, changes: { visualStyleProfile: 'senior-warm-watercolor', refreshColdOpen: true } })).status, 400, 'only the content profile\'s picture styles')
   assert.equal((await call({ taskType: 'job_remaster', sourceJobId: 'job_nope', changes: {} })).status, 404)
   // legacy alias stays compatible, but production code and future UI use job_remaster.
   assert.equal((await call({ taskType: 'job_remaster_yasa', sourceJobId: sourceId, visualStyleProfile: 'webtoon_historical', idempotencyKey: 'legacy-alias-check-1' })).status, 201)
-  const rm = await call({ taskType: 'job_remaster', sourceJobId: sourceId, changes: { visualStyleProfile: 'webtoon_historical', refreshColdOpen: true }, idempotencyKey: 'generic-remaster-check-1' })
+  assert.equal((await call({ taskType: 'job_remaster', sourceJobId: sourceId, changes: { visualStyleProfile: 'webtoon_historical', refreshColdOpen: true } })).status, 400, 'an old 야담 style is not a choice any more')
+  const rm = await call({ taskType: 'job_remaster', sourceJobId: sourceId, changes: { refreshColdOpen: true }, idempotencyKey: 'generic-remaster-check-1' })
   assert.equal(rm.status, 201, JSON.stringify(rm.json)); const childId = rm.json.job.id
   assert.notEqual(childId, sourceId)
   // the remaster writes ONLY a new cold open (a different one); DNA / outline / acts / upload text are never asked for
@@ -362,12 +363,12 @@ test('YADAM quality: cold open from the middle (never the first 10% / the reveal
   const child: any = await blobs.getJson(cplan.result.scriptRef)
   assert.deepEqual([child.sections, child.yasaStoryDNA, child.metadata, child.title, child.characters], [script.sections, script.yasaStoryDNA, script.metadata, script.title, script.characters], 'the story, acts, narration and upload text are the source\'s')
   assert.deepEqual(child.coldOpen.sentences.map((x: any) => x.say), newCold.map(([, s]) => s))
-  // TTS: only the new cold open lines (the main narration comes from the cache: same voice, same text); pictures: the new style
+  // TTS: only the new cold open lines (the main narration comes from the cache: same voice, same text); pictures: all reused
   const childTts = ttsTexts.slice(before.tts)
   assert.deepEqual(childTts.sort(), newCold.map(([, s]) => s).sort(), 'no main-story TTS again')
   assert.ok(new Set(voiceIds).size === 1 && voiceIds[0] === 'ko-lf-female-senior-calm-0.9-yadam-v1', 'the source voice (0.9x) is kept')
   const childPrompts = prompts.slice(before.prompts)
-  assert.ok(childPrompts.length > 0 && childPrompts.every((p) => p.includes(VISUAL_STYLE_PROFILES.webtoon_historical.promptPrefix)))
+  assert.equal(childPrompts.length, 0, 'the same story in the same (only) style: every picture comes from the cache')
   // the source job keeps its own script
   assert.equal(((await store.listStageRuns(sourceId)).find((r: any) => r.stage === 'PLAN' && r.status === 'SUCCEEDED') as any).result.scriptRef, splan.result.scriptRef)
 })
@@ -423,7 +424,7 @@ test('REMASTER RETRY: the same remaster after a FAILED child makes a NEW child j
   const sourceId = src.json.job.id
   await runOnce({ store, blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner({}) as any })]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
   const before = await store.getJob(sourceId)
-  const ask = () => call({ taskType: 'job_remaster', sourceJobId: sourceId, changes: { visualStyleProfile: 'webtoon_historical', refreshColdOpen: true } })
+  const ask = () => call({ taskType: 'job_remaster', sourceJobId: sourceId, changes: { refreshColdOpen: true } })
   const a = await ask(); assert.equal(a.status, 201, JSON.stringify(a.json))
   const again = await ask(); assert.equal(again.json.job.id, a.json.job.id, 'queued: the same request is the same job')
   await db.query(`UPDATE production_jobs SET status = 'FAILED' WHERE id = $1`, [a.json.job.id])
@@ -448,7 +449,7 @@ test('JOB LIST: the server lists this workspace\'s jobs (a COMPLETE source + its
   const sourceId = src.json.job.id
   await runOnce({ store, blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: fakePlanner({}) as any })]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
   await db.query(`UPDATE production_jobs SET status = 'COMPLETE', stage = 'PACKAGE' WHERE id = $1`, [sourceId])
-  const child = await call('POST', { body: { taskType: 'job_remaster', sourceJobId: sourceId, changes: { visualStyleProfile: 'webtoon_historical', refreshColdOpen: true } } })
+  const child = await call('POST', { body: { taskType: 'job_remaster', sourceJobId: sourceId, changes: { refreshColdOpen: true } } })
   await db.query(`UPDATE production_jobs SET status = 'FAILED' WHERE id = $1`, [child.json.job.id])
   await call('POST', { key: 'z'.repeat(32), body: { taskType: 'job_create', profile: 'yasa_longform', idempotencyKey: 'other-ws-job-01', budgetUsd: 5, input: { kind: 'topic', text: '다른 작업 공간의 이야기', targetSeconds: SECONDS } } })
   const list = await call('GET', { query: { taskType: 'job_list' } })
@@ -472,12 +473,17 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   const d = await mkdtemp(join(tmpdir(), 'style-lock-'))
   const created = await call('POST', { body: { taskType: 'job_create', profile: 'yasa_longform', idempotencyKey: 'yadam-style-lock-01', budgetUsd: 5, input: { kind: 'topic', text: TOPIC, targetSeconds: SECONDS, thumbnailFirst: true } } })
   const jobId = created.json.job.id
-  const calls = { image: 0, example: 0, ref: 0, tts: 0 }, judged: number[] = [], refSeen: Buffer[] = [], refPrompts: string[] = [], exampleSeen: Buffer[] = []
+  const calls = { image: 0, thumb: 0, ref: 0, tts: 0 }, judged: number[] = [], refSeen: Buffer[] = [], refPrompts: string[] = [], thumbPrompts: string[] = []
   let refMode: 'off' | 'same' = 'off'
   const off = await (async () => { const f = join(d, 'off.jpg'); await runOk(['-y', '-f', 'lavfi', '-i', 'color=c=0x0a3d0a:s=1536x1024', '-frames:v', '1', '-q:v', '3', f]); return { bytes: await readFile(f), contentType: 'image/jpeg', provider: 'standin', model: 'off-style' } })()
   const asset = createLongformAssetExecutor({ apiKey: 'k',
-    image: async () => { calls.image++; return scenePicture(d, 500 + calls.image) },
-    imageRef: async (p: string, ref: Buffer) => { if (p.startsWith('STYLE EXAMPLE ATTACHED')) { calls.example++; exampleSeen.push(ref); const f = join(d, `ex${calls.example}.jpg`); await runOk(['-y', '-f', 'lavfi', '-i', `testsrc2=s=1536x1024,hue=h=${calls.example * 40}`, '-frames:v', '1', '-q:v', '3', f]); return { bytes: await readFile(f), contentType: 'image/jpeg', provider: 'standin', model: 'example' } } calls.ref++; refSeen.push(ref); refPrompts.push(p); return refMode === 'same' ? { bytes: ref, contentType: 'image/jpeg', provider: 'standin', model: 'ref' } : off },
+    // 야담: every picture goes through the ONE style contract drawer; the plain image / reference drawers must never be used
+    image: async () => { calls.image++; throw new Error('a 야담 picture never bypasses the style contract') },
+    imageRef: async () => { calls.image++; throw new Error('a 야담 picture never bypasses the style contract') },
+    yadam: async (p: string, _k: string, o: any = {}) => {
+      if (!o.approved) { calls.thumb++; thumbPrompts.push(p); const f = join(d, `th${calls.thumb}.jpg`); await runOk(['-y', '-f', 'lavfi', '-i', `testsrc2=s=1536x1024,hue=h=${calls.thumb * 40}`, '-frames:v', '1', '-q:v', '3', f]); return { bytes: await readFile(f), contentType: 'image/jpeg', provider: 'standin', model: 'yadam' } }
+      calls.ref++; refSeen.push(o.approved); refPrompts.push(p); return refMode === 'same' ? { bytes: o.approved, contentType: 'image/jpeg', provider: 'standin', model: 'ref' } : off
+    },
     tts: async () => { calls.tts++; return shortTts() },
     styleJudge: async () => { judged.push(1); return { same: true, score: 92, differences: [] } },
     copyWriter: async () => { throw new Error('the copy passes its checks: no rewrite call') } } as any)
@@ -487,10 +493,8 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   let j = await job()
   // 1: before approval only ONE picture (the thumbnail background); no scene picture, no reference picture, no narration
   assert.deepEqual([j.status, j.waitReason, j.stage], ['WAITING_USER', 'DECISION', 'ASSET'])
-  assert.deepEqual(calls, { image: 0, example: 1, ref: 0, tts: 0 }, 'the first thumbnail is drawn FROM the chosen style\'s example picture (no text-only drawing)')
-  const { loadStyleExample, styleExampleFor } = await import('../lib/generative/styleExamples.js')
-  const briefNow: any = await blobs.getJson((await store.getJob(jobId))!.planRef!), chosen = styleExampleFor(briefNow.creative?.resolved?.visualStyleProfile)
-  assert.ok(chosen, 'the resolved 야담 style has an example'); assert.ok(exampleSeen[0].equals((await loadStyleExample(chosen!)).bytes), 'the real example file of THAT style')
+  assert.deepEqual(calls, { image: 0, thumb: 1, ref: 0, tts: 0 }, 'the first thumbnail is drawn by the 야담 style contract (no plain drawing)')
+  assert.ok(!/Clean, bright|lively|not muddy|STYLE/.test(thumbPrompts[0]), 'the thumbnail background prompt carries no style / colour words: the contract decides the look')
   let st = (await call('GET', { query: { taskType: 'job_style', id: jobId } })).json.style
   assert.equal(st.awaiting, true); assert.equal(st.attempt, 1); assert.match(st.thumbnailUrl, /^memory:\/\/style-approval\/thumbnails\//)
   const thumb1: any = (await blobs.getJson(styleApprovalRef(jobId))).attempts[0]
@@ -503,13 +507,13 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   assert.equal(rg.status, 200, JSON.stringify(rg.json)); assert.equal(rg.json.job.id, jobId)
   await tick()
   st = (await call('GET', { query: { taskType: 'job_style', id: jobId } })).json.style
-  assert.deepEqual([st.awaiting, st.attempt, st.attempts], [true, 2, 2]); assert.deepEqual(calls, { image: 0, example: 2, ref: 0, tts: 0 }); assert.equal(st.example, chosen)
+  assert.deepEqual([st.awaiting, st.attempt, st.attempts], [true, 2, 2]); assert.deepEqual(calls, { image: 0, thumb: 2, ref: 0, tts: 0 })
   // 2 + 5: approved -> the representative picture first; it does NOT match -> nothing else is drawn, the stage stops (retryable)
   assert.equal((await call('POST', { body: { taskType: 'job_style_decision', jobId, action: 'approve', attempt: 2 } })).status, 200)
   await tick()
   j = await job()
   assert.deepEqual([j.status, j.waitReason, j.stage], ['WAITING_USER', 'DECISION', 'ASSET'], 'a mismatch waits for the user (no paid automatic retries)')
-  assert.deepEqual(calls, { image: 0, example: 2, ref: 2, tts: 0 }, 'only the representative (twice), no other picture, no narration')
+  assert.deepEqual(calls, { image: 0, thumb: 2, ref: 2, tts: 0 }, 'only the representative (twice), no other picture, no narration')
   assert.equal(judged.length, 0, 'a picture that fails the free colour / texture checks never costs a judge call')
   assert.equal((await tick() as any).ran, false)
   st = (await call('GET', { query: { taskType: 'job_style', id: jobId } })).json.style
@@ -518,7 +522,7 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   assert.deepEqual([rec.status, rec.approved.n, rec.representative.status], ['approved', 2, 'mismatch'])
   // 4: every reference call carried the APPROVED picture itself + its measured features (not a style name)
   const approvedBg = await blobs.getBytes(rec.approved.backgroundRef)
-  assert.ok(refSeen.every((b) => b.equals(approvedBg))); assert.ok(refPrompts.every((p) => p.includes('STYLE LOCK') && rec.approved.features.palette.every((c: string) => p.includes(c))))
+  assert.ok(refSeen.every((b) => b.equals(approvedBg))); assert.ok(refPrompts.every((p) => !p.includes('STYLE LOCK') && !/palette|muted|saturated colors/.test(p)), '야담: no measured-colour text, the contract (with the approved picture) is the style')
   // retry: the representative matches -> the rest of the pictures are drawn from the reference, then the narration
   refMode = 'same'
   assert.equal((await call('POST', { body: { taskType: 'job_style_decision', jobId, action: 'representative' } })).status, 200, 'redraw only the representative')
@@ -528,7 +532,7 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   const runs = await store.listStageRuns(jobId), last: any = runs.filter((r: any) => r.stage === 'ASSET' && r.status === 'SUCCEEDED').at(-1)
   const manifest: any = await blobs.getJson(last.result.assetSpecRef)
   assert.equal(manifest.approvedThumbnail.ref, rec.approved.thumbnailRef, 'the approved thumbnail is the video thumbnail')
-  assert.deepEqual([calls.image, calls.example], [0, 2], 'after approval every picture comes from the approved thumbnail (never the example, never text-only)')
+  assert.deepEqual([calls.image, calls.thumb], [0, 2], 'after approval every picture is drawn by the contract with the approved picture (never a plain drawing)')
   assert.equal(judged.length, 1, 'one judge call for the representative that passed the free checks')
   const pics = manifest.images.length, refCalls = calls.ref
   assert.ok(refCalls >= pics, `${refCalls} reference calls for ${pics} pictures`)

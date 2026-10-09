@@ -9,7 +9,7 @@ import { composeTitleThumbnail, sameTitle, normTitle, titleSceneIndex, thumbnail
 import { probe, runOk } from '../lib/media/ffmpeg.js'
 import { STYLE_APPROVAL } from '../lib/generative/styleApproval.js'
 
-const bg = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'style-examples', 'yadam', 'oriental_painterly.jpg')
+const bg = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'style-distance', 'oriental_painterly.jpg')
 
 test('the thumbnail text is the final title exactly; long titles wrap and shrink; the ink stays inside the frame; too long = an error, never a cut', async () => {
   const background = await readFile(bg)

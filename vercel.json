@@ -3,6 +3,9 @@
     "api/story.ts": {
       "maxDuration": 180,
       "includeFiles": "node_modules/{@sparticuz/chromium/bin/**,mediainfo.js/dist/MediaInfoModule.wasm,ffmpeg-static/ffmpeg}"
+    },
+    "api/image.ts": {
+      "includeFiles": "assets/style-reference/yadam/sent/**"
     }
   }
 }

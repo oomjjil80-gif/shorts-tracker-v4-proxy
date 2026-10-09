@@ -11,7 +11,7 @@ import { previewVoice } from '../lib/generative/voicePreview.js'
 import imageHandler from '../api/image.js'
 
 const FORMATS = ['shorts', 'longform'] as const
-const AUTO_STYLE: Record<string, string> = { senior: 'senior-warm-watercolor', wisdom: 'wisdom-painterly', yasa: 'historical-dramatic', general: 'bright-editorial', economy: 'realistic-documentary' }
+const AUTO_STYLE: Record<string, string> = { senior: 'senior-warm-watercolor', wisdom: 'wisdom-painterly', yasa: 'yadam_reference', general: 'bright-editorial', economy: 'realistic-documentary' }
 const http = (handler: any, body: any) => new Promise<{ status: number; json: any }>((resolve) => {
   let status = 0
   handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32) }, query: {}, body } as any,
@@ -23,7 +23,9 @@ test('matrix: every family x format resolves through the one resolver; AUTO styl
   for (const fam of CONTENT_FAMILIES) for (const fmt of FORMATS) {
     const content = creativeContentFor(fam, fmt)
     const auto = resolveCreativeProfile(content, {}, '평범한 이야기').resolved
-    assert.equal(auto.visualStyleProfile, content === 'yasa_longform' ? 'korean_drama_illustration' : AUTO_STYLE[fam], `${fam}/${fmt}`)
+    assert.equal(auto.visualStyleProfile, AUTO_STYLE[fam], `${fam}/${fmt}`)
+    // 야담 has one 그림체: another style is refused; every other family takes the explicit choice
+    if (fam === 'yasa') { assert.throws(() => resolveCreativeProfile(content, { visualStyleProfile: 'senior-warm-watercolor' }, ''), /visualStyleProfile/); continue }
     const mine = resolveCreativeProfile(content, { voiceProfile: 'female-middle', voiceTone: 'neutral', voiceSpeed: 1.1, visualStyleProfile: 'senior-warm-watercolor' }, '').resolved
     assert.deepEqual([mine.voiceProfile, mine.voiceTone, mine.voiceSpeed, mine.visualStyleProfile], ['female-middle', 'neutral', 1.1, 'senior-warm-watercolor'], `${fam}/${fmt}`)
   }
@@ -56,8 +58,11 @@ test('creative_resolve: the browser asks the server (keys in, resolved profile o
   // economy AUTO keeps its own (native) look: nothing is added to a hand-copied prompt either
   assert.equal(r.json.styleWrap, null)
   const yasa = await http(handler, { taskType: 'creative_resolve', family: 'yasa', format: 'longform', topic: '조선 왕실' })
-  assert.ok(yasa.json.styleWrap.head.includes(VISUAL_STYLE_PROFILES['korean_drama_illustration'].promptPrefix) && yasa.json.styleWrap.tail.includes(VISUAL_STYLE_PROFILES['korean_drama_illustration'].negativePrompt))
-  assert.equal(withVisualStyle('P', VISUAL_STYLE_PROFILES['korean_drama_illustration']), [yasa.json.styleWrap.head, '', 'P', '', yasa.json.styleWrap.tail].join('\n')) // the same text as /api/image
+  // 야담: the one contract's text, and the hand-copied prompt is told to attach the 3 reference frames
+  const { YADAM_STYLE_CONTRACT, YADAM_STYLE_ID } = await import('../lib/generative/yadamStyle.js')
+  assert.equal(yasa.json.creative.resolved.visualStyleProfile, YADAM_STYLE_ID)
+  assert.ok(yasa.json.styleWrap.head.startsWith(YADAM_STYLE_CONTRACT) && /ATTACH\] the 3 야담 style reference frames/.test(yasa.json.styleWrap.tail))
+  assert.equal(withVisualStyle('P', VISUAL_STYLE_PROFILES[YADAM_STYLE_ID]), [yasa.json.styleWrap.head, '', 'P', '', yasa.json.styleWrap.tail].join('\n'))
   const econWater = await http(handler, { taskType: 'creative_resolve', family: 'economy', format: 'shorts', visualStyleProfile: 'senior-warm-watercolor' })
   assert.ok(econWater.json.styleWrap.head.includes('senior-warm-watercolor'))
   for (const bad of [{ family: 'horror', format: 'shorts' }, { family: 'yasa', format: 'shorts', voiceSpeed: 1.3 }, { family: 'yasa', format: 'shorts', visualStyleProfile: 'anime' }]) assert.equal((await http(handler, { taskType: 'creative_resolve', ...bad })).status, 400)
@@ -66,7 +71,9 @@ test('creative_resolve: the browser asks the server (keys in, resolved profile o
 test('/api/image style: legacy Episodes unchanged; AUTO per family; explicit wins; stored resolved wins; economy AUTO keeps its prompts', () => {
   assert.equal(imageStyleFor(undefined), null) // an Episode from before Creative Settings
   const c = (family: string, format: string, requested: any = {}, resolved?: any) => imageStyleFor({ family, format, requested, ...(resolved ? { resolved } : {}) })?.id ?? null
-  assert.equal(c('general', 'shorts'), 'bright-editorial'); assert.equal(c('yasa', 'longform'), 'korean_drama_illustration'); assert.equal(c('yasa', 'shorts'), 'historical-dramatic'); assert.equal(c('senior', 'shorts'), 'senior-warm-watercolor')
+  assert.equal(c('general', 'shorts'), 'bright-editorial'); assert.equal(c('yasa', 'longform'), 'yadam_reference'); assert.equal(c('yasa', 'shorts'), 'yadam_reference');
+  // an old 야담 Episode (stored resolved / requested from before) never brings its old style back
+  assert.equal(c('yasa', 'shorts', { visualStyleProfile: 'historical-dramatic' }, { visualStyleProfile: 'historical-dramatic' }), 'yadam_reference'); assert.equal(c('yasa', 'longform', { visualStyleProfile: 'korean_drama_illustration' }, { visualStyleProfile: 'korean_drama_illustration' }), 'yadam_reference'); assert.equal(c('senior', 'shorts'), 'senior-warm-watercolor')
   assert.equal(c('economy', 'shorts'), null); assert.equal(c('economy', 'longform'), null) // native: the economy bible already draws it
   assert.equal(c('wisdom', 'shorts'), null) // Wisdom Shorts native style
   assert.equal(c('economy', 'shorts', { visualStyleProfile: 'senior-warm-watercolor' }), 'senior-warm-watercolor')
@@ -87,7 +94,7 @@ async function callImage(input: any) {
   try {
     let status = 0, json: any = null
     await imageHandler({ method: 'POST', query: {}, headers: {}, body: { contractVersion: '1.5', taskType: 'cut_image', input } } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this }, send() { return this } } as any)
-    return { status, json, text: sent[0]?.input?.[0]?.text as string }
+    return { status, json, text: sent[0]?.input?.[0]?.text as string, sent: sent[0] }
   } finally { globalThis.fetch = prevFetch; if (prevKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = prevKey }
 }
 
@@ -96,12 +103,23 @@ test('/api/image (cut_image): a legacy request is sent exactly as before; a Stor
   const legacy = await callImage({ prompt, aspectRatio: '9:16' })
   assert.equal(legacy.text, 'Generate exactly ONE final image for this CUT. Do not return a candidate sheet, variations, collage, triptych, or contact sheet.\n\n' + prompt)
   assert.equal(legacy.json?.meta?.visualStyleProfile ?? null, null)
-  const yasa = await callImage({ prompt, aspectRatio: '9:16', creative: { family: 'yasa', format: 'shorts', requested: { visualStyleProfile: 'auto' }, resolved: { visualStyleProfile: 'historical-dramatic' } } })
-  assert.ok(yasa.text.includes(VISUAL_STYLE_PROFILES['historical-dramatic'].promptPrefix) && yasa.text.includes(prompt) && yasa.text.includes(VISUAL_STYLE_PROFILES['historical-dramatic'].negativePrompt))
-  assert.equal(yasa.json.meta.visualStyleProfile, 'historical-dramatic')
-  // another style = another prompt (no image is ever reused across styles)
-  const water = await callImage({ prompt, aspectRatio: '9:16', creative: { family: 'yasa', format: 'shorts', requested: { visualStyleProfile: 'senior-warm-watercolor' } } })
-  assert.notEqual(water.text, yasa.text); assert.equal(water.json.meta.visualStyleProfile, 'senior-warm-watercolor')
+  // 야담 쇼츠: the one contract — its text around the CUT prompt and its 3 reference frames FIRST, even for an old
+  // Episode that stored another style
+  const { YADAM_STYLE_CONTRACT, yadamReferences } = await import('../lib/generative/yadamStyle.js')
+  const refs = (await yadamReferences()).map((r) => r.bytes.toString('base64'))
+  for (const resolved of [{ visualStyleProfile: 'historical-dramatic' }, { visualStyleProfile: 'korean_drama_illustration' }, undefined]) {
+    const yasa = await callImage({ prompt, aspectRatio: '9:16', references: [{ data: 'aGVsbG8=', mimeType: 'image/png' }], creative: { family: 'yasa', format: 'shorts', requested: { visualStyleProfile: 'auto' }, ...(resolved ? { resolved } : {}) } })
+    assert.equal(yasa.json.meta.visualStyleProfile, 'yadam_reference')
+    assert.ok(yasa.text.includes(YADAM_STYLE_CONTRACT) && yasa.text.includes(prompt) && /FIRST THREE images are the style reference/.test(yasa.text))
+    assert.doesNotMatch(yasa.text, new RegExp(VISUAL_STYLE_PROFILES['historical-dramatic'].promptPrefix.slice(0, 30)))
+    assert.deepEqual(yasa.sent.input.slice(1).map((b: any) => b.data), [...refs, 'aGVsbG8='], 'the 3 frames first, then the episode reference')
+  }
+  // another family keeps its own style text (no frames)
+  const water = await callImage({ prompt, aspectRatio: '9:16', creative: { family: 'senior', format: 'shorts', requested: { visualStyleProfile: 'senior-warm-watercolor' } } })
+  assert.equal(water.json.meta.visualStyleProfile, 'senior-warm-watercolor'); assert.equal(water.sent.input.length, 1)
+  // an Episode that names another style for 야담 (an old one) is still drawn by the one contract
+  const other = await callImage({ prompt, aspectRatio: '9:16', creative: { family: 'yasa', format: 'shorts', requested: { visualStyleProfile: 'senior-warm-watercolor' } } })
+  assert.equal(other.json.meta.visualStyleProfile, 'yadam_reference'); assert.equal(other.sent.input.length, 4)
   assert.equal((await callImage({ prompt, creative: { family: 'horror', format: 'shorts' } })).status, 400)
 })
 

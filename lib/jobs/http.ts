@@ -270,7 +270,6 @@ export function createJobsHttp(deps: JobsDeps) {
         return res.status(200).json({ ok: true, style: {
           status: rec.status, awaiting, attempt: cur?.n ?? 0, attempts: rec.attempts?.length ?? 0, thumbnailUrl: await url(cur?.thumbnailRef),
           copy: (rec.attempts?.at(-1)?.lines ?? []).map((l: any) => String(l?.text || '')), issues: [...(rec.attempts?.at(-1)?.copyIssues ?? []), ...(rec.attempts?.at(-1)?.imageIssues ?? [])],
-          example: rec.attempts?.at(-1)?.example?.style ?? null,
           regenerating: rec.regenerate === true, redrawingRepresentative: rec.redrawRepresentative === true,
           representative: rec.representative ? { status: rec.representative.status, distance: rec.representative.distance, url: await url(rec.representative.ref) } : null
         } })
@@ -321,7 +320,7 @@ export function createJobsHttp(deps: JobsDeps) {
       // job_remaster_yasa remains only as a backwards-compatible alias and translates into the same shared contract.
       if (taskType === 'job_remaster_yasa') {
         body.taskType = 'job_remaster'
-        body.changes = { visualStyleProfile: String(body.visualStyleProfile ?? 'auto'), refreshColdOpen: true }
+        body.changes = { refreshColdOpen: true } // 야담 has one 그림체: the alias never changes it
         taskType = 'job_remaster'
       }
       if (taskType === 'job_remaster') {

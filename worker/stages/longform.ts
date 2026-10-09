@@ -15,7 +15,7 @@ import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaSc
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
 import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
-import { briefVoice, creativeStyle, creativeStyleOverride, YADAM_AUTO_STYLE, type CreativeContent } from '../../lib/generative/creativeProfile.js'
+import { briefVoice, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { VISUAL_STYLE_PROFILES } from '../../lib/generative/visualStyle.js'
 import { VIDEO_ENCODER_THREADS } from '../../lib/media/render.js'
 import { openAiLongformResearcher, researchPath, researchErrors, sectionFragments, RESEARCH_MODEL, type LongformResearcher, type ResearchBundle } from '../../lib/generative/longformResearch.js'
@@ -28,7 +28,7 @@ import { styleGate, representativeCheck, type StyleReference, type DrawRefFn, ty
 import { styleApprovalWanted } from '../../lib/generative/styleApproval.js'
 import { openAiThumbnailCopyWriter } from '../../lib/generative/thumbnailCopyWriter.js'
 import { openAiStyleJudge } from '../../lib/generative/styleJudge.js'
-import { loadStyleExample, styleExampleFor } from '../../lib/generative/styleExamples.js'
+import { YADAM_STYLE_VERSION, openAiYadamImage, type YadamDraw } from '../../lib/generative/yadamStyle.js'
 import { composeTitleThumbnail, thumbnailBackgroundPrompt, titleSceneIndex } from '../../lib/generative/titleThumbnail.js'
 import { styleApprovalRef } from '../../lib/generative/styleApproval.js'
 import type { StyleJudge } from '../../lib/generative/styleApproval.js'
@@ -291,9 +291,9 @@ export async function longformTitleThumbnail(o: { jobId: string; blobs: any; ass
   try { return (await composeTitleThumbnail({ background: bg, title: o.title })).bytes }
   catch (e: any) { throw new StageError(e?.code || 'THUMB_TITLE_OVERFLOW', `${e?.code || 'THUMB_TITLE_OVERFLOW'}: ${String(e?.message || e)}`, false) }
 }
-export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver; imageRef?: DrawRefFn; copyWriter?: CopyWriter; styleJudge?: StyleJudge; styleExample?: typeof loadStyleExample } = {}): StageExecutor {
+export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver; imageRef?: DrawRefFn; copyWriter?: CopyWriter; styleJudge?: StyleJudge; yadam?: YadamDraw } = {}): StageExecutor {
   const image = deps.image ?? openAiLongformImage, tts = deps.tts ?? openAiTts, apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? ''
-  const imageRef = deps.imageRef ?? openAiImageWithReference
+  const imageRef = deps.imageRef ?? openAiImageWithReference, yadamDraw = deps.yadam ?? openAiYadamImage()
   return {
     stage: 'ASSET', estimateUsd: () => 1.0,
     inputHash: (job) => sha256(`longform-asset|${job.id}|${job.planRev}|wisdom_longform/1`),
@@ -313,24 +313,28 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       // Wisdom: the one picture; a style the user picked replaces only its style line (AUTO = the prompt as before).
       const sceneList = scenes ? seniorScenes(script as unknown as SeniorScript) : []
       const yasa = job.profile === 'yasa_longform'
-      const sceneStyle = scenes ? ((brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES[yasa ? YADAM_AUTO_STYLE : 'senior-warm-watercolor']) : null
-      const scenePrompts = sceneList.map((sc) => (yasa ? yasaScenePrompt : seniorScenePrompt)(script as unknown as SeniorScript, sc, sceneStyle!))
+      // 야담: every picture is drawn by the ONE style contract (yadamStyle.ts: the reference frames + its text); the scene
+      // prompt says only what the picture shows. Senior keeps its resolved style (watercolor by default).
+      const sceneStyle = scenes && !yasa ? ((brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES['senior-warm-watercolor']) : null
+      const scenePrompts = sceneList.map((sc) => (yasa ? yasaScenePrompt(script as unknown as SeniorScript, sc) : seniorScenePrompt(script as unknown as SeniorScript, sc, sceneStyle!)))
       const prompt = scenes ? scenePrompts[0] : longformImagePrompt(script, creativeStyleOverride(brief?.creative)), chunks = ttsChunks(script)
       // THUMBNAIL FIRST + STYLE LOCK (profiles switched on in STYLE_APPROVAL, briefs that ask for it): before approval only
       // the thumbnail is made and the job waits; after approval every picture is drawn FROM the approved picture
       const repIndex = scenes ? Math.min(sceneList.length - 1, Math.floor(sceneList.length * 0.4)) : -1
       let styleLock: StyleReference | null = null, approval: any = null
       if (styleApprovalWanted(job.profile, brief)) {
-        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, backgroundPrompt: thumbnailBackgroundPrompt(script.title, scenes ? scenePrompts[titleSceneIndex(script.title, sceneList.map((sc: any) => ({ id: sc.id, text: [sc.visual, sc.action, ...((script as any).sections ?? []).flatMap((x: any) => (x.sentences ?? []).filter((y: any) => y.scene === sc.id).map((y: any) => y.say))].join(' ') })), repIndex)] : prompt), draw: image, drawRef: imageRef, example: async () => { const k = styleExampleFor(sceneStyle?.id); return k ? (deps.styleExample ?? loadStyleExample)(k) : null }, copyWriter: deps.copyWriter ?? openAiThumbnailCopyWriter(), signal })
+        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, backgroundPrompt: thumbnailBackgroundPrompt(script.title, scenes ? scenePrompts[titleSceneIndex(script.title, sceneList.map((sc: any) => ({ id: sc.id, text: [sc.visual, sc.action, ...((script as any).sections ?? []).flatMap((x: any) => (x.sentences ?? []).filter((y: any) => y.scene === sc.id).map((y: any) => y.say))].join(' ') })), repIndex)] : prompt, { styleNeutral: yasa }), draw: yasa ? (p: string, k: string) => yadamDraw(p, k, { quality: 'high' }) : image, copyWriter: deps.copyWriter ?? openAiThumbnailCopyWriter(), signal })
         if (gate.wait) return { result: { styleApproval: { status: 'pending', attempt: gate.record.attempts.length, thumbnailRef: gate.record.attempts.at(-1)?.thumbnailRef ?? null } }, wait: 'DECISION' }
-        styleLock = gate.reference; approval = gate.record
+        // 야담: the approved picture keeps the people and place consistent; the drawing stays the contract's (no measured colour text)
+        styleLock = yasa ? { ...gate.reference, text: '' } : gate.reference; approval = gate.record
       }
-      const draw = (p: string) => (styleLock ? imageRef(`${p}\n\n${styleLock.text}`, styleLock.bytes, apiKey) : image(p, apiKey))
+      const draw = (p: string) => (yasa ? yadamDraw(p, apiKey, { quality: 'medium', approved: styleLock?.bytes ?? null }) : styleLock ? imageRef(`${p}\n\n${styleLock.text}`, styleLock.bytes, apiKey) : image(p, apiKey))
+      const drawRepresentative: DrawRefFn = yasa ? (p, ref, k) => yadamDraw(p.trim(), k, { quality: 'high', approved: ref }) : imageRef
       // paid calls only on a cache miss (an ASSET rerun reuses every picture and every narration chunk); the prompt (and so
       // the style, and the approved reference picture) is part of every image key
       const lockTag = styleLock ? `|ref:${styleLock.sha}` : ''
       const ik = sha256((styleLock ? 'longform-image-ref-v1|' : 'longform-image-v1|') + prompt + lockTag)
-      const sceneKeys = scenePrompts.map((x) => sha256((styleLock ? 'longform-scene-image-ref-v1|' : 'longform-scene-image-v1|') + x + lockTag))
+      const sceneKeys = scenePrompts.map((x) => sha256((yasa ? `${YADAM_STYLE_VERSION}|scene|` : styleLock ? 'longform-scene-image-ref-v1|' : 'longform-scene-image-v1|') + x + lockTag))
       const sceneMeta = await Promise.all(sceneKeys.map((k) => meta('image', k)))
       let im: any = scenes ? null : await withBytes(await meta('image', ik)), generated = 0, reused = 0
       const ttsKeys = chunks.map((c) => sha256(ttsCacheIdentity(voice, c.text)))
@@ -341,7 +345,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       // the representative picture first: drawn from the reference and compared with it; only a match unlocks the rest
       if (styleLock) {
         const key = scenes ? sceneKeys[repIndex] : ik, cached = await withBytes(await meta('image', key))
-        const x = await representativeCheck({ jobId: job.id, blobs, record: approval, reference: styleLock, prompt: scenes ? scenePrompts[repIndex] : prompt, sceneId: scenes ? sceneList[repIndex].id : null, apiKey, drawRef: imageRef, judge: deps.styleJudge ?? openAiStyleJudge(), cached })
+        const x = await representativeCheck({ jobId: job.id, blobs, record: approval, reference: styleLock, prompt: scenes ? scenePrompts[repIndex] : prompt, sceneId: scenes ? sceneList[repIndex].id : null, apiKey, drawRef: drawRepresentative, judge: deps.styleJudge ?? openAiStyleJudge(), cached })
         if (!x) return { result: { styleApproval: { status: 'approved', representative: approval.representative ?? null } }, wait: 'DECISION' as const }
         if (x !== cached) generated++
         if (scenes) madeNow.set(key, x); else im = x

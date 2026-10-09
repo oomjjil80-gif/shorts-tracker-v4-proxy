@@ -1,19 +1,16 @@
+import { YADAM_STYLE_ID, YADAM_STYLE_LABEL, YADAM_STYLE_TRAITS, YADAM_STYLE_RULES } from './yadamStyle.js'
 // The single place where picture styles (그림체) are defined, like voiceProfile.ts for voices. Planners never write a
 // style sentence of their own when a style is chosen: every generated image prompt is composed here, in one order:
 // BASE CONTENT -> VISUAL STYLE -> COMPOSITION -> CHARACTER CONSISTENCY -> NEGATIVE. UI strings carry only the key.
-// 숨은야담 그림체 (the user picks one like a voice; never photoreal, always a pretty illustration)
-export const YADAM_STYLE_KEYS = ['korean_drama_illustration', 'oriental_painterly', 'webtoon_historical', 'fairytale_illustration', 'classic_storybook'] as const
-export const VISUAL_STYLE_KEYS = ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial', ...YADAM_STYLE_KEYS] as const
+// 야담 has exactly one style: the reference contract in yadamStyle.ts (its id is listed here so a 야담 brief can name it;
+// its pictures are never drawn from this text alone — every 야담 request goes through yadamStyle.ts with the frames).
+export const VISUAL_STYLE_KEYS = ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial', YADAM_STYLE_ID] as const
 export type VisualStyleKey = (typeof VISUAL_STYLE_KEYS)[number]
 export const VISUAL_STYLE_CHOICES = ['auto', ...VISUAL_STYLE_KEYS] as const
 export type VisualStyleChoice = (typeof VISUAL_STYLE_CHOICES)[number]
 export type VisualStyleProfile = { id: VisualStyleKey; label: string; promptPrefix: string; negativePrompt: string; compositionHints: string }
 
 const NO_TEXT = 'no text, letters, numbers, captions, signatures, logos or watermark'
-// every 숨은야담 preset: an illustration, never a photo; never ugly or grotesque
-export const YADAM_NO_PHOTO = 'photorealistic, photoreal, real photo, live action, cinematic photography, hyper realistic human, uncanny realism, ugly or grotesque faces, horror style, excessive distortion, wrong hands, faces or body proportions'
-const yadam = (id: VisualStyleKey, label: string, look: string, composition: string): VisualStyleProfile =>
-  ({ id, label, promptPrefix: `${look}; a beautiful, pleasant-looking illustration (never a photograph), attractive well-drawn faces with clear emotion`, negativePrompt: `${YADAM_NO_PHOTO}, ${NO_TEXT}`, compositionHints: composition })
 export const VISUAL_STYLE_PROFILES: Readonly<Record<VisualStyleKey, VisualStyleProfile>> = {
   'senior-warm-watercolor': {
     id: 'senior-warm-watercolor', label: '따뜻한 수채화',
@@ -45,11 +42,7 @@ export const VISUAL_STYLE_PROFILES: Readonly<Record<VisualStyleKey, VisualStyleP
     negativePrompt: `dark muddy colors, cluttered details, photorealistic photo, ${NO_TEXT}`,
     compositionHints: 'one clear subject, readable silhouette'
   },
-  korean_drama_illustration: yadam('korean_drama_illustration', '고급 사극 일러스트', 'Premium Korean historical drama illustration, refined digital painting, beautiful clean faces, vivid clear colors, expressive emotion that reads at thumbnail size', 'faces and emotion clearly readable, strong thumbnail-friendly focal point'),
-  oriental_painterly: yadam('oriental_painterly', '감성 동양화풍', 'Lyrical East Asian ink-and-color painting style, soft washes of gentle muted color, delicate brushwork, graceful beautiful figures, quiet traditional atmosphere', 'airy composition with breathing space, figures gracefully placed'),
-  webtoon_historical: yadam('webtoon_historical', '웹툰형 사극풍', 'Korean historical webtoon style, crisp clean line art, attractive distinct characters, strong readable facial expressions, bright clear colors', 'characters easy to tell apart, expressive faces large in frame'),
-  fairytale_illustration: yadam('fairytale_illustration', '동화풍 채색 일러스트', 'Warm storybook fairytale illustration, soft painted colors, friendly beautiful faces, gentle emotional storytelling like an old Korean folk-tale picture book', 'warm inviting staging, emotion carried by faces and gestures'),
-  classic_storybook: yadam('classic_storybook', '고전 삽화풍', 'Classic old storybook illustration, hand-drawn traditional feel, calm harmonious colors (not faded, dirty or gloomy), figures still pleasant and well drawn', 'clear storytelling tableau, balanced traditional layout')
+  [YADAM_STYLE_ID]: { id: YADAM_STYLE_ID, label: YADAM_STYLE_LABEL, promptPrefix: YADAM_STYLE_TRAITS, negativePrompt: YADAM_STYLE_RULES, compositionHints: 'faces and the key action clearly readable' }
 }
 export function parseVisualStyle(v: unknown): VisualStyleChoice {
   const s = String(v ?? 'auto')

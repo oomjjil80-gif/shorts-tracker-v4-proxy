@@ -17,7 +17,6 @@ import { imageStyleFeatures, styleApprovalRef, styleDistance, styleFeatureText, 
 import type { GeneratedBinary } from '../../lib/generative/providers.js'
 import { StageError } from '../types.js'
 import { composeTitleThumbnail, normTitle } from '../../lib/generative/titleThumbnail.js'
-import { styleExamplePrompt, type StyleExample } from '../../lib/generative/styleExamples.js'
 
 export type DrawFn = (prompt: string, apiKey: string) => Promise<GeneratedBinary>
 export type DrawRefFn = (prompt: string, reference: Buffer, apiKey: string) => Promise<GeneratedBinary>
@@ -35,9 +34,7 @@ export async function readStyleRecord(blobs: JobBlobStore, jobId: string): Promi
 const save = (blobs: JobBlobStore, jobId: string, rec: StyleApprovalRecord) => blobs.putJson(styleApprovalRef(jobId), rec, { overwrite: true })
 
 // Before approval: make (or keep) the thumbnail attempt and say "wait". After approval: the style reference.
-export async function styleGate(o: { jobId: string; blobs: JobBlobStore; script: any; profile: string; apiKey: string; backgroundPrompt: string; draw: DrawFn; copyWriter?: CopyWriter; signal?: AbortSignal
-  // the chosen style's example picture (loaded only when a new thumbnail is drawn; throws when it is missing) + the image edit
-  example?: () => Promise<StyleExample | null>; drawRef?: DrawRefFn }): Promise<{ wait: true; record: StyleApprovalRecord } | { wait: false; record: StyleApprovalRecord; reference: StyleReference }> {
+export async function styleGate(o: { jobId: string; blobs: JobBlobStore; script: any; profile: string; apiKey: string; backgroundPrompt: string; draw: DrawFn; copyWriter?: CopyWriter; signal?: AbortSignal }): Promise<{ wait: true; record: StyleApprovalRecord } | { wait: false; record: StyleApprovalRecord; reference: StyleReference }> {
   const rec: StyleApprovalRecord = (await readStyleRecord(o.blobs, o.jobId)) ?? { schema: 'style-approval/1', status: 'pending', attempts: [] }
   if (rec.status === 'approved' && rec.approved) {
     const bytes = await o.blobs.getBytes(rec.approved.backgroundRef)
@@ -53,15 +50,10 @@ export async function styleGate(o: { jobId: string; blobs: JobBlobStore; script:
     if (!title) throw new StageError('THUMB_TITLE_MISSING', 'the script has no title for the thumbnail', false)
     let lines: ThumbLine[] = [], copyIssues: string[] = []
     // the picture: one background, the copy composited as real text (1280x720); a blank / too dark picture is drawn once more
-    // the style the user chose, as the real example picture (image edit): the thumbnail starts in exactly that look
-    let example: StyleExample | null = null
-    try { example = o.example ? await o.example() : null }
-    catch (e: any) { throw new StageError('STYLE_EXAMPLE_MISSING', `STYLE_EXAMPLE_MISSING: ${String(e?.message || e)}`, false) }
-    if (example && !o.drawRef) throw new StageError('STYLE_EXAMPLE_MISSING', 'the style example needs the reference image drawer', false)
     let bg: GeneratedBinary | null = null, imageIssues: string[] = [], thumbBytes: Buffer | null = null
     for (let t = 0; t < 2; t++) {
       if (o.signal?.aborted) throw new Error('aborted')
-      bg = example ? await o.drawRef!(styleExamplePrompt(o.backgroundPrompt), example.bytes, o.apiKey) : await o.draw(o.backgroundPrompt, o.apiKey)
+      bg = await o.draw(o.backgroundPrompt, o.apiKey)
       const bgPath = join(work, `bg${t}.jpg`); await writeFile(bgPath, bg.bytes)
       // a muddy / too dark / blank background is drawn once more (measured on the picture itself, no AI)
       imageIssues = await thumbnailImageIssues(bgPath)
@@ -72,7 +64,7 @@ export async function styleGate(o: { jobId: string; blobs: JobBlobStore; script:
     }
     const bgRef = `style-approval/images/${sha256(bg!.bytes)}.jpg`, thRef = `style-approval/thumbnails/${sha256(thumbBytes!)}.jpg`
     await o.blobs.putBytes(bgRef, bg!.bytes, 'image/jpeg'); await o.blobs.putBytes(thRef, thumbBytes!, 'image/jpeg')
-    rec.attempts.push({ n: rec.attempts.length + 1, backgroundRef: bgRef, thumbnailRef: thRef, lines, copyIssues, imageIssues, ...(example ? { example: { style: example.style, file: example.file, sha: example.sha } } : {}), at: new Date().toISOString() })
+    rec.attempts.push({ n: rec.attempts.length + 1, backgroundRef: bgRef, thumbnailRef: thRef, lines, copyIssues, imageIssues, at: new Date().toISOString() })
     rec.status = 'pending'; delete rec.regenerate
     await save(o.blobs, o.jobId, rec)
     return { wait: true, record: rec }

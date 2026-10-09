@@ -10,7 +10,7 @@ import { createMemoryBlobStore } from '../lib/jobs/blobs.js'
 import { representativeCheck } from '../worker/stages/styleGate.js'
 import { imageStyleFeatures, styleDistance, textureDistance, styleFeatureText, STYLE_MATCH, TEXTURE_MATCH } from '../lib/generative/styleApproval.js'
 
-const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'style-examples', 'yadam')
+const dir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'style-distance')
 const names = ['classic_storybook', 'fairytale_illustration', 'korean_drama_illustration', 'oriental_painterly', 'webtoon_historical']
 
 test('colour + brightness alone never pass; a different art style of the same scene is rejected; the same style passes only with the judge', async () => {
