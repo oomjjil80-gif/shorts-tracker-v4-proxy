@@ -1,0 +1,13 @@
+{
+ "order": [
+  "v3-representative"
+ ],
+ "errors": {},
+ "report": {
+  "prompt": "Premium Korean romance-webtoon / anime key-visual illustration — the highest-quality polished digital painting — set in the Joseon dynasty of Korea.\n\nSCENE (medium shot, both faces and their emotions clearly visible, wide 16:9): in the sunlit courtyard of a tiled-roof hanok (wooden maru veranda, paper-screen doors, a blossoming plum tree, a few onggi crocks softly out of focus), a beautiful young Joseon woman (about 20; delicate oval face, large luminous dark eyes with fine lashes, soft natural blush, glossy black hair in a neat low chignon with a jade binyeo; pale pink silk jeogori with a deep crimson goreum and an indigo silk chima with a subtle woven pattern) receives a small bundle wrapped in a jade-green silk bojagi tied with a gold-thread knot from an elegant, dignified older woman (about 60; kind but serious eyes, gentle refined wrinkles, silver-streaked hair in a low chignon with a silver binyeo; plum-purple jeogori and charcoal-navy chima). Their hands meet over the bundle; the young woman looks up with surprised, moved eyes; the older woman gives a quiet, meaningful smile. Two clearly different faces.\n\nRENDERING: beautiful natural face proportions, finely drawn eyes with highlights, soft luminous skin with natural warm undertones, individually rendered hair strands with sheen, detailed silk texture, folds and embroidery; rich vivid yet harmonious colours (jade, crimson, soft pink, indigo, plum, fresh spring greens, clear blue sky); bright natural daylight with soft rim light and dimensional light and shadow; clean neutral white balance; crisp focus on the faces, gentle depth of field; a polished, finished, detailed background.\n\nThe attached images are QUALITY references only — for the level of face drawing, eye detail, skin, hair and lighting craft. Do NOT copy their people, poses, clothing, scenes or their warm amber / sepia colour cast; draw these new characters in this new scene.\n\nNEVER: sepia, yellow or brown tint, beige haze, aged paper, old textbook illustration, folk painting (minhwa) or old storybook look, flat faces, simple outlines, washed-out or muddy colours, dull or grey skin, identical faces; modern clothes or buildings; Chinese or Japanese costume; text, letters, borders, frames, watermark or signature.",
+  "references": [
+   "webtoon_historical",
+   "korean_drama_illustration"
+  ]
+ }
+}
