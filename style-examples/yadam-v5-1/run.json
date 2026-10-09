@@ -1,0 +1,45 @@
+{
+  "status": "done",
+  "calls": [
+    {
+      "sent": "2026-10-09T05:29:46.629Z",
+      "status": 200,
+      "ok": true,
+      "paidCalls": 1,
+      "ms": 61889,
+      "model": "gpt-image-1+yadam-style/1"
+    }
+  ],
+  "errors": {},
+  "report": {
+    "style": "yadam-style/1",
+    "model": "gpt-image-1",
+    "size": "1536x1024",
+    "quality": "high",
+    "inputFidelity": "high",
+    "final": {
+      "width": 1536,
+      "height": 864,
+      "cutTop": 80,
+      "cutBottom": 80
+    },
+    "references": [
+      {
+        "file": "capture-2.jpg",
+        "sent": "1920x800",
+        "sha256": "292d81ebc86496d87b21d39dde43a9048326a40852381b30116dced8d8fb191f"
+      },
+      {
+        "file": "capture-1.jpg",
+        "sent": "1920x800",
+        "sha256": "c11490d07052b9e3dec0f7c39107891bdfa06ae40a43892ab63d76c4be759ac2"
+      },
+      {
+        "file": "capture-3.jpg",
+        "sent": "1920x800",
+        "sha256": "f5fe1406e07e4b9230cb9e8488458d3934bd69510a86a6e88de15590bfd58f95"
+      }
+    ],
+    "prompt": "Use the supplied reference image as the primary visual style reference. Preserve its illustration craftsmanship, facial rendering approach, line quality, skin shading, hair detail, lighting sophistication, color harmony, and overall visual polish. Change the characters, costumes, environment, and narrative action according to the new scene description. Do not copy the identities or exact composition of the reference image.\n\nMatch these traits of the reference frames exactly: Korean historical webtoon (manhwa) art; bold black ink contour lines with strong line-weight variation (thick outer contours, fine inner lines); hard-edged two-tone cel shadows with crisp shapes on faces, necks and clothing; deep value contrast; detailed eyes with dark lash lines, defined irises and catchlights; sharp defined brows, nose shadow and lips; solid glossy black hair masses with sharp strand lines and highlights; saturated deep indigo and slate-blue fabrics with ink-drawn folds; crisp, highly detailed backgrounds (stone walls, wood grain, roof tiles) at the same finish as the people; neutral, clean colour (no yellow or beige cast).\n\nScene: Joseon hanok courtyard (tiled roofs). A beautiful young woman (about 20, chignon with wooden binyeo, pale blue-grey jeogori, deep indigo chima) and a dignified older woman (about 60, silver-streaked chignon, dark plum jeogori, charcoal chima) pass a small bojagi bundle between their hands. Slightly low camera, medium shot, both faces large and clearly lit: the young woman moved, eyes wet; the older woman resolute. Joseon clothing and buildings only. Framing for a 16:9 frame: this picture will be trimmed to its central 16:9 band (the top 8% and the bottom 8% are cut off). Keep every head with its hair and hairpin, every face, every hand and the bundle well inside the middle 80% of the height, with clear space above the heads; put only sky, roof edges or ground in the top and bottom edges.\n\nNew people only, never the reference characters. One single illustration: no photograph or photorealism; no text, letters, subtitles, captions, borders, frames, panels, speech bubbles, logos or watermark."
+  }
+}
