@@ -1,0 +1,57 @@
+{
+  "request": {
+    "model": "gpt-image-1",
+    "endpoint": "/v1/images/edits",
+    "size": "1536x1024 -> central 1536x864",
+    "quality": "high",
+    "input_fidelity": "high",
+    "images": "the ONE reference only",
+    "prompt": "참고 이미지의 그림체로 아래 장면을 새로 그려 주세요. 참고 이미지의 인물이나 구도는 따라 하지 마세요.\n\n장면: 조선시대 낡은 한옥 앞마당. 젊은 여인이 작은 보자기를 할머니에게 건넵니다. 할머니는 놀라움과 고마움이 섞인 표정으로 받아 듭니다.\n\n16:9, 글자 없음."
+  },
+  "calls": [
+    {
+      "ref": 1,
+      "sent": "2026-10-09T06:20:14.037Z",
+      "status": 200,
+      "ok": true,
+      "paidCalls": 1,
+      "ms": 56627
+    },
+    {
+      "ref": 2,
+      "sent": "2026-10-09T06:21:11.441Z",
+      "status": 200,
+      "ok": true,
+      "paidCalls": 1,
+      "ms": 51050
+    },
+    {
+      "ref": 3,
+      "sent": "2026-10-09T06:22:02.970Z",
+      "status": 502,
+      "ok": false,
+      "paidCalls": 1,
+      "ms": 259,
+      "error": "429: {\n  \"error\": {\n    \"message\": \"You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.\",\n    \"type\": \"insufficient_quota\",\n    \"param\": null,\n    \"code\": \"credit_balance_exhausted\"\n  }\n}"
+    },
+    {
+      "ref": 4,
+      "sent": "2026-10-09T06:22:03.564Z",
+      "status": 502,
+      "ok": false,
+      "paidCalls": 1,
+      "ms": 282,
+      "error": "429: {\n  \"error\": {\n    \"message\": \"You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.\",\n    \"type\": \"insufficient_quota\",\n    \"param\": null,\n    \"code\": \"credit_balance_exhausted\"\n  }\n}"
+    },
+    {
+      "ref": 5,
+      "sent": "2026-10-09T06:22:04.187Z",
+      "status": 502,
+      "ok": false,
+      "paidCalls": 1,
+      "ms": 62,
+      "error": "429: {\n  \"error\": {\n    \"message\": \"You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.\",\n    \"type\": \"insufficient_quota\",\n    \"param\": null,\n    \"code\": \"credit_balance_exhausted\"\n  }\n}"
+    }
+  ],
+  "paidCallsTotal": 5
+}
