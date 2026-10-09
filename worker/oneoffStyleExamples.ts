@@ -13,7 +13,7 @@ import { runOk } from '../lib/media/ffmpeg.js'
 import { yasaScenePrompt } from '../lib/generative/yasaLongform.js'
 import { imageStyleFeatures } from '../lib/generative/styleApproval.js'
 import { EXAMPLE_SCENE, EXAMPLE_SCRIPT, YADAM_STYLE_CANDIDATES } from '../lib/generative/yadamStyleCandidates.js'
-import { V4_CROP, V4_PROMPT, V4_REFERENCES, V4_REFERENCE_DIR, buildV4Request } from '../lib/generative/yadamReferenceStyle.js'
+import { V4_CROP, V4_PROMPT, V4_REFERENCES, V4_REFERENCE_DIR, buildV4Request, toSixteenNine } from '../lib/generative/yadamReferenceStyle.js'
 
 const LEGACY_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'style-examples', 'yadam')
 const LINK_MS = 7 * 24 * 3600_000
@@ -86,7 +86,7 @@ async function runV4(o: { blobs: JobBlobStore; log: (line: string) => void; work
   const files: Record<string, string> = {}, errors: Record<string, string> = {}
   try {
     const req = await buildV4Request()
-    let made: Buffer | null = null
+    let made: Buffer | null = null, wide: Awaited<ReturnType<typeof toSixteenNine>> | null = null
     try { // one call, no retry
       const r = await f(req.endpoint, { method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: req.form })
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`)
@@ -95,15 +95,18 @@ async function runV4(o: { blobs: JobBlobStore; log: (line: string) => void; work
       made = Buffer.from(b64, 'base64')
     } catch (e: any) { errors.v4 = String(e?.message || e).replace(/sk-[A-Za-z0-9_-]+/g, '[key]'); o.log(`[style-examples] v4 failed (not retried): ${errors.v4}`) }
     if (made) {
-      const p = join(work, 'v4.jpg'); await writeFile(p, made)
-      files['v4-representative'] = `${base}/v4-representative.jpg`; await o.blobs.putBytes(files['v4-representative'], made, 'image/jpeg')
+      // the model's 3:2 picture is kept; the representative is its exact central 16:9 band
+      files['v4-raw-3x2'] = `${base}/v4-raw-3x2.jpg`; await o.blobs.putBytes(files['v4-raw-3x2'], made, 'image/jpeg')
+      wide = await toSixteenNine(made)
+      const p = join(work, 'v4.jpg'); await writeFile(p, wide.bytes)
+      files['v4-representative'] = `${base}/v4-representative.jpg`; await o.blobs.putBytes(files['v4-representative'], wide.bytes, 'image/jpeg')
       // comparison: V4 (top, large) above the 3 reference frames as they were sent
       const refs = V4_REFERENCES.map((r) => join(V4_REFERENCE_DIR, r.file)), sheet = join(work, 'compare.jpg')
       await runOk(['-y', '-i', p, ...refs.flatMap((x) => ['-i', x]), '-filter_complex',
-        `[0:v]scale=1920:1280[a];${refs.map((_, i) => `[${i + 1}:v]${V4_CROP},scale=640:-2,pad=640:268:0:(oh-ih)/2[r${i}]`).join(';')};[r0][r1][r2]hstack=3[b];[a][b]vstack[v]`, '-map', '[v]', '-frames:v', '1', '-q:v', '3', sheet])
+        `[0:v]scale=1920:1080[a];${refs.map((_, i) => `[${i + 1}:v]${V4_CROP},scale=640:-2,pad=640:268:0:(oh-ih)/2[r${i}]`).join(';')};[r0][r1][r2]hstack=3[b];[a][b]vstack[v]`, '-map', '[v]', '-frames:v', '1', '-q:v', '3', sheet])
       files['compare-v4-top-references-below'] = `${base}/compare.jpg`; await o.blobs.putBytes(files['compare-v4-top-references-below'], await readFile(sheet), 'image/jpeg')
     }
-    await o.blobs.putJson(recRef, { schema: 'style-examples-run/1', status: 'done', finishedAt: new Date().toISOString(), order: made ? ['v4-representative'] : [], files, errors, report: { model: req.model, size: req.size, quality: req.quality, endpoint: req.endpoint, inputs: req.inputs, prompt: V4_PROMPT } }, { overwrite: true })
+    await o.blobs.putJson(recRef, { schema: 'style-examples-run/1', status: 'done', finishedAt: new Date().toISOString(), order: made ? ['v4-representative'] : [], files, errors, report: { model: req.model, size: req.size, final: wide ? { width: wide.width, height: wide.height, cutTop: wide.cutTop, cutBottom: wide.cutBottom } : null, quality: req.quality, endpoint: req.endpoint, inputs: req.inputs, prompt: V4_PROMPT } }, { overwrite: true })
     for (const [k, ref] of Object.entries(files)) { const s = await o.blobs.presign?.(ref, LINK_MS).catch(() => null); o.log(`[style-examples] ${k}: ${s?.url ?? ref}`) }
     o.log(`[style-examples] run ${runId} done (${made ? 1 : 0}/1 picture). Remove STYLE_EXAMPLES_RUN from the worker variables; this run id never draws again.`)
     return 'done'

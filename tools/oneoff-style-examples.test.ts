@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { runOk } from '../lib/media/ffmpeg.js'
+import { runOk, probe } from '../lib/media/ffmpeg.js'
 import { createMemoryBlobStore } from '../lib/jobs/blobs.js'
 import { runStyleExamplesOnce } from '../worker/oneoffStyleExamples.js'
 import { YADAM_AUTO_STYLE } from '../lib/generative/creativeProfile.js'
@@ -39,7 +39,23 @@ test('one-off examples: off without the variable; 5 single calls; a second start
 test('V4 request as sent: the 3 user captures (bars, subtitles and AI label removed, aspect kept) as real images, primary-style contract, no conflicting style words; one call; v3 retired; production untouched', async () => {
   const { buildV4Request, V4_PROMPT, V4_CONTRACT } = await import('../lib/generative/yadamReferenceStyle.js')
   const req = await buildV4Request()
-  assert.deepEqual([req.endpoint, req.model, req.size, req.quality], ['https://api.openai.com/v1/images/edits', 'gpt-image-1', '1536x1024', 'high'])
+  assert.deepEqual([req.endpoint, req.model, req.size, req.quality], ['https://api.openai.com/v1/images/edits', 'gpt-image-1', '1536x1024', 'high'], 'the model has no 16:9 size: 3:2 is asked for')
+  const { toSixteenNine, V4_FRAMING } = await import('../lib/generative/yadamReferenceStyle.js')
+  assert.ok(String(req.form.get('prompt')).endsWith(V4_FRAMING) && /central 16:9 band/.test(V4_FRAMING) && /middle 80% of the height/.test(V4_FRAMING))
+  // 16:9: exactly the central band of the 3:2 picture — the 80 px edges go, everything in the safe band stays, unscaled
+  {
+    const t = await mkdtemp(join(tmpdir(), 'v4-169-')), src = join(t, 'src.png')
+    await runOk(['-y', '-f', 'lavfi', '-i', 'color=c=gray:s=1536x1024', '-vf', 'drawbox=x=0:y=0:w=1536:h=80:color=red:t=fill,drawbox=x=0:y=944:w=1536:h=80:color=blue:t=fill,drawbox=x=300:y=82:w=120:h=120:color=lime:t=fill,drawbox=x=1100:y=820:w=120:h=120:color=lime:t=fill', '-frames:v', '1', src])
+    const jpg = join(t, 'src.jpg'); await runOk(['-y', '-i', src, '-q:v', '1', jpg])
+    const w = await toSixteenNine(await readFile(jpg))
+    assert.deepEqual([w.width, w.height, w.cutTop, w.cutBottom], [1536, 864, 80, 80]); assert.equal((w.width / w.height).toFixed(4), (16 / 9).toFixed(4))
+    const f = join(t, 'out.jpg'); await (await import('node:fs/promises')).writeFile(f, w.bytes)
+    const px = async (x: number, y: number) => [...((await runOk(['-i', f, '-vf', `crop=1:1:${x}:${y},format=rgb24`, '-frames:v', '1', '-f', 'rawvideo', '-'])).stdout as Buffer)]
+    const isRed = ([r, g, b]: number[]) => r > 180 && g < 80 && b < 80, isBlue = ([r, g, b]: number[]) => b > 180 && r < 80 && g < 80, isLime = ([r, g, b]: number[]) => g > 180 && r < 90 && b < 90
+    for (const x of [10, 700, 1500]) { assert.ok(!isRed(await px(x, 1)), 'top edge cut'); assert.ok(!isBlue(await px(x, 862)), 'bottom edge cut') }
+    assert.ok(isLime(await px(360, 2 + 60)), 'a head right at the top of the safe band is kept, not scaled'); assert.ok(isLime(await px(1160, 740 + 60)), 'a hand near the bottom of the band is kept')
+    await assert.rejects(() => toSixteenNine(bytes1024()), /expected 1536x1024/)
+  }
   const imgs = req.form.getAll('image[]') as any[]
   assert.deepEqual(imgs.map((x) => x.name), ['capture-1.png', 'capture-2.png', 'capture-3.png'], 'three real images, in this order')
   for (const [i, x] of req.inputs.entries()) {
@@ -66,7 +82,11 @@ test('V4 request as sent: the 3 user captures (bars, subtitles and AI label remo
   assert.equal(await runStyleExamplesOnce({ env, blobs, log: () => {}, fetchImpl, workerId: 'w1' }), 'done')
   assert.equal(calls.length, 1); assert.deepEqual(calls[0].refs, ['capture-1.png', 'capture-2.png', 'capture-3.png']); assert.equal(calls[0].prompt, V4_PROMPT)
   const rec: any = await blobs.getJson('style-examples/candidates/v4-1/run.json')
-  assert.equal(rec.report.inputs.length, 3); assert.ok(await blobs.getBytes(rec.files['v4-representative'])); assert.ok(await blobs.getBytes(rec.files['compare-v4-top-references-below']))
+  assert.equal(rec.report.inputs.length, 3); assert.deepEqual(rec.report.final, { width: 1536, height: 864, cutTop: 80, cutBottom: 80 })
+  { const t = await mkdtemp(join(tmpdir(), 'v4-rec-')); for (const [k, wh] of [['v4-representative', '1536x864'], ['v4-raw-3x2', '1536x1024'], ['compare-v4-top-references-below', null]] as const) { const f = join(t, `${k}.jpg`); await (await import('node:fs/promises')).writeFile(f, await blobs.getBytes(rec.files[k])); const i = await probe(f); if (wh) assert.equal(`${i.width}x${i.height}`, wh, k) } }
+  assert.ok(await blobs.getBytes(rec.files['v4-representative'])); assert.ok(await blobs.getBytes(rec.files['compare-v4-top-references-below']))
   assert.equal(await runStyleExamplesOnce({ env, blobs, log: () => {}, fetchImpl, workerId: 'w2' }), 'already'); assert.equal(calls.length, 1)
   assert.equal(YADAM_AUTO_STYLE, 'korean_drama_illustration', 'production AUTO unchanged')
 })
+
+const bytes1024 = () => Buffer.from('not-a-picture-of-the-right-size')

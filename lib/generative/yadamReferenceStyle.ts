@@ -25,7 +25,25 @@ export const V4_PRESERVE = 'All three attached images are frames of ONE illustra
 export const V4_CHANGE = 'New people, new clothes and hairstyles, new place, new action and a new camera framing come only from the scene below — never the reference characters (no headband servant, no bound girl), never their poses or composition.'
 export const V4_CONTENT = 'Content rules (separate from style): Joseon dynasty Korea — Joseon hanbok, Joseon women\'s hairstyles (chignon with binyeo for married women), hanok architecture and Joseon household objects; no modern or Western clothing or buildings, no Chinese or Japanese costume. One single illustration, wide 16:9, no text, letters, captions, subtitles, borders, frames, panel layout, speech bubbles, logos or watermark.'
 export const V4_SCENE = 'Scene: in the courtyard of a Joseon tiled-roof hanok, a young woman (about 20, beautiful, gentle, in a pale blue-grey jeogori and indigo chima, hair in a neat chignon with a wooden binyeo) and a dignified older woman (about 60, calm and serious, silver-streaked hair in a low chignon, dark plum jeogori and charcoal chima) hand a small cloth bundle wrapped in a bojagi to each other; medium shot at eye level so both faces and emotions read clearly — the young woman moved and uncertain, the older woman quietly resolute. Two clearly different faces.'
-export const V4_PROMPT = [V4_CONTRACT, V4_PRESERVE, V4_CHANGE, V4_CONTENT, V4_SCENE].join('\n\n')
+// 16:9: gpt-image-1 draws only 1024x1024, 1536x1024 (3:2), 1024x1536 or auto — no 16:9. So the picture is drawn at
+// 1536x1024 and its central 16:9 band (1536x864: 80 px off the top and the bottom, no stretching, no resampling) is the
+// final image; the prompt keeps everything that matters inside that band, so no head, face, hand or the bundle is cut.
+export const V4_MODEL_SIZE = { w: 1536, h: 1024 } as const
+export const V4_FINAL = { w: 1536, h: 864, top: 80 } as const
+export const V4_FRAMING = 'Framing for a 16:9 frame: this picture will be trimmed to its central 16:9 band (the top 8% and the bottom 8% are cut off). Keep every head with its hair and hairpin, every face, every hand and the bundle well inside the middle 80% of the height, with clear space above the heads; put only sky, roof edges or ground in the top and bottom edges.'
+export const V4_PROMPT = [V4_CONTRACT, V4_PRESERVE, V4_CHANGE, V4_CONTENT, V4_SCENE, V4_FRAMING].join('\n\n')
+// the 3:2 picture -> the final 16:9 (exact central band; the input must be the size that was asked for)
+export async function toSixteenNine(bytes: Buffer): Promise<{ bytes: Buffer; width: number; height: number; cutTop: number; cutBottom: number }> {
+  const work = await mkdtemp(join(tmpdir(), 'v4-169-'))
+  try {
+    const src = join(work, 'in.jpg'), out = join(work, 'out.jpg'); await (await import('node:fs/promises')).writeFile(src, bytes)
+    const i = await probe(src)
+    if (i.width !== V4_MODEL_SIZE.w || i.height !== V4_MODEL_SIZE.h) throw new Error(`expected ${V4_MODEL_SIZE.w}x${V4_MODEL_SIZE.h}, got ${i.width}x${i.height}`)
+    await runOk(['-y', '-i', src, '-vf', `crop=${V4_FINAL.w}:${V4_FINAL.h}:0:${V4_FINAL.top}`, '-frames:v', '1', '-q:v', '1', out])
+    const o = await probe(out)
+    return { bytes: await readFile(out), width: Number(o.width), height: Number(o.height), cutTop: V4_FINAL.top, cutBottom: V4_MODEL_SIZE.h - V4_FINAL.h - V4_FINAL.top }
+  } finally { await rm(work, { recursive: true, force: true }) }
+}
 
 export type V4Input = { file: string; source: { width: number; height: number; bytes: number; sha256: string }; input: { width: number; height: number; bytes: number; sha256: string; format: 'png' }; role: string }
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex')
@@ -33,7 +51,7 @@ const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex')
 export async function buildV4Request(dir = V4_REFERENCE_DIR): Promise<{ form: FormData; inputs: V4Input[]; model: string; size: string; quality: string; endpoint: string }> {
   const work = await mkdtemp(join(tmpdir(), 'style-v4-'))
   try {
-    const model = 'gpt-image-1', size = '1536x1024', quality = 'high', endpoint = 'https://api.openai.com/v1/images/edits'
+    const model = 'gpt-image-1', size = `${V4_MODEL_SIZE.w}x${V4_MODEL_SIZE.h}`, quality = 'high', endpoint = 'https://api.openai.com/v1/images/edits'
     const form = new FormData()
     form.append('model', model); form.append('prompt', V4_PROMPT); form.append('size', size); form.append('quality', quality); form.append('output_format', 'jpeg'); form.append('n', '1')
     const inputs: V4Input[] = []
