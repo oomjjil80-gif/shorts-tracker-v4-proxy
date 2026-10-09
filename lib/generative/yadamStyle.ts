@@ -7,11 +7,12 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { GeneratedBinary } from './providers.js'
+import { sniffImageMime, type GeneratedBinary } from './providers.js'
+import { GEMINI_IMAGE_MODEL, geminiImage, type GeminiImageRequest, type GeminiReference } from './geminiImage.js'
 
 export const YADAM_STYLE_ID = 'yadam_reference' as const
 export const YADAM_STYLE_LABEL = '야담 기준 그림체'
-export const YADAM_STYLE_VERSION = 'yadam-style/1' // part of every 야담 image cache key
+export const YADAM_STYLE_VERSION = 'yadam-style/2-gemini' // part of every 야담 image cache key (the drawing model is part of the style)
 export const YADAM_REFERENCE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'style-reference', 'yadam')
 // face close-up first (with high input fidelity the first image keeps the richest detail), then full figures, then background
 export const YADAM_REFERENCES = [
@@ -50,29 +51,21 @@ export function yadamReferences(dir = YADAM_REFERENCE_DIR): Promise<YadamReferen
   return p
 }
 
-// gpt-image-1 image edit: the 3 frames (+ the approved thumbnail picture after approval, as the last image: the same
-// people and place across the video), high input fidelity. quality: high for the thumbnail / representative, medium
-// for the many scene pictures.
-export const YADAM_IMAGE_MODEL = 'gpt-image-1'
-export const YADAM_IMAGE_SIZE = '1536x1024'
-export async function yadamImageForm(o: { scene: string; quality: 'high' | 'medium'; approved?: Buffer | null; dir?: string }): Promise<FormData> {
-  const form = new FormData()
-  form.append('model', YADAM_IMAGE_MODEL); form.append('prompt', yadamImagePrompt(o.scene)); form.append('size', YADAM_IMAGE_SIZE); form.append('quality', o.quality)
-  form.append('input_fidelity', 'high'); form.append('output_format', 'jpeg'); form.append('n', '1')
-  for (const r of await yadamReferences(o.dir)) form.append('image[]', new Blob([new Uint8Array(r.bytes)], { type: r.mime }), r.name)
-  if (o.approved) form.append('image[]', new Blob([new Uint8Array(o.approved)], { type: 'image/jpeg' }), 'approved-thumbnail.jpg')
-  return form
+// Gemini (geminiImage.ts): the 3 frames as the first images (+ the approved thumbnail picture after approval, as the last
+// image: the same people and place across the video), native 16:9. Text = the contract around the scene.
+export const YADAM_IMAGE_MODEL = GEMINI_IMAGE_MODEL
+export const YADAM_IMAGE_ASPECT = '16:9' as const
+export async function yadamImageRequest(o: { scene: string; approved?: Buffer | null; dir?: string }): Promise<GeminiImageRequest> {
+  const refs: GeminiReference[] = (await yadamReferences(o.dir)).map((r) => ({ bytes: r.bytes, mime: r.mime }))
+  if (o.approved) refs.push({ bytes: o.approved, mime: sniffImageMime(o.approved) })
+  return { prompt: yadamImagePrompt(o.scene), aspectRatio: YADAM_IMAGE_ASPECT, imageSize: '1K', references: refs }
 }
-export type YadamDraw = (scene: string, apiKey: string, o?: { quality?: 'high' | 'medium'; approved?: Buffer | null }) => Promise<GeneratedBinary>
-export const openAiYadamImage = (f: typeof fetch = fetch): YadamDraw => async (scene, apiKey, o = {}) => {
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured')
-  const r = await f('https://api.openai.com/v1/images/edits', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: await yadamImageForm({ scene, quality: o.quality ?? 'medium', approved: o.approved }) })
-  if (!r.ok) throw new Error(`야담 image failed ${r.status}: ${(await r.text()).slice(0, 300)}`)
-  const b64 = ((await r.json()) as any)?.data?.[0]?.b64_json
-  if (!b64) throw new Error('야담 image returned no b64_json')
-  return { bytes: Buffer.from(b64, 'base64'), contentType: 'image/jpeg', provider: 'openai', model: `${YADAM_IMAGE_MODEL}+${YADAM_STYLE_VERSION}` }
+export type YadamDraw = (scene: string, apiKey: string, o?: { approved?: Buffer | null }) => Promise<GeneratedBinary>
+export const geminiYadamImage = (f: typeof fetch = fetch): YadamDraw => async (scene, apiKey, o = {}) => {
+  const made = await geminiImage(await yadamImageRequest({ scene, approved: o.approved }), apiKey, f)
+  return { ...made, model: `${made.model}+${YADAM_STYLE_VERSION}` }
 }
-// 야담 쇼츠 CUT images (/api/image, another image model): the same frames as reference blocks + the same contract text
+// 야담 쇼츠 CUT images (/api/image, the same Gemini model): the same frames as reference blocks + the same contract text
 export async function yadamReferenceBlocks(): Promise<Array<{ type: 'image'; data: string; mime_type: string }>> {
   return (await yadamReferences()).map((r) => ({ type: 'image', data: r.bytes.toString('base64'), mime_type: r.mime }))
 }

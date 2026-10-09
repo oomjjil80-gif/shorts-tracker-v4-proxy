@@ -99,12 +99,12 @@ test('WISDOM LONGFORM -> 3 recommended Shorts -> user keeps 2 -> two Wisdom Shor
   const executors = stageExecutorsFor(createModuleRegistry({
     analyze: analyzeExecutor, sourcePlan: { stage: 'PLAN', estimateUsd: () => 0, inputHash: () => 'x', run: async () => { throw new Error('no source shorts here') } } as any,
     wisdomPlan: createGenerativePlanExecutor({ apiKey: 'k', plan: wisdomPlan(seenBriefs) as any }),
-    wisdomAsset: createGenerativeAssetExecutor({ apiKey: 'k', image: async (p: string) => { imagePrompts.push(p); return { bytes: await portrait(imagePrompts.length), contentType: 'image/jpeg', provider: 'standin', model: 'portrait' } }, tts: async (t: string) => ({ bytes: await mp3(Math.max(2.5, [...t].length / 7)), contentType: 'audio/mpeg', provider: 'standin', model: 'tone' }) } as any),
+    wisdomAsset: createGenerativeAssetExecutor({apiKey:'k',imageKey:'gk', image: async (p: string) => { imagePrompts.push(p); return { bytes: await portrait(imagePrompts.length), contentType: 'image/jpeg', provider: 'standin', model: 'portrait' } }, tts: async (t: string) => ({ bytes: await mp3(Math.max(2.5, [...t].length / 7)), contentType: 'audio/mpeg', provider: 'standin', model: 'tone' }) } as any),
     compile: compileExecutor, render: renderExecutor, autoQc: createAutoQcExecutor(null, async () => null),
     decision: decisionExecutor, final: finalExecutor,
-    shortsPackage: withWisdomThumbnail(packageExecutor, { apiKey: 'k', kit: async (i: any) => { calls.kit = (calls.kit || 0) + 1; return KIT(i) as any }, image: async () => ({ bytes: await portrait(99), contentType: 'image/jpeg', provider: 'standin', model: 'thumb' }) as any }),
+    shortsPackage: withWisdomThumbnail(packageExecutor, { apiKey: 'k', imageKey: 'gk', kit: async (i: any) => { calls.kit = (calls.kit || 0) + 1; return KIT(i) as any }, image: async () => ({ bytes: await portrait(99), contentType: 'image/jpeg', provider: 'standin', model: 'thumb' }) as any }),
     longformPlan: createLongformPlanExecutor({ apiKey: 'k', planner: planner(calls) as any, research: research(calls) as any, derive: derive as any, log: () => {} }),
-    longformAsset: createLongformAssetExecutor({ apiKey: 'k', image: async () => { throw new Error('the longform picture is not needed in this test') }, tts: async () => { throw new Error('no longform voice in this test') } } as any),
+    longformAsset: createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async () => { throw new Error('the longform picture is not needed in this test') }, tts: async () => { throw new Error('no longform voice in this test') } } as any),
     longformRender: longformRenderExecutor, longformPackage: longformPackageExecutor
   }))
   const resolveSourceAsset = async (id: string) => { const g: any = await blobs.getJson(`generative-sources/${id}.json`); if (!g) throw Object.assign(new Error('not ready'), { code: 'SOURCE_ASSET_NOT_FOUND' }); return g }

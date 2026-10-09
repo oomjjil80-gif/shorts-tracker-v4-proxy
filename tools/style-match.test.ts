@@ -38,7 +38,7 @@ test('colour + brightness alone never pass; a different art style of the same sc
     if (a === b) continue
     let judgeCalls = 0
     const record: any = { schema: 'style-approval/1', status: 'approved', attempts: [] }
-    const x = await representativeCheck({ jobId: `j-${a}-${b}`, blobs, record, reference: { bytes: pic[a], sha: 's', features: feat[a], text: styleFeatureText(feat[a]), thumbnailRef: 't' }, prompt: 'p', sceneId: 's1', apiKey: 'k', tries: 1,
+    const x = await representativeCheck({ jobId: `j-${a}-${b}`, blobs, record, reference: { bytes: pic[a], sha: 's', features: feat[a], text: styleFeatureText(feat[a]), thumbnailRef: 't' }, prompt: 'p', sceneId: 's1', apiKey: 'k', imageKey: 'gk', tries: 1,
       drawRef: async () => ({ bytes: pic[b], contentType: 'image/jpeg', provider: 'fixture', model: 'real' }) as any,
       judge: async () => { judgeCalls++; return { same: false, score: 20, differences: ['different medium'] } } })
     assert.equal(x, null, `${b} must not pass as ${a}`); assert.equal(record.representative.status, 'mismatch')
@@ -47,22 +47,21 @@ test('colour + brightness alone never pass; a different art style of the same sc
   // the same picture: a pass needs the judge's yes (no judge / a low score = never a pass)
   for (const [judge, want] of [[undefined, false], [async () => ({ same: true, score: 60, differences: [] }), false], [async () => ({ same: true, score: 90, differences: [] }), true]] as const) {
     const record: any = { schema: 'style-approval/1', status: 'approved', attempts: [] }
-    const x = await representativeCheck({ jobId: 'j-same', blobs, record, reference: { bytes: pic.webtoon_historical, sha: 's', features: feat.webtoon_historical, text: '', thumbnailRef: 't' }, prompt: 'p', sceneId: 's1', apiKey: 'k', tries: 1, judge: judge as any,
+    const x = await representativeCheck({ jobId: 'j-same', blobs, record, reference: { bytes: pic.webtoon_historical, sha: 's', features: feat.webtoon_historical, text: '', thumbnailRef: 't' }, prompt: 'p', sceneId: 's1', apiKey: 'k', imageKey: 'gk', tries: 1, judge: judge as any,
       drawRef: async () => ({ bytes: pic.webtoon_historical, contentType: 'image/jpeg', provider: 'fixture', model: 'real' }) as any })
     assert.equal(!!x, want)
   }
 })
 
-test('style-locked picture: gpt-image-1-mini by default with the approved picture attached; falls back to gpt-image-1 only when the model cannot take a reference', async () => {
-  const { openAiImageWithReference } = await import('../lib/generative/providers.js')
-  const seen: string[] = [], ok = (m: string) => new Response(JSON.stringify({ data: [{ b64_json: Buffer.from(m).toString('base64') }] }), { status: 200 })
+test('style-locked picture: Gemini with the approved picture attached as the one reference image (16:9); a quota stop is never retried', async () => {
+  const { geminiImageWithReference } = await import('../lib/generative/providers.js')
+  const seen: any[] = [], ok = () => new Response(JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'image', data: Buffer.from('x').toString('base64'), mime_type: 'image/png' }] }] }), { status: 200 })
   const ref = Buffer.from('approved-picture')
-  const f1: any = async (url: string, init: any) => { const fd = init.body as FormData; seen.push(`${url}|${fd.get('model')}|${(fd.get('image[]') as Blob)?.size}`); return ok('x') }
-  const a = await openAiImageWithReference('p', ref, 'k', f1)
-  assert.deepEqual(seen, [`https://api.openai.com/v1/images/edits|gpt-image-1-mini|${ref.length}`]); assert.equal(a.model, 'gpt-image-1-mini')
-  seen.length = 0
-  const f2: any = async (_u: string, init: any) => { const m = (init.body as FormData).get('model'); seen.push(String(m)); return m === 'gpt-image-1-mini' ? new Response('{"error":{"message":"model does not support image edits"}}', { status: 400 }) : ok('y') }
-  assert.equal((await openAiImageWithReference('p', ref, 'k', f2)).model, 'gpt-image-1'); assert.deepEqual(seen, ['gpt-image-1-mini', 'gpt-image-1'])
-  const f3: any = async () => new Response('{"error":{"message":"Billing hard limit has been reached"}}', { status: 400 })
-  await assert.rejects(openAiImageWithReference('p', ref, 'k', f3), /400/) // billing is never retried on a pricier model
+  const f1: any = async (url: string, init: any) => { seen.push({ url, body: JSON.parse(init.body) }); return ok() }
+  const a = await geminiImageWithReference('p', ref, 'k', f1)
+  assert.equal(seen.length, 1); assert.match(seen[0].url, /generativelanguage\.googleapis\.com\/v1beta\/interactions$/)
+  assert.deepEqual(seen[0].body.input.slice(1).map((x: any) => x.data), [ref.toString('base64')]); assert.equal(seen[0].body.response_format[0].aspect_ratio, '16:9'); assert.equal(a.model, 'gemini-3.1-flash-image')
+  let n = 0
+  const f3: any = async () => { n++; return new Response('{"error":{"status":"RESOURCE_EXHAUSTED","message":"quota"}}', { status: 429 }) }
+  await assert.rejects(geminiImageWithReference('p', ref, 'k', f3), (e: any) => e.stop === true); assert.equal(n, 1)
 })

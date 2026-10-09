@@ -149,7 +149,7 @@ test('YADAM 45-minute job: job_create -> PLAN (DNA, 8 acts, cold open) -> ASSET 
   const calls: Record<string, any[]> = {}, prompts: string[] = [], voices: any[] = []
   const executors = withLongform([], [
     createLongformPlanExecutor({ apiKey: 'k', research: async () => { throw new Error('a yadam story is not researched') }, log: () => {}, planner: fakePlanner(calls) as any }),
-    createLongformAssetExecutor({ apiKey: 'k', image: async () => { throw new Error('a 야담 picture never bypasses the style contract') }, yadam: async (p: string) => { prompts.push(p); return scenePicture(d, prompts.length) }, tts: async (_t: string, _k: string, v: any) => { voices.push(v); return shortTts() } } as any),
+    createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async () => { throw new Error('a 야담 picture never bypasses the style contract') }, yadam: async (p: string) => { prompts.push(p); return scenePicture(d, prompts.length) }, tts: async (_t: string, _k: string, v: any) => { voices.push(v); return shortTts() } } as any),
     longformRenderExecutor, longformPackageExecutor
   ])
   let record: any = null
@@ -212,7 +212,7 @@ test('YADAM 45-minute job: job_create -> PLAN (DNA, 8 acts, cold open) -> ASSET 
   assert.ok(argv.includes('1+0.16*t') && argv.includes('1+0.06*t') === false && /scale=2380:1340/.test(argv), 'cold beats: stronger push-in; story scenes keep the gentle motion')
   // an ASSET retry pays for nothing (every picture and sentence is cached)
   prompts.length = 0; voices.length = 0
-  await createLongformAssetExecutor({ apiKey: 'k', image: async () => { throw new Error('a 야담 picture never bypasses the style contract') }, yadam: async (p: string) => { prompts.push(p); return scenePicture(d, 99) }, tts: async (_t: string, _k: string, v: any) => { voices.push(v); return shortTts() } } as any).run({ job: record, blobs, previous: async (st: string) => ok(st), signal: new AbortController().signal } as any)
+  await createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async () => { throw new Error('a 야담 picture never bypasses the style contract') }, yadam: async (p: string) => { prompts.push(p); return scenePicture(d, 99) }, tts: async (_t: string, _k: string, v: any) => { voices.push(v); return shortTts() } } as any).run({ job: record, blobs, previous: async (st: string) => ok(st), signal: new AbortController().signal } as any)
   assert.deepEqual([prompts.length, voices.length], [0, 0])
 })
 
@@ -298,7 +298,7 @@ test('YADAM quality: cold open from the middle (never the first 10% / the reveal
   const calls: Record<string, any[]> = {}, prompts: string[] = [], ttsTexts: string[] = [], voiceIds: string[] = []
   let seen: any = null
   const planner: any = fakePlanner(calls, { coldOpen: (i: any) => { seen = i; return { sentences: COLD.map(([scene, s]) => ({ scene, say: s, show: ['썩은 메주', '왜'], accent: '썩은 메주', color: 'red' })) } } })
-  const tick = (pl: any) => runOnce({ store, blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: pl }), createLongformAssetExecutor({ apiKey: 'k', image: async () => { throw new Error('a 야담 picture never bypasses the style contract') }, yadam: async (p: string) => { prompts.push(p); return scenePicture(d, prompts.length) }, tts: async (t: string, _k: string, v: any) => { ttsTexts.push(t); voiceIds.push(v.id); return shortTts() } } as any)]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
+  const tick = (pl: any) => runOnce({ store, blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', log: () => {}, planner: pl }), createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async () => { throw new Error('a 야담 picture never bypasses the style contract') }, yadam: async (p: string) => { prompts.push(p); return scenePicture(d, prompts.length) }, tts: async (t: string, _k: string, v: any) => { ttsTexts.push(t); voiceIds.push(v.id); return shortTts() } } as any)]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
   await tick(planner); await tick(planner) // source PLAN + ASSET
   const sourceRuns = await store.listStageRuns(sourceId), splan: any = sourceRuns.find((r: any) => r.stage === 'PLAN' && r.status === 'SUCCEEDED')
   const script: any = await blobs.getJson(splan.result.scriptRef)
@@ -476,7 +476,7 @@ test('THUMBNAIL FIRST + STYLE LOCK: one thumbnail before approval, regenerate on
   const calls = { image: 0, thumb: 0, ref: 0, tts: 0 }, judged: number[] = [], refSeen: Buffer[] = [], refPrompts: string[] = [], thumbPrompts: string[] = []
   let refMode: 'off' | 'same' = 'off'
   const off = await (async () => { const f = join(d, 'off.jpg'); await runOk(['-y', '-f', 'lavfi', '-i', 'color=c=0x0a3d0a:s=1536x1024', '-frames:v', '1', '-q:v', '3', f]); return { bytes: await readFile(f), contentType: 'image/jpeg', provider: 'standin', model: 'off-style' } })()
-  const asset = createLongformAssetExecutor({ apiKey: 'k',
+  const asset = createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk',
     // 야담: every picture goes through the ONE style contract drawer; the plain image / reference drawers must never be used
     image: async () => { calls.image++; throw new Error('a 야담 picture never bypasses the style contract') },
     imageRef: async () => { calls.image++; throw new Error('a 야담 picture never bypasses the style contract') },

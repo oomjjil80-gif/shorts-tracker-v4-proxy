@@ -6,7 +6,7 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runOk, probe } from '../../lib/media/ffmpeg.js'
-import { openAiWisdomImage, openAiTts } from '../../lib/generative/providers.js'
+import { geminiWisdomImage, openAiTts } from '../../lib/generative/providers.js'
 import { openAiWisdomPlan, applyVisualBible, styledVisualBible } from '../../lib/generative/planner.js'
 import { briefVoice, creativeStyleOverride } from '../../lib/generative/creativeProfile.js'
 import { ttsCacheIdentity } from '../../lib/generative/voiceProfile.js'
@@ -100,8 +100,10 @@ export const generativePlanExecutor=createGenerativePlanExecutor()
 
 // Feature modules inside this stage: IMAGE (deps.image) and TTS (deps.tts), both needed to compose the beats, and
 // CAPTION (the timed caption events). A feature the profile does not select is never called.
-export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeof openAiWisdomImage; tts?:typeof openAiTts; features?:FeatureResolver}={}):StageExecutor {
- const image=deps.image??openAiWisdomImage, tts=deps.tts??openAiTts, apiKey=deps.apiKey??process.env.OPENAI_API_KEY??''
+export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:string; image?:typeof geminiWisdomImage; tts?:typeof openAiTts; features?:FeatureResolver}={}):StageExecutor {
+ const image=deps.image??geminiWisdomImage, tts=deps.tts??openAiTts, apiKey=deps.apiKey??process.env.OPENAI_API_KEY??''
+ // pictures: Gemini with its own key; narration stays on OpenAI
+ const imageKey=deps.imageKey??process.env.GEMINI_API_KEY??''
  return {
  stage:'ASSET', estimateUsd:()=>0.75,
  inputHash:(job)=>sha256(`gen-asset|${job.id}|${job.planRev}|wisdom/2`),
@@ -109,6 +111,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
   if(job.profile!=='wisdom')throw new StageError('PROFILE_UNSUPPORTED','generative ASSET only handles wisdom')
   const features=(deps.features??profileFeatures)(job); needFeatures(features,['IMAGE','TTS'],'Wisdom ASSET')
   if(!apiKey)throw new StageError('PROVIDER_DOWN','OPENAI_API_KEY is not configured',true)
+  if(!imageKey)throw new StageError('PROVIDER_DOWN','GEMINI_API_KEY is not configured (every picture is drawn by Gemini)',true)
   const p=await previous('PLAN'); const scriptRef=(p?.result as any)?.scriptRef; if(!scriptRef)throw new StageError('SCRIPT_MISSING','ASSET requires PLAN script')
   const planned:any=await blobs.getJson(scriptRef); if(!planned||planned.schema!=='wisdom-script/1')throw new StageError('SCRIPT_INVALID','wisdom script missing')
   const prior=await previous('ASSET')
@@ -149,7 +152,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    if(signal.aborted)throw new Error('aborted')
    let {im,au}=cached[i]; const ik=sha256('image-v1|'+b.imagePrompt), ak=sha256(ttsCacheIdentity(voice,b.narration))
    const imageCacheHit=!!im, ttsCacheHit=!!au
-   if(im)reused++;else{im=await image(b.imagePrompt,apiKey);generated++}
+   if(im)reused++;else{im=await image(b.imagePrompt,imageKey);generated++}
    if(au)reused++;else{au=await tts(b.narration,apiKey,voice);generated++}
    const ih=sha256(im.bytes), ah=sha256(au.bytes)
    const ip=`generative-assets/images/${ih}.jpg`, ap=`generative-assets/audio/${ah}.mp3`
@@ -217,7 +220,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; image?:typeo
    await blobs.putJson(pointer,source,{overwrite:true})
    const current:any=await blobs.getJson(pointer)
    if(current?.sha256!==vh||current?.blobPath!==blobPath)throw new StageError('SOURCE_POINTER_STALE',`${pointer} still points at ${String(current?.sha256||'nothing').slice(0,12)}, not the new source ${vh.slice(0,12)}`,true)
-   return {outputRef:timedStored.path,outputHash:timedStored.sha256,result:{assetSpecRef:timedStored.path,timedPlanRef:timedPlanStored.path,namedThinkerAnchorBeatId:anchoredBeatId,geometryReceipt,timedTotalSeconds:timedTotal,items:items.length,ready:true,bytes,generated,reused,source},provider:'openai',model:'gpt-image-1-mini+gpt-4o-mini-tts'}
+   return {outputRef:timedStored.path,outputHash:timedStored.sha256,result:{assetSpecRef:timedStored.path,timedPlanRef:timedPlanStored.path,namedThinkerAnchorBeatId:anchoredBeatId,geometryReceipt,timedTotalSeconds:timedTotal,items:items.length,ready:true,bytes,generated,reused,source},provider:'gemini+openai',model:'gemini-3.1-flash-image+gpt-4o-mini-tts'}
   }finally{await rm(work,{recursive:true,force:true})}
  }}
 }

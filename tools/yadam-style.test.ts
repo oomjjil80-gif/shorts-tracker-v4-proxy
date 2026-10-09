@@ -6,7 +6,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runOk } from '../lib/media/ffmpeg.js'
-import { YADAM_REFERENCES, YADAM_REFERENCE_CROP, YADAM_REFERENCE_DIR, YADAM_STYLE_CONTRACT, YADAM_STYLE_ID, YADAM_STYLE_TRAITS, openAiYadamImage, yadamImageForm, yadamImagePrompt, yadamReferences } from '../lib/generative/yadamStyle.js'
+import { YADAM_REFERENCES, YADAM_REFERENCE_CROP, YADAM_REFERENCE_DIR, YADAM_STYLE_CONTRACT, YADAM_STYLE_ID, YADAM_STYLE_TRAITS, YADAM_STYLE_VERSION, geminiYadamImage, yadamImageRequest, yadamImagePrompt, yadamReferences } from '../lib/generative/yadamStyle.js'
 import { VISUAL_STYLE_KEYS, VISUAL_STYLE_PROFILES } from '../lib/generative/visualStyle.js'
 import { creativeStylesFor } from '../lib/generative/creativeProfile.js'
 
@@ -30,23 +30,22 @@ test('the ONE 야담 style: the 3 sent frames are exactly the user captures (bar
   await assert.rejects(() => yadamReferences(join(ROOT, 'tools')), (e: any) => e.code === 'YADAM_REFERENCE_MISSING', 'a missing frame stops; no fallback')
 })
 
-test('every 야담 image request: gpt-image-1 image edit, input_fidelity high, the 3 frames first (+ the approved picture last), the contract text around the scene', async () => {
+test('every 야담 image request: Gemini, native 16:9, the 3 frames first (+ the approved picture last), the contract text around the scene', async () => {
   const refs = await yadamReferences()
-  const form = await yadamImageForm({ scene: 'SCENE TEXT', quality: 'medium', approved: Buffer.from('approved') })
-  assert.deepEqual(['model', 'size', 'quality', 'input_fidelity', 'output_format', 'n'].map((k) => form.get(k)), ['gpt-image-1', '1536x1024', 'medium', 'high', 'jpeg', '1'])
-  const imgs = form.getAll('image[]') as any[]
-  assert.deepEqual(imgs.map((x) => x.name), ['capture-2.png', 'capture-1.png', 'capture-3.png', 'approved-thumbnail.jpg'])
-  for (const [i, r] of refs.entries()) assert.ok(Buffer.from(await imgs[i].arrayBuffer()).equals(r.bytes))
-  const p = String(form.get('prompt'))
+  const req = await yadamImageRequest({ scene: 'SCENE TEXT', approved: Buffer.from([0xff, 0xd8, 0x01]) })
+  assert.deepEqual([req.aspectRatio, req.imageSize, req.references!.length], ['16:9', '1K', 4])
+  for (const [i, r] of refs.entries()) assert.ok(req.references![i].bytes.equals(r.bytes) && req.references![i].mime === 'image/png')
+  assert.equal(req.references![3].mime, 'image/jpeg')
+  const p = req.prompt
   assert.equal(p, yadamImagePrompt('SCENE TEXT')); assert.ok(p.startsWith(YADAM_STYLE_CONTRACT) && p.includes(YADAM_STYLE_TRAITS) && p.includes('Scene: SCENE TEXT'))
   assert.doesNotMatch(p, /watercolor|storybook|painterly|folk|textbook|vintage|sepia|muted|earth brown|soft overcast/i)
-  assert.equal((await yadamImageForm({ scene: 'S', quality: 'high' })).getAll('image[]').length, 3, 'before approval: the 3 frames only')
-  // the drawer sends exactly that request
+  assert.equal((await yadamImageRequest({ scene: 'S' })).references!.length, 3, 'before approval: the 3 frames only')
+  // the drawer sends exactly that request to Gemini
   const seen: any[] = []
-  const draw = openAiYadamImage((async (url: string, init: any) => { seen.push({ url, form: init.body }); return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from('x').toString('base64') }] }), { headers: { 'content-type': 'application/json' } }) }) as any)
-  const out = await draw('S', 'k', { quality: 'high' })
-  assert.equal(seen[0].url, 'https://api.openai.com/v1/images/edits'); assert.equal(seen[0].form.get('quality'), 'high'); assert.equal(seen[0].form.getAll('image[]').length, 3)
-  assert.equal(out.model, 'gpt-image-1+yadam-style/1')
+  const draw = geminiYadamImage((async (url: string, init: any) => { seen.push({ url, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'image', data: Buffer.from('x').toString('base64'), mime_type: 'image/png' }] }] }), { headers: { 'content-type': 'application/json' } }) }) as any)
+  const out = await draw('S', 'k')
+  assert.equal(seen[0].url, 'https://generativelanguage.googleapis.com/v1beta/interactions'); assert.equal(seen[0].body.model, 'gemini-3.1-flash-image'); assert.equal(seen[0].body.input.length, 4)
+  assert.equal(out.model, `gemini-3.1-flash-image+${YADAM_STYLE_VERSION}`)
 })
 
 test('nothing of the old 야담 styles is left on a production path; the other contents\' styles are byte-for-byte the same', async () => {

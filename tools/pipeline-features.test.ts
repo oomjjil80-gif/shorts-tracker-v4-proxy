@@ -74,7 +74,7 @@ async function wisdomFixture() {
   const script: any = { schema: 'wisdom-script/1', title: '나이 들수록 말을 아끼는 이유', hook: 'h', ending: 'e', totalSeconds: 6, beats: [1, 2, 3].map((i) => ({ id: 'b' + i, narration: '나레이션 ' + i + '번 문장입니다', visualGoal: 'g', imagePrompt: 'scene ' + i, durationSec: 2 })) }
   const stored = await putAddressed(blobs, 'generative-scripts', script)
   const calls = { image: 0, tts: 0 }
-  const deps = { apiKey: 'k', image: async (p: string) => { calls.image++; return { bytes: Buffer.concat([jpg, Buffer.from(p)]), contentType: 'image/jpeg', provider: 'standin', model: 'm' } }, tts: async () => { calls.tts++; return { bytes: mp3, contentType: 'audio/mpeg', provider: 'standin', model: 'm' } } }
+  const deps = { apiKey: 'k', imageKey: 'gk', image: async (p: string) => { calls.image++; return { bytes: Buffer.concat([jpg, Buffer.from(p)]), contentType: 'image/jpeg', provider: 'standin', model: 'm' } }, tts: async () => { calls.tts++; return { bytes: mp3, contentType: 'audio/mpeg', provider: 'standin', model: 'm' } } }
   const ctx = (n: string) => ({ job: { id: 'j', profile: 'wisdom', planRev: 1, sourceAssetId: 'src_gen_' + n } as any, blobs, attempt: 1, previous: async (s: string) => (s === 'PLAN' ? { result: { scriptRef: stored.path } } : null) as any, signal: new AbortController().signal } as any)
   return { blobs, calls, deps, ctx }
 }
@@ -85,7 +85,7 @@ test('IMAGE excluded: 0 image calls (and 0 TTS) — Wisdom ASSET fails as a conf
   await assert.rejects(createGenerativeAssetExecutor({ ...deps, features: without('wisdom', 'IMAGE') }).run(ctx('a')), (e: any) => e.code === 'MODULE_CONFIG' && /IMAGE/.test(e.message) && e.retryable === false)
   assert.deepEqual(calls, { image: 0, tts: 0 }); assert.equal(blobs.binaries.size, before)
   const lfCalls = { image: 0, tts: 0 }
-  await assert.rejects(createLongformAssetExecutor({ apiKey: 'k', image: async () => { lfCalls.image++; throw new Error('no') }, tts: async () => { lfCalls.tts++; throw new Error('no') }, features: without('wisdom_longform', 'IMAGE') })
+  await assert.rejects(createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async () => { lfCalls.image++; throw new Error('no') }, tts: async () => { lfCalls.tts++; throw new Error('no') }, features: without('wisdom_longform', 'IMAGE') })
     .run({ job: { id: 'l', profile: 'wisdom_longform', planRev: 1 }, blobs, previous: async () => null, signal: new AbortController().signal } as any), (e: any) => e.code === 'MODULE_CONFIG')
   assert.deepEqual(lfCalls, { image: 0, tts: 0 })
 })
@@ -189,7 +189,7 @@ test('THUMBNAIL excluded: 0 thumbnail image/render calls, upload text still made
   // copy that would FAIL the thumbnail rules (it is the title): with THUMBNAIL off it must not trigger a repair call
   const kit = async () => { calls.kit++; return { lines: [{ text: '나이 들수록 설명하지 말아야 할 5가지', color: 'white' }] as any, figure: 'x', metadata } }
   const image = async () => { calls.image++; throw new Error('must not be called') }
-  const run = (features: any) => withWisdomThumbnail(pkgExec, { apiKey: 'k', kit, image, features }).run({ job: { id: 'j', profile: 'wisdom' }, blobs, previous: async (s: string) => (s === 'PLAN' ? { result: { scriptRef: script.path } } : null), signal: new AbortController().signal } as any)
+  const run = (features: any) => withWisdomThumbnail(pkgExec, { apiKey: 'k', imageKey: 'gk', kit, image, features }).run({ job: { id: 'j', profile: 'wisdom' }, blobs, previous: async (s: string) => (s === 'PLAN' ? { result: { scriptRef: script.path } } : null), signal: new AbortController().signal } as any)
   const r: any = await run(without('wisdom', 'THUMBNAIL'))
   assert.deepEqual(calls, { kit: 1, image: 0 })
   assert.equal(r.result.thumbnailRef, null); assert.equal(r.result.uploadReady, true); assert.equal(r.result.thumbnailError, undefined)

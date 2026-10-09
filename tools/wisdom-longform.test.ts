@@ -246,7 +246,7 @@ test('REAL RUN: job_create -> PLAN -> ASSET -> RENDER -> PACKAGE -> final 16:9 M
   const img = await standInImage(d)
   const executors = withLongform([], [
     createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, research: fakeResearch, log: () => {}, planner: sample(d) as any }),
-    createLongformAssetExecutor({ apiKey: 'k', image: async () => { imageCalls++; return { bytes: img, contentType: 'image/jpeg', provider: 'standin', model: 'still' } }, tts: async (t: string) => { ttsCalls++; return standInTts(t) } }),
+    createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async () => { imageCalls++; return { bytes: img, contentType: 'image/jpeg', provider: 'standin', model: 'still' } }, tts: async (t: string) => { ttsCalls++; return standInTts(t) } }),
     longformRenderExecutor, longformPackageExecutor
   ])
   for (let i = 0; i < 8; i++) { const r = await runOnce({ store, blobs, executors, resolveSourceAsset: async () => { throw new Error('longform has no source asset') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 }); if (!r.ran) break; assert.ok(r.ran && r.outcome === 'completed', JSON.stringify(r)) }
@@ -402,7 +402,7 @@ test('T7: the female-middle Voice Profile reaches the real TTS provider request 
   const fx = await assetFixture('female-middle'), tone = await mp3Tone(), bodies: any[] = []
   const fakeFetch: any = async (_u: string, init: any) => { bodies.push(JSON.parse(init.body)); return new Response(new Uint8Array(tone), { status: 200 }) }
   const img = await standInImage(fx.d)
-  const out: any = await createLongformAssetExecutor({ apiKey: 'k', image: async () => ({ bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' }), tts: (t, k, p) => openAiTts(t, k, p, fakeFetch) }).run(fx.ctx())
+  const out: any = await createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async () => ({ bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' }), tts: (t, k, p) => openAiTts(t, k, p, fakeFetch) }).run(fx.ctx())
   // a new job: the female-middle voice with the default tone (calm) and speed (1.0)
   const want = resolveLongformRuntimeVoice({ voiceKey: 'female-middle', tone: 'calm', speed: 1 })
   assert.equal(bodies.length, sentencesOf(SAMPLE).length)
@@ -415,7 +415,7 @@ test('T7: the female-middle Voice Profile reaches the real TTS provider request 
 test('T8 + T13: TTS cache is per Voice Profile; an ASSET retry reuses the ONE image and every narration chunk', async () => {
   const fx = await assetFixture('female-middle'), tone = await mp3Tone(), img = await standInImage(fx.d)
   const calls = { image: 0, tts: [] as string[] }
-  const deps = { apiKey: 'k', image: async () => { calls.image++; return { bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' } }, tts: async (_t: string, _k: string, p: any) => { calls.tts.push(p.id); return { bytes: Buffer.concat([tone, Buffer.from(p.id)]), contentType: 'audio/mpeg', provider: 's', model: 'm' } } }
+  const deps = { apiKey: 'k', imageKey: 'gk', image: async () => { calls.image++; return { bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' } }, tts: async (_t: string, _k: string, p: any) => { calls.tts.push(p.id); return { bytes: Buffer.concat([tone, Buffer.from(p.id)]), contentType: 'audio/mpeg', provider: 's', model: 'm' } } }
   const n = sentencesOf(SAMPLE).length
   const first: any = await createLongformAssetExecutor(deps).run(fx.ctx())
   assert.equal(calls.image, 1); assert.equal(calls.tts.length, n) // T10: exactly ONE image
@@ -461,7 +461,7 @@ test('Voice Profile choices: UI keys only (provider values live in voiceProfile.
 
 test('T11 + T12: figure right / text left kept; the card k starts exactly where narration chunk k starts (measured audio)', async () => {
   const fx = await assetFixture('female-middle'), img = await standInImage(fx.d)
-  const out: any = await createLongformAssetExecutor({ apiKey: 'k', image: async () => ({ bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' }), tts: async (t: string) => standInTts(t) }).run(fx.ctx())
+  const out: any = await createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async () => ({ bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' }), tts: async (t: string) => standInTts(t) }).run(fx.ctx())
   const m: any = await fx.blobs.getJson(out.result.assetSpecRef)
   assert.equal(m.image.mirrored, true) // the stand-in figure was on the LEFT: mirrored to the right
   assert.match(longformImagePrompt(SAMPLE), /RIGHT third of the frame \(right 35-40%\).*LEFT 60%/)
@@ -588,7 +588,7 @@ test('LOUDNESS: the narration is levelled ONCE to about -17 LUFS (true peak <= -
     const r = await runOk(['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono:d=0.25', '-f', 'lavfi', '-i', `sine=f=${200 + (n % 7) * 40}:d=${sec.toFixed(2)}`, '-filter_complex', '[0][1]concat=n=2:v=0:a=1,volume=0.03', '-c:a', 'libmp3lame', '-f', 'mp3', '-'])
     return { bytes: r.stdout, contentType: 'audio/mpeg', provider: 'standin', model: 'tone' }
   }
-  const out: any = await createLongformAssetExecutor({ apiKey: 'k', image: async () => ({ bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' }), tts: quiet as any }).run(fx.ctx())
+  const out: any = await createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async () => ({ bytes: img, contentType: 'image/jpeg', provider: 's', model: 'm' }), tts: quiet as any }).run(fx.ctx())
   const m: any = await fx.blobs.getJson(out.result.assetSpecRef)
   assert.equal(m.narration.loudness, 'loudnorm=I=-17:TP=-1.5:LRA=11')
   const file = join(fx.d, 'narration.m4a'); await (await import('node:fs/promises')).writeFile(file, await fx.blobs.getBytes(m.narration.ref))
@@ -702,7 +702,7 @@ test('SENIOR 18 + 23-25 + REAL RENDER: one picture per scene in ONE style with t
   runs.PLAN = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, log: () => {}, planner: seniorPlanner() as any }).run(ctx())
   const d = await mkdtemp(join(tmpdir(), 'senior-'))
   const prompts: string[] = [], voices: string[] = [], colors = new Map<string, number[]>()
-  const deps = { apiKey: 'k', image: async (p: string) => { prompts.push(p); const x = await scenePicture(d, p); return x }, tts: async (_t: string, _k: string, v: any) => { voices.push(v.id); return shortTts() } }
+  const deps = { apiKey: 'k', imageKey: 'gk', image: async (p: string) => { prompts.push(p); const x = await scenePicture(d, p); return x }, tts: async (_t: string, _k: string, v: any) => { voices.push(v.id); return shortTts() } }
   runs.ASSET = await createLongformAssetExecutor(deps as any).run(ctx())
   const m: any = await blobs.getJson(runs.ASSET.result.assetSpecRef)
   // 18: one picture per scene (27), not one per sentence (28)
