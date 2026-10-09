@@ -1,0 +1,18 @@
+{
+  "taskType": "job_create",
+  "profile": "yasa_longform",
+  "idempotencyKey": "yasa-lf-issue181-golden3-v1",
+  "budgetUsd": 6,
+  "input": {
+    "kind": "topic",
+    "text": "죽은 남편이 돌아온 밤 — 조선 야담. 장례를 치른 지 석 달 되는 비 오는 밤, 죽은 남편이 대문을 두드리며 돌아오는 장면으로 곧바로 시작한다(강한 초반 훅). 돌아온 남편은 얼굴도 목소리도 그대로지만, 아내만 아는 작은 습관과 기억이 하나씩 어긋난다. 그 어긋남과 시댁·마을 사람들의 수상한 침묵을 설득력 있는 미스터리와 복선으로 쌓아 가고, 후반에 예상하지 못한 반전으로 진실이 드러난다. 마지막은 부부의 정과 남은 사람의 슬픔이 가슴에 남는 감정적인 결말.",
+    "language": "ko",
+    "aspectRatio": "16:9",
+    "targetSeconds": 2700,
+    "voiceProfile": "auto",
+    "voiceTone": "calm",
+    "voiceSpeed": 1,
+    "visualStyleProfile": "golden-3",
+    "thumbnailFirst": true
+  }
+}

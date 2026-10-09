@@ -1,0 +1,56 @@
+name: Production yasa 181 (thumbnail checkpoint)
+on:
+  push:
+    branches: ['production/yasa-181']
+    paths: ['production-requests/yasa-181.json', '.github/workflows/production-yasa-181.yml']
+permissions:
+  contents: write
+concurrency: { group: production-yasa-181, cancel-in-progress: false }
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secret present (value never printed)
+        env: { SYNC_KEY: '${{ secrets.TRACKER_SYNC_KEY }}' }
+        run: |
+          if [ -z "$SYNC_KEY" ]; then echo "TRACKER_SYNC_KEY: MISSING"; exit 1; fi
+          if [ "${#SYNC_KEY}" -lt 24 ]; then echo "TRACKER_SYNC_KEY: present but shorter than 24 chars"; exit 1; fi
+          echo "TRACKER_SYNC_KEY: present (>=24 chars)"
+      - name: Create NEW job, wait for the thumbnail checkpoint (no approval here)
+        env:
+          SYNC_KEY: '${{ secrets.TRACKER_SYNC_KEY }}'
+          API: https://tracker-api-continuity-production.up.railway.app/api/story
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          H=(-H "X-Sync-Key: $SYNC_KEY" -H 'Accept: application/json')
+          code=$(curl -sS -o out/create.json -w '%{http_code}' -X POST "$API" "${H[@]}" -H 'Content-Type: application/json' --data-binary @production-requests/yasa-181.json)
+          echo "create http=$code"; jq '{ok, created, error, job: (.job | {id,status,stage,budgetUsd})}' out/create.json
+          JOB=$(jq -r '.job.id // empty' out/create.json); test -n "$JOB"
+          echo "JOB_ID=$JOB" | tee out/job-id.txt
+          for i in $(seq 1 420); do
+            curl -sS "$API?taskType=job_get&id=$JOB" "${H[@]}" > out/job.json || { echo "poll error"; sleep 20; continue; }
+            S=$(jq -r '.job.status' out/job.json); G=$(jq -r '.job.stage' out/job.json); W=$(jq -r '.job.waitReason // ""' out/job.json); USD=$(jq -r '.job.spentUsd' out/job.json)
+            echo "t=$((i*20))s status=$S stage=$G wait=$W spent=$USD"
+            case "$S" in WAITING_USER|FAILED|CANCELLED|COMPLETE) break;; esac
+            # before the approval no more than PLAN + one thumbnail may be paid; over $1.5 -> cancel and stop
+            if awk "BEGIN{exit !($USD > 1.5)}"; then echo "OVER CHECKPOINT CAP -> cancel"; curl -sS -X POST "$API" "${H[@]}" -H 'Content-Type: application/json' -d "{\"taskType\":\"job_cancel\",\"jobId\":\"$JOB\"}" > out/cancel.json; break; fi
+            sleep 20
+          done
+          curl -sS "$API?taskType=job_style&id=$JOB" "${H[@]}" > out/style.json || true
+          U=$(jq -r '.style.thumbnailUrl // empty' out/style.json)
+          if [ -n "$U" ]; then curl -sS -o out/thumbnail.jpg "$U"; file out/thumbnail.jpg; fi
+          jq 'del(.style.thumbnailUrl) | del(.style.representative.url)' out/style.json > out/style-public.json || true
+          jq '{id:.job.id,profile:.job.profile,status:.job.status,stage:.job.stage,waitReason:.job.waitReason,budgetUsd:.job.budgetUsd,spentUsd:.job.spentUsd,error:.job.error,planner:.job.planner,cost:.job.cost,runs:.job.runs,stages:.job.stages}' out/job.json > out/job-public.json
+          cat out/job-public.json; cat out/style-public.json
+      - name: Publish the checkpoint (no presigned URL, no key)
+        if: always()
+        run: |
+          set -eu
+          [ -f out/job-public.json ] || exit 0
+          mkdir -p pub && cp out/job-id.txt out/job-public.json pub/ && cp out/style-public.json pub/ 2>/dev/null || true; cp out/thumbnail.jpg pub/ 2>/dev/null || true
+          ! grep -rqi "x-amz\|signature\|sync" pub/*.json || { echo "refusing to publish a secret-looking value"; exit 1; }
+          cd pub && git init -q && git checkout -q -b r && git add -A && git -c user.name=ci -c user.email=ci@local commit -qm "yasa 181 thumbnail checkpoint"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" r:refs/heads/production/yasa-181-checkpoint
