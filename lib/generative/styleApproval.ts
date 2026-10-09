@@ -32,14 +32,39 @@ export type StyleApprovalRecord = {
   attempts: Array<{ n: number; backgroundRef: string; thumbnailRef: string; lines: ThumbLine[]; copyIssues: string[]; imageIssues: string[]; example?: { style: string; file: string; sha: string }; at: string }>
   regenerate?: boolean
   redrawRepresentative?: boolean
+  // 썸네일만 다시 생성 (after approval): ONE new thumbnail picture; the approved picture stays the style / character lock
+  thumbnailRequest?: { at: string }
   approved?: { n: number; backgroundRef: string; thumbnailRef: string; features: StyleFeatures; at: string }
   representative?: { sceneId: string | null; ref: string; distance: number; textureDistance?: number; judge?: StyleJudgement | null; status: 'match' | 'mismatch'; tries: number }
 }
 export type StyleJudgement = { same: boolean; score: number; differences: string[] }
 // the final word on "same art style": one small vision call with both pictures (only after the free checks passed)
-export type StyleJudge = (reference: Buffer, candidate: Buffer, apiKey: string) => Promise<StyleJudgement>
+export type StyleJudge = (reference: Buffer, candidate: Buffer, apiKey: string, o?: { people?: boolean }) => Promise<StyleJudgement>
 export const STYLE_JUDGE_MIN = 75
 export const styleApprovalRef = (jobId: string) => `style-approval/${jobId}.json`
+
+// THUMBNAIL ONLY — the delivered thumbnail can be replaced after approval WITHOUT touching the approved picture, which stays
+// the style reference and the first-image character lock (every scene's cache key carries its hash, so the representative
+// and every drawn scene stay valid). Its own file (never the approval record the worker rewrites): a text edit from the
+// phone can never be lost to a concurrent save. Every version is kept (history); nothing is deleted.
+export type ThumbnailVersion = {
+  n: number; backgroundRef: string; thumbnailRef: string; text: string; lines: string[]; imageIssues: string[]
+  source: 'approved' | 'redraw' | 'text'
+  // the picture was checked against the kept representative scene (same art style AND the same people); a text-only
+  // version keeps the check of its picture
+  check?: { ok: boolean; judge: StyleJudgement | null; at: string } | null
+  at: string
+}
+export type ThumbnailOverride = { schema: 'thumbnail-override/1'; current: ThumbnailVersion; history: ThumbnailVersion[] }
+export const thumbnailOverrideRef = (jobId: string) => `style-approval/${jobId}-thumbnail.json`
+// the user's own words on the thumbnail (no AI): one line of plain text, 2..60 characters, wrapped by the compositor
+export function thumbnailTextOf(input: unknown): string {
+  const t = String(input ?? '').replace(/[\u0000-\u001f\u007f{}\\]/g, ' ').replace(/\s+/g, ' ').trim()
+  if ([...t].length < 2 || [...t].length > 60) throw Object.assign(new Error('thumbnail text must be 2..60 characters'), { code: 'THUMB_TEXT_INVALID' })
+  return t
+}
+// THUMBNAIL LIGHTING for the redraw: the night stays, the faces and the key object are lit and sharp (phone-readable)
+export const THUMBNAIL_BRIGHT_LINE = 'THUMBNAIL LIGHTING: keep the night atmosphere of the scene (deep blue night sky, rain or mist, lantern glow), but the faces of the main characters and the key object of the story are brightly and warmly lit by a close lantern / moonlight key light: clear, sharp, high-contrast and easy to read on a small phone screen. No dark shadow over the faces, no muddy haze. The people are the SAME people as in the attached character reference. No text in the picture.'
 
 // ---- the copy: deterministic checks (format, the title, broken Hangul, spoilers of the answer) ----
 const squash = (t: string) => String(t || '').replace(/[\s.,!?…'"“”‘’·:;~-]+/g, '')

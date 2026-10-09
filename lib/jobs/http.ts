@@ -1,4 +1,5 @@
-import { styleApprovalRef, imageStyleFeatures } from '../generative/styleApproval.js'
+import { styleApprovalRef, imageStyleFeatures, thumbnailTextOf } from '../generative/styleApproval.js'
+import { approvedThumbnailVersion, composeThumbnailVersion, currentThumbnail, readThumbnailOverride, saveThumbnailVersion } from '../generative/thumbnailOverride.js'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -59,7 +60,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
   JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503,
-  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409
+  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409
 }
 
 const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
@@ -267,9 +268,14 @@ export function createJobsHttp(deps: JobsDeps) {
         const cur = rec.status === 'approved' ? rec.approved : rec.attempts?.at(-1)
         const url = async (ref?: string) => (ref && deps.blobs.presign ? (await deps.blobs.presign(ref).catch(() => null))?.url ?? null : null)
         const awaiting = job.status === 'WAITING_USER' && job.waitReason === 'DECISION' && job.stage === 'ASSET'
+        // a replacement made after approval (썸네일만 다시 생성 / 문구 수정) is the thumbnail shown and delivered
+        const ov = rec.status === 'approved' ? await readThumbnailOverride(deps.blobs, job.id) : null
+        const shown = rec.status === 'approved' ? (ov?.current ?? approvedThumbnailVersion(rec)) : null
         return res.status(200).json({ ok: true, style: {
-          status: rec.status, awaiting, attempt: cur?.n ?? 0, attempts: rec.attempts?.length ?? 0, thumbnailUrl: await url(cur?.thumbnailRef),
-          copy: (rec.attempts?.at(-1)?.lines ?? []).map((l: any) => String(l?.text || '')), issues: [...(rec.attempts?.at(-1)?.copyIssues ?? []), ...(rec.attempts?.at(-1)?.imageIssues ?? [])],
+          status: rec.status, awaiting, attempt: cur?.n ?? 0, attempts: rec.attempts?.length ?? 0, thumbnailUrl: await url(ov?.current.thumbnailRef ?? cur?.thumbnailRef),
+          thumbnailText: shown?.text ?? null, redrawingThumbnail: !!rec.thumbnailRequest,
+          replacement: ov ? { n: ov.current.n, source: ov.current.source, text: ov.current.text, imageIssues: ov.current.imageIssues, check: ov.current.check ? { ok: ov.current.check.ok, score: ov.current.check.judge?.score ?? null, differences: ov.current.check.judge?.differences ?? [] } : null, versions: ov.history.length } : null,
+          copy: (rec.attempts?.at(-1)?.lines ?? []).map((l: any) => String(l?.text || '')), issues: ov ? ov.current.imageIssues : [...(rec.attempts?.at(-1)?.copyIssues ?? []), ...(rec.attempts?.at(-1)?.imageIssues ?? [])],
           regenerating: rec.regenerate === true, redrawingRepresentative: rec.redrawRepresentative === true,
           representative: rec.representative ? { status: rec.representative.status, distance: rec.representative.distance, url: await url(rec.representative.ref) } : null
         } })
@@ -292,10 +298,40 @@ export function createJobsHttp(deps: JobsDeps) {
       // new thumbnail). Only a job waiting for its thumbnail; the decision names the attempt the user saw.
       if (taskType === 'job_style_decision') {
         const jobId = need(String(body.jobId || ''), 'jobId is required'), action = String(body.action || '')
-        need(action === 'approve' || action === 'regenerate' || action === 'representative', 'action must be approve, regenerate or representative')
+        need(['approve', 'regenerate', 'representative', 'thumbnail_redraw', 'thumbnail_text'].includes(action), 'action must be approve, regenerate, representative, thumbnail_redraw or thumbnail_text')
         const job = await store.getJob(jobId, workspaceId)
         if (!job) throw new JobError('NOT_FOUND', 'job not found')
+        // 문구만 바꾸기: the current thumbnail picture + the user's words (no AI call, no job state change). Allowed until the
+        // video is rendered (RENDER reads the thumbnail when it composes the package); never while a redraw is on its way.
+        if (action === 'thumbnail_text') {
+          const rec: any = await deps.blobs.getJson(styleApprovalRef(job.id)).catch(() => null)
+          if (!rec || rec.status !== 'approved' || !rec.approved) throw new JobError('NO_THUMBNAIL', 'the thumbnail is not approved yet')
+          const open = (job.stage === 'ASSET' && ['WAITING_USER', 'QUEUED', 'RUNNING'].includes(job.status)) || (job.stage === 'RENDER' && job.status === 'QUEUED')
+          if (!open) throw new JobError('THUMBNAIL_LOCKED', `the video is past its thumbnail (${job.status}/${job.stage})`)
+          if (rec.thumbnailRequest) throw new JobError('THUMBNAIL_BUSY', 'a new thumbnail picture is being drawn')
+          let text: string
+          try { text = thumbnailTextOf(body.text) } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
+          const cur = await currentThumbnail(deps.blobs, job.id, rec)
+          const bg = cur ? await deps.blobs.getBytes(cur.backgroundRef) : null
+          if (!cur || !bg) throw new JobError('NO_THUMBNAIL', 'the thumbnail picture is missing')
+          const prev = await readThumbnailOverride(deps.blobs, job.id)
+          let v
+          try { v = await composeThumbnailVersion(deps.blobs, { background: bg, text, n: (prev?.current.n ?? 0) + 1, source: 'text', imageIssues: cur.imageIssues, check: cur.check ?? null }) }
+          catch (e: any) { throw new JobError('BAD_REQUEST', `${e?.code || 'THUMB_TITLE_OVERFLOW'}: ${String(e?.message || e)}`) }
+          const ov = await saveThumbnailVersion(deps.blobs, job.id, rec, v)
+          return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)), thumbnail: { n: ov.current.n, text: ov.current.text, lines: ov.current.lines } })
+        }
         if (job.status !== 'WAITING_USER' || job.waitReason !== 'DECISION' || job.stage !== 'ASSET') throw new JobError('NOT_AWAITING_THUMBNAIL', `job is ${job.status}/${job.stage}/${job.waitReason}`)
+        // 썸네일만 다시 생성: after approval, the worker draws ONE new thumbnail picture (the approved one stays the style /
+        // character lock; the representative scene and every drawn scene are kept) and checks it against the representative
+        if (action === 'thumbnail_redraw') {
+          const rec: any = await deps.blobs.getJson(styleApprovalRef(job.id)).catch(() => null)
+          if (!rec || rec.status !== 'approved' || !rec.approved) throw new JobError('NO_THUMBNAIL', 'the thumbnail is not approved yet (use regenerate)')
+          rec.thumbnailRequest = { at: new Date().toISOString() }
+          await deps.blobs.putJson(styleApprovalRef(job.id), rec, { overwrite: true })
+          const next = await store.resumeStyleApproval({ jobId: job.id, workspaceId })
+          return res.status(200).json({ ok: true, job: view(next, await store.listStageRuns(next.id)), style: { status: rec.status, thumbnail: 'redrawing' } })
+        }
         const rec: any = await deps.blobs.getJson(styleApprovalRef(job.id)).catch(() => null), cur = rec?.attempts?.at(-1)
         // after approval the job waits only when the representative did not match: redraw it, or start over from a new thumbnail
         const mismatch = rec?.status === 'approved' && rec?.representative?.status === 'mismatch'

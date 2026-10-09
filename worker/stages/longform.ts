@@ -25,12 +25,13 @@ import {
   longformCardsAss, yasaCaptionsAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
 } from '../../lib/generative/longform.js'
 import { thumbnailArgv, thumbnailCopyErrors, LONGFORM_THUMB } from '../../lib/generative/wisdomThumbnail.js'
-import { styleGate, representativeCheck, type StyleReference, type DrawRefFn, type CopyWriter } from './styleGate.js'
+import { styleGate, representativeCheck, thumbnailRework, type StyleReference, type DrawRefFn, type CopyWriter } from './styleGate.js'
 import { styleApprovalWanted } from '../../lib/generative/styleApproval.js'
 import { openAiThumbnailCopyWriter } from '../../lib/generative/thumbnailCopyWriter.js'
 import { openAiStyleJudge } from '../../lib/generative/styleJudge.js'
 import { YADAM_STYLE_VERSION, geminiYadamImage, type YadamDraw } from '../../lib/generative/yadamStyle.js'
 import { composeTitleThumbnail, thumbnailBackgroundPrompt, titleSceneIndex } from '../../lib/generative/titleThumbnail.js'
+import { readThumbnailOverride } from '../../lib/generative/thumbnailOverride.js'
 import { styleApprovalRef } from '../../lib/generative/styleApproval.js'
 import type { StyleJudge } from '../../lib/generative/styleApproval.js'
 import { uploadMetadataErrors } from '../../lib/generative/uploadPackage.js'
@@ -285,6 +286,12 @@ export const LONGFORM_LOUDNORM = NARRATION_LOUDNORM // the one narration engine'
 export const longformConcatTimeoutMs = narrationConcatTimeoutMs
 // every Longform's delivered thumbnail: the approved background (style lock) or the video's own picture + the FINAL title
 export async function longformTitleThumbnail(o: { jobId: string; blobs: any; assets: any; title: string; picture: () => Promise<Buffer> }): Promise<Buffer> {
+  // 썸네일만 다시 생성 / 문구 수정: the replacement the user made after approval IS the thumbnail (already composed)
+  if (o.assets?.approvedThumbnail) {
+    const ov = await readThumbnailOverride(o.blobs, o.jobId), b = ov ? await o.blobs.getBytes(ov.current.thumbnailRef) : null
+    if (ov && !b) throw new StageError('THUMB_BACKGROUND_MISSING', `the replaced thumbnail ${ov.current.thumbnailRef} is missing`, false)
+    if (b) return b
+  }
   let bgRef: string | null = o.assets?.approvedThumbnail?.backgroundRef ?? null
   if (o.assets?.approvedThumbnail?.ref && !bgRef) bgRef = (((await o.blobs.getJson(styleApprovalRef(o.jobId)).catch(() => null)) as any)?.approved?.backgroundRef) ?? null
   const bg = bgRef ? await o.blobs.getBytes(bgRef) : await o.picture()
@@ -330,9 +337,10 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       // THUMBNAIL FIRST + STYLE LOCK (profiles switched on in STYLE_APPROVAL, briefs that ask for it): before approval only
       // the thumbnail is made and the job waits; after approval every picture is drawn FROM the approved picture
       const repIndex = scenes ? Math.min(sceneList.length - 1, Math.floor(sceneList.length * 0.4)) : -1
-      let styleLock: StyleReference | null = null, approval: any = null
+      let styleLock: StyleReference | null = null, approval: any = null, thumbPrompt = ''
       if (styleApprovalWanted(job.profile, brief)) {
-        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, imageKey, backgroundPrompt: thumbnailBackgroundPrompt(script.title, scenes ? scenePrompts[titleSceneIndex(script.title, sceneList.map((sc: any) => ({ id: sc.id, text: [sc.visual, sc.action, ...((script as any).sections ?? []).flatMap((x: any) => (x.sentences ?? []).filter((y: any) => y.scene === sc.id).map((y: any) => y.say))].join(' ') })), repIndex)] : prompt, { styleNeutral: yasa || !!golden }), draw: goldenDraw ? goldenDraw : yasa ? (p: string, k: string) => yadamDraw(p, k) : image, copyWriter: deps.copyWriter ?? openAiThumbnailCopyWriter(), signal })
+        thumbPrompt = thumbnailBackgroundPrompt(script.title, scenes ? scenePrompts[titleSceneIndex(script.title, sceneList.map((sc: any) => ({ id: sc.id, text: [sc.visual, sc.action, ...((script as any).sections ?? []).flatMap((x: any) => (x.sentences ?? []).filter((y: any) => y.scene === sc.id).map((y: any) => y.say))].join(' ') })), repIndex)] : prompt, { styleNeutral: yasa || !!golden })
+        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, imageKey, backgroundPrompt: thumbPrompt, draw: goldenDraw ? goldenDraw : yasa ? (p: string, k: string) => yadamDraw(p, k) : image, copyWriter: deps.copyWriter ?? openAiThumbnailCopyWriter(), signal })
         if (gate.wait) return { result: { styleApproval: { status: 'pending', attempt: gate.record.attempts.length, thumbnailRef: gate.record.attempts.at(-1)?.thumbnailRef ?? null } }, wait: 'DECISION' }
         // 야담: the approved picture keeps the people and place consistent; the drawing stays the contract's (no measured colour text)
         styleLock = yasa || golden ? { ...gate.reference, text: '' } : gate.reference; approval = gate.record
@@ -369,12 +377,22 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       if (needImage && !imageKey) throw new StageError('PROVIDER_DOWN', 'GEMINI_API_KEY is not configured (every picture is drawn by Gemini)', true)
       if (needTts && !apiKey) throw new StageError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured', true)
       const sceneImages: any[] = [], madeNow = new Map<string, any>()
+      // 썸네일만 다시 생성 (asked from the phone while the job waited): ONE new thumbnail picture with the character lock,
+      // checked against the kept representative; the approved picture stays the lock (every key above is unchanged)
+      if (styleLock && approval?.thumbnailRequest) {
+        if (!imageKey) throw new StageError('PROVIDER_DOWN', 'GEMINI_API_KEY is not configured (every picture is drawn by Gemini)', true)
+        const thumbDraw = (p: string) => (goldenDraw ? goldenDraw(p, imageKey) : yasa ? yadamDraw(p, imageKey, { approved: styleLock!.bytes }) : imageRef(`${p}\n\n${styleLock!.text}`, styleLock!.bytes, imageKey))
+        const go = await thumbnailRework({ jobId: job.id, blobs, record: approval, prompt: thumbPrompt, draw: thumbDraw, judge: deps.styleJudge ?? openAiStyleJudge(), apiKey, signal })
+        generated++
+        if (!go) return { result: { styleApproval: { status: 'approved', representative: approval.representative ?? null, thumbnail: 'mismatch' } }, wait: 'DECISION' as const }
+      }
       // the representative picture first: drawn from the reference and compared with it; only a match unlocks the rest
       if (styleLock) {
         const key = scenes ? sceneKeys[repIndex] : ik, cached = await withBytes(await meta('image', key))
-        const x = await representativeCheck({ jobId: job.id, blobs, record: approval, reference: styleLock, prompt: scenes ? scenePrompts[repIndex] : prompt, sceneId: scenes ? sceneList[repIndex].id : null, apiKey, imageKey, drawRef: drawRepresentative, judge: deps.styleJudge ?? openAiStyleJudge(), cached })
+        const x = await representativeCheck({ jobId: job.id, blobs, record: approval, reference: styleLock, prompt: scenes ? scenePrompts[repIndex] : prompt, sceneId: scenes ? sceneList[repIndex].id : null, apiKey, imageKey, drawRef: drawRepresentative, judge: deps.styleJudge ?? openAiStyleJudge(), cached, freeChecks: !golden })
         if (!x) return { result: { styleApproval: { status: 'approved', representative: approval.representative ?? null } }, wait: 'DECISION' as const }
-        if (x !== cached) generated++
+        if (x !== cached && !(x as any).kept) generated++
+        else if ((x as any).kept) reused++
         if (scenes) madeNow.set(key, x); else im = x
       }
       for (const [i, sc] of sceneList.entries()) {
