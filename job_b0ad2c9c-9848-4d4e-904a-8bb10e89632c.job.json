@@ -1,0 +1,80 @@
+{
+  "id": "job_b0ad2c9c-9848-4d4e-904a-8bb10e89632c",
+  "status": "FAILED",
+  "stage": "PLAN",
+  "waitReason": null,
+  "spentUsd": 0,
+  "error": "section-001: yasa.concreteProp: \"끝이 불에 그을리고 은제 덮개가 씌워진 매화나무 비녀. 사산한 딸을 위해 남편이 깎던 요람의 남은 나무로 만든 것이며, 금이 간 끝을 고치겠다며 남편이 마지막 장삿길에 가져갔다.\" never appears in the script",
+  "cost": {
+    "paidCalls": 8,
+    "estUsd": 0,
+    "byStage": {
+      "PLAN": {
+        "paidCalls": 8,
+        "estUsd": 0,
+        "attempts": 3
+      }
+    },
+    "byModel": {
+      "gpt-5.6-sol": {
+        "calls": 8,
+        "estUsd": null,
+        "outputTokens": 55461,
+        "reasoningTokens": 10528
+      }
+    },
+    "unpricedModels": [
+      "gpt-5.6-sol"
+    ]
+  },
+  "runs": [
+    {
+      "stage": "PLAN",
+      "attempt": 1,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "PLAN",
+      "attempt": 1,
+      "status": "FAILED",
+      "error": "outline: sections[0].scenes[3].characters.unknown:clan, sections[1].scenes[3].characters.unknown:clan, sections[1].scenes[4].characters.unknown:clan, sections[2].scenes[2].characters.unknown:clan, sections[2].scenes[3].characters.unknown:chilsung, sections[2].scenes[3].characters.unknown:workers, se",
+      "paidCalls": 3,
+      "estUsd": 0
+    },
+    {
+      "stage": "PLAN",
+      "attempt": 2,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "PLAN",
+      "attempt": 2,
+      "status": "FAILED",
+      "error": "section-001: yasa.concreteProp: \"끝이 불에 그을리고 은제 덮개가 씌워진 매화나무 비녀. 사산한 딸을 위해 남편이 깎던 요람의 남은 나무로 만든 것이며, 금이 간 끝을 고치겠다며 남편이 마지막 장삿길에 가져갔다.\" never appears in the script",
+      "paidCalls": 3,
+      "estUsd": 0
+    },
+    {
+      "stage": "PLAN",
+      "attempt": 3,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "PLAN",
+      "attempt": 3,
+      "status": "FAILED",
+      "error": "section-001: yasa.concreteProp: \"끝이 불에 그을리고 은제 덮개가 씌워진 매화나무 비녀. 사산한 딸을 위해 남편이 깎던 요람의 남은 나무로 만든 것이며, 금이 간 끝을 고치겠다며 남편이 마지막 장삿길에 가져갔다.\" never appears in the script",
+      "paidCalls": 2,
+      "estUsd": 0
+    }
+  ]
+}

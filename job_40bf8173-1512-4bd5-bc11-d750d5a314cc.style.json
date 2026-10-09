@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "style": {
+    "status": "approved",
+    "awaiting": true,
+    "attempt": 1,
+    "attempts": 1,
+    "copy": [
+      "장례 석 달 만에 관 속",
+      "목침을 들고 돌아온",
+      "남편은 왜 왼손으로",
+      "문을 두드렸나"
+    ],
+    "issues": [
+      "image.too_dark"
+    ],
+    "regenerating": false,
+    "redrawingRepresentative": false,
+    "representative": {
+      "status": "mismatch",
+      "distance": 0.427
+    }
+  }
+}

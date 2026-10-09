@@ -1,0 +1,137 @@
+[
+  {
+    "id": "job_40bf8173-1512-4bd5-bc11-d750d5a314cc",
+    "profile": "yasa_longform",
+    "status": "WAITING_USER",
+    "stage": "ASSET",
+    "createdAt": "2026-10-09T15:16:09.822Z",
+    "updatedAt": "2026-10-09T22:21:09.841Z",
+    "title": "조선시대 미스터리 야담 「죽은 남편이 돌아온 밤」. 장례를 치른 지 석 달 만에 죽은 남편이 과부 연화의 집에 돌아온다. 남편만 알던 비밀을 알"
+  },
+  {
+    "id": "job_b0ad2c9c-9848-4d4e-904a-8bb10e89632c",
+    "profile": "yasa_longform",
+    "status": "FAILED",
+    "stage": "PLAN",
+    "createdAt": "2026-10-09T15:01:36.231Z",
+    "updatedAt": "2026-10-09T15:33:01.878Z",
+    "title": "죽은 남편이 돌아온 밤 — 조선 야담. 장례를 치른 지 석 달 되는 비 오는 밤, 죽은 남편이 대문을 두드리며 돌아오는 장면으로 곧바로 시작한다"
+  },
+  {
+    "id": "job_4f245dc4-a870-49a6-a506-eff0bdc22431",
+    "profile": "yasa_longform",
+    "status": "WAITING_USER",
+    "stage": "ASSET",
+    "createdAt": "2026-10-08T09:10:48.402Z",
+    "updatedAt": "2026-10-08T12:15:04.571Z",
+    "title": "조선시대, 가난한 과부가 눈보라 속에서 쓰러진 낯선 소녀를 구해준다. 소녀는 떠나면서 낡은 비녀 하나를 남긴"
+  },
+  {
+    "id": "job_6aa8ed3d-02ae-4e20-99cd-e07fcb37b543",
+    "profile": "yasa_longform",
+    "status": "FAILED",
+    "stage": "PLAN",
+    "createdAt": "2026-10-08T07:42:00.593Z",
+    "updatedAt": "2026-10-08T07:52:11.547Z",
+    "title": "조선시대, 가난한 과부가 눈보라 속에서 쓰러진 낯선 소녀를 구해준다. 소녀는 떠나면서 낡은 비녀 하나를 남긴다. 사흘 뒤 관군이 마을에 들이닥쳐"
+  },
+  {
+    "id": "job_9b52dfbd-ea41-480c-81d9-8e61e6ae6ce9",
+    "profile": "yasa_longform",
+    "status": "COMPLETE",
+    "stage": "PACKAGE",
+    "createdAt": "2026-10-08T02:45:16.723Z",
+    "updatedAt": "2026-10-08T05:45:07.654Z",
+    "title": "죽은 아들이 남긴 낡은 열쇠를 한 거지 소년에게 건넨 노파. 사흘 뒤 관군이 노파의 집을 포위한다. 사람들은 아들이 큰 죄를 저질렀다고 믿지만,"
+  },
+  {
+    "id": "job_32f3a9ec-e064-4eee-b835-fc3152f39a53",
+    "profile": "yasa_longform",
+    "status": "FAILED",
+    "stage": "PLAN",
+    "createdAt": "2026-10-08T00:02:58.059Z",
+    "updatedAt": "2026-10-08T00:07:19.365Z",
+    "title": "죽은 아들이 남긴 낡은 열쇠를 한 거지 소년에게 건넨 노파. 사흘 뒤 관군이 노파의 집을 포위한다. 사람들은 아들이 큰 죄를 저질렀다고 믿지만,"
+  },
+  {
+    "id": "job_9ee1b22b-7d60-47e5-a5ba-605499adcb10",
+    "profile": "yasa_longform",
+    "status": "COMPLETE",
+    "stage": "PACKAGE",
+    "createdAt": "2026-10-07T11:26:30.648Z",
+    "updatedAt": "2026-10-07T17:11:16.447Z",
+    "title": "죽은 아들이 남긴 낡은 열쇠를 한 거지 소년에게 건넨 노파. 사흘 뒤 관군이 노파의 집을 포위한다. 사람들은 아들이 큰 죄를 저질렀다고 믿지만,"
+  },
+  {
+    "id": "job_52d23505-593c-40da-b3f3-0ce92cd19fe3",
+    "profile": "wisdom",
+    "status": "COMPLETE",
+    "stage": "PACKAGE",
+    "createdAt": "2026-10-06T13:29:07.387Z",
+    "updatedAt": "2026-10-06T13:47:02.340Z",
+    "title": null
+  },
+  {
+    "id": "job_64bdab47-6af1-4660-b953-cd82ea580f2b",
+    "profile": "wisdom_longform",
+    "status": "COMPLETE",
+    "stage": "PACKAGE",
+    "createdAt": "2026-10-06T11:05:00.647Z",
+    "updatedAt": "2026-10-06T11:44:53.548Z",
+    "title": "부처님이 말한 인생의 마지막 공부｜죽기 전에 반드시 깨달아야 할 7가지"
+  },
+  {
+    "id": "job_a1975c77-d62f-4829-a3ab-ff4bfcaaeade",
+    "profile": "wisdom_longform",
+    "status": "FAILED",
+    "stage": "PLAN",
+    "createdAt": "2026-10-06T09:18:02.312Z",
+    "updatedAt": "2026-10-06T09:26:50.564Z",
+    "title": "부처님이 말한 인생의 마지막 공부｜죽기 전에 반드시 깨달아야 할 7가지"
+  },
+  {
+    "id": "job_ca3bcb4c-ace4-4469-aa45-b3d7bbc35150",
+    "profile": "wisdom",
+    "status": "COMPLETE",
+    "stage": "PACKAGE",
+    "createdAt": "2026-10-03T18:01:16.004Z",
+    "updatedAt": "2026-10-03T18:17:46.033Z",
+    "title": null
+  },
+  {
+    "id": "job_9aa5bc5b-7499-45c6-bb7b-12639557b3a5",
+    "profile": "wisdom",
+    "status": "COMPLETE",
+    "stage": "PACKAGE",
+    "createdAt": "2026-10-03T16:28:09.236Z",
+    "updatedAt": "2026-10-03T16:39:14.498Z",
+    "title": null
+  },
+  {
+    "id": "job_6cdb68e0-d8df-4a2a-8887-95a1a090ba0c",
+    "profile": "wisdom",
+    "status": "CANCELLED",
+    "stage": "DECISION",
+    "createdAt": "2026-10-03T15:18:38.349Z",
+    "updatedAt": "2026-10-03T16:27:53.914Z",
+    "title": null
+  },
+  {
+    "id": "job_d3c6e316-6a13-4674-9833-2944303460b6",
+    "profile": "wisdom",
+    "status": "CANCELLED",
+    "stage": "DECISION",
+    "createdAt": "2026-10-03T14:03:43.450Z",
+    "updatedAt": "2026-10-03T15:18:36.243Z",
+    "title": null
+  },
+  {
+    "id": "job_acccc4cf-3683-47a8-9db9-da06ddc33acc",
+    "profile": "wisdom",
+    "status": "WAITING_USER",
+    "stage": "AUTO_QC",
+    "createdAt": "2026-10-03T13:52:49.423Z",
+    "updatedAt": "2026-10-03T13:56:56.371Z",
+    "title": null
+  }
+]

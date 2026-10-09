@@ -1,0 +1,91 @@
+{
+  "id": "job_40bf8173-1512-4bd5-bc11-d750d5a314cc",
+  "status": "WAITING_USER",
+  "stage": "ASSET",
+  "waitReason": "DECISION",
+  "spentUsd": 0,
+  "error": null,
+  "cost": {
+    "paidCalls": 19,
+    "estUsd": 0.2734,
+    "byStage": {
+      "PLAN": {
+        "paidCalls": 15,
+        "estUsd": 0,
+        "attempts": 1
+      },
+      "ASSET": {
+        "paidCalls": 4,
+        "estUsd": 0.2734,
+        "attempts": 2
+      }
+    },
+    "byModel": {
+      "gpt-5.6-sol": {
+        "calls": 15,
+        "estUsd": null,
+        "outputTokens": 55555,
+        "reasoningTokens": 13051
+      },
+      "gemini-3.1-flash-image": {
+        "calls": 4,
+        "estUsd": 0.2734,
+        "outputTokens": 6438,
+        "reasoningTokens": 0
+      }
+    },
+    "unpricedModels": [
+      "gpt-5.6-sol"
+    ]
+  },
+  "runs": [
+    {
+      "stage": "PLAN",
+      "attempt": 1,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "PLAN",
+      "attempt": 1,
+      "status": "SUCCEEDED",
+      "error": "null",
+      "paidCalls": 15,
+      "estUsd": 0
+    },
+    {
+      "stage": "ASSET",
+      "attempt": 1,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "ASSET",
+      "attempt": 1,
+      "status": "SUCCEEDED",
+      "error": "null",
+      "paidCalls": 2,
+      "estUsd": 0.1361
+    },
+    {
+      "stage": "ASSET",
+      "attempt": 2,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "ASSET",
+      "attempt": 2,
+      "status": "SUCCEEDED",
+      "error": "null",
+      "paidCalls": 2,
+      "estUsd": 0.1373
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "id": "job_4f245dc4-a870-49a6-a506-eff0bdc22431",
+  "status": "WAITING_USER",
+  "stage": "ASSET",
+  "waitReason": "DECISION",
+  "spentUsd": 0,
+  "error": null,
+  "cost": {
+    "paidCalls": 19,
+    "estUsd": 0.0452,
+    "byStage": {
+      "PLAN": {
+        "paidCalls": 16,
+        "estUsd": 0,
+        "attempts": 2
+      },
+      "ASSET": {
+        "paidCalls": 3,
+        "estUsd": 0.0452,
+        "attempts": 3
+      }
+    },
+    "byModel": {
+      "gpt-5.6-sol": {
+        "calls": 16,
+        "estUsd": null,
+        "outputTokens": 69461,
+        "reasoningTokens": 16838
+      },
+      "gpt-image-1-mini": {
+        "calls": 3,
+        "estUsd": 0.0452,
+        "outputTokens": 4704,
+        "reasoningTokens": 0
+      }
+    },
+    "unpricedModels": [
+      "gpt-5.6-sol"
+    ]
+  },
+  "runs": [
+    {
+      "stage": "PLAN",
+      "attempt": 1,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "PLAN",
+      "attempt": 1,
+      "status": "FAILED",
+      "error": "outline: sections[0].scenes[2].characters.unknown:heosam, sections[0].scenes[3].characters.unknown:baedo, sections[1].scenes[1].characters.unknown:heosam, sections[2].scenes[1].characters.unknown:notaek, sections[2].scenes[2].characters.unknown:kimman, sections[2].scenes[5].characters.unknown:notaek",
+      "paidCalls": 2,
+      "estUsd": 0
+    },
+    {
+      "stage": "PLAN",
+      "attempt": 2,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "PLAN",
+      "attempt": 2,
+      "status": "SUCCEEDED",
+      "error": "null",
+      "paidCalls": 14,
+      "estUsd": 0
+    },
+    {
+      "stage": "ASSET",
+      "attempt": 1,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "ASSET",
+      "attempt": 1,
+      "status": "SUCCEEDED",
+      "error": "null",
+      "paidCalls": 1,
+      "estUsd": 0.0147
+    },
+    {
+      "stage": "ASSET",
+      "attempt": 2,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "ASSET",
+      "attempt": 2,
+      "status": "SUCCEEDED",
+      "error": "null",
+      "paidCalls": 1,
+      "estUsd": 0.0153
+    },
+    {
+      "stage": "ASSET",
+      "attempt": 3,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "ASSET",
+      "attempt": 3,
+      "status": "SUCCEEDED",
+      "error": "null",
+      "paidCalls": 1,
+      "estUsd": 0.0152
+    }
+  ]
+}

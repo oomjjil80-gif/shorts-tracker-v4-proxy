@@ -1,0 +1,33 @@
+{
+  "id": "job_6aa8ed3d-02ae-4e20-99cd-e07fcb37b543",
+  "status": "FAILED",
+  "stage": "PLAN",
+  "waitReason": null,
+  "spentUsd": 0,
+  "error": "OpenAI longform yasa_longform_act: OpenAI billing stop (HTTP 429): {\n  \"error\": {\n    \"message\": \"You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.\",\n    \"type\": \"insufficient_quota\",\n    \"param\": null,\n    \"code\": \"cr",
+  "cost": {
+    "paidCalls": 0,
+    "estUsd": 0,
+    "byStage": {},
+    "byModel": {},
+    "unpricedModels": []
+  },
+  "runs": [
+    {
+      "stage": "PLAN",
+      "attempt": 1,
+      "status": "STARTED",
+      "error": "null",
+      "paidCalls": 0,
+      "estUsd": 0
+    },
+    {
+      "stage": "PLAN",
+      "attempt": 1,
+      "status": "FAILED",
+      "error": "OpenAI longform yasa_longform_act: OpenAI billing stop (HTTP 429): {\n  \"error\": {\n    \"message\": \"You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.\",\n    \"type\": \"insufficient_quota\",\n    \"param\": null,\n    \"code\": \"cr",
+      "paidCalls": 0,
+      "estUsd": 0
+    }
+  ]
+}

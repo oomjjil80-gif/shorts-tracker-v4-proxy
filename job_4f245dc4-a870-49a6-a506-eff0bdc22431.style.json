@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "style": {
+    "status": "pending",
+    "awaiting": true,
+    "attempt": 3,
+    "attempts": 3,
+    "copy": [
+      "눈보라 속 소녀를",
+      "살린 가난한 과부에게",
+      "낡은 비녀를 거꾸로",
+      "꽂으라 한 이유"
+    ],
+    "issues": [],
+    "regenerating": false,
+    "redrawingRepresentative": false,
+    "representative": null
+  }
+}
