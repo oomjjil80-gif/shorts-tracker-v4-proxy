@@ -1,0 +1,31 @@
+name: Production deploy check (read-only probe)
+on:
+  push:
+    branches: ['production/yasa-181-deploy-check']
+    paths: ['.github/workflows/production-yasa-181-deploy-check.yml']
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Probe the Railway API (no paid call, no state change)
+        env:
+          SYNC_KEY: '${{ secrets.TRACKER_SYNC_KEY }}'
+          API: https://tracker-api-continuity-production.up.railway.app/api/story
+          JOB: job_40bf8173-1512-4bd5-bc11-d750d5a314cc
+        run: |
+          set -uo pipefail
+          H=(-H "X-Sync-Key: $SYNC_KEY" -H 'Accept: application/json')
+          before=$(curl -sS "$API?taskType=job_get&id=$JOB" "${H[@]}" | jq -c '{status:.job.status,stage:.job.stage,wait:.job.waitReason,updatedAt:.job.updatedAt}')
+          echo "before: $before"
+          for i in $(seq 1 50); do
+            # too-short text: the NEW code refuses it at the text check (nothing is written); the OLD code refuses the action
+            r=$(curl -sS -X POST "$API" "${H[@]}" -H 'Content-Type: application/json' -d "{\"taskType\":\"job_style_decision\",\"jobId\":\"$JOB\",\"action\":\"thumbnail_text\",\"text\":\"x\"}" | jq -r '.error.message // .ok')
+            echo "t=$((i*30))s probe: $r"
+            case "$r" in *"thumbnail text must be"*) echo "DEPLOYED: new API live"; break;; esac
+            sleep 30
+          done
+          curl -sS "$API?taskType=job_style&id=$JOB" "${H[@]}" | jq '{status:.style.status,awaiting:.style.awaiting,thumbnailText:.style.thumbnailText,redrawingThumbnail:.style.redrawingThumbnail,replacement:.style.replacement,representative:{status:.style.representative.status,distance:.style.representative.distance}}'
+          after=$(curl -sS "$API?taskType=job_get&id=$JOB" "${H[@]}" | jq -c '{status:.job.status,stage:.job.stage,wait:.job.waitReason,updatedAt:.job.updatedAt}')
+          echo "after:  $after"
+          [ "$before" = "$after" ] && echo "JOB UNCHANGED" || echo "JOB CHANGED"
