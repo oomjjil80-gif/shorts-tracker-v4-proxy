@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { sha256, sha256File, putAddressed, type JobBlobStore } from '../../lib/jobs/blobs.js'
 import { runOk, probe } from '../../lib/media/ffmpeg.js'
 import { FONTS_DIR } from '../../lib/media/ass.js'
-import { openAiLongformImage, openAiImageWithReference, openAiTts } from '../../lib/generative/providers.js'
+import { geminiLongformImage, geminiImageWithReference, openAiTts } from '../../lib/generative/providers.js'
 import { openAiLongformPlanner, type LongformPlanner, type LongformOutline, type LongformSectionDraft, type LongformMetadataDraft } from '../../lib/generative/longformPlanner.js'
 import { openAiSeniorPlanner } from '../../lib/generative/seniorPlanner.js'
 import { openAiYasaPlanner, type YasaPlanner } from '../../lib/generative/yasaPlanner.js'
@@ -28,7 +28,7 @@ import { styleGate, representativeCheck, type StyleReference, type DrawRefFn, ty
 import { styleApprovalWanted } from '../../lib/generative/styleApproval.js'
 import { openAiThumbnailCopyWriter } from '../../lib/generative/thumbnailCopyWriter.js'
 import { openAiStyleJudge } from '../../lib/generative/styleJudge.js'
-import { YADAM_STYLE_VERSION, openAiYadamImage, type YadamDraw } from '../../lib/generative/yadamStyle.js'
+import { YADAM_STYLE_VERSION, geminiYadamImage, type YadamDraw } from '../../lib/generative/yadamStyle.js'
 import { composeTitleThumbnail, thumbnailBackgroundPrompt, titleSceneIndex } from '../../lib/generative/titleThumbnail.js'
 import { styleApprovalRef } from '../../lib/generative/styleApproval.js'
 import type { StyleJudge } from '../../lib/generative/styleApproval.js'
@@ -291,9 +291,11 @@ export async function longformTitleThumbnail(o: { jobId: string; blobs: any; ass
   try { return (await composeTitleThumbnail({ background: bg, title: o.title })).bytes }
   catch (e: any) { throw new StageError(e?.code || 'THUMB_TITLE_OVERFLOW', `${e?.code || 'THUMB_TITLE_OVERFLOW'}: ${String(e?.message || e)}`, false) }
 }
-export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typeof openAiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver; imageRef?: DrawRefFn; copyWriter?: CopyWriter; styleJudge?: StyleJudge; yadam?: YadamDraw } = {}): StageExecutor {
-  const image = deps.image ?? openAiLongformImage, tts = deps.tts ?? openAiTts, apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? ''
-  const imageRef = deps.imageRef ?? openAiImageWithReference, yadamDraw = deps.yadam ?? openAiYadamImage()
+export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: string; image?: typeof geminiLongformImage; tts?: typeof openAiTts; features?: FeatureResolver; imageRef?: DrawRefFn; copyWriter?: CopyWriter; styleJudge?: StyleJudge; yadam?: YadamDraw } = {}): StageExecutor {
+  const image = deps.image ?? geminiLongformImage, tts = deps.tts ?? openAiTts, apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? ''
+  // every picture is drawn by Gemini (geminiImage.ts) with its own key; OpenAI keeps narration and the text steps
+  const imageKey = deps.imageKey ?? process.env.GEMINI_API_KEY ?? ''
+  const imageRef = deps.imageRef ?? geminiImageWithReference, yadamDraw = deps.yadam ?? geminiYadamImage()
   return {
     stage: 'ASSET', estimateUsd: () => 1.0,
     inputHash: (job) => sha256(`longform-asset|${job.id}|${job.planRev}|wisdom_longform/1`),
@@ -323,13 +325,13 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       const repIndex = scenes ? Math.min(sceneList.length - 1, Math.floor(sceneList.length * 0.4)) : -1
       let styleLock: StyleReference | null = null, approval: any = null
       if (styleApprovalWanted(job.profile, brief)) {
-        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, backgroundPrompt: thumbnailBackgroundPrompt(script.title, scenes ? scenePrompts[titleSceneIndex(script.title, sceneList.map((sc: any) => ({ id: sc.id, text: [sc.visual, sc.action, ...((script as any).sections ?? []).flatMap((x: any) => (x.sentences ?? []).filter((y: any) => y.scene === sc.id).map((y: any) => y.say))].join(' ') })), repIndex)] : prompt, { styleNeutral: yasa }), draw: yasa ? (p: string, k: string) => yadamDraw(p, k, { quality: 'high' }) : image, copyWriter: deps.copyWriter ?? openAiThumbnailCopyWriter(), signal })
+        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, imageKey, backgroundPrompt: thumbnailBackgroundPrompt(script.title, scenes ? scenePrompts[titleSceneIndex(script.title, sceneList.map((sc: any) => ({ id: sc.id, text: [sc.visual, sc.action, ...((script as any).sections ?? []).flatMap((x: any) => (x.sentences ?? []).filter((y: any) => y.scene === sc.id).map((y: any) => y.say))].join(' ') })), repIndex)] : prompt, { styleNeutral: yasa }), draw: yasa ? (p: string, k: string) => yadamDraw(p, k) : image, copyWriter: deps.copyWriter ?? openAiThumbnailCopyWriter(), signal })
         if (gate.wait) return { result: { styleApproval: { status: 'pending', attempt: gate.record.attempts.length, thumbnailRef: gate.record.attempts.at(-1)?.thumbnailRef ?? null } }, wait: 'DECISION' }
         // 야담: the approved picture keeps the people and place consistent; the drawing stays the contract's (no measured colour text)
         styleLock = yasa ? { ...gate.reference, text: '' } : gate.reference; approval = gate.record
       }
-      const draw = (p: string) => (yasa ? yadamDraw(p, apiKey, { quality: 'medium', approved: styleLock?.bytes ?? null }) : styleLock ? imageRef(`${p}\n\n${styleLock.text}`, styleLock.bytes, apiKey) : image(p, apiKey))
-      const drawRepresentative: DrawRefFn = yasa ? (p, ref, k) => yadamDraw(p.trim(), k, { quality: 'high', approved: ref }) : imageRef
+      const draw = (p: string) => (yasa ? yadamDraw(p, imageKey, { approved: styleLock?.bytes ?? null }) : styleLock ? imageRef(`${p}\n\n${styleLock.text}`, styleLock.bytes, imageKey) : image(p, imageKey))
+      const drawRepresentative: DrawRefFn = yasa ? (p, ref, k) => yadamDraw(p.trim(), k, { approved: ref }) : imageRef
       // paid calls only on a cache miss (an ASSET rerun reuses every picture and every narration chunk); the prompt (and so
       // the style, and the approved reference picture) is part of every image key
       const lockTag = styleLock ? `|ref:${styleLock.sha}` : ''
@@ -339,13 +341,14 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
       let im: any = scenes ? null : await withBytes(await meta('image', ik)), generated = 0, reused = 0
       const ttsKeys = chunks.map((c) => sha256(ttsCacheIdentity(voice, c.text)))
       const ttsMeta = await Promise.all(ttsKeys.map((k) => meta('tts', k)))
-      const needKey = (!scenes && !im) || sceneMeta.some((x) => !x) || ttsMeta.some((x) => !x)
-      if (needKey && !apiKey) throw new StageError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured', true)
+      const needImage = (!scenes && !im) || sceneMeta.some((x) => !x) || !!styleLock, needTts = ttsMeta.some((x) => !x)
+      if (needImage && !imageKey) throw new StageError('PROVIDER_DOWN', 'GEMINI_API_KEY is not configured (every picture is drawn by Gemini)', true)
+      if (needTts && !apiKey) throw new StageError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured', true)
       const sceneImages: any[] = [], madeNow = new Map<string, any>()
       // the representative picture first: drawn from the reference and compared with it; only a match unlocks the rest
       if (styleLock) {
         const key = scenes ? sceneKeys[repIndex] : ik, cached = await withBytes(await meta('image', key))
-        const x = await representativeCheck({ jobId: job.id, blobs, record: approval, reference: styleLock, prompt: scenes ? scenePrompts[repIndex] : prompt, sceneId: scenes ? sceneList[repIndex].id : null, apiKey, drawRef: drawRepresentative, judge: deps.styleJudge ?? openAiStyleJudge(), cached })
+        const x = await representativeCheck({ jobId: job.id, blobs, record: approval, reference: styleLock, prompt: scenes ? scenePrompts[repIndex] : prompt, sceneId: scenes ? sceneList[repIndex].id : null, apiKey, imageKey, drawRef: drawRepresentative, judge: deps.styleJudge ?? openAiStyleJudge(), cached })
         if (!x) return { result: { styleApproval: { status: 'approved', representative: approval.representative ?? null } }, wait: 'DECISION' as const }
         if (x !== cached) generated++
         if (scenes) madeNow.set(key, x); else im = x
@@ -422,7 +425,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; image?: typ
         await blobs.putFile(narrationRef, narration, 'audio/mp4')
         const manifest = { schema: 'longform-assets/1', profile: job.profile, scriptRef, voiceProfileId: voice.id, ...(styleLock ? { approvedThumbnail: { ref: styleLock.thumbnailRef, backgroundRef: approval?.approved?.backgroundRef ?? null }, styleReference: { sha256: styleLock.sha, features: styleLock.features } } : {}), image: { ref: imageRef, sha256: imgSha, prompt, subjectSide: side, mirrored: side?.side === 'left' }, ...(scenes ? { images: sceneImages.map(({ bytes, ...x }) => x) } : {}), narration: { ref: narrationRef, sha256: nsha, seconds: narrationSeconds, loudness: LONGFORM_LOUDNORM }, chunks: parts }
         const stored = await putAddressed(blobs, 'generative-assets', manifest)
-        return { outputRef: stored.path, outputHash: stored.sha256, result: { assetSpecRef: stored.path, images: scenes ? sceneImages.length : 1, chunks: parts.length, totalSeconds, voiceProfileId: voice.id, generated, reused }, provider: 'openai', model: 'gpt-image-1-mini+gpt-4o-mini-tts' }
+        return { outputRef: stored.path, outputHash: stored.sha256, result: { assetSpecRef: stored.path, images: scenes ? sceneImages.length : 1, chunks: parts.length, totalSeconds, voiceProfileId: voice.id, generated, reused }, provider: 'gemini+openai', model: 'gemini-3.1-flash-image+gpt-4o-mini-tts' }
       } finally { await rm(work, { recursive: true, force: true }) }
     }
   }

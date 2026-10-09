@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { sha256, putAddressed } from '../../lib/jobs/blobs.js'
 import { runOk } from '../../lib/media/ffmpeg.js'
 import { FONTS_DIR } from '../../lib/media/ass.js'
-import { openAiPortraitImage } from '../../lib/generative/providers.js'
+import { geminiPortraitImage } from '../../lib/generative/providers.js'
 import { openAiWisdomPublishKit, thumbnailArgv, thumbnailCopyErrors, thumbnailFigure, figureBelowPrompt, SHORTS_THUMB } from '../../lib/generative/wisdomThumbnail.js'
 import { uploadMetadataErrors, uploadPackageText } from '../../lib/generative/uploadPackage.js'
 import { thinkerDisplayName } from '../../lib/generative/wisdom.js'
@@ -24,8 +24,9 @@ import { profileFeatures, type FeatureResolver } from '../modules/features.js'
 
 // THUMBNAIL is a feature module: when the profile does not select it, no thumbnail image/render is made and the
 // thumbnail copy is not checked or repaired. The upload text is PACKAGE's and is made either way (same kit call).
-export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string; kit?: typeof openAiWisdomPublishKit; image?: typeof openAiPortraitImage; features?: FeatureResolver } = {}): StageExecutor {
-  const apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? '', kit = deps.kit ?? openAiWisdomPublishKit, image = deps.image ?? openAiPortraitImage
+export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string; imageKey?: string; kit?: typeof openAiWisdomPublishKit; image?: typeof geminiPortraitImage; features?: FeatureResolver } = {}): StageExecutor {
+  const apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? '', kit = deps.kit ?? openAiWisdomPublishKit, image = deps.image ?? geminiPortraitImage
+  const imageKey = deps.imageKey ?? process.env.GEMINI_API_KEY ?? '' // the picture: Gemini
   return {
     ...pkg,
     estimateUsd: (job) => pkg.estimateUsd(job) + (job.profile === 'wisdom' ? 0.07 : 0),
@@ -71,7 +72,7 @@ export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string;
             const ik = sha256('wisdom-thumb-image-v2-portrait|' + prompt)
             let im: any = null
             try { const m: any = await blobs.getJson(`generative-cache/image/${ik}.json`); const b = m?.ref ? await blobs.getBytes(m.ref) : null; if (b) im = { ...m, bytes: b } } catch {}
-            if (!im) { im = await image(prompt, apiKey); const ref = `generative-assets/images/${sha256(im.bytes)}.jpg`; await blobs.putBytes(ref, im.bytes, im.contentType); await blobs.putJson(`generative-cache/image/${ik}.json`, { ref, sha256: sha256(im.bytes), contentType: im.contentType }) }
+            if (!im) { im = await image(prompt, imageKey); const ref = `generative-assets/images/${sha256(im.bytes)}.jpg`; await blobs.putBytes(ref, im.bytes, im.contentType); await blobs.putJson(`generative-cache/image/${ik}.json`, { ref, sha256: sha256(im.bytes), contentType: im.contentType }) }
             const img = join(work, 'img.jpg'), assPath = join(work, 't.ass'), out = join(work, 'thumb.jpg')
             await writeFile(img, im.bytes)
             const t = thumbnailArgv({ image: img, lines: made.lines, assPath, fontsDir: FONTS_DIR, out, canvas: SHORTS_THUMB })

@@ -1,15 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { openAiWisdomImage,openAiWisdomTts } from '../lib/generative/providers.js'
+import { geminiWisdomImage,openAiWisdomTts } from '../lib/generative/providers.js'
 import { createGenerativeAssetExecutor } from '../worker/stages/generative.js'
 import { createMemoryBlobStore,putAddressed } from '../lib/jobs/blobs.js'
 import { createHash } from 'node:crypto'
 
-test('P2 image adapter requests vertical low-cost image and requires real bytes',async()=>{
- let body:any
- const fake:any=async(_u:any,o:any)=>{body=JSON.parse(o.body);return new Response(JSON.stringify({data:[{b64_json:Buffer.from('jpg').toString('base64')}]}),{status:200,headers:{'content-type':'application/json'}})}
- const x=await openAiWisdomImage('scene','k',fake)
- assert.equal(body.model,'gpt-image-1-mini');assert.equal(body.size,'1024x1536');assert.equal(body.quality,'low');assert.equal(x.bytes.toString(),'jpg')
+test('P2 image adapter: a Gemini portrait (2:3) picture, real bytes required',async()=>{
+ let body:any,url=''
+ const fake:any=async(u:any,o:any)=>{url=u;body=JSON.parse(o.body);return new Response(JSON.stringify({steps:[{type:'model_output',content:[{type:'image',data:Buffer.from('jpg').toString('base64'),mime_type:'image/jpeg'}]}]}),{status:200,headers:{'content-type':'application/json'}})}
+ const x=await geminiWisdomImage('scene','k',fake)
+ assert.match(url,/generativelanguage\.googleapis\.com/);assert.equal(body.model,'gemini-3.1-flash-image');assert.deepEqual(body.response_format,[{type:'image',aspect_ratio:'2:3',image_size:'1K'}]);assert.equal(x.bytes.toString(),'jpg')
+ await assert.rejects(geminiWisdomImage('scene','k',(async()=>new Response('{}',{status:200})) as any),/no image/)
 })
 test('P2 TTS adapter uses Korean-directed speech and mp3 bytes',async()=>{
  let body:any

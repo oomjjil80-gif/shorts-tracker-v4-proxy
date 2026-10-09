@@ -34,7 +34,7 @@ export async function readStyleRecord(blobs: JobBlobStore, jobId: string): Promi
 const save = (blobs: JobBlobStore, jobId: string, rec: StyleApprovalRecord) => blobs.putJson(styleApprovalRef(jobId), rec, { overwrite: true })
 
 // Before approval: make (or keep) the thumbnail attempt and say "wait". After approval: the style reference.
-export async function styleGate(o: { jobId: string; blobs: JobBlobStore; script: any; profile: string; apiKey: string; backgroundPrompt: string; draw: DrawFn; copyWriter?: CopyWriter; signal?: AbortSignal }): Promise<{ wait: true; record: StyleApprovalRecord } | { wait: false; record: StyleApprovalRecord; reference: StyleReference }> {
+export async function styleGate(o: { jobId: string; blobs: JobBlobStore; script: any; profile: string; apiKey: string; imageKey: string; backgroundPrompt: string; draw: DrawFn; copyWriter?: CopyWriter; signal?: AbortSignal }): Promise<{ wait: true; record: StyleApprovalRecord } | { wait: false; record: StyleApprovalRecord; reference: StyleReference }> {
   const rec: StyleApprovalRecord = (await readStyleRecord(o.blobs, o.jobId)) ?? { schema: 'style-approval/1', status: 'pending', attempts: [] }
   if (rec.status === 'approved' && rec.approved) {
     const bytes = await o.blobs.getBytes(rec.approved.backgroundRef)
@@ -42,7 +42,7 @@ export async function styleGate(o: { jobId: string; blobs: JobBlobStore; script:
     return { wait: false, record: rec, reference: { bytes, sha: sha256(bytes), features: rec.approved.features, text: styleFeatureText(rec.approved.features), thumbnailRef: rec.approved.thumbnailRef } }
   }
   if (rec.attempts.length && !rec.regenerate) return { wait: true, record: rec } // still waiting for the user
-  if (!o.apiKey) throw new StageError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured', true)
+  if (!o.imageKey) throw new StageError('PROVIDER_DOWN', 'GEMINI_API_KEY is not configured (every picture is drawn by Gemini)', true)
   const work = await mkdtemp(join(tmpdir(), 'style-gate-'))
   try {
     // the words: the video's final title, exactly (never rewritten, shortened or summarised) — see titleThumbnail.ts
@@ -53,7 +53,7 @@ export async function styleGate(o: { jobId: string; blobs: JobBlobStore; script:
     let bg: GeneratedBinary | null = null, imageIssues: string[] = [], thumbBytes: Buffer | null = null
     for (let t = 0; t < 2; t++) {
       if (o.signal?.aborted) throw new Error('aborted')
-      bg = await o.draw(o.backgroundPrompt, o.apiKey)
+      bg = await o.draw(o.backgroundPrompt, o.imageKey)
       const bgPath = join(work, `bg${t}.jpg`); await writeFile(bgPath, bg.bytes)
       // a muddy / too dark / blank background is drawn once more (measured on the picture itself, no AI)
       imageIssues = await thumbnailImageIssues(bgPath)
@@ -74,7 +74,7 @@ export async function styleGate(o: { jobId: string; blobs: JobBlobStore; script:
 // After approval: the ONE representative picture, drawn from the reference and compared with it before anything else.
 // A mismatch never fails the job (no paid automatic retries): the job waits for the user, who redraws only the representative
 // (or a new thumbnail). Returns null = wait.
-export async function representativeCheck(o: { jobId: string; blobs: JobBlobStore; record: StyleApprovalRecord; reference: StyleReference; prompt: string; sceneId: string | null; apiKey: string; drawRef: DrawRefFn; judge?: StyleJudge; cached?: GeneratedBinary | null; tries?: number }): Promise<GeneratedBinary | null> {
+export async function representativeCheck(o: { jobId: string; blobs: JobBlobStore; record: StyleApprovalRecord; reference: StyleReference; prompt: string; sceneId: string | null; apiKey: string; imageKey: string; drawRef: DrawRefFn; judge?: StyleJudge; cached?: GeneratedBinary | null; tries?: number }): Promise<GeneratedBinary | null> {
   // the representative already passed (a retry / restart): reuse it, no check and no call again
   if (o.cached && o.record.representative?.status === 'match') return o.cached
   if (o.record.representative?.status === 'mismatch' && !o.record.redrawRepresentative) return null // still waiting for the user
@@ -91,7 +91,7 @@ export async function representativeCheck(o: { jobId: string; blobs: JobBlobStor
     const tries = o.tries ?? 2
     let x: GeneratedBinary | null = null, r: Awaited<ReturnType<typeof check>> | null = null
     for (let t = 0; t < tries; t++) {
-      x = t === 0 && o.cached ? o.cached : await o.drawRef(`${o.prompt}\n\n${o.reference.text}`, o.reference.bytes, o.apiKey)
+      x = t === 0 && o.cached ? o.cached : await o.drawRef(`${o.prompt}\n\n${o.reference.text}`, o.reference.bytes, o.imageKey)
       r = await check(x)
       if (r.ok) break
     }

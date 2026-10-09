@@ -2,6 +2,7 @@ import type { Request, Response } from 'express'
 import { handleBenchmarkCloneDiagnostic } from '../lib/benchmarkCloneDiagnostic.js'
 import { imageStyleFor, withVisualStyle } from '../lib/generative/creativeProfile.js'
 import { YADAM_STYLE_ID, yadamImagePrompt, yadamReferenceBlocks } from '../lib/generative/yadamStyle.js'
+import { GEMINI_IMAGE_MODEL, GEMINI_INTERACTIONS_URL } from '../lib/generative/geminiImage.js'
 import type { VisualStyleProfile } from '../lib/generative/visualStyle.js'
 import { handleBenchmarkRef01Diagnostic } from '../lib/benchmarkRef01Diagnostic.js'
 
@@ -169,7 +170,7 @@ export default async function handler(req: Request, res: Response) {
 
   const effectiveRatio = ratios.has(ratio) ? ratio : (economyLongform ? '16:9' : '9:16')
   const payload = {
-    model: 'gemini-3.1-flash-image',
+    model: GEMINI_IMAGE_MODEL,
     input: interactionInput,
     response_format: [
       {
@@ -181,7 +182,7 @@ export default async function handler(req: Request, res: Response) {
   }
 
   try {
-    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+    const response = await fetch(GEMINI_INTERACTIONS_URL, {
       method: 'POST',
       headers: {
         'x-goog-api-key': apiKey,
@@ -207,7 +208,7 @@ export default async function handler(req: Request, res: Response) {
       image,
       meta: {
         providerId: 'gemini',
-        modelId: 'gemini-3.1-flash-image',
+        modelId: GEMINI_IMAGE_MODEL,
         requestId: data?.id || null,
         profile: economyLongform ? 'economy-longform-v01' : '',
         effectiveAspectRatio: effectiveRatio,

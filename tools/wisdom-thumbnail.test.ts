@@ -73,7 +73,7 @@ test('REAL: Wisdom SHORTS thumbnail (Schopenhauer topic) through the PACKAGE dec
   const script = await putAddressed(blobs, 'generative-scripts', { schema: 'wisdom-script/1', title: '쇼펜하우어가 말하는 나이 들수록 혼자가 편한 이유', hook: '왜 나이 들수록 혼자가 편할까', beats: [{ narration: '쇼펜하우어는 고독을 두려워하지 말라고 했습니다' }] })
   const brief = await putAddressed(blobs, 'generative-briefs', { text: '쇼펜하우어가 말하는 나이 들수록 혼자가 편한 이유' })
   const prompts: string[] = []
-  const ex = withWisdomThumbnail(pkgExec, { apiKey: 'k', kit: async () => ({ lines: [{ text: '혼자가', color: 'white' }, { text: '편해지는', color: 'purple' }, { text: '진짜 이유', color: 'red' }], figure: 'old man', metadata: A_KIT.metadata }), image: async (p: string) => { prompts.push(p); return { bytes: await readFile(portrait), contentType: 'image/jpeg', provider: 'standin', model: 'still' } } })
+  const ex = withWisdomThumbnail(pkgExec, { apiKey: 'k', imageKey: 'gk', kit: async () => ({ lines: [{ text: '혼자가', color: 'white' }, { text: '편해지는', color: 'purple' }, { text: '진짜 이유', color: 'red' }], figure: 'old man', metadata: A_KIT.metadata }), image: async (p: string) => { prompts.push(p); return { bytes: await readFile(portrait), contentType: 'image/jpeg', provider: 'standin', model: 'still' } } })
   const r: any = await ex.run({ job: { id: 'j', profile: 'wisdom', planRef: brief.path }, blobs, previous: async (s: string) => (s === 'PLAN' ? { result: { scriptRef: script.path } } : null), signal: new AbortController().signal } as any)
   assert.ok(r.result.thumbnailRef, JSON.stringify(r.result))
   assert.match(prompts[0], /Arthur Schopenhauer/) // named thinker is the hero, not a generic elderly man
@@ -93,7 +93,7 @@ test('REAL: Wisdom SHORTS thumbnail (Schopenhauer topic) through the PACKAGE dec
 
 test('a failing thumbnail never blocks the Shorts package', async () => {
   const blobs: any = createMemoryBlobStore()
-  const ex = withWisdomThumbnail(pkgExec, { apiKey: 'k', kit: async () => { throw new Error('provider down') } })
+  const ex = withWisdomThumbnail(pkgExec, { apiKey: 'k', imageKey: 'gk', kit: async () => { throw new Error('provider down') } })
   const r: any = await ex.run({ job: { id: 'j', profile: 'wisdom' }, blobs, previous: async () => ({ result: { scriptRef: (await putAddressed(blobs, 's', { title: 't', beats: [] })).path } }), signal: new AbortController().signal } as any)
   assert.ok(r.result.packageRef); assert.match(r.result.kitError, /provider down/)
 })
@@ -111,7 +111,7 @@ test('EXAMPLE A: Wisdom Shorts "나이 들수록 설명하지 말아야 할 5가
   const brief = await putAddressed(blobs, 'generative-briefs', { text: '나이 들수록 설명하지 말아야 할 5가지' })
   const job = { id: 'job_example_a', profile: 'wisdom', planRef: brief.path }
   let calls = 0
-  const ex = withWisdomThumbnail(pkgExec, { apiKey: 'k', kit: async (inp: any) => { calls++; return calls === 1 ? { ...A_KIT, metadata: oldPhoneSide(A_SCRIPT) } : A_KIT }, image: async () => ({ bytes: await readFile(portrait), contentType: 'image/jpeg', provider: 'standin', model: 'still' }) })
+  const ex = withWisdomThumbnail(pkgExec, { apiKey: 'k', imageKey: 'gk', kit: async (inp: any) => { calls++; return calls === 1 ? { ...A_KIT, metadata: oldPhoneSide(A_SCRIPT) } : A_KIT }, image: async () => ({ bytes: await readFile(portrait), contentType: 'image/jpeg', provider: 'standin', model: 'still' }) })
   const r: any = await ex.run({ job: { ...job, planRef: brief.path }, blobs, previous: async (st: string) => (st === 'PLAN' ? { result: { scriptRef: script.path } } : null), signal: new AbortController().signal } as any)
   assert.equal(calls, 2, 'the first (old-style) kit is rejected and repaired once')
   assert.equal(r.result.uploadReady, true); assert.ok(r.result.thumbnailRef)

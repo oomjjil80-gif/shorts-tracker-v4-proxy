@@ -103,7 +103,7 @@ test('FINAL MP4: Wisdom narration appears as short large captions and every imag
     await blobs.putBytes(`aud/${b.id}.mp3`, mp3, 'audio/mpeg'); await blobs.putJson('generative-cache/tts/' + h('tts-v1|' + b.narration) + '.json', { ref: `aud/${b.id}.mp3`, sha256: h(mp3), contentType: 'audio/mpeg' })
   }
   const stored = await putAddressed(blobs, 'generative-scripts', script)
-  const ex = createGenerativeAssetExecutor({ apiKey: 'k', image: async () => { throw new Error('paid image call') }, tts: async () => { throw new Error('paid tts call') } } as any)
+  const ex = createGenerativeAssetExecutor({apiKey:'k',imageKey:'gk', image: async () => { throw new Error('paid image call') }, tts: async () => { throw new Error('paid tts call') } } as any)
   const out: any = await ex.run({ job: { id: 'jw', profile: 'wisdom', planRev: 1, sourceAssetId: 'src_gen_jw' }, blobs, previous: async (s: string) => (s === 'PLAN' ? { result: { scriptRef: stored.path } } : null), signal: new AbortController().signal } as any)
 
   // ASSET timed plan -> COMPILE manifest -> ASS

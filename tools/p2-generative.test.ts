@@ -224,7 +224,7 @@ test('Wisdom ASSET rerun reuses every cached image/TTS except the anchored think
  const oldPointer={sourceAssetId:'src_gen_j',blobPath:'source-collector/generated/'+'0'.repeat(64)+'.mp4',sha256:'0'.repeat(64),generative:true}
  await blobs.putJson('generative-sources/src_gen_j.json',oldPointer)
  const prompts:string[]=[]; let tts=0
- const ex=createGenerativeAssetExecutor({apiKey:'k',image:async(p:string)=>{prompts.push(p);return {bytes:jpg,contentType:'image/jpeg',provider:'openai',model:'m'}},tts:async()=>{tts++;return {bytes:mp3,contentType:'audio/mpeg',provider:'openai',model:'m'}}})
+ const ex=createGenerativeAssetExecutor({apiKey:'k',imageKey:'gk',image:async(p:string)=>{prompts.push(p);return {bytes:jpg,contentType:'image/jpeg',provider:'openai',model:'m'}},tts:async()=>{tts++;return {bytes:mp3,contentType:'audio/mpeg',provider:'openai',model:'m'}}})
  const out:any=await ex.run({job:{id:'j',profile:'wisdom',planRev:1,sourceAssetId:'src_gen_j'} as any,blobs,previous:async(stage:string)=>(stage==='PLAN'?{result:{scriptRef:stored.path}}:stage==='ASSET'?{result:{assetSpecRef:'generative-assets/prior.json'}}:null) as any,signal:new AbortController().signal} as any)
  assert.equal(prompts.length,1); assert.match(prompts[0],/Arthur Schopenhauer/); assert.equal(tts,0)
  assert.equal(out.result.generated,1); assert.equal(out.result.reused,7)
@@ -255,7 +255,7 @@ test('Wisdom ASSET rerun refuses before any paid call if a non-anchor image or a
  }
  const stored=await putAddressed(blobs,'generative-scripts',script)
  let paid=0
- const ex=createGenerativeAssetExecutor({apiKey:'k',image:async()=>{paid++;throw new Error('must not be called')},tts:async()=>{paid++;throw new Error('must not be called')}})
+ const ex=createGenerativeAssetExecutor({apiKey:'k',imageKey:'gk',image:async()=>{paid++;throw new Error('must not be called')},tts:async()=>{paid++;throw new Error('must not be called')}})
  await assert.rejects(()=>ex.run({job:{id:'j',profile:'wisdom',planRev:1,sourceAssetId:'src_gen_j'} as any,blobs,previous:async(stage:string)=>(stage==='PLAN'?{result:{scriptRef:stored.path}}:{result:{assetSpecRef:'prior'}}) as any,signal:new AbortController().signal} as any),(e:any)=>e.code==='ASSET_RECHECK_WOULD_REGENERATE'&&/b3\.image/.test(e.message)&&!/b1/.test(e.message))
  assert.equal(paid,0)
 })
