@@ -1,0 +1,36 @@
+name: Production yasa 181 inspect (read-only)
+on:
+  push:
+    branches: ['production/yasa-181-inspect']
+    paths: ['.github/workflows/production-yasa-181-inspect.yml']
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Read jobs (GET only, no paid call)
+        env:
+          SYNC_KEY: '${{ secrets.TRACKER_SYNC_KEY }}'
+          API: https://tracker-api-continuity-production.up.railway.app/api/story
+        run: |
+          set -euo pipefail
+          mkdir -p pub
+          H=(-H "X-Sync-Key: $SYNC_KEY" -H 'Accept: application/json')
+          curl -sS "$API?taskType=job_list&limit=15" "${H[@]}" > list.json
+          jq '[.jobs[] | {id,profile,status,stage,createdAt,updatedAt,title}]' list.json | tee pub/list.json
+          for J in $(jq -r '.jobs[] | select(.profile=="yasa_longform") | .id' list.json | head -4); do
+            curl -sS "$API?taskType=job_get&id=$J" "${H[@]}" > job.json
+            jq '{id:.job.id,status:.job.status,stage:.job.stage,waitReason:.job.waitReason,spentUsd:.job.spentUsd,error:.job.error,cost:.job.cost,runs:[.job.runs[]|{stage,attempt,status,error:(.error.message//null|tostring|.[0:300]),paidCalls,estUsd}]}' job.json > "pub/$J.job.json"
+            curl -sS "$API?taskType=job_style&id=$J" "${H[@]}" > style.json
+            jq 'del(.style.thumbnailUrl) | del(.style.representative.url)' style.json > "pub/$J.style.json"
+            U=$(jq -r '.style.thumbnailUrl // empty' style.json); [ -n "$U" ] && curl -sS -o "pub/$J.thumbnail.jpg" "$U" || true
+            R=$(jq -r '.style.representative.url // empty' style.json); [ -n "$R" ] && curl -sS -o "pub/$J.representative.jpg" "$R" || true
+          done
+          ls -la pub; cat pub/*.style.json
+          ! grep -rqi "x-amz\|signature" pub/*.json
+      - name: Publish
+        run: |
+          cd pub && git init -q && git checkout -q -b r && git add -A && git -c user.name=ci -c user.email=ci@local commit -qm "yasa 181 inspect"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" r:refs/heads/production/yasa-181-inspect-out
