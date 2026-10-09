@@ -13,6 +13,7 @@ import { runOk } from '../lib/media/ffmpeg.js'
 import { yasaScenePrompt } from '../lib/generative/yasaLongform.js'
 import { imageStyleFeatures } from '../lib/generative/styleApproval.js'
 import { EXAMPLE_SCENE, EXAMPLE_SCRIPT, YADAM_STYLE_CANDIDATES } from '../lib/generative/yadamStyleCandidates.js'
+import { V4_CROP, V4_PROMPT, V4_REFERENCES, V4_REFERENCE_DIR, buildV4Request } from '../lib/generative/yadamReferenceStyle.js'
 
 const LEGACY_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'style-examples', 'yadam')
 const LINK_MS = 7 * 24 * 3600_000
@@ -30,7 +31,8 @@ export async function runStyleExamplesOnce(o: { env: Record<string, string | und
   const apiKey = String(o.env.OPENAI_API_KEY || '')
   if (!apiKey) { o.log('[style-examples] OPENAI_API_KEY is not set on the worker; nothing done'); return 'invalid' }
   const f = o.fetchImpl ?? fetch
-  if (runId.startsWith('v3')) return runV3(o, runId, base, recRef, apiKey, f)
+  if (runId.startsWith('v3')) { o.log(`[style-examples] v3 runs are retired (its prompt treated the reference as quality-only); nothing done`); return 'invalid' }
+  if (runId.startsWith('v4')) return runV4(o, runId, base, recRef, apiKey, f)
   // claim the run BEFORE any paid call: whatever happens next, this run id never draws again
   await o.blobs.putJson(recRef, { schema: 'style-examples-run/1', status: 'running', startedAt: new Date().toISOString(), worker: o.workerId ?? null }, { overwrite: false })
   const claimed: any = await o.blobs.getJson(recRef).catch(() => null)
@@ -73,52 +75,35 @@ export async function runStyleExamplesOnce(o: { env: Record<string, string | und
   } finally { await rm(work, { recursive: true, force: true }) }
 }
 
-// V3 (one picture): premium Korean romance-webtoon key-visual quality in the Joseon era. ONE paid call, never retried:
-// gpt-image-1 image edit, high, 1536x1024, with two benchmark pictures as QUALITY references (face / eye / skin / hair /
-// light craft only; their amber cast and their people are not copied). The v2-1 results are never used as references.
-export const V3_PROMPT = [
-  'Premium Korean romance-webtoon / anime key-visual illustration — the highest-quality polished digital painting — set in the Joseon dynasty of Korea.',
-  'SCENE (medium shot, both faces and their emotions clearly visible, wide 16:9): in the sunlit courtyard of a tiled-roof hanok (wooden maru veranda, paper-screen doors, a blossoming plum tree, a few onggi crocks softly out of focus), a beautiful young Joseon woman (about 20; delicate oval face, large luminous dark eyes with fine lashes, soft natural blush, glossy black hair in a neat low chignon with a jade binyeo; pale pink silk jeogori with a deep crimson goreum and an indigo silk chima with a subtle woven pattern) receives a small bundle wrapped in a jade-green silk bojagi tied with a gold-thread knot from an elegant, dignified older woman (about 60; kind but serious eyes, gentle refined wrinkles, silver-streaked hair in a low chignon with a silver binyeo; plum-purple jeogori and charcoal-navy chima). Their hands meet over the bundle; the young woman looks up with surprised, moved eyes; the older woman gives a quiet, meaningful smile. Two clearly different faces.',
-  'RENDERING: beautiful natural face proportions, finely drawn eyes with highlights, soft luminous skin with natural warm undertones, individually rendered hair strands with sheen, detailed silk texture, folds and embroidery; rich vivid yet harmonious colours (jade, crimson, soft pink, indigo, plum, fresh spring greens, clear blue sky); bright natural daylight with soft rim light and dimensional light and shadow; clean neutral white balance; crisp focus on the faces, gentle depth of field; a polished, finished, detailed background.',
-  'The attached images are QUALITY references only — for the level of face drawing, eye detail, skin, hair and lighting craft. Do NOT copy their people, poses, clothing, scenes or their warm amber / sepia colour cast; draw these new characters in this new scene.',
-  'NEVER: sepia, yellow or brown tint, beige haze, aged paper, old textbook illustration, folk painting (minhwa) or old storybook look, flat faces, simple outlines, washed-out or muddy colours, dull or grey skin, identical faces; modern clothes or buildings; Chinese or Japanese costume; text, letters, borders, frames, watermark or signature.'
-].join('\n\n')
-const V3_REFERENCES = ['webtoon_historical', 'korean_drama_illustration'] // the benchmark pictures (not v2-1)
-async function runV3(o: { blobs: JobBlobStore; log: (line: string) => void; workerId?: string }, runId: string, base: string, recRef: string, apiKey: string, f: typeof fetch): Promise<'done' | 'already'> {
+// V4 (one picture): the user's 3 reference captures as the PRIMARY style reference (real images, image edit), the
+// contract in yadamReferenceStyle.ts. ONE paid call, never retried. V3's "quality reference only, do not copy" prompt
+// is gone. The request's exact inputs (sizes, hashes, order) are written to the run record.
+async function runV4(o: { blobs: JobBlobStore; log: (line: string) => void; workerId?: string }, runId: string, base: string, recRef: string, apiKey: string, f: typeof fetch): Promise<'done' | 'already'> {
   await o.blobs.putJson(recRef, { schema: 'style-examples-run/1', status: 'running', startedAt: new Date().toISOString(), worker: o.workerId ?? null }, { overwrite: false })
   const claimed: any = await o.blobs.getJson(recRef).catch(() => null)
   if (claimed?.worker !== (o.workerId ?? null) || claimed?.status !== 'running') { o.log(`[style-examples] run ${runId} was claimed by another worker; nothing done`); return 'already' }
-  const work = await mkdtemp(join(tmpdir(), 'style-v3-'))
+  const work = await mkdtemp(join(tmpdir(), 'style-v4-run-'))
   const files: Record<string, string> = {}, errors: Record<string, string> = {}
   try {
-    // the benchmark cards without their cream border, enlarged (lanczos) so the reference is not a tiny blurred card
-    const form = new FormData()
-    form.append('model', 'gpt-image-1'); form.append('prompt', V3_PROMPT); form.append('size', '1536x1024'); form.append('quality', 'high'); form.append('output_format', 'jpeg'); form.append('n', '1')
-    for (const k of V3_REFERENCES) {
-      const out = join(work, `ref-${k}.png`)
-      await runOk(['-y', '-i', join(LEGACY_DIR, `${k}.jpg`), '-vf', 'crop=iw*0.88:ih*0.92:iw*0.06:ih*0.04,scale=-2:1024:flags=lanczos', '-frames:v', '1', out])
-      form.append('image[]', new Blob([new Uint8Array(await readFile(out))], { type: 'image/png' }), `${k}.png`)
-    }
+    const req = await buildV4Request()
     let made: Buffer | null = null
     try { // one call, no retry
-      const r = await f('https://api.openai.com/v1/images/edits', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form })
+      const r = await f(req.endpoint, { method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: req.form })
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`)
       const b64 = ((await r.json()) as any)?.data?.[0]?.b64_json
       if (!b64) throw new Error('no image returned')
       made = Buffer.from(b64, 'base64')
-    } catch (e: any) { errors.v3 = String(e?.message || e).replace(/sk-[A-Za-z0-9_-]+/g, '[key]'); o.log(`[style-examples] v3 failed (not retried): ${errors.v3}`) }
+    } catch (e: any) { errors.v4 = String(e?.message || e).replace(/sk-[A-Za-z0-9_-]+/g, '[key]'); o.log(`[style-examples] v4 failed (not retried): ${errors.v4}`) }
     if (made) {
-      const p = join(work, 'v3.jpg'); await writeFile(p, made)
-      files['v3-representative'] = `${base}/v3-representative.jpg`; await o.blobs.putBytes(files['v3-representative'], made, 'image/jpeg')
-      // comparison: V3 (left) | v2-1 joseon_clean_watercolor (right); the benchmark pictures underneath
-      const v2 = await o.blobs.getBytes('style-examples/candidates/v2-1/joseon_clean_watercolor.jpg').catch(() => null)
-      const v2p = join(work, 'v2.jpg'); if (v2) await writeFile(v2p, v2)
-      const sheet = join(work, 'compare.jpg')
-      await runOk(['-y', '-i', p, ...(v2 ? ['-i', v2p] : ['-f', 'lavfi', '-i', 'color=c=0xdddddd:s=1536x1024']), '-i', join(LEGACY_DIR, `${V3_REFERENCES[0]}.jpg`), '-i', join(LEGACY_DIR, `${V3_REFERENCES[1]}.jpg`), '-filter_complex',
-        '[0:v]scale=960:640[a];[1:v]scale=960:640[b];[a][b]hstack[top];[2:v]scale=-2:640,pad=960:640:(ow-iw)/2:0:color=0xdddddd[c];[3:v]scale=-2:640,pad=960:640:(ow-iw)/2:0:color=0xdddddd[d];[c][d]hstack[bot];[top][bot]vstack[v]', '-map', '[v]', '-frames:v', '1', '-q:v', '3', sheet])
-      files['compare-v3-left-v2-right-benchmark-below'] = `${base}/compare.jpg`; await o.blobs.putBytes(files['compare-v3-left-v2-right-benchmark-below'], await readFile(sheet), 'image/jpeg')
+      const p = join(work, 'v4.jpg'); await writeFile(p, made)
+      files['v4-representative'] = `${base}/v4-representative.jpg`; await o.blobs.putBytes(files['v4-representative'], made, 'image/jpeg')
+      // comparison: V4 (top, large) above the 3 reference frames as they were sent
+      const refs = V4_REFERENCES.map((r) => join(V4_REFERENCE_DIR, r.file)), sheet = join(work, 'compare.jpg')
+      await runOk(['-y', '-i', p, ...refs.flatMap((x) => ['-i', x]), '-filter_complex',
+        `[0:v]scale=1920:1280[a];${refs.map((_, i) => `[${i + 1}:v]${V4_CROP},scale=640:-2,pad=640:268:0:(oh-ih)/2[r${i}]`).join(';')};[r0][r1][r2]hstack=3[b];[a][b]vstack[v]`, '-map', '[v]', '-frames:v', '1', '-q:v', '3', sheet])
+      files['compare-v4-top-references-below'] = `${base}/compare.jpg`; await o.blobs.putBytes(files['compare-v4-top-references-below'], await readFile(sheet), 'image/jpeg')
     }
-    await o.blobs.putJson(recRef, { schema: 'style-examples-run/1', status: 'done', finishedAt: new Date().toISOString(), order: made ? ['v3-representative'] : [], files, errors, report: { prompt: V3_PROMPT, references: V3_REFERENCES } }, { overwrite: true })
+    await o.blobs.putJson(recRef, { schema: 'style-examples-run/1', status: 'done', finishedAt: new Date().toISOString(), order: made ? ['v4-representative'] : [], files, errors, report: { model: req.model, size: req.size, quality: req.quality, endpoint: req.endpoint, inputs: req.inputs, prompt: V4_PROMPT } }, { overwrite: true })
     for (const [k, ref] of Object.entries(files)) { const s = await o.blobs.presign?.(ref, LINK_MS).catch(() => null); o.log(`[style-examples] ${k}: ${s?.url ?? ref}`) }
     o.log(`[style-examples] run ${runId} done (${made ? 1 : 0}/1 picture). Remove STYLE_EXAMPLES_RUN from the worker variables; this run id never draws again.`)
     return 'done'
