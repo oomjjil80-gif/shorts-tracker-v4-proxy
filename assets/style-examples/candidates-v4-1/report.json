@@ -1,0 +1,72 @@
+{
+ "order": [
+  "v4-representative"
+ ],
+ "errors": {},
+ "report": {
+  "model": "gpt-image-1",
+  "size": "1536x1024",
+  "final": {
+   "width": 1536,
+   "height": 864,
+   "cutTop": 80,
+   "cutBottom": 80
+  },
+  "quality": "high",
+  "endpoint": "https://api.openai.com/v1/images/edits",
+  "inputs": [
+   {
+    "file": "capture-1.jpg",
+    "role": "two people, full figures, low angle, Joseon gate, overcast light",
+    "source": {
+     "width": 2340,
+     "height": 1080,
+     "bytes": 960903,
+     "sha256": "a50b865b4eae009f7d6ff6e465feb19c1817347967553c62de0e7bbfac2fb0f5"
+    },
+    "input": {
+     "width": 1920,
+     "height": 800,
+     "bytes": 2183691,
+     "sha256": "c11490d07052b9e3dec0f7c39107891bdfa06ae40a43892ab63d76c4be759ac2",
+     "format": "png"
+    }
+   },
+   {
+    "file": "capture-2.jpg",
+    "role": "face close-up: eyes, brows, skin shading, line weight",
+    "source": {
+     "width": 2340,
+     "height": 1080,
+     "bytes": 863072,
+     "sha256": "145161cf8b4cf2543b0d525cc72f407eab8b6264ee8182d9ac79d1b9a53ba8c0"
+    },
+    "input": {
+     "width": 1920,
+     "height": 800,
+     "bytes": 1704842,
+     "sha256": "292d81ebc86496d87b21d39dde43a9048326a40852381b30116dced8d8fb191f",
+     "format": "png"
+    }
+   },
+   {
+    "file": "capture-3.jpg",
+    "role": "medium shot with hanok roofs and stone wall: background detail and depth",
+    "source": {
+     "width": 2340,
+     "height": 1080,
+     "bytes": 953091,
+     "sha256": "f1dbe08f56ed853d56468cb283d01fb5ab42ea5daa96426466b0b19eea2c89c7"
+    },
+    "input": {
+     "width": 1920,
+     "height": 800,
+     "bytes": 2072942,
+     "sha256": "f5fe1406e07e4b9230cb9e8488458d3934bd69510a86a6e88de15590bfd58f95",
+     "format": "png"
+    }
+   }
+  ],
+  "prompt": "Use the supplied reference image as the primary visual style reference. Preserve its illustration craftsmanship, facial rendering approach, line quality, skin shading, hair detail, lighting sophistication, color harmony, and overall visual polish. Change the characters, costumes, environment, and narrative action according to the new scene description. Do not copy the identities or exact composition of the reference image.\n\nAll three attached images are frames of ONE illustrated video and share one art style; reproduce that art style exactly: Korean historical webtoon (manhwa) rendering with clean confident black ink outlines of varying weight; semi-realistic, attractive face proportions with sharp expressive eyes, defined brows and natural mouths; cel shading with crisp shadow shapes softened by subtle gradients; natural tan skin tones; individually drawn hair strands; fabric with real folds, seams and wear; a detailed, painterly-realistic background (stone, wood grain, roof tiles) with depth; soft overcast natural daylight; the same cool, natural, harmonious palette (slate blue, indigo, stone grey, earth brown, soft sage greens) and the same level of finish.\n\nNew people, new clothes and hairstyles, new place, new action and a new camera framing come only from the scene below — never the reference characters (no headband servant, no bound girl), never their poses or composition.\n\nContent rules (separate from style): Joseon dynasty Korea — Joseon hanbok, Joseon women's hairstyles (chignon with binyeo for married women), hanok architecture and Joseon household objects; no modern or Western clothing or buildings, no Chinese or Japanese costume. One single illustration, wide 16:9, no text, letters, captions, subtitles, borders, frames, panel layout, speech bubbles, logos or watermark.\n\nScene: in the courtyard of a Joseon tiled-roof hanok, a young woman (about 20, beautiful, gentle, in a pale blue-grey jeogori and indigo chima, hair in a neat chignon with a wooden binyeo) and a dignified older woman (about 60, calm and serious, silver-streaked hair in a low chignon, dark plum jeogori and charcoal chima) hand a small cloth bundle wrapped in a bojagi to each other; medium shot at eye level so both faces and emotions read clearly — the young woman moved and uncertain, the older woman quietly resolute. Two clearly different faces.\n\nFraming for a 16:9 frame: this picture will be trimmed to its central 16:9 band (the top 8% and the bottom 8% are cut off). Keep every head with its hair and hairpin, every face, every hand and the bundle well inside the middle 80% of the height, with clear space above the heads; put only sky, roof edges or ground in the top and bottom edges."
+ }
+}
