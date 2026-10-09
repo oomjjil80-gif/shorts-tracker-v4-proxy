@@ -5,7 +5,8 @@
       "includeFiles": "node_modules/{@sparticuz/chromium/bin/**,mediainfo.js/dist/MediaInfoModule.wasm,ffmpeg-static/ffmpeg}"
     },
     "api/image.ts": {
-      "includeFiles": "assets/style-reference/{yadam/sent,golden}/**"
+      "includeFiles": "assets/style-reference/{yadam/sent,golden}/**",
+      "maxDuration": 180
     }
   }
 }

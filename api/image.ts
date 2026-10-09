@@ -4,6 +4,7 @@ import { imageStyleFor, withVisualStyle } from '../lib/generative/creativeProfil
 import { YADAM_STYLE_ID, yadamImagePrompt, yadamReferenceBlocks } from '../lib/generative/yadamStyle.js'
 import { GEMINI_IMAGE_MODEL, GEMINI_INTERACTIONS_URL, geminiImagePayload, type GeminiAspect } from '../lib/generative/geminiImage.js'
 import { GOLDEN_IDENTITY_VERSION, goldenImageRequest, goldenSpec, identityOf } from '../lib/generative/goldenStyle.js'
+import { handleGoldenLockTest } from '../lib/oneoff/goldenLockTest.js' // ONE-OFF TEST, branch yv5-run only
 import type { VisualStyleProfile } from '../lib/generative/visualStyle.js'
 import { handleBenchmarkRef01Diagnostic } from '../lib/benchmarkRef01Diagnostic.js'
 
@@ -82,6 +83,7 @@ function economyLongformServerGuard() {
 export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
+  if (String((req.query as any)?.oneoff || '') === 'golden-lock-test') return handleGoldenLockTest(req, res)
 
   const diagnostic = String((req.query as any)?.diagnostic || '')
   if (req.method === 'GET' && diagnostic === 'benchmark-clone') {
