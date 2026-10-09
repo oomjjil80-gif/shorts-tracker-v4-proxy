@@ -1,0 +1,42 @@
+name: publish 야담 style examples v4-1 (one-off)
+# Runs only on a push to style-examples/publish-v4. Downloads the 6 pictures the worker ALREADY made (no generation, no
+# OpenAI call) through the one-off job_style_examples links, commits them to this branch, then closes the endpoint.
+on:
+  push:
+    branches: ['style-examples/publish-v4']
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: "!contains(github.event.head_commit.message, '[examples-published]')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the 6 existing pictures
+        run: |
+          set -e
+          API="https://tracker-api-continuity-production.up.railway.app/api/story"
+          KEY="publish-$(openssl rand -hex 16)"
+          curl -fsS -H "X-Sync-Key: $KEY" "$API?taskType=job_style_examples&run=v4-1" -o /tmp/run.json
+          mkdir -p assets/style-examples/candidates-v4-1
+          python3 - <<'PY'
+          import json, urllib.request
+          r = json.load(open('/tmp/run.json'))
+          print('pictures:', list(r['files']))
+          for k, url in r['files'].items():
+              name = 'compare.jpg' if k.startswith('compare') else f'{k}.jpg'
+              urllib.request.urlretrieve(url, f'assets/style-examples/candidates-v4-1/{name}')
+          json.dump({k: r[k] for k in ('order', 'errors', 'report')}, open('assets/style-examples/candidates-v4-1/report.json', 'w'), ensure_ascii=False, indent=1)
+          PY
+          ls -la assets/style-examples/candidates-v4-1
+      - name: Commit to this branch
+        run: |
+          git config user.name "style-examples-bot"
+          git config user.email "style-examples-bot@users.noreply.github.com"
+          git add assets/style-examples/candidates-v4-1
+          git commit -m "야담 style examples v4-1 (made by the worker) [examples-published]"
+          git push
+      - name: Close the one-off endpoint
+        run: |
+          curl -fsS -H "X-Sync-Key: publish-$(openssl rand -hex 16)" "https://tracker-api-continuity-production.up.railway.app/api/story?taskType=job_style_examples&run=v4-1&confirm=1"
