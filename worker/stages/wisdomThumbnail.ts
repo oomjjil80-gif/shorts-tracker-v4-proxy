@@ -15,13 +15,9 @@ import { uploadMetadataErrors, uploadPackageText } from '../../lib/generative/up
 import { thinkerDisplayName } from '../../lib/generative/wisdom.js'
 import type { StageExecutor } from '../types.js'
 
-// the parent Longform in a derived Short's description and pinned comment (the short itself stays complete)
-export function derivedUploadText(m: any, parent: { parentLongformTitle: string; parentLongformUrl?: string | null }) {
-  const title = String(parent.parentLongformTitle || '').trim(), url = String(parent.parentLongformUrl || '').trim()
-  const line = `이 이야기는 롱폼 「${title}」의 한 대목입니다. 더 깊은 이야기는 롱폼에서 이어집니다.${url ? ` ${url}` : ''}`
-  const pin = `${String(m.pinnedComment || '').trim()} 전체 이야기는 롱폼 「${title}」에서 더 깊게 다룹니다.`
-  return { ...m, description: `${String(m.description || '').trim()}\n\n${line}`, pinnedComment: [...pin].length <= 250 ? pin : m.pinnedComment }
-}
+// derivedUploadText now lives with the shared upload text (re-exported for existing callers)
+export { derivedUploadText } from '../../lib/generative/wisdomUploadText.js'
+import { wisdomUploadText } from '../../lib/generative/wisdomUploadText.js'
 import { profileFeatures, type FeatureResolver } from '../modules/features.js'
 
 // THUMBNAIL is a feature module: when the profile does not select it, no thumbnail image/render is made and the
@@ -47,25 +43,15 @@ export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string;
         // PLAN replaces job.planRef with the generated plan, so use the preserved original briefRef for publishing copy.
         // This keeps high-value named thinkers (e.g. 쇼펜하우어) available even when the generated on-video title is generic.
         const brief: any = pr.briefRef ? await blobs.getJson(String(pr.briefRef)) : null
-        const topic = String(brief?.text || script.title || ''), narration = (script.beats || []).map((b: any) => b.narration).join(' ')
-        const thinker = thinkerDisplayName(topic)
-        const check = (k: any) => {
-          const upload = uploadMetadataErrors(k.metadata || ({} as any), { narration, format: 'shorts' })
-          if (thinker && !String(k?.metadata?.title || '').includes(thinker)) upload.push('title.missing_named_thinker')
-          return { copy: thumbnail ? thumbnailCopyErrors(k.lines, script.title) : [], upload }
-        }
-        let made = await kit({ topic, title: script.title, hook: script.hook, narration }, apiKey), errs = check(made)
-        if (errs.copy.length || errs.upload.length) {
-          made = await kit({ topic, title: script.title, hook: script.hook, narration, repair: [...errs.copy.map((x) => 'thumbnail ' + x), ...errs.upload] }, apiKey); errs = check(made)
-        }
+        const topic = String(brief?.text || script.title || '')
+        // the upload text (and the thumbnail copy): up to 3 kit calls, every repair says exactly what to fix
+        const up = await wisdomUploadText({ script, brief, apiKey, kit, copy: thumbnail })
+        const made = up.made, errs = up.errors
         // a Short derived from a Wisdom Longform points to it naturally (its URL only once one exists; never a placeholder)
         const parent = brief?.derivedFrom
         if (parent?.parentLongformJobId) extra.derivedFrom = { parentLongformJobId: parent.parentLongformJobId, parentLongformTitle: parent.parentLongformTitle, parentLongformUrl: parent.parentLongformUrl ?? null }
-        if (!errs.upload.length) {
-          const m = parent?.parentLongformTitle ? derivedUploadText(made.metadata, parent) : made.metadata
-          const t = uploadPackageText(m); extra.metadata = { title: t.title, description: t.descriptionWithHashtags, tags: t.tags, hashtags: t.hashtags, pinnedComment: t.pinnedComment }
-        }
-        else notes.uploadError = 'upload text: ' + errs.upload.join(',')
+        if (up.metadata) extra.metadata = up.metadata
+        else { notes.uploadError = 'upload text: ' + errs.upload.join(','); extra.uploadError = { errors: errs.upload, at: new Date().toISOString() } } // stored with the package: never silently empty
         if (thumbnail && !errs.copy.length) {
           try {
             // Golden Style (from job_create): the locked reference is the style, so no style words; otherwise as before
