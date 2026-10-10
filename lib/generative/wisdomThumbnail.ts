@@ -90,6 +90,9 @@ export function thumbnailArgv(o: { image: string; lines: ThumbLine[]; assPath: s
 
 // Publish kit for a Wisdom SHORTS video (Longform gets the same from its planner): the thumbnail's 2-3 re-written
 // meaning units + colours, the thumbnail hero, and the YouTube upload text — one call, written from the actual content.
+// The content check uses narration-word overlap, not semantic similarity. Tell the writer how to ground the
+// question without relaxing that check or substituting a generic comment after a refusal.
+export const WISDOM_PINNED_GROUNDING = 'pinnedComment: quote one short, content-bearing phrase verbatim from Narration (keep its complete words and Korean particles unchanged), then ask a concrete question about that event, choice or dilemma. The phrase must carry the actual subject, not just generic words like 지혜/인생/철학 or a greeting. Do not merely append a keyword to an unrelated question. Use 25-250 characters and include a question mark; do not copy the full narration.'
 export async function openAiWisdomPublishKit(input: { topic: string; title: string; hook: string; narration: string; repair?: string[] }, apiKey: string, model = process.env.OPENAI_PLAN_MODEL || 'gpt-6-luna', f: typeof fetch = fetch): Promise<{ lines: ThumbLine[]; figure: string; metadata: UploadMetadata }> {
   const schema = { type: 'object', additionalProperties: false, required: ['lines', 'figure', 'metadata'], properties: {
     lines: { type: 'array', minItems: 2, maxItems: 3, items: { type: 'object', additionalProperties: false, required: ['text', 'color'], properties: { text: { type: 'string' }, color: { type: 'string', enum: Object.keys(THUMB_COLORS) } } } },
@@ -98,7 +101,7 @@ export async function openAiWisdomPublishKit(input: { topic: string; title: stri
     'You prepare the YouTube publishing kit for ONE Korean wisdom Shorts video from its real script.',
     'lines (thumbnail click copy): 2-3 lines, each a separate meaning unit of at most 8 Korean characters (spaces not counted). Do NOT copy or merely trim the title. The reason to click (curiosity, warning, benefit, contrast) must be obvious in one glance on a phone, e.g. ["절대","만만하게","보이지 마라"]. Colour by meaning: the single most important word/phrase red or purple or green; never only white/yellow; not every line the same colour.',
     'figure: the one person who should be the hero of the thumbnail (if the topic names a philosopher or historical figure, that person with recognizable traits; otherwise a fitting sage). Appearance only.',
-    'metadata (Korean, YouTube Shorts upload text):', UPLOAD_METADATA_RULES,
+    'metadata (Korean, YouTube Shorts upload text):', UPLOAD_METADATA_RULES, WISDOM_PINNED_GROUNDING,
     ...(input.repair?.length ? [`The previous kit was rejected for: ${input.repair.join(', ')}. Fix exactly these.`] : [])
   ].join('\n')
   const res = await f('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model, instructions, input: `Topic: ${input.topic}\nTitle: ${input.title}\nHook: ${input.hook}\nNarration: ${input.narration.slice(0, 2500)}`, text: { format: { type: 'json_schema', name: 'wisdom_publish_kit', strict: true, schema } } }) })
