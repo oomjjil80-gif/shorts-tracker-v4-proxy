@@ -1,0 +1,38 @@
+name: One-time upload text recovery PR185
+on:
+  push:
+    branches: ['production/one-time-upload-recovery-185']
+    paths: ['.github/workflows/one-time-upload-recovery-185.yml']
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Recover missing upload text once (preserve media)
+        env:
+          SYNC_KEY: ${{ secrets.TRACKER_SYNC_KEY }}
+          API: https://tracker-api-continuity-production.up.railway.app/api/story
+          JOB_ID: job_4e8e5d26-62bf-427f-a740-9e32a2d6a688
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SYNC_KEY" || { echo "BLOCK: missing sync key"; exit 1; }
+          curl --fail-with-body -sS --max-time 30 -H "X-Sync-Key: $SYNC_KEY" "$API?taskType=job_package&id=$JOB_ID" > before.json
+          jq -c '{ok, uploadPresent:(.upload.description != null and .upload.description != ""), media:{finalRenderRef:.package.finalRenderRef,thumbnailRef:.package.thumbnailRef}}' before.json
+          if jq -e '(.upload.description // "") != "" and (.upload.pinnedComment // "") != ""' before.json >/dev/null; then
+            echo "Already recovered; skipping paid POST"
+          else
+            printf '{"taskType":"job_upload_text","jobId":"%s"}' "$JOB_ID" > request.json
+            echo "Issuing exactly one POST (curl retries disabled)"
+            curl -sS --max-time 150 -H "X-Sync-Key: $SYNC_KEY" -H 'Content-Type: application/json' --data-binary @request.json "$API" -o response.json -w 'POST HTTP %{http_code}\n'
+            jq -c '{ok, made, calls, error}' response.json
+          fi
+          curl --fail-with-body -sS --max-time 30 -H "X-Sync-Key: $SYNC_KEY" "$API?taskType=job_package&id=$JOB_ID" > after.json
+          jq -c '{ok, fields:{title:(.upload.title|type),description:(.upload.description|type),tags:(.upload.tags|type),hashtags:(.upload.hashtags|type),pinnedComment:(.upload.pinnedComment|type)},media:{finalRenderRef:.package.finalRenderRef,thumbnailRef:.package.thumbnailRef}}' after.json
+          jq -e '(.upload.title // "") != "" and (.upload.description // "") != "" and (.upload.tags | length)>0 and (.upload.hashtags | length)>0 and (.upload.pinnedComment // "") != ""' after.json >/dev/null
+          jq -S '{finalRenderRef:.package.finalRenderRef,thumbnailRef:.package.thumbnailRef}' before.json > media-before.json
+          jq -S '{finalRenderRef:.package.finalRenderRef,thumbnailRef:.package.thumbnailRef}' after.json > media-after.json
+          diff -u media-before.json media-after.json
+          echo "PASS: upload fields populated; media references unchanged"
