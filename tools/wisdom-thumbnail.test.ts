@@ -159,3 +159,58 @@ test('thumbnail canvases are separate contracts: Shorts 9:16 1080x1920, Longform
   assert.ok(l.block.x1 <= 1280 * 0.62 && Math.abs((l.block.y0 + l.block.y1) / 2 - 360) <= 2, JSON.stringify(l.block)) // left, vertically centred
   assert.ok(s.fs > l.fs) // sized for its own canvas
 })
+
+// PR185: deterministic replay of the observed refusal class, NOT a capture of the
+// unavailable Production model output. The real publish-kit HTTP body is inspected;
+// fixed responses never depend on the prompt and no external fetch is used.
+const RECOVERY_NARRATION = '사다리를 빌려준 사람은 매일 이웃의 부탁을 들어주었습니다. 친절이 당연해지는 순간 고마움은 요구로 바뀌었습니다. 쇼펜하우어는 호의를 베풀더라도 자신의 한계를 지키라고 말합니다.'
+const UNRELATED_PIN = '이번 주말에는 어떤 음식을 요리해 드실 계획인가요? 좋아하는 메뉴를 알려주세요.'
+const CONTENT_PIN = '여러분도 “친절이 당연해지는 순간”을 겪으셨나요? 사다리를 빌려준 사람이라면 이웃에게 어떤 한계를 정하시겠어요?'
+const recoveryKit = (pinnedComment: string) => ({ ...A_KIT, metadata: { ...A_KIT.metadata, title: '친절이 요구로 바뀌는 이유｜쇼펜하우어의 사다리 이야기', pinnedComment } })
+const recoveryInput = { topic: '쇼펜하우어와 사다리 우화', title: '친절이 당연해지는 이유', hook: '친절은 언제 요구가 될까요?', narration: RECOVERY_NARRATION }
+
+async function replayUpload(pins: string[]) {
+  const { wisdomUploadText } = await import('../lib/generative/wisdomUploadText.js')
+  const { openAiWisdomPublishKit } = await import('../lib/generative/wisdomThumbnail.js')
+  const bodies: any[] = []
+  const fakeFetch: typeof fetch = async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)))
+    return new Response(JSON.stringify({ output_text: JSON.stringify(recoveryKit(pins[Math.min(bodies.length - 1, pins.length - 1)])) }), { status: 200 })
+  }
+  const result = await wisdomUploadText({
+    script: { title: recoveryInput.title, hook: recoveryInput.hook, beats: [{ narration: RECOVERY_NARRATION }] },
+    brief: { text: recoveryInput.topic }, apiKey: 'local-test-not-a-key',
+    kit: (input, key) => openAiWisdomPublishKit(input, key, 'offline-fixture', fakeFetch)
+  })
+  return { result, bodies }
+}
+
+test('upload recovery: unrelated pinned question is refused, concrete narration question passes unchanged validation', () => {
+  assert.deepEqual(uploadMetadataErrors(recoveryKit(UNRELATED_PIN).metadata, { narration: RECOVERY_NARRATION, format: 'shorts' }), ['pinnedComment.not_about_content'])
+  assert.deepEqual(uploadMetadataErrors(recoveryKit(CONTENT_PIN).metadata, { narration: RECOVERY_NARRATION, format: 'shorts' }), [])
+  assert.ok(uploadMetadataErrors(recoveryKit(oldPhoneSide(A_SCRIPT).pinnedComment).metadata, { narration: RECOVERY_NARRATION, format: 'shorts' }).includes('pinnedComment.generic'))
+})
+
+test('upload recovery: initial provider request specifies verbatim narration grounding and a concrete question', async () => {
+  const { result, bodies } = await replayUpload([CONTENT_PIN])
+  assert.ok(result.metadata); assert.equal(bodies.length, 1)
+  assert.match(bodies[0].instructions, /pinnedComment.*verbatim.*Narration/)
+  assert.match(bodies[0].instructions, /event.*choice.*dilemma/)
+  assert.ok(bodies[0].input.includes(RECOVERY_NARRATION))
+})
+
+test('upload recovery: content refusal sends actionable repair plus rejected comment through the real adapter', async () => {
+  const { result, bodies } = await replayUpload([UNRELATED_PIN, CONTENT_PIN])
+  assert.equal(result.calls, 2); assert.equal(result.metadata?.pinnedComment, CONTENT_PIN)
+  const repair = bodies[1].instructions.split('The previous kit was rejected for: ')[1]
+  assert.match(repair, /pinnedComment.not_about_content.*verbatim.*Narration/)
+  assert.ok(repair.includes(UNRELATED_PIN), 'repair identifies the actual rejected comment')
+  assert.ok(bodies[1].input.includes(RECOVERY_NARRATION), 'repair retains the real source content')
+})
+
+test('upload recovery: three unrelated responses stay refused; no fabricated fallback or additional attempt', async () => {
+  const { result, bodies } = await replayUpload([UNRELATED_PIN])
+  assert.equal(bodies.length, 3); assert.equal(result.calls, 3)
+  assert.equal(result.metadata, null)
+  assert.deepEqual(result.errors.upload, ['pinnedComment.not_about_content'])
+})
