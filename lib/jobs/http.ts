@@ -1,4 +1,5 @@
 import { styleApprovalRef, imageStyleFeatures, thumbnailTextOf } from '../generative/styleApproval.js'
+import { summaryUsd } from '../generative/usageLedger.js'
 import { approvedThumbnailVersion, composeThumbnailVersion, currentThumbnail, readThumbnailOverride, saveThumbnailVersion } from '../generative/thumbnailOverride.js'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -123,18 +124,23 @@ function view(job: Job, runs: StageRun[]) {
   }
 }
 const usageOfRun = (r: StageRun): any => { const u: any = r.usage; return u?.schema === 'usage/1' ? u : u?.ledger?.schema === 'usage/1' ? u.ledger : null }
+// estUsd = the CONFIRMED cost (known prices). A call without a confirmed price is never counted as $0: its reserve
+// (unverified price list / conservative rate) is unconfirmedUsd, and costStatus says whether the total is confirmed.
 export function jobCost(runs: StageRun[]) {
-  const byStage: Record<string, { paidCalls: number; estUsd: number; attempts: number }> = {}, byModel: Record<string, { calls: number; estUsd: number | null; outputTokens: number; reasoningTokens: number }> = {}
-  let paidCalls = 0, estUsd = 0
+  const byStage: Record<string, { paidCalls: number; estUsd: number; unconfirmedUsd: number; attempts: number }> = {}, byModel: Record<string, { calls: number; estUsd: number | null; unconfirmedUsd: number; outputTokens: number; reasoningTokens: number }> = {}
+  let paidCalls = 0, estUsd = 0, unconfirmedUsd = 0
   const unpriced = new Set<string>()
   for (const r of runs) {
     const u = usageOfRun(r); if (!u) continue
-    const s = (byStage[r.stage] ??= { paidCalls: 0, estUsd: 0, attempts: 0 }); s.attempts++; s.paidCalls += u.paidCalls; s.estUsd = Number((s.estUsd + (u.estUsd ?? 0)).toFixed(4))
-    paidCalls += u.paidCalls; estUsd += u.estUsd ?? 0
-    for (const [m, x] of Object.entries<any>(u.byModel ?? {})) { const t = (byModel[m] ??= { calls: 0, estUsd: 0, outputTokens: 0, reasoningTokens: 0 }); t.calls += x.calls; t.outputTokens += x.outputTokens; t.reasoningTokens += x.reasoningTokens; t.estUsd = t.estUsd === null || x.estUsd === null ? null : Number((t.estUsd + x.estUsd).toFixed(4)) }
+    const x = summaryUsd(u)
+    const s = (byStage[r.stage] ??= { paidCalls: 0, estUsd: 0, unconfirmedUsd: 0, attempts: 0 }); s.attempts++; s.paidCalls += u.paidCalls; s.estUsd = Number((s.estUsd + x.confirmed).toFixed(4)); s.unconfirmedUsd = Number((s.unconfirmedUsd + x.unconfirmed).toFixed(4))
+    paidCalls += u.paidCalls; estUsd += x.confirmed; unconfirmedUsd += x.unconfirmed
+    for (const [m, y] of Object.entries<any>(u.byModel ?? {})) { const t = (byModel[m] ??= { calls: 0, estUsd: 0, unconfirmedUsd: 0, outputTokens: 0, reasoningTokens: 0 }); t.calls += y.calls; t.outputTokens += y.outputTokens; t.reasoningTokens += y.reasoningTokens; t.estUsd = t.estUsd === null || y.estUsd === null ? null : Number((t.estUsd + y.estUsd).toFixed(4)); if (y.estUsd === null) t.unconfirmedUsd = Number((t.unconfirmedUsd + summaryUsd({ schema: 'usage/1', estUsd: 0, byModel: { [m]: y }, ...(typeof y.reserveUsd === 'number' ? { unconfirmedUsd: y.reserveUsd } : {}) }).unconfirmed).toFixed(4)) }
     for (const m of u.unpricedModels ?? []) unpriced.add(m)
   }
-  return { paidCalls, estUsd: Number(estUsd.toFixed(4)), byStage, byModel, unpricedModels: [...unpriced] }
+  // an unconfirmed part appears only where there is one (a job with confirmed prices only keeps its former shape)
+  const strip = <T extends { unconfirmedUsd: number }>(o: Record<string, T>) => Object.fromEntries(Object.entries(o).map(([k, v]) => { if (v.unconfirmedUsd) return [k, v]; const { unconfirmedUsd: _u, ...rest } = v; return [k, rest] }))
+  return { paidCalls, estUsd: Number(estUsd.toFixed(4)), unconfirmedUsd: Number(unconfirmedUsd.toFixed(4)), totalUsd: Number((estUsd + unconfirmedUsd).toFixed(4)), costStatus: unpriced.size ? 'unconfirmed' : 'confirmed', byStage: strip(byStage), byModel: strip(byModel), unpricedModels: [...unpriced] }
 }
 
 function matching(value: unknown, re: RegExp, message: string): string {

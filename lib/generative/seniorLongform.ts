@@ -5,7 +5,7 @@
 // always looks the same. Wisdom Longform keeps its one-image mode untouched.
 import { composeImagePrompt, type VisualStyleProfile } from './visualStyle.js'
 import { LONGFORM, sentencesOf, type LongformScript, type LongformSentence } from './longform.js'
-import { estimateUsd, runSpentUsd } from './usageLedger.js'
+import { estimateUsd, runSpentUsd, runUnconfirmedUsd } from './usageLedger.js'
 
 export const SENIOR = {
   acts: 6,
@@ -68,18 +68,22 @@ export function seniorRepeatErrors(o: any): string[] {
 export const SENIOR_COST = { imageUsd: 0.07, checkUsd: 0.01 } as const
 export const ttsUsdOf = (chars: number) => estimateUsd({ api: 'speech', model: 'gpt-4o-mini-tts', inputTokens: 0, cachedTokens: 0, outputTokens: 0, reasoningTokens: 0, images: 0, ttsChars: Math.max(0, chars) }) ?? 0
 const usd = (x: number) => Number(x.toFixed(4))
-export function seniorCostEstimate(o: { pictures: number; extraPictures?: number; narrationChars: number; spentUsd?: number; budgetUsd?: number }) {
+// spentUsd = everything paid so far (confirmed + unconfirmed); unconfirmedUsd = the part without a confirmed price
+export function seniorCostEstimate(o: { pictures: number; extraPictures?: number; narrationChars: number; spentUsd?: number; unconfirmedUsd?: number; budgetUsd?: number }) {
   const images = o.pictures + (o.extraPictures ?? 0), imageUsd = images * SENIOR_COST.imageUsd, ttsUsd = ttsUsdOf(o.narrationChars)
   const assetUsd = imageUsd + ttsUsd, spent = o.spentUsd ?? 0, total = spent + assetUsd
-  return { images, imageUsd: usd(imageUsd), ttsUsd: usd(ttsUsd), assetUsd: usd(assetUsd), spentUsd: usd(spent), totalUsd: usd(total), ...(o.budgetUsd !== undefined ? { budgetUsd: o.budgetUsd, fits: total <= o.budgetUsd } : {}) }
+  const unconfirmed = o.unconfirmedUsd ?? 0
+  return { images, imageUsd: usd(imageUsd), ttsUsd: usd(ttsUsd), assetUsd: usd(assetUsd), spentUsd: usd(spent), confirmedSpentUsd: usd(spent - unconfirmed), unconfirmedUsd: usd(unconfirmed), costStatus: unconfirmed > 0 ? 'unconfirmed' as const : 'confirmed' as const, totalUsd: usd(total), ...(o.budgetUsd !== undefined ? { budgetUsd: o.budgetUsd, fits: total <= o.budgetUsd } : {}) }
 }
 // BUDGET GUARD of one ASSET run: every paid call RESERVES its price first; a call that would take the job over its budget
 // is never sent (the stage stops and the job waits for a bigger budget; everything made so far is stored and reused)
-export function budgetGuard(o: { budgetUsd: number; spentBefore: number }) {
+export function budgetGuard(o: { budgetUsd: number; spentBefore: number; unconfirmedBefore?: number }) {
   let inflight = 0
+  // confirmed + unconfirmed (a call without a confirmed price counts at its reserve, never as $0)
   const spent = () => o.spentBefore + runSpentUsd()
   return {
     spent: () => usd(spent()),
+    unconfirmed: () => usd((o.unconfirmedBefore ?? 0) + runUnconfirmedUsd()),
     // true = paid for (call `done` after the call); false = over budget, do not call
     take(cost: number) { if (spent() + inflight + cost > o.budgetUsd + 1e-9) return false; inflight += cost; return true },
     done(cost: number) { inflight = Math.max(0, inflight - cost) }

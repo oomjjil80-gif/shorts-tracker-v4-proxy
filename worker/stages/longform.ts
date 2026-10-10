@@ -32,7 +32,7 @@ import { openAiStyleJudge } from '../../lib/generative/styleJudge.js'
 import { YADAM_STYLE_VERSION, geminiYadamImage, type YadamDraw } from '../../lib/generative/yadamStyle.js'
 import { composeTitleThumbnail, thumbnailBackgroundPrompt, titleSceneIndex } from '../../lib/generative/titleThumbnail.js'
 import { readThumbnailOverride } from '../../lib/generative/thumbnailOverride.js'
-import { runSpentUsd } from '../../lib/generative/usageLedger.js'
+import { runSpentUsd, runUnconfirmedUsd } from '../../lib/generative/usageLedger.js'
 import { styleApprovalRef } from '../../lib/generative/styleApproval.js'
 import type { StyleJudge } from '../../lib/generative/styleApproval.js'
 import { uploadMetadataErrors } from '../../lib/generative/uploadPackage.js'
@@ -265,7 +265,7 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         }
       }
       // Senior: the pictures and the narration this script will cost (ASSET checks it against the budget before paying)
-      const estimate = senior ? seniorCostEstimate({ pictures: seniorScenes(script).length, extraPictures: styleApprovalWanted(job.profile, brief) ? 1 : 0, narrationChars: [...sentencesOf(script).map((x) => x.say).join('')].length, spentUsd: ((await costSoFar?.()) ?? 0) + runSpentUsd(), budgetUsd: job.budgetUsd }) : null
+      const estimate = senior ? seniorCostEstimate({ pictures: seniorScenes(script).length, extraPictures: styleApprovalWanted(job.profile, brief) ? 1 : 0, narrationChars: [...sentencesOf(script).map((x) => x.say).join('')].length, ...(await (async () => { const c = (await costSoFar?.()) ?? { confirmed: 0, unconfirmed: 0 }; return { spentUsd: c.confirmed + c.unconfirmed + runSpentUsd(), unconfirmedUsd: c.unconfirmed + runUnconfirmedUsd() } })()), budgetUsd: job.budgetUsd }) : null
       return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, ...(estimate ? { estimate } : {}), ...(derived ? { derived } : {}), sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(senior ? { pacing: seniorPacing(script as unknown as SeniorScript, Number(brief.creative?.resolved?.voiceSpeed) || 1) } : {}), ...(yasa ? { yasa: { dna: dnaSource, acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars, coldOpen: { beats: coldOpen.sentences.length, estimatedSeconds: Number(([...coldOpen.sentences.map((x: any) => x.say).join(' ')].length / (LONGFORM.charsPerSecond * (Number(brief.creative?.resolved?.voiceSpeed) || 1))).toFixed(1)) } } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, validation: errors } }
     }
   }
@@ -345,10 +345,11 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       // representative, each scene, each narration chunk, the copy / style checks — reserves its price BEFORE it is sent;
       // one that would take the job over its budget is never sent: the job waits (BUDGET) with what it needs, everything
       // made so far stored (cache), and job_resume goes on paying only for what is missing.
-      const guard = senior && Number.isFinite(job.budgetUsd) ? budgetGuard({ budgetUsd: job.budgetUsd, spentBefore: (await costSoFar?.()) ?? 0 }) : null
+      const before = (await costSoFar?.()) ?? { confirmed: 0, unconfirmed: 0 }
+      const guard = senior && Number.isFinite(job.budgetUsd) ? budgetGuard({ budgetUsd: job.budgetUsd, spentBefore: before.confirmed + before.unconfirmed, unconfirmedBefore: before.unconfirmed }) : null
       let leftNow = () => ({ images: new Set(scenePrompts).size || 1, chars: chunks.reduce((a, c) => a + [...c.text].length, 0) })
       let madeOf = (_l: { images: number; chars: number }) => ({ pictures: 0, narration: 0 })
-      const budgetWait = (l: { images: number; chars: number }) => ({ result: { budget: { ...seniorCostEstimate({ pictures: l.images, narrationChars: l.chars, spentUsd: guard!.spent(), budgetUsd: job.budgetUsd }), stopped: 'before the next paid call', made: madeOf(l) } }, wait: 'BUDGET' as const })
+      const budgetWait = (l: { images: number; chars: number }) => ({ result: { budget: { ...seniorCostEstimate({ pictures: l.images, narrationChars: l.chars, spentUsd: guard!.spent(), unconfirmedUsd: guard!.unconfirmed(), budgetUsd: job.budgetUsd }), stopped: 'before the next paid call', made: madeOf(l) } }, wait: 'BUDGET' as const })
       const paid = async <T>(cost: number, call: () => Promise<T>): Promise<T> => {
         if (!guard) return call()
         if (!guard.take(cost)) throw Object.assign(new Error('BUDGET: the next paid call would cross the job budget'), { budgetStop: budgetWait(leftNow()) })

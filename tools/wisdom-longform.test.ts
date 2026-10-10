@@ -914,7 +914,7 @@ test('SENIOR BUDGET: PLAN estimates pictures + cost; ASSET stops BEFORE the next
   const j2 = (await call2('GET', { query: { taskType: 'job_get', id: c2.json.job.id } })).json.job
   assert.deepEqual([j2.status, j2.waitReason, drawn.length, tts], ['WAITING_USER', 'BUDGET', 0, 0], JSON.stringify({ stage: j2.stage, runs: j2.runs }))
   assert.ok(j2.budgetStop.totalUsd > 1.2 && j2.budgetStop.fits === false, JSON.stringify(j2.budgetStop))
-  assert.deepEqual(seniorCostEstimate({ pictures: 100, narrationChars: 0, budgetUsd: 10 }), { images: 100, imageUsd: 7, ttsUsd: 0, assetUsd: 7, spentUsd: 0, totalUsd: 7, budgetUsd: 10, fits: true })
+  assert.deepEqual(seniorCostEstimate({ pictures: 100, narrationChars: 0, budgetUsd: 10 }), { images: 100, imageUsd: 7, ttsUsd: 0, assetUsd: 7, spentUsd: 0, confirmedSpentUsd: 0, unconfirmedUsd: 0, costStatus: 'confirmed', totalUsd: 7, budgetUsd: 10, fits: true })
 })
 
 test('SENIOR BUDGET (every paid call): the thumbnail-approval picture and the Golden first-scene lock are checked BEFORE they are sent; real exposure vs the estimate is recorded with the cause of every hold over 30 s', async () => {
@@ -939,7 +939,7 @@ test('SENIOR BUDGET (every paid call): the thumbnail-approval picture and the Go
   const runAsset = async (input: any, spent: number, blobs?: any) => {
     const x = await seniorJob(input); if (blobs) { for (const [k, v] of blobs.files) x.blobs.files.set(k, v); for (const [k, v] of blobs.binaries) x.blobs.binaries.set(k, v) }
     x.runs.PLAN = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, log: () => {}, planner: seniorPlanner() as any }).run(x.ctx())
-    const out: any = await asset.run({ ...x.ctx(), job: { ...x.job, budgetUsd: 1 }, costSoFar: async () => spent })
+    const out: any = await asset.run({ ...x.ctx(), job: { ...x.job, budgetUsd: 1 }, costSoFar: async () => ({ confirmed: spent, unconfirmed: 0 }) })
     return { out, x }
   }
   // 1) THUMBNAIL FIRST: the approval picture is never sent over budget; with room it is drawn once and waits for approval
@@ -967,4 +967,43 @@ test('SENIOR BUDGET (every paid call): the thumbnail-approval picture and the Go
   const p: any = runPacing([{ image: 0, seconds: 21, sceneId: 's1' }, { image: 1, seconds: 34, sceneId: 's2' }, { image: 2, seconds: 35, sceneId: 's3' }, { image: 3, seconds: 26, sceneId: 's4' }], { script })
   assert.deepEqual(p.longHolds.map((x: any) => [x.sceneId, x.cause]), [['s2', 'narration spoken slower than estimated'], ['s3', 'planned over the limit']])
   assert.equal(p.overMaxHold, 2); assert.ok(p.realVsEstimate! > 1, 'the voice took longer than the script was sized for')
+})
+
+test('SCRIPT COST without a confirmed price (gpt-5.6-sol): never $0 — recorded as UNCONFIRMED at its reserve, shown apart from the confirmed cost, and counted by the Senior budget stop', async () => {
+  const { meteredFetch, summarize, summaryUsd, reserveUsdOf, estimateUsd } = await import('../lib/generative/usageLedger.js')
+  const { withUsageLedger } = await import('../lib/generative/usageLedger.js')
+  const responses = (model: string, input: number, output: number) => meteredFetch((async () => new Response(JSON.stringify({ model, usage: { input_tokens: input, output_tokens: output } }), { headers: { 'content-type': 'application/json' } })) as any, () => {})('https://api.openai.com/v1/responses', { method: 'POST', body: JSON.stringify({ model }) })
+  // the ledger: confirmed price -> estUsd; gpt-5.6-sol (third-party list only) -> estUsd null + reserve at $5 / $30 per 1M
+  const m = withUsageLedger('t', async () => { await responses('gpt-5.6-sol', 20000, 50000); await responses('gpt-5-mini', 1000, 1000); await responses('some-new-model', 1000, 1000) })
+  await m.run
+  const [sol, mini, unknown] = m.ledger.calls
+  assert.deepEqual([sol.estUsd, sol.reserveUsd], [null, 1.6]); assert.ok(mini.estUsd! > 0 && mini.reserveUsd === undefined); assert.equal(unknown.estUsd, null); assert.ok(unknown.reserveUsd! > 0, 'an unknown model is reserved at the highest known text rate, never 0')
+  const u = summarize(m.ledger.calls)
+  assert.deepEqual([u.costStatus, u.unconfirmedUsd, u.estUsd], ['unconfirmed', Number((1.6 + unknown.reserveUsd!).toFixed(4)), Number(mini.estUsd!.toFixed(4))])
+  assert.deepEqual(u.unpricedModels.sort(), ['gpt-5.6-sol', 'some-new-model'])
+  // a summary stored BEFORE reserves existed (tokens only): its reserve is computed from the tokens
+  assert.deepEqual(summaryUsd({ schema: 'usage/1', paidCalls: 1, estUsd: 0, unpricedModels: ['gpt-5.6-sol'], byModel: { 'gpt-5.6-sol': { calls: 1, inputTokens: 20000, cachedTokens: 0, outputTokens: 50000, reasoningTokens: 0, images: 0, ttsChars: 0, estUsd: null } } }), { confirmed: 0, unconfirmed: 1.6 })
+  // a CONFIRMED price (OPENAI_PRICES_JSON) makes it a confirmed cost
+  process.env.OPENAI_PRICES_JSON = JSON.stringify({ 'gpt-5.6-sol': { in: 5, cached: 0.5, out: 30 } })
+  try { assert.equal(estimateUsd({ api: 'responses', model: 'gpt-5.6-sol', inputTokens: 20000, cachedTokens: 0, outputTokens: 50000, reasoningTokens: 0, images: 0, ttsChars: 0 }), 1.6) } finally { delete process.env.OPENAI_PRICES_JSON }
+  assert.equal(reserveUsdOf({ api: 'responses', model: 'gpt-5.6-sol', inputTokens: 0, cachedTokens: 0, outputTokens: 0, reasoningTokens: 0, images: 0, ttsChars: 0 }), 0)
+  // the budget: a script that paid ~$1.60 unconfirmed leaves too little of $2 for 27 pictures -> ASSET stops BEFORE any
+  // picture (with the old $0 it would have drawn $1.89 of pictures over the budget)
+  const { createTestDb } = await import('./testDb.js'), { createJobStore } = await import('../lib/jobs/store.js'), { createJobsHttp } = await import('../lib/jobs/http.js')
+  const { runOnce } = await import('../worker/runJob.js'), { withLongform } = await import('../worker/stages/longform.js')
+  const KEY = 'c'.repeat(32), store = createJobStore(await createTestDb()), blobs: any = createMemoryBlobStore()
+  const h = createJobsHttp({ getStore: async () => store, blobs, sourceExists: async () => true })
+  const call = async (method: string, o: { body?: any; query?: any } = {}) => { let status = 0, json: any = null; const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } }; await h({ method, headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': KEY }, query: o.query || {}, body: o.body } as any, res); return { status, json } }
+  const base = seniorPlanner(), planner = { ...base, outline: async (...a: any[]) => { await responses('gpt-5.6-sol', 20000, 50000); return (base.outline as any)(...a) } }
+  let drawn = 0
+  const d = await mkdtemp(join(tmpdir(), 'senior-unconfirmed-'))
+  const exec = () => withLongform([], [createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, log: () => {}, planner: planner as any }), createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async (p: string) => { drawn++; return scenePicture(d, p) }, tts: async () => shortTts() } as any)])
+  const tick = () => runOnce({ store, blobs, executors: exec(), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'u', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
+  const id = (await call('POST', { body: { taskType: 'job_create', profile: 'senior_longform', idempotencyKey: 'senior-unconfirmed-01', budgetUsd: 2, input: { kind: 'topic', text: FAMILY, targetSeconds: 3600 } } })).json.job.id
+  await tick(); await tick()
+  const j = (await call('GET', { query: { taskType: 'job_get', id } })).json.job
+  assert.deepEqual([j.status, j.waitReason, drawn], ['WAITING_USER', 'BUDGET', 0], JSON.stringify(j.runs?.slice(-1)))
+  assert.deepEqual([j.cost.costStatus, j.cost.estUsd, j.cost.unconfirmedUsd, j.cost.totalUsd], ['unconfirmed', 0, 1.6, 1.6], 'the job cost: $0 confirmed + $1.60 unconfirmed (never "$0 total")')
+  assert.deepEqual([j.estimate.costStatus, j.estimate.unconfirmedUsd, j.estimate.spentUsd], ['unconfirmed', 1.6, 1.6], 'the PLAN estimate carries the unconfirmed script cost')
+  assert.deepEqual([j.budgetStop.unconfirmedUsd, j.budgetStop.confirmedSpentUsd, j.budgetStop.fits], [1.6, 0, false])
 })

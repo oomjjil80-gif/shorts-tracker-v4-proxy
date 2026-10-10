@@ -2,7 +2,7 @@ import type { JobStore } from '../lib/jobs/store.js'
 import type { JobBlobStore } from '../lib/jobs/blobs.js'
 import { LeaseLostError, type Job } from '../lib/jobs/types.js'
 import { StageError, type SourceAssetLike, type SourceFile, type StageExecutor } from './types.js'
-import { summarize, withUsageLedger } from '../lib/generative/usageLedger.js'
+import { summarize, summaryUsd, withUsageLedger } from '../lib/generative/usageLedger.js'
 
 export type RunDeps = {
   store: JobStore
@@ -52,9 +52,9 @@ export async function runOnce(deps: RunDeps): Promise<RunOutcome> {
         job, attempt, blobs, resolveSourceAsset: deps.resolveSourceAsset, signal: abort.signal,
         resolveSourceFile: deps.resolveSourceFile ?? (async () => { throw new StageError('NO_SOURCE_FILE_RESOLVER', 'worker has no source file resolver') }),
         previous: (stage) => store.getLatestSucceeded(job.id, stage),
-        costSoFar: async () => (await store.listStageRuns(job.id)).reduce((a, r: any) => { const u = r.usage?.schema === 'usage/1' ? r.usage : r.usage?.ledger?.schema === 'usage/1' ? r.usage.ledger : null; return a + (Number(u?.estUsd) || 0) }, 0)
+        costSoFar: async () => (await store.listStageRuns(job.id)).reduce((a, r: any) => { const x = summaryUsd(r.usage?.schema === 'usage/1' ? r.usage : r.usage?.ledger); return { confirmed: a.confirmed + x.confirmed, unconfirmed: a.unconfirmed + x.unconfirmed } }, { confirmed: 0, unconfirmed: 0 })
       }))
-    const spend = () => { const u = summarize(metered.ledger.calls); if (u.paidCalls) console.log(`[cost] job=${job.id} stage=${job.stage} attempt=${attempt} paidCalls=${u.paidCalls} est=${u.estUsd === null ? 'n/a' : '$' + u.estUsd}${u.unpricedModels.length ? ` unpriced=${u.unpricedModels.join(',')}` : ''}`); return u }
+    const spend = () => { const u = summarize(metered.ledger.calls); if (u.paidCalls) console.log(`[cost] job=${job.id} stage=${job.stage} attempt=${attempt} paidCalls=${u.paidCalls} est=${u.estUsd === null ? 'n/a' : '$' + u.estUsd}${u.unconfirmedUsd ? ` unconfirmed=~$${u.unconfirmedUsd}` : ''}${u.unpricedModels.length ? ` unpriced=${u.unpricedModels.join(',')}` : ''}`); return u }
     try {
       const res = await metered.run
       if (leaseLost) return { ran: true, jobId: job.id, stage: job.stage, outcome: 'lease_lost' }

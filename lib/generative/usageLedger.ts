@@ -5,8 +5,10 @@
 // It never changes a request or a response, and never fails a call (metering errors are swallowed).
 import { AsyncLocalStorage } from 'node:async_hooks'
 
-export type UsageCall = { api: string; model: string; name?: string; imageSize?: string; inputTokens: number; cachedTokens: number; outputTokens: number; reasoningTokens: number; images: number; ttsChars: number; estUsd: number | null }
-export type UsageSummary = { schema: 'usage/1'; paidCalls: number; byModel: Record<string, { calls: number; inputTokens: number; cachedTokens: number; outputTokens: number; reasoningTokens: number; images: number; ttsChars: number; estUsd: number | null }>; estUsd: number | null; unpricedModels: string[] }
+export type UsageCall = { api: string; model: string; name?: string; imageSize?: string; inputTokens: number; cachedTokens: number; outputTokens: number; reasoningTokens: number; images: number; ttsChars: number; estUsd: number | null; reserveUsd?: number }
+// estUsd = the CONFIRMED part only (models with a known price); a call without a confirmed price is never $0: it carries
+// reserveUsd (an unverified / conservative estimate), reported apart as unconfirmedUsd and counted by every budget check
+export type UsageSummary = { schema: 'usage/1'; paidCalls: number; byModel: Record<string, { calls: number; inputTokens: number; cachedTokens: number; outputTokens: number; reasoningTokens: number; images: number; ttsChars: number; estUsd: number | null; reserveUsd?: number }>; estUsd: number | null; unpricedModels: string[]; unconfirmedUsd?: number; costStatus?: 'confirmed' | 'unconfirmed' }
 type Ledger = { calls: UsageCall[]; label: string }
 
 // USD per 1M tokens (text: in / cached in / out; image models: text in / image out). A model without a known price is
@@ -24,6 +26,14 @@ const DEFAULT_PRICES: Record<string, Price> = {
 function prices(): Record<string, Price> {
   try { return { ...DEFAULT_PRICES, ...(process.env.OPENAI_PRICES_JSON ? JSON.parse(process.env.OPENAI_PRICES_JSON) : {}) } } catch { return DEFAULT_PRICES }
 }
+// NOT CONFIRMED prices: no OpenAI page for these was found, only third-party price lists (gpt-5.6-sol: $5 in / $0.50
+// cached / $30 out per 1M, Oct 2026). They are never reported as a confirmed cost: a call is recorded with estUsd null and
+// this as its reserveUsd. Any other model without a price is reserved at the highest known text rate. A confirmed price
+// goes into OPENAI_PRICES_JSON (or DEFAULT_PRICES), which makes the cost confirmed.
+export const UNVERIFIED_PRICES: Record<string, Price & { source: string }> = {
+  'gpt-5.6-sol': { in: 5, cached: 0.5, out: 30, source: 'third-party price lists, not confirmed by OpenAI' }
+}
+export const UNKNOWN_MODEL_RESERVE: Price = { in: 5, cached: 0.5, out: 30 }
 const TTS_CHARS_PER_SECOND = 6.2 // the measured Korean narration pace (LONGFORM.charsPerSecond)
 
 export function estimateUsd(c: Omit<UsageCall, 'estUsd'>): number | null {
@@ -35,22 +45,40 @@ export function estimateUsd(c: Omit<UsageCall, 'estUsd'>): number | null {
   return Number(((fresh * p.in + c.cachedTokens * (p.cached ?? p.in) + c.outputTokens * p.out) / 1e6).toFixed(5))
 }
 
+// the unverified / conservative estimate of a call that has no confirmed price (never 0 for a paid call)
+export function reserveUsdOf(c: Omit<UsageCall, 'estUsd'>): number {
+  const p = UNVERIFIED_PRICES[c.model] ?? UNVERIFIED_PRICES[c.model.replace(/-\d{4}-\d{2}-\d{2}$/, '')] ?? UNKNOWN_MODEL_RESERVE
+  const fresh = Math.max(0, c.inputTokens - c.cachedTokens)
+  return Number(((fresh * p.in + c.cachedTokens * (p.cached ?? p.in) + c.outputTokens * p.out) / 1e6).toFixed(5))
+}
 const store = new AsyncLocalStorage<Ledger>()
 // what the CURRENT run has paid so far (the ledger of the stage run this code is called from; 0 outside a run)
-export const runSpentUsd = () => (store.getStore()?.calls ?? []).reduce((a, c) => a + (c.estUsd ?? 0), 0)
+export const runSpentUsd = () => (store.getStore()?.calls ?? []).reduce((a, c) => a + (c.estUsd ?? c.reserveUsd ?? 0), 0)
+// the part of it without a confirmed price
+export const runUnconfirmedUsd = () => (store.getStore()?.calls ?? []).reduce((a, c) => a + (c.estUsd === null ? c.reserveUsd ?? 0 : 0), 0)
 export const withUsageLedger = <T>(label: string, fn: () => Promise<T>) => { const l: Ledger = { calls: [], label }; return { ledger: l, run: store.run(l, fn) } }
 export function summarize(calls: UsageCall[]): UsageSummary {
   const byModel: UsageSummary['byModel'] = {}, unpriced = new Set<string>()
-  let total = 0
+  let total = 0, reserve = 0
   for (const c of calls) {
     const m = (byModel[c.model] ??= { calls: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, reasoningTokens: 0, images: 0, ttsChars: 0, estUsd: 0 })
     m.calls++; m.inputTokens += c.inputTokens; m.cachedTokens += c.cachedTokens; m.outputTokens += c.outputTokens; m.reasoningTokens += c.reasoningTokens; m.images += c.images; m.ttsChars += c.ttsChars
-    if (c.estUsd === null) { m.estUsd = null; unpriced.add(c.model) } else if (m.estUsd !== null) m.estUsd = Number((m.estUsd + c.estUsd).toFixed(5))
+    if (c.estUsd === null) { m.estUsd = null; unpriced.add(c.model); const r = c.reserveUsd ?? reserveUsdOf(c); m.reserveUsd = Number(((m.reserveUsd ?? 0) + r).toFixed(5)); reserve += r } else if (m.estUsd !== null) m.estUsd = Number((m.estUsd + c.estUsd).toFixed(5))
     total += c.estUsd ?? 0
   }
-  return { schema: 'usage/1', paidCalls: calls.length, byModel, estUsd: calls.length ? Number(total.toFixed(4)) : 0, unpricedModels: [...unpriced] }
+  return { schema: 'usage/1', paidCalls: calls.length, byModel, estUsd: calls.length ? Number(total.toFixed(4)) : 0, unpricedModels: [...unpriced], unconfirmedUsd: Number(reserve.toFixed(4)), costStatus: unpriced.size ? 'unconfirmed' : 'confirmed' }
 }
 
+// a stored run summary -> { confirmed, unconfirmed } USD. A summary written before reserves existed still carries the token
+// counts of its unpriced models, so their reserve is computed from them (never 0 for a paid call without a price)
+export function summaryUsd(u: any): { confirmed: number; unconfirmed: number } {
+  if (!u || u.schema !== 'usage/1') return { confirmed: 0, unconfirmed: 0 }
+  const confirmed = Number(u.estUsd) || 0
+  if (typeof u.unconfirmedUsd === 'number') return { confirmed, unconfirmed: u.unconfirmedUsd }
+  let unconfirmed = 0
+  for (const [model, m] of Object.entries<any>(u.byModel ?? {})) if (m?.estUsd === null) unconfirmed += reserveUsdOf({ api: 'responses', model, inputTokens: Number(m.inputTokens) || 0, cachedTokens: Number(m.cachedTokens) || 0, outputTokens: Number(m.outputTokens) || 0, reasoningTokens: 0, images: 0, ttsChars: 0 })
+  return { confirmed, unconfirmed: Number(unconfirmed.toFixed(4)) }
+}
 const n = (x: any) => (Number.isFinite(Number(x)) ? Number(x) : 0)
 // what one OpenAI request/response cost (no AI, no extra request): Responses / Images usage blocks; speech = characters
 export function usageOf(url: string, reqBody: any, json: any): Omit<UsageCall, 'estUsd'> | null {
@@ -96,10 +124,10 @@ export function meteredFetch(base: typeof fetch, log: (line: string) => void = (
       const json = isJson ? await res.clone().json().catch(() => null) : null
       const u = usageOf(url, req, json)
       if (!u) return res
-      const call: UsageCall = { ...u, estUsd: estimateUsd(u) }
+      const est = estimateUsd(u), call: UsageCall = { ...u, estUsd: est, ...(est === null ? { reserveUsd: reserveUsdOf(u) } : {}) }
       const l = store.getStore()
       if (l) l.calls.push(call)
-      log(`[cost] ${l?.label ?? 'no-job'} ${call.api} model=${call.model}${call.name ? ` name=${call.name}` : ''} in=${call.inputTokens} cached=${call.cachedTokens} out=${call.outputTokens} reasoning=${call.reasoningTokens}${call.images ? ` images=${call.images}` : ''}${call.ttsChars ? ` ttsChars=${call.ttsChars}` : ''} est=${call.estUsd === null ? 'n/a' : '$' + call.estUsd}`)
+      log(`[cost] ${l?.label ?? 'no-job'} ${call.api} model=${call.model}${call.name ? ` name=${call.name}` : ''} in=${call.inputTokens} cached=${call.cachedTokens} out=${call.outputTokens} reasoning=${call.reasoningTokens}${call.images ? ` images=${call.images}` : ''}${call.ttsChars ? ` ttsChars=${call.ttsChars}` : ''} est=${call.estUsd === null ? `unconfirmed(~$${call.reserveUsd})` : '$' + call.estUsd}`)
     } catch { /* metering never breaks a call */ }
     return res
   }) as typeof fetch
