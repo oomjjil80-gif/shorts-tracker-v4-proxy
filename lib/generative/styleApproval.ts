@@ -35,7 +35,7 @@ export type StyleApprovalRecord = {
   // 썸네일만 다시 생성 (after approval): ONE new thumbnail picture; the approved picture stays the style / character lock
   thumbnailRequest?: { at: string }
   approved?: { n: number; backgroundRef: string; thumbnailRef: string; features: StyleFeatures; at: string }
-  representative?: { sceneId: string | null; ref: string; distance: number; textureDistance?: number; judge?: StyleJudgement | null; status: 'match' | 'mismatch'; tries: number }
+  representative?: { sceneId: string | null; ref: string; distance: number; textureDistance?: number; judge?: StyleJudgement | null; status: 'match' | 'mismatch'; tries: number; accepted?: { by: 'user'; at: string } }
 }
 export type StyleJudgement = { same: boolean; score: number; differences: string[] }
 // the final word on "same art style": one small vision call with both pictures (only after the free checks passed)

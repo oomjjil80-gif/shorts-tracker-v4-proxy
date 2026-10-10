@@ -1007,3 +1007,22 @@ test('SCRIPT COST without a confirmed price (gpt-5.6-sol): never $0 — recorded
   assert.deepEqual([j.estimate.costStatus, j.estimate.unconfirmedUsd, j.estimate.spentUsd], ['unconfirmed', 1.6, 1.6], 'the PLAN estimate carries the unconfirmed script cost')
   assert.deepEqual([j.budgetStop.unconfirmedUsd, j.budgetStop.confirmedSpentUsd, j.budgetStop.fits], [1.6, 0, false])
 })
+
+test('지혜 롱폼 현재 그림체 승인 (accept): the representative the user accepted IS the one picture — kept byte for byte, zero image calls, the stage goes on', async () => {
+  const { imageStyleFeatures, styleApprovalRef } = await import('../lib/generative/styleApproval.js')
+  const d = await mkdtemp(join(tmpdir(), 'lf-accept-')), tb: any = createMemoryBlobStore(), pic = await standInImage(d)
+  const brief = await putAddressed(tb, 'generative-briefs', normalizeLongformBrief({ kind: 'topic', text: '부처님이 말하는 마음 다스리는 법', targetSeconds: 3600, thumbnailFirst: true }))
+  const script = await putAddressed(tb, 'generative-scripts', SAMPLE)
+  const ap = join(d, 'approved.jpg'); await writeFile(ap, pic); await tb.putBytes('style/approved-bg.jpg', pic, 'image/jpeg')
+  const rep = Buffer.concat([pic, Buffer.from([0])]); await tb.putBytes('style-approval/representative/kept.jpg', rep, 'image/jpeg')
+  await tb.putJson(styleApprovalRef('ja'), { schema: 'style-approval/1', status: 'approved', attempts: [{ n: 1, backgroundRef: 'style/approved-bg.jpg', thumbnailRef: 'style/approved-thumb.jpg', lines: [], copyIssues: [], imageIssues: [], at: 'x' }], approved: { n: 1, backgroundRef: 'style/approved-bg.jpg', thumbnailRef: 'style/approved-thumb.jpg', features: await imageStyleFeatures(ap), at: 'x' }, representative: { sceneId: null, ref: 'style-approval/representative/kept.jpg', distance: 0.5, status: 'match', accepted: { by: 'user', at: 'x' }, tries: 2 } })
+  let drawn = 0
+  const out: any = await createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async () => { drawn++; throw new Error('no drawing') }, imageRef: async () => { drawn++; throw new Error('no drawing') }, tts: async () => shortTts(), styleJudge: async () => { throw new Error('no judge') } } as any)
+    .run({ job: { id: 'ja', profile: 'wisdom_longform', planRev: 1, planRef: brief.path }, blobs: tb, previous: async () => ({ result: { scriptRef: script.path } }), signal: new AbortController().signal } as any)
+  assert.ok(out.result.assetSpecRef, JSON.stringify(out.result)); assert.equal(drawn, 0, 'no picture drawn and no judge call')
+  const m: any = await tb.getJson(out.result.assetSpecRef)
+  assert.equal(m.approvedThumbnail.backgroundRef, 'style/approved-bg.jpg', 'the approved thumbnail stays the thumbnail')
+  const raw = createHash('sha256').update(rep).digest('hex')
+  assert.ok(m.image.sha256 === raw || m.image.mirrored === true, 'the one picture is the kept representative (mirrored only if its figure is on the left, as always)')
+  assert.ok(await tb.getBytes('style-approval/representative/kept.jpg'), 'the representative file is kept')
+})

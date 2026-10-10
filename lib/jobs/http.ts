@@ -287,7 +287,7 @@ export function createJobsHttp(deps: JobsDeps) {
           replacement: ov ? { n: ov.current.n, source: ov.current.source, text: ov.current.text, imageIssues: ov.current.imageIssues, check: ov.current.check ? { ok: ov.current.check.ok, score: ov.current.check.judge?.score ?? null, differences: ov.current.check.judge?.differences ?? [] } : null, versions: ov.history.length } : null,
           copy: (rec.attempts?.at(-1)?.lines ?? []).map((l: any) => String(l?.text || '')), issues: ov ? ov.current.imageIssues : [...(rec.attempts?.at(-1)?.copyIssues ?? []), ...(rec.attempts?.at(-1)?.imageIssues ?? [])],
           regenerating: rec.regenerate === true, redrawingRepresentative: rec.redrawRepresentative === true,
-          representative: rec.representative ? { status: rec.representative.status, distance: rec.representative.distance, url: await url(rec.representative.ref) } : null
+          representative: rec.representative ? { status: rec.representative.status, distance: rec.representative.distance, url: await url(rec.representative.ref), ...(rec.representative.accepted ? { accepted: true } : {}) } : null
         } })
       }
 
@@ -308,7 +308,7 @@ export function createJobsHttp(deps: JobsDeps) {
       // new thumbnail). Only a job waiting for its thumbnail; the decision names the attempt the user saw.
       if (taskType === 'job_style_decision') {
         const jobId = need(String(body.jobId || ''), 'jobId is required'), action = String(body.action || '')
-        need(['approve', 'regenerate', 'representative', 'thumbnail_redraw', 'thumbnail_text'].includes(action), 'action must be approve, regenerate, representative, thumbnail_redraw or thumbnail_text')
+        need(['approve', 'regenerate', 'representative', 'thumbnail_redraw', 'thumbnail_text', 'accept'].includes(action), 'action must be approve, regenerate, representative, thumbnail_redraw, thumbnail_text or accept')
         const job = await store.getJob(jobId, workspaceId)
         if (!job) throw new JobError('NOT_FOUND', 'job not found')
         // 문구만 바꾸기: the current thumbnail picture + the user's words (no AI call, no job state change). Allowed until the
@@ -330,6 +330,21 @@ export function createJobsHttp(deps: JobsDeps) {
           catch (e: any) { throw new JobError('BAD_REQUEST', `${e?.code || 'THUMB_TITLE_OVERFLOW'}: ${String(e?.message || e)}`) }
           const ov = await saveThumbnailVersion(deps.blobs, job.id, rec, v)
           return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)), thumbnail: { n: ov.current.n, text: ov.current.text, lines: ov.current.lines } })
+        }
+        // 현재 그림체 승인 · 제작 계속 (every profile with the representative check): the user keeps the approved thumbnail
+        // AND the representative scene as they are — no picture is drawn, the representative counts as matched and the SAME
+        // job goes on (the worker reuses the kept picture). Stored in the approval record; a repeat (double tap, network
+        // retry) after it was accepted answers with the job as it is and never resumes it twice.
+        if (action === 'accept') {
+          const rec: any = await deps.blobs.getJson(styleApprovalRef(job.id)).catch(() => null)
+          if (!rec || rec.status !== 'approved' || !rec.representative) throw new JobError('NO_THUMBNAIL', 'no representative scene is waiting')
+          if (rec.representative.accepted) return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)), style: { status: rec.status, representative: 'accepted', repeated: true } })
+          if (job.status !== 'WAITING_USER' || job.waitReason !== 'DECISION' || job.stage !== 'ASSET') throw new JobError('NOT_AWAITING_THUMBNAIL', `job is ${job.status}/${job.stage}/${job.waitReason}`)
+          if (rec.representative.status !== 'mismatch' || rec.thumbnailRequest || rec.redrawRepresentative) throw new JobError('NO_THUMBNAIL', 'no representative mismatch is waiting')
+          rec.representative = { ...rec.representative, status: 'match', accepted: { by: 'user', at: new Date().toISOString() } }
+          await deps.blobs.putJson(styleApprovalRef(job.id), rec, { overwrite: true })
+          const next = await store.resumeStyleApproval({ jobId: job.id, workspaceId })
+          return res.status(200).json({ ok: true, job: view(next, await store.listStageRuns(next.id)), style: { status: rec.status, representative: 'accepted' } })
         }
         if (job.status !== 'WAITING_USER' || job.waitReason !== 'DECISION' || job.stage !== 'ASSET') throw new JobError('NOT_AWAITING_THUMBNAIL', `job is ${job.status}/${job.stage}/${job.waitReason}`)
         // 썸네일만 다시 생성: after approval, the worker draws ONE new thumbnail picture (the approved one stays the style /
