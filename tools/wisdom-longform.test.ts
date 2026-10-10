@@ -916,3 +916,55 @@ test('SENIOR BUDGET: PLAN estimates pictures + cost; ASSET stops BEFORE the next
   assert.ok(j2.budgetStop.totalUsd > 1.2 && j2.budgetStop.fits === false, JSON.stringify(j2.budgetStop))
   assert.deepEqual(seniorCostEstimate({ pictures: 100, narrationChars: 0, budgetUsd: 10 }), { images: 100, imageUsd: 7, ttsUsd: 0, assetUsd: 7, spentUsd: 0, totalUsd: 7, budgetUsd: 10, fits: true })
 })
+
+test('SENIOR BUDGET (every paid call): the thumbnail-approval picture and the Golden first-scene lock are checked BEFORE they are sent; real exposure vs the estimate is recorded with the cause of every hold over 30 s', async () => {
+  const { createTestDb } = await import('./testDb.js'), { createJobStore } = await import('../lib/jobs/store.js'), { createJobsHttp } = await import('../lib/jobs/http.js')
+  const { runOnce } = await import('../worker/runJob.js'), { withLongform } = await import('../worker/stages/longform.js')
+  const KEY = 't'.repeat(32)
+  const env = async () => {
+    const store = createJobStore(await createTestDb()), blobs: any = createMemoryBlobStore()
+    ;(blobs as any).presign = async (ref: string) => ({ url: `memory://${ref}`, validUntil: 'x' })
+    const h = createJobsHttp({ getStore: async () => store, blobs, sourceExists: async () => true })
+    const call = async (method: string, o: { body?: any; query?: any } = {}) => { let status = 0, json: any = null; const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } }; await h({ method, headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': KEY }, query: o.query || {}, body: o.body } as any, res); return { status, json } }
+    return { store, blobs, call }
+  }
+  const d = await mkdtemp(join(tmpdir(), 'senior-guard-'))
+  const pic = await scenePicture(d, 'visual 1-1'), sent: string[] = []
+  // the Gemini request itself is counted (a stand-in for the provider); no call may reach it over budget
+  const imageFetch: any = async (_u: string, init: any) => { sent.push(JSON.parse(init.body).input[0].text); return new Response(JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'image', data: pic.bytes.toString('base64'), mime_type: 'image/jpeg' }] }] }), { status: 200, headers: { 'content-type': 'application/json' } }) }
+  const image = async (p: string, k: string) => { const { geminiLongformImage } = await import('../lib/generative/providers.js'); return geminiLongformImage(p, k, imageFetch) }
+  const executors = () => withLongform([], [createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, log: () => {}, planner: seniorPlanner() as any }), createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image, imageFetch, tts: async () => shortTts(), copyWriter: async () => { throw new Error('no rewrite') }, styleJudge: async () => ({ same: true, score: 90, differences: [] }) } as any)])
+  // the real ASSET stage, $0.98 already spent of a $1.00 budget: no picture ($0.07) fits any more
+  const asset = createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image, imageFetch, tts: async () => shortTts(), copyWriter: async () => { throw new Error('no rewrite') }, styleJudge: async () => ({ same: true, score: 90, differences: [] }) } as any)
+  const runAsset = async (input: any, spent: number, blobs?: any) => {
+    const x = await seniorJob(input); if (blobs) { for (const [k, v] of blobs.files) x.blobs.files.set(k, v); for (const [k, v] of blobs.binaries) x.blobs.binaries.set(k, v) }
+    x.runs.PLAN = await createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, log: () => {}, planner: seniorPlanner() as any }).run(x.ctx())
+    const out: any = await asset.run({ ...x.ctx(), job: { ...x.job, budgetUsd: 1 }, costSoFar: async () => spent })
+    return { out, x }
+  }
+  // 1) THUMBNAIL FIRST: the approval picture is never sent over budget; with room it is drawn once and waits for approval
+  let r = await runAsset({ thumbnailFirst: true }, 0.98)
+  assert.deepEqual([r.out.wait, sent.length], ['BUDGET', 0], JSON.stringify(r.out.result))
+  assert.equal(r.out.result.budget.stopped, 'before the next paid call'); assert.equal(r.out.result.budget.fits, false)
+  r = await runAsset({ thumbnailFirst: true }, 0)
+  assert.equal(r.out.wait, 'DECISION'); assert.ok(sent.length >= 1 && sent.length <= 2, `${sent.length} approval pictures (the gate redraws a muddy one once, as before)`)
+  // 2) GOLDEN style: the first-scene character lock is a paid picture too — checked before it is sent; no lock without it
+  sent.length = 0
+  r = await runAsset({ visualStyleProfile: 'golden-3' }, 0.98)
+  assert.deepEqual([r.out.wait, sent.length], ['BUDGET', 0])
+  const { goldenLockPath } = await import('../lib/generative/goldenStyle.js')
+  assert.equal(await r.x.blobs.getJson(goldenLockPath(r.x.job.id)), null, 'no lock stored without its picture')
+  // the job view shows the PLAN estimate with the budget (before any picture is made)
+  const e = await env(), tick = () => runOnce({ store: e.store, blobs: e.blobs, executors: withLongform([], [createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, log: () => {}, planner: seniorPlanner() as any })]), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'e', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
+  const je = (await e.call('POST', { body: { taskType: 'job_create', profile: 'senior_longform', idempotencyKey: 'senior-guard-estimate', budgetUsd: 5, input: { kind: 'topic', text: FAMILY, targetSeconds: 3600, thumbnailFirst: true } } })).json.job.id
+  await tick()
+  const jv = (await e.call('GET', { query: { taskType: 'job_get', id: je } })).json.job
+  assert.deepEqual([jv.estimate.images, jv.estimate.budgetUsd, jv.estimate.fits], [28, 5, true], JSON.stringify(jv.estimate))
+  // 3) quality record: each picture's REAL seconds vs the estimate; a hold over 30 s gets its cause (nothing is cut)
+  const cps = LONGFORM.charsPerSecond, sc = (id: string) => ({ id, place: 'p', time: 't', characters: [], action: id, mood: 'm', visual: id })
+  const sent2 = (scene: string, sec: number) => ({ say: '가'.repeat(Math.round(sec * cps)), show: ['가', '나'], accent: '가', color: 'red', scene })
+  const script: any = { sections: [{ id: 'a1', scenes: [sc('s1'), sc('s2'), sc('s3'), sc('s4')], sentences: [sent2('s1', 20), sent2('s2', 12), sent2('s2', 12), sent2('s3', 33), sent2('s4', 25)] }] }
+  const p: any = runPacing([{ image: 0, seconds: 21, sceneId: 's1' }, { image: 1, seconds: 34, sceneId: 's2' }, { image: 2, seconds: 35, sceneId: 's3' }, { image: 3, seconds: 26, sceneId: 's4' }], { script })
+  assert.deepEqual(p.longHolds.map((x: any) => [x.sceneId, x.cause]), [['s2', 'narration spoken slower than estimated'], ['s3', 'planned over the limit']])
+  assert.equal(p.overMaxHold, 2); assert.ok(p.realVsEstimate! > 1, 'the voice took longer than the script was sized for')
+})

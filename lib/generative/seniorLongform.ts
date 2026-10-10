@@ -64,7 +64,8 @@ export function seniorRepeatErrors(o: any): string[] {
 }
 // ---- COST (Senior only): what the pictures and the narration of this script will cost, before ASSET pays for any ----
 // one 16:9 1K Gemini picture incl. its reference-image input (measured ~$0.068 on a real job), rounded up
-export const SENIOR_COST = { imageUsd: 0.07 } as const
+// a copy / style check (one small text or vision call) is reserved at checkUsd before it is sent
+export const SENIOR_COST = { imageUsd: 0.07, checkUsd: 0.01 } as const
 export const ttsUsdOf = (chars: number) => estimateUsd({ api: 'speech', model: 'gpt-4o-mini-tts', inputTokens: 0, cachedTokens: 0, outputTokens: 0, reasoningTokens: 0, images: 0, ttsChars: Math.max(0, chars) }) ?? 0
 const usd = (x: number) => Number(x.toFixed(4))
 export function seniorCostEstimate(o: { pictures: number; extraPictures?: number; narrationChars: number; spentUsd?: number; budgetUsd?: number }) {
@@ -93,10 +94,23 @@ export function seniorPacing(s: SeniorScript, speed = 1) {
   const r = (x: number) => Number(x.toFixed(1))
   return { pictures: all.length, avgSeconds: r(all.reduce((a, b) => a + b, 0) / Math.max(1, all.length)), minSeconds: r(Math.min(...all)), maxSeconds: r(Math.max(...all)), inTarget: all.filter((t) => t >= SENIOR.pace.targetMin && t <= SENIOR.pace.targetMax).length, overMaxHold: all.filter((t) => t > SENIOR.pace.maxHold).length, hookBy: hookAt, repeated: seniorRepeatErrors(s).length }
 }
-// the real pacing from the rendered runs (seconds each picture was on screen)
-export function runPacing(runs: Array<{ image: number; seconds: number }>) {
+// the real pacing from the rendered runs (seconds each picture was on screen). With the script: each picture's REAL time
+// next to its PLAN estimate, and for every picture over maxHold the reason (recorded only — nothing is cut or redrawn)
+export function runPacing(runs: Array<{ image: number; seconds: number; sceneId?: string }>, o: { script?: SeniorScript; speed?: number } = {}) {
   const r = (x: number) => Number(x.toFixed(1)), t = runs.map((x) => x.seconds)
-  return { runs: runs.length, avgSeconds: r(t.reduce((a, b) => a + b, 0) / Math.max(1, t.length)), maxSeconds: r(Math.max(0, ...t)), overMaxHold: t.filter((x) => x > SENIOR.pace.maxHold).length, sameImageBackToBack: runs.filter((x, i) => i > 0 && runs[i - 1].image === x.image).length }
+  const base = { runs: runs.length, avgSeconds: r(t.reduce((a, b) => a + b, 0) / Math.max(1, t.length)), maxSeconds: r(Math.max(0, ...t)), overMaxHold: t.filter((x) => x > SENIOR.pace.maxHold).length, sameImageBackToBack: runs.filter((x, i) => i > 0 && runs[i - 1].image === x.image).length }
+  if (!o.script) return base
+  const said = new Map<string, string[]>()
+  for (const a of o.script.sections) for (const x of a.sentences) said.set(x.scene, [...(said.get(x.scene) ?? []), String(x.say || '')])
+  const est = (id: string) => secondsOf((said.get(id) ?? []).reduce((a, x) => a + [...x].length, 0), o.speed ?? 1)
+  const estTotal = runs.reduce((a, x) => a + (x.sceneId ? est(x.sceneId) : 0), 0), realTotal = t.reduce((a, b) => a + b, 0)
+  const longHolds = runs.filter((x) => x.seconds > SENIOR.pace.maxHold && x.sceneId).map((x) => {
+    const e = est(x.sceneId!), n = said.get(x.sceneId!)?.length ?? 0, longest = Math.max(0, ...(said.get(x.sceneId!) ?? []).map((y) => secondsOf([...y].length, o.speed ?? 1)))
+    const cause = e > SENIOR.pace.maxHold ? 'planned over the limit' : n === 1 || longest > SENIOR.pace.maxHold ? 'one sentence longer than the limit' : 'narration spoken slower than estimated'
+    return { sceneId: x.sceneId!, seconds: r(x.seconds), estimatedSeconds: r(e), sentences: n, cause }
+  })
+  // real / estimated: > 1 = the voice took longer than the script was sized for
+  return { ...base, estimatedTotalSeconds: r(estTotal), realTotalSeconds: r(realTotal), realVsEstimate: estTotal ? Number((realTotal / estTotal).toFixed(3)) : null, longHolds }
 }
 
 const norm = (t: unknown) => String(t ?? '').replace(/\s+/g, ' ').trim().toLowerCase()

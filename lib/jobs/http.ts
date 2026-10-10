@@ -115,6 +115,8 @@ function view(job: Job, runs: StageRun[]) {
     error: job.status === 'FAILED' ? (lastFail?.error as any)?.message ?? 'failed' : null,
     // paid calls of this job so far (every attempt, failed ones too): estimated USD + call counts per stage / model
     cost: jobCost(runs),
+    // Senior: the PLAN's estimate (pictures, image / narration USD) against the budget, shown before the pictures are made
+    estimate: (latest(runs, 'PLAN')?.result as any)?.estimate ?? null,
     // a budget stop (Senior ASSET): what is still unpaid and the budget it needs to go on
     budgetStop: job.status === 'WAITING_USER' && job.waitReason === 'BUDGET' ? ((latest(runs, job.stage)?.result as any)?.budget ?? null) : null,
     runs: runs.map((r) => ({ stage: r.stage, kind: r.kind, attempt: r.attempt, status: r.status, error: r.error, finishedAt: r.finishedAt, paidCalls: usageOfRun(r)?.paidCalls ?? 0, estUsd: usageOfRun(r)?.estUsd ?? 0 }))
