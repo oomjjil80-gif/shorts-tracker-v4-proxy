@@ -1,4 +1,5 @@
 import { styleApprovalRef, imageStyleFeatures, thumbnailTextOf } from '../generative/styleApproval.js'
+import { summaryUsd } from '../generative/usageLedger.js'
 import { approvedThumbnailVersion, composeThumbnailVersion, currentThumbnail, readThumbnailOverride, saveThumbnailVersion } from '../generative/thumbnailOverride.js'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -47,7 +48,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -60,7 +61,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
   JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503,
-  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409
+  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409
 }
 
 const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
@@ -115,22 +116,31 @@ function view(job: Job, runs: StageRun[]) {
     error: job.status === 'FAILED' ? (lastFail?.error as any)?.message ?? 'failed' : null,
     // paid calls of this job so far (every attempt, failed ones too): estimated USD + call counts per stage / model
     cost: jobCost(runs),
+    // Senior: the PLAN's estimate (pictures, image / narration USD) against the budget, shown before the pictures are made
+    estimate: (latest(runs, 'PLAN')?.result as any)?.estimate ?? null,
+    // a budget stop (Senior ASSET): what is still unpaid and the budget it needs to go on
+    budgetStop: job.status === 'WAITING_USER' && job.waitReason === 'BUDGET' ? ((latest(runs, job.stage)?.result as any)?.budget ?? null) : null,
     runs: runs.map((r) => ({ stage: r.stage, kind: r.kind, attempt: r.attempt, status: r.status, error: r.error, finishedAt: r.finishedAt, paidCalls: usageOfRun(r)?.paidCalls ?? 0, estUsd: usageOfRun(r)?.estUsd ?? 0 }))
   }
 }
 const usageOfRun = (r: StageRun): any => { const u: any = r.usage; return u?.schema === 'usage/1' ? u : u?.ledger?.schema === 'usage/1' ? u.ledger : null }
+// estUsd = the CONFIRMED cost (known prices). A call without a confirmed price is never counted as $0: its reserve
+// (unverified price list / conservative rate) is unconfirmedUsd, and costStatus says whether the total is confirmed.
 export function jobCost(runs: StageRun[]) {
-  const byStage: Record<string, { paidCalls: number; estUsd: number; attempts: number }> = {}, byModel: Record<string, { calls: number; estUsd: number | null; outputTokens: number; reasoningTokens: number }> = {}
-  let paidCalls = 0, estUsd = 0
+  const byStage: Record<string, { paidCalls: number; estUsd: number; unconfirmedUsd: number; attempts: number }> = {}, byModel: Record<string, { calls: number; estUsd: number | null; unconfirmedUsd: number; outputTokens: number; reasoningTokens: number }> = {}
+  let paidCalls = 0, estUsd = 0, unconfirmedUsd = 0
   const unpriced = new Set<string>()
   for (const r of runs) {
     const u = usageOfRun(r); if (!u) continue
-    const s = (byStage[r.stage] ??= { paidCalls: 0, estUsd: 0, attempts: 0 }); s.attempts++; s.paidCalls += u.paidCalls; s.estUsd = Number((s.estUsd + (u.estUsd ?? 0)).toFixed(4))
-    paidCalls += u.paidCalls; estUsd += u.estUsd ?? 0
-    for (const [m, x] of Object.entries<any>(u.byModel ?? {})) { const t = (byModel[m] ??= { calls: 0, estUsd: 0, outputTokens: 0, reasoningTokens: 0 }); t.calls += x.calls; t.outputTokens += x.outputTokens; t.reasoningTokens += x.reasoningTokens; t.estUsd = t.estUsd === null || x.estUsd === null ? null : Number((t.estUsd + x.estUsd).toFixed(4)) }
+    const x = summaryUsd(u)
+    const s = (byStage[r.stage] ??= { paidCalls: 0, estUsd: 0, unconfirmedUsd: 0, attempts: 0 }); s.attempts++; s.paidCalls += u.paidCalls; s.estUsd = Number((s.estUsd + x.confirmed).toFixed(4)); s.unconfirmedUsd = Number((s.unconfirmedUsd + x.unconfirmed).toFixed(4))
+    paidCalls += u.paidCalls; estUsd += x.confirmed; unconfirmedUsd += x.unconfirmed
+    for (const [m, y] of Object.entries<any>(u.byModel ?? {})) { const t = (byModel[m] ??= { calls: 0, estUsd: 0, unconfirmedUsd: 0, outputTokens: 0, reasoningTokens: 0 }); t.calls += y.calls; t.outputTokens += y.outputTokens; t.reasoningTokens += y.reasoningTokens; t.estUsd = t.estUsd === null || y.estUsd === null ? null : Number((t.estUsd + y.estUsd).toFixed(4)); if (y.estUsd === null) t.unconfirmedUsd = Number((t.unconfirmedUsd + summaryUsd({ schema: 'usage/1', estUsd: 0, byModel: { [m]: y }, ...(typeof y.reserveUsd === 'number' ? { unconfirmedUsd: y.reserveUsd } : {}) }).unconfirmed).toFixed(4)) }
     for (const m of u.unpricedModels ?? []) unpriced.add(m)
   }
-  return { paidCalls, estUsd: Number(estUsd.toFixed(4)), byStage, byModel, unpricedModels: [...unpriced] }
+  // an unconfirmed part appears only where there is one (a job with confirmed prices only keeps its former shape)
+  const strip = <T extends { unconfirmedUsd: number }>(o: Record<string, T>) => Object.fromEntries(Object.entries(o).map(([k, v]) => { if (v.unconfirmedUsd) return [k, v]; const { unconfirmedUsd: _u, ...rest } = v; return [k, rest] }))
+  return { paidCalls, estUsd: Number(estUsd.toFixed(4)), unconfirmedUsd: Number(unconfirmedUsd.toFixed(4)), totalUsd: Number((estUsd + unconfirmedUsd).toFixed(4)), costStatus: unpriced.size ? 'unconfirmed' : 'confirmed', byStage: strip(byStage), byModel: strip(byModel), unpricedModels: [...unpriced] }
 }
 
 function matching(value: unknown, re: RegExp, message: string): string {
@@ -478,6 +488,15 @@ export function createJobsHttp(deps: JobsDeps) {
       if (taskType === 'job_retry_render') {
         // a Longform that failed at RENDER: the SAME job renders again from its stored assets (no new job, no AI call)
         const job = await store.retryLongformRender({ jobId: need(String(body.jobId || ''), 'jobId is required'), workspaceId })
+        return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)) })
+      }
+
+      // a job WAITING for budget (Senior ASSET stopped before a paid call): the SAME job goes on with a bigger budget; the
+      // pictures / narration already made are in the cache, so nothing is paid twice
+      if (taskType === 'job_resume') {
+        const jobId = need(String(body.jobId || ''), 'jobId is required'), budgetUsd = Number(body.budgetUsd)
+        need(Number.isFinite(budgetUsd) && budgetUsd > 0 && budgetUsd <= MAX_BUDGET_USD, `budgetUsd must be 0..${MAX_BUDGET_USD}`)
+        const job = await store.resumeJob({ jobId, workspaceId, budgetUsd })
         return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)) })
       }
 
