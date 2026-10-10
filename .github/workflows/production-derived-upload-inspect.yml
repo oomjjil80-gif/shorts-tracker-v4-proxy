@@ -1,0 +1,24 @@
+name: Derived Shorts upload inspect (read-only)
+on:
+  push:
+    branches: ['production/derived-upload-inspect']
+    paths: ['.github/workflows/production-derived-upload-inspect.yml']
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: GET only (no paid call, nothing written)
+        env:
+          SYNC_KEY: '${{ secrets.TRACKER_SYNC_KEY }}'
+          API: https://tracker-api-continuity-production.up.railway.app/api/story
+        run: |
+          set -uo pipefail
+          H=(-H "X-Sync-Key: $SYNC_KEY" -H 'Accept: application/json')
+          curl -sS "$API?taskType=job_list&limit=40" "${H[@]}" > list.json
+          jq -c '.jobs[] | select(.profile=="wisdom" or .profile=="wisdom_longform") | {id,profile,status,stage,createdAt,title:(.title//"")[0:60]}' list.json
+          for J in $(jq -r '.jobs[] | select(.profile=="wisdom") | .id' list.json | head -8); do
+            echo "=== $J"
+            curl -sS "$API?taskType=job_get&id=$J" "${H[@]}" | jq -c '{status:.job.status,stage:.job.stage,final:.job.final,runs:[.job.runs[]|select(.status=="SUCCEEDED")|.stage]}'
+            curl -sS "$API?taskType=job_package&id=$J" "${H[@]}" | jq -c '{ok, err:.error, upload, metadata:.package.metadata, derivedFrom:.package.derivedFrom, keys:(.package|keys?), script:{title:.script.title, beats:(.script.beats|length)}}' | cut -c1-3000
+          done
