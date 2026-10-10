@@ -621,7 +621,7 @@ test('LOUDNESS: the narration is levelled ONCE to about -17 LUFS (true peak <= -
 
 // ======================= SENIOR LONGFORM: the same engine in its story "scenes" mode =======================
 import { LONGFORM_MODES, longformMode } from '../lib/generative/longform.js'
-import { mergeSameScenes, seniorActErrors, seniorScenePlan, seniorScenes, sceneRuns, characterLine, sceneMotion, SENIOR } from '../lib/generative/seniorLongform.js'
+import { mergeSameScenes, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorScenePrompt, seniorScenePlan, seniorScenes, sceneRuns, characterLine, sceneMotion, SENIOR } from '../lib/generative/seniorLongform.js'
 import { VISUAL_STYLE_PROFILES } from '../lib/generative/visualStyle.js'
 
 const FAMILY = '어머니가 마지막으로 차려준 밥상'
@@ -667,7 +667,9 @@ async function seniorJob(input: any = {}) {
 test('SENIOR 17-21: Wisdom Longform keeps its single-image mode; Senior is the scenes mode: 6 acts, ~24-30 pictures, watercolor by default', async () => {
   assert.deepEqual([LONGFORM_MODES.wisdom_longform.images, LONGFORM_MODES.senior_longform.images], ['single', 'scenes'])
   assert.equal(longformMode('wisdom_longform').research, true); assert.equal(longformMode('senior_longform').research, false)
-  assert.deepEqual(seniorScenePlan(3600), { acts: 6, scenesPerAct: { min: 4, max: 5 }, charsPerAct: 3720 })
+  // PACING: one picture per 15-30 s of narration (60 min: 20-40 per act); the fake planner below draws 4-5 per act
+  assert.deepEqual(seniorScenePlan(3600), { acts: 6, scenesPerAct: { min: 20, max: 40 }, charsPerAct: 3720 })
+  assert.deepEqual(seniorScenePlan(2700).scenesPerAct, { min: 15, max: 30 })
   const { ctx, runs, brief } = await seniorJob()
   assert.equal(brief.creative!.resolved.visualStyleProfile, 'senior-warm-watercolor')
   const calls: Record<string, number> = {}, research: any[] = []
@@ -680,6 +682,7 @@ test('SENIOR 17-21: Wisdom Longform keeps its single-image mode; Senior is the s
   const pics = seniorScenes(script)
   assert.equal(pics.length, 27); assert.ok(pics.length >= 24 && pics.length <= 30)
   assert.equal(out.result.scenes, 27); assert.deepEqual(out.result.creative.resolved.visualStyleProfile, 'senior-warm-watercolor')
+  assert.deepEqual([out.result.pacing.pictures, out.result.pacing.overMaxHold, out.result.pacing.repeated], [27, 0, 0], 'the PLAN stores its pacing report')
   // the repeated scene was merged: its sentence is told over the first scene's picture
   assert.ok(!pics.some((s: any) => s.id === 'a1dup')); assert.deepEqual(script.sections[0].sentences.slice(0, 2).map((x: any) => x.scene), ['a1s1', 'a1s1'])
 })
@@ -728,6 +731,7 @@ test('SENIOR 18 + 23-25 + REAL RENDER: one picture per scene in ONE style with t
   // REAL RENDER: 16:9, the length of the narration, every scene on screen while its sentences are told
   const r: any = await createLongformRenderExecutor({ features: () => new Set(['LONGFORM_RENDER', 'CAPTION', 'QC']) as any }).run(ctx())
   assert.equal(r.result.scenePictures, 27); assert.equal(r.result.canvas, '1920x1080')
+  assert.deepEqual([r.result.pacing.runs, r.result.pacing.overMaxHold, r.result.pacing.sameImageBackToBack], [27, 0, 0], 'RENDER reports the real seconds per picture')
   const file = join(d, 'senior.mp4'); await (await import('node:fs/promises')).writeFile(file, await blobs.getBytes(r.result.variants[0].renderRef))
   const info = await probe(file)
   assert.ok(Math.abs(Number(info.duration) - m.narration.seconds) < 0.5, `${info.duration} vs ${m.narration.seconds}`)
@@ -814,4 +818,46 @@ test('Golden Style + FIRST-IMAGE CHARACTER LOCK (issue #179, PR #180): Wisdom / 
   await check(tsent, 'golden-4', ['Painterly realistic portrait'], approvedPic)
   assert.equal(((await tb.getJson(goldenLockPath('jt'))) as any).source, 'approved-thumbnail')
   assert.ok(s.sent.every((x) => x.body.input[0].text.includes(characterLine(CAST[0] as any))), 'the same mother in every picture')
+})
+
+test('SENIOR PACING: a picture is held 8-15 s (never over 30 s), no picture twice, the hook in the first 30 s, shots in the picture prompt; the checks are Senior-only', async () => {
+  const sc = (id: string, o: any = {}) => ({ id, place: '부엌', time: '아침', characters: ['mother'], action: `act ${id}`, mood: 'warm', shot: 'medium', visual: `v ${id}`, ...o })
+  const say = (scene: string, chars: number) => ({ say: '가'.repeat(chars), show: ['가', '나'], accent: '가', color: 'red' as const, scene })
+  const cps = LONGFORM.charsPerSecond
+  // 25 s over one picture passes; 31 s is refused (the act is written again); at 0.8x speed the same text is longer on screen
+  assert.deepEqual(seniorPacingErrors({ scenes: [sc('s1'), sc('s2')], sentences: [say('s1', Math.round(25 * cps)), say('s2', 40)] }), [])
+  const long = seniorPacingErrors({ scenes: [sc('s1')], sentences: [say('s1', Math.round(16 * cps)), say('s1', Math.round(15 * cps))] })
+  assert.equal(long.length, 1); assert.match(long[0], /pacing\.scene_too_long:s1:31s/)
+  assert.equal(seniorPacingErrors({ scenes: [sc('s1')], sentences: [say('s1', Math.round(26 * cps))] }, 0.8).length, 1, 'slower voice -> longer hold')
+  // the same picture twice in the video is refused; the same scene twice IN A ROW is one picture (merged), not a repeat
+  const outline = (acts: any[][]) => ({ sections: acts.map((scenes, i) => ({ id: `a${i + 1}`, scenes })) })
+  assert.deepEqual(seniorRepeatErrors(outline([[sc('a1s1'), sc('a1s1b', { action: 'act a1s1', visual: 'v a1s1' })], [sc('a2s1')]])), [])
+  assert.match(seniorRepeatErrors(outline([[sc('a1s1'), sc('a1s2')], [sc('a2s1', { action: 'act a1s1', visual: 'v a1s1' })]])).join(';'), /repeated_picture:a2s1=a1s1/)
+  // the shot reaches the picture prompt (close-up for emotion); a scene without a shot keeps the old prompt
+  const s: any = { characters: CAST, sections: [] }
+  const wc = VISUAL_STYLE_PROFILES['senior-warm-watercolor']
+  assert.match(seniorScenePrompt(s, sc('x', { shot: 'close-up' }), wc), /Close-up shot: the face and its expression fill the frame\./)
+  const { shot: _drop, ...noShot } = sc('y'); assert.ok(!/shot/i.test(seniorScenePrompt(s, noShot as any, wc).split('Characters')[0].replace(/Style[\s\S]*/, '')))
+  // the whole-script report: pictures, seconds per picture, in-target count, holds over 30 s, when the hook is spoken
+  const script: any = { hook: '그날 밤 어머니가 사라졌다', characters: CAST, sections: [{ id: 'a1', scenes: [sc('a1s1'), sc('a1s2'), sc('a1s3')], sentences: [{ ...say('a1s1', 20), say: '그날 밤 어머니가 사라졌다. 아무도 몰랐다.' }, say('a1s1', 40), say('a1s2', Math.round(12 * cps)), say('a1s3', Math.round(40 * cps))] }] }
+  const p = seniorPacing(script)
+  assert.deepEqual([p.pictures, p.overMaxHold, p.repeated], [3, 1, 0]); assert.ok(p.hookBy !== null && p.hookBy <= SENIOR.pace.hookSeconds, `hook at ${p.hookBy}s`)
+  assert.ok(p.inTarget >= 1 && p.maxSeconds >= 40)
+  // the rendered runs: the real seconds each picture was on screen (and the same picture back to back)
+  assert.deepEqual(runPacing([{ image: 0, seconds: 12 }, { image: 1, seconds: 31 }, { image: 1, seconds: 5 }]), { runs: 3, avgSeconds: 16, maxSeconds: 31, overMaxHold: 1, sameImageBackToBack: 1 })
+  // the planner asks for it: pacing in seconds and characters, the hook in 30 s, shots per moment, the 6-step arc
+  const sent: any[] = []
+  const f: any = async (_u: string, init: any) => { const b = JSON.parse(init.body); sent.push(b); const out = sent.length === 1 ? { title: 't', hook: 'h', figure: { name: 'n', imagePrompt: 'p' }, thumbnail: { lines: [] }, characters: [], sections: [] } : { sentences: [] }; return new Response(JSON.stringify({ output_text: JSON.stringify(out) }), { status: 200 }) }
+  const { openAiSeniorPlanner } = await import('../lib/generative/seniorPlanner.js')
+  const brief = normalizeLongformBrief({ kind: 'topic', text: FAMILY, targetSeconds: 2700 }, 'senior_longform')
+  const pl = openAiSeniorPlanner(f)
+  const o: any = await pl.outline(brief as any, 6, 'k').catch(() => null)
+  void o
+  const oi = String(sent[0]?.instructions ?? ''), schema = JSON.stringify(sent[0]?.text?.format?.schema ?? sent[0])
+  assert.match(oi, /15-30 VISUAL scenes/); assert.match(oi, /8-15 seconds per picture and NEVER more than 30 seconds/); assert.match(oi, /first 30 seconds \(about 186 Korean characters/)
+  assert.match(oi, /close-up/); assert.match(oi, /over-the-shoulder/); assert.match(oi, /never the same picture twice/)
+  assert.ok(SENIOR.actRoles.map((r) => r.split(':')[0]).join('>') === 'Hook>Conflict>Crisis>Reversal>Emotional reward>Ending')
+  assert.match(schema, /"maxItems":30/); assert.match(schema, /"close-up"/)
+  await pl.section({ brief: brief as any, outline: { title: 't', hook: 'h', sections: [{ id: 'a1', heading: 'h', points: ['p'], scenes: [sc('a1s1')] }] } as any, index: 0, previousTail: [], targetChars: 1000 } as any, 'k').catch(() => null)
+  assert.match(String(sent[1]?.instructions ?? ''), /about 50-93 Korean characters over each scene .* NEVER more than 186 characters/)
 })

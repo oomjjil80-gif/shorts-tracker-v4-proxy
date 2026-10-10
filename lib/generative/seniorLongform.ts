@@ -9,14 +9,20 @@ import { LONGFORM, sentencesOf, type LongformScript, type LongformSentence } fro
 export const SENIOR = {
   acts: 6,
   // the six acts of the story template (adapted to the story, never an explainer)
-  actRoles: ['Hook: something goes wrong / a question that hurts', 'The people and their relationship', 'The conflict deepens', 'The decisive event or the reversal', 'The emotional aftermath', 'Closing: what it means for a life, a quiet aftertaste'],
+  // hook -> conflict -> crisis -> reversal -> emotional reward -> an ending that lingers
+  actRoles: ['Hook: a strong event or an emotional question within the first 30 seconds (no greeting, no background first)', 'Conflict: the people, what they want and what stands between them', 'Crisis: the conflict deepens to the worst moment', 'Reversal: the decisive event that turns the story', 'Emotional reward: what the reversal gives back (reconciliation, truth, gratitude)', 'Ending: a quiet aftertaste that stays with the viewer'],
+  // PACING: how long one picture stays on screen (narration told over it). A new picture only for a real visible change
+  // (expression, action, place, viewpoint); never more than maxHold seconds, never a split just to add pictures.
+  pace: { hookSeconds: 30, targetMin: 8, targetMax: 15, maxHold: 30 },
+  // the shot of a scene picture (the image prompt; motion is the renderer's own zoom / pan cycle)
+  shots: ['close-up', 'medium', 'wide', 'over-the-shoulder', 'low-angle', 'high-angle'],
   canvas: { w: 1920, h: 1080 },
   // bottom subtitle cards (the picture is the whole frame)
   text: { x: 960, bottom: 70, maxWidth: 1640, basePx: 78, minPx: 54 }
 } as const
 
 export type CharacterBible = { id: string; name: string; role: string; gender: string; age: string; face: string; hair: string; build: string; outfit: string; colors: string }
-export type SeniorScene = { id: string; place: string; time: string; characters: string[]; action: string; mood: string; visual: string }
+export type SeniorScene = { id: string; place: string; time: string; characters: string[]; action: string; mood: string; visual: string; shot?: string }
 export type SeniorSentence = LongformSentence & { scene: string }
 // sections = acts; each act has its scenes and its sentences (every sentence names the scene it is told over)
 export type SeniorScript = Omit<LongformScript, 'schema' | 'sections'> & {
@@ -25,11 +31,49 @@ export type SeniorScript = Omit<LongformScript, 'schema' | 'sections'> & {
   sections: Array<{ id: string; heading: string; scenes: SeniorScene[]; sentences: SeniorSentence[] }>
 }
 
-// how many scenes each act gets: ~4-5 for an hour (24-30 pictures), fewer for a short story; a guide, not a gate
+// how many scenes each act gets, from the PACING: at least one picture per maxHold (30 s) of narration, at most one per
+// targetMax (15 s) — e.g. 45 min: 15-30 per act (90-180 pictures). A guide for the planner; the 30 s hold is checked.
 export function seniorScenePlan(targetSeconds: number): { acts: number; scenesPerAct: { min: number; max: number }; charsPerAct: number } {
-  const min = Math.max(2, Math.min(5, Math.floor(targetSeconds / 900)))
+  const act = Math.max(1, targetSeconds) / SENIOR.acts, { maxHold, targetMax } = SENIOR.pace
+  const min = Math.max(2, Math.ceil(act / maxHold)), max = Math.max(min + 1, Math.ceil(act / targetMax))
   const totalChars = Math.max(1, Math.round(targetSeconds * LONGFORM.charsPerSecond))
-  return { acts: SENIOR.acts, scenesPerAct: { min, max: min + 1 }, charsPerAct: Math.round(totalChars / SENIOR.acts) }
+  return { acts: SENIOR.acts, scenesPerAct: { min, max }, charsPerAct: Math.round(totalChars / SENIOR.acts) }
+}
+// narration seconds of a text at the voice's speed (the same estimate that sizes the script)
+const secondsOf = (chars: number, speed = 1) => chars / (LONGFORM.charsPerSecond * (speed || 1))
+// PACING CHECK of one act (Senior only): every scene's estimated time on screen; a picture held over maxHold is an error
+// the act is written again for (split it at a real visible change, or tell less over it)
+export function seniorPacingErrors(act: { scenes: SeniorScene[]; sentences: SeniorSentence[] }, speed = 1): string[] {
+  const chars = new Map<string, number>()
+  for (const x of act.sentences ?? []) chars.set(x.scene, (chars.get(x.scene) ?? 0) + [...String(x.say || '')].length)
+  return (act.scenes ?? []).flatMap((sc) => { const t = secondsOf(chars.get(sc.id) ?? 0, speed); return t > SENIOR.pace.maxHold ? [`pacing.scene_too_long:${sc.id}:${Math.round(t)}s (at most ${SENIOR.pace.maxHold} s per picture: split it where the expression, action, place or viewpoint really changes, or tell less over it)`] : [] })
+}
+// the same picture twice: two scenes anywhere in the video that would draw the same thing (same place, people, action
+// and visual) — one of them must show something else (outline check, Senior only)
+const sceneSig = (sc: SeniorScene) => [norm(sc.place), [...(sc.characters ?? [])].sort().join('|'), norm(sc.action), norm(sc.visual)].join('#')
+export function seniorRepeatErrors(o: any): string[] {
+  const seen = new Map<string, string>(), e: string[] = []
+  let prev = ''
+  for (const a of Array.isArray(o?.sections) ? o.sections : []) for (const sc of Array.isArray(a?.scenes) ? a.scenes : []) {
+    const k = sceneSig(sc), first = seen.get(k), back = k === prev; prev = k
+    if (back) continue // the same scene twice in a row is ONE picture (mergeSameScenes), not a repeat
+    if (first) e.push(`pacing.repeated_picture:${sc.id}=${first} (the same place, people, action and picture; show a new expression, action or viewpoint)`); else seen.set(k, sc.id)
+  }
+  return e
+}
+// the measured-in-advance pacing of a whole script (stored with the PLAN result; RENDER reports the real one)
+export function seniorPacing(s: SeniorScript, speed = 1) {
+  const all = s.sections.flatMap((a) => a.scenes.map((sc) => secondsOf(a.sentences.filter((x) => x.scene === sc.id).reduce((n, x) => n + [...String(x.say || '')].length, 0), speed)))
+  const sents = s.sections.flatMap((a) => a.sentences), hook = norm(s.hook).replace(/[^가-힣a-z0-9]/g, '')
+  let at = 0, hookAt: number | null = null
+  for (const x of sents) { at += secondsOf([...String(x.say || '')].length, speed); if (hook && norm(x.say).replace(/[^가-힣a-z0-9]/g, '').includes(hook.slice(0, Math.min(12, hook.length)))) { hookAt = Number(at.toFixed(1)); break } }
+  const r = (x: number) => Number(x.toFixed(1))
+  return { pictures: all.length, avgSeconds: r(all.reduce((a, b) => a + b, 0) / Math.max(1, all.length)), minSeconds: r(Math.min(...all)), maxSeconds: r(Math.max(...all)), inTarget: all.filter((t) => t >= SENIOR.pace.targetMin && t <= SENIOR.pace.targetMax).length, overMaxHold: all.filter((t) => t > SENIOR.pace.maxHold).length, hookBy: hookAt, repeated: seniorRepeatErrors(s).length }
+}
+// the real pacing from the rendered runs (seconds each picture was on screen)
+export function runPacing(runs: Array<{ image: number; seconds: number }>) {
+  const r = (x: number) => Number(x.toFixed(1)), t = runs.map((x) => x.seconds)
+  return { runs: runs.length, avgSeconds: r(t.reduce((a, b) => a + b, 0) / Math.max(1, t.length)), maxSeconds: r(Math.max(0, ...t)), overMaxHold: t.filter((x) => x > SENIOR.pace.maxHold).length, sameImageBackToBack: runs.filter((x, i) => i > 0 && runs[i - 1].image === x.image).length }
 }
 
 const norm = (t: unknown) => String(t ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
@@ -107,9 +151,14 @@ export function seniorScenePrompt(s: SeniorScript, scene: SeniorScene, style: Vi
   return composeImagePrompt({
     content: `${scene.visual} Place: ${scene.place}. Time: ${scene.time}. Action: ${scene.action}. Mood: ${scene.mood}`,
     style,
-    composition: 'Wide 16:9 story frame. Faces and the key action in the upper two thirds; the bottom quarter calm and simple (subtitles are added later).',
+    composition: `${scene.shot ? `${SHOT_LINE[scene.shot] ?? `Shot: ${scene.shot}.`} ` : ''}16:9 story frame. Faces and the key action in the upper two thirds; the bottom quarter calm and simple (subtitles are added later).`,
     characters: people
   })
+}
+const SHOT_LINE: Record<string, string> = {
+  'close-up': 'Close-up shot: the face and its expression fill the frame.', medium: 'Medium shot: the people from the waist up and what they are doing.',
+  wide: 'Wide shot: the whole place and the people in it.', 'over-the-shoulder': 'Over-the-shoulder shot: from behind one person toward the other.',
+  'low-angle': 'Low-angle shot: looking up at the person.', 'high-angle': 'High-angle shot: looking down at the person.'
 }
 // gentle motion only (no fast moves, no transitions): slow zoom in, slow pan, or a still picture
 export const SCENE_MOTIONS = ['zoom', 'pan-right', 'pan-left', 'still'] as const

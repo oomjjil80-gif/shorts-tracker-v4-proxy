@@ -14,7 +14,7 @@ import { openAiYasaPlanner, type YasaPlanner } from '../../lib/generative/yasaPl
 import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaScenePrompt, coldOpenErrors, coldOpenCandidates, coldOpenRejections } from '../../lib/generative/yasaLongform.js'
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
-import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
+import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeGolden, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
 import { VISUAL_STYLE_PROFILES } from '../../lib/generative/visualStyle.js'
@@ -126,7 +126,7 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       if (!isLongform(job)) throw new StageError('PROFILE_UNSUPPORTED', 'longform PLAN only handles longform profiles')
       const brief = (job.planRef ? await blobs.getJson(job.planRef) : null) as LongformBrief | null
       if (!brief || brief.schema !== 'generative-brief/1' || brief.profile !== job.profile) throw new StageError('BRIEF_INVALID', `invalid ${job.profile} brief`)
-      const mode = longformMode(job.profile), scenes = mode.images === 'scenes', yasa = job.profile === 'yasa_longform'
+      const mode = longformMode(job.profile), scenes = mode.images === 'scenes', yasa = job.profile === 'yasa_longform', senior = job.profile === 'senior_longform'
       const planner = deps.planner ?? (yasa ? openAiYasaPlanner() : scenes ? openAiSeniorPlanner() : openAiLongformPlanner())
       // Senior: six acts; 숨은야담: the DNA's eight acts (one section per act); Wisdom: sections sized by the running time
       const size = yasa ? { sections: YASA_ACTS.length, charsPerSection: 0 } : scenes ? (() => { const p = seniorScenePlan(brief.targetSeconds); return { sections: p.acts, charsPerSection: p.charsPerAct } })() : sectionPlan(brief.targetSeconds)
@@ -220,14 +220,14 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         const dna = brief.yasaStoryDNA ?? await step<any>('dna', 'DNA_INVALID', (r) => (planner as YasaPlanner).dna(brief, apiKey, r), (d) => validateYasaStoryDna(d, 'longform', { layers: true }).errors)
         dnaSource = brief.yasaStoryDNA ? 'brief' : 'plan'; pbrief = { ...brief, yasaStoryDNA: dna }
       }
-      const outline = await step<LongformOutline>('outline', 'OUTLINE_INVALID', (r) => planner.outline(pbrief, size.sections, apiKey, r, research), (o) => [...outlineErrors(o, size.sections), ...(scenes ? seniorOutlineErrors(o) : [])])
+      const outline = await step<LongformOutline>('outline', 'OUTLINE_INVALID', (r) => planner.outline(pbrief, size.sections, apiKey, r, research), (o) => [...outlineErrors(o, size.sections), ...(scenes ? seniorOutlineErrors(o) : []), ...(senior ? seniorRepeatErrors(o) : [])])
       const castIds = new Set<string>(((outline as any).characters ?? []).map((c: any) => String(c?.id)))
       const sections: any[] = []
       let tail: string[] = []
       for (let i = 0; i < outline.sections.length; i++) {
         const actScenes = (outline.sections[i] as any).scenes
         const d = await step<LongformSectionDraft>(`section-${String(i + 1).padStart(3, '0')}`, 'SECTION_INVALID', (r) => planner.section({ brief: pbrief, outline, index: i, previousTail: tail, targetChars: targetOf(i), repair: r, fragments: sectionFragments(research, i) }, apiKey),
-          (d) => [...sectionErrors(d), ...(scenes ? seniorActErrors({ scenes: actScenes, sentences: (d as any)?.sentences }, castIds) : []), ...(yasa ? yasaActErrors(i, (d as any)?.sentences, pbrief.yasaStoryDNA, targetOf(i)) : [])])
+          (d) => [...sectionErrors(d), ...(scenes ? seniorActErrors({ scenes: actScenes, sentences: (d as any)?.sentences }, castIds) : []), ...(senior ? seniorPacingErrors({ scenes: actScenes, sentences: (d as any)?.sentences ?? [] }, Number(brief.creative?.resolved?.voiceSpeed) || 1) : []), ...(yasa ? yasaActErrors(i, (d as any)?.sentences, pbrief.yasaStoryDNA, targetOf(i)) : [])])
         // Senior: two scenes in a row with the same place/time/people/action are one picture
         sections.push(scenes ? { id: String(outline.sections[i].id || `a${i + 1}`), heading: outline.sections[i].heading, ...(yasa ? { act: YASA_ACTS[i]?.key } : {}), ...mergeSameScenes({ scenes: actScenes, sentences: d.sentences as any }) } : { id: String(outline.sections[i].id || `s${i + 1}`), sentences: d.sentences })
         tail = d.sentences.slice(-2).map((x) => x.say)
@@ -263,7 +263,7 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
           } catch (e: any) { derived = { status: 'failed', error: String(e?.message || e).slice(0, 200) } }
         }
       }
-      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, ...(derived ? { derived } : {}), sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(yasa ? { yasa: { dna: dnaSource, acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars, coldOpen: { beats: coldOpen.sentences.length, estimatedSeconds: Number(([...coldOpen.sentences.map((x: any) => x.say).join(' ')].length / (LONGFORM.charsPerSecond * (Number(brief.creative?.resolved?.voiceSpeed) || 1))).toFixed(1)) } } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, validation: errors } }
+      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, ...(derived ? { derived } : {}), sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(senior ? { pacing: seniorPacing(script as unknown as SeniorScript, Number(brief.creative?.resolved?.voiceSpeed) || 1) } : {}), ...(yasa ? { yasa: { dna: dnaSource, acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars, coldOpen: { beats: coldOpen.sentences.length, estimatedSeconds: Number(([...coldOpen.sentences.map((x: any) => x.say).join(' ')].length / (LONGFORM.charsPerSecond * (Number(brief.creative?.resolved?.voiceSpeed) || 1))).toFixed(1)) } } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, validation: errors } }
     }
   }
 }
@@ -497,6 +497,8 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver;
       // libass uses Fontconfig even when fontsdir is supplied. Railway has no system Fontconfig config, so give this
       // render a tiny self-contained config that scans only our bundled Korean font and writes cache only under /tmp.
       let segmentLog: Record<string, unknown> | null = null, segmentsMade = 0, segmentsReused = 0
+      // Senior: the REAL time each picture was on screen (measured narration), next to the PLAN's estimate
+      let pacing: ReturnType<typeof runPacing> | null = null
       const fontConfig = join(work, 'fonts.conf')
       await writeFile(fontConfig, `<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "fonts.dtd"><fontconfig><dir>${FONTS_DIR}</dir><cachedir>${work}/font-cache</cachedir></fontconfig>`, 'utf8')
       const ffmpegEnv = { FONTCONFIG_FILE: fontConfig, FONTCONFIG_PATH: work }
@@ -559,6 +561,7 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver;
         }
         const listPath = join(work, 'segments.txt'); await writeFile(listPath, list.join('\n') + '\n', 'utf8')
         await runOk(segmentConcatArgv({ list: listPath, audio, out, seconds }), { signal, timeoutMs: longformRenderTimeoutMs(seconds), env: ffmpegEnv })
+        if (job.profile === 'senior_longform') pacing = runPacing(runs)
         segmentLog = { plan, segments: specs.length, made: segmentsMade, reused: segmentsReused, maxPicturesPerProcess: Math.max(...specs.map((x) => x.segRuns.length)) }
       } else {
         const background = join(work, 'background.png')
@@ -588,7 +591,7 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver;
       const tb = withThumbnail ? await readFile(thumb) : null, thumbStored = tb ? await blobs.putBytes(`renders/${sha256(tb)}.jpg`, tb, 'image/jpeg') : null
       const thumbRef = thumbStored ? thumbStored.path : null
       const v = { variantId: 'v1', label: '롱폼', manifestHash: renderHash, renderRef: stored.path, renderHash, bytes: stored.bytes, duration: info.duration, posterRef: thumbRef, thumbnailRef: thumbRef, gate: { decision: 'PASS', reasons: [], checks: [] }, publishable: true }
-      return { outputRef: stored.path, outputHash: renderHash, result: { variants: [v], cards: cards.length, imageRef: assets.image.ref, ...(scenes ? { scenePictures: (assets.images ?? []).length, segments: segmentLog } : {}), thumbnailRef: thumbRef, canvas: `${info.width}x${info.height}`, durationSec: info.duration }, provider: 'ffmpeg', model: 'libx264+libass' }
+      return { outputRef: stored.path, outputHash: renderHash, result: { variants: [v], cards: cards.length, imageRef: assets.image.ref, ...(scenes ? { scenePictures: (assets.images ?? []).length, segments: segmentLog } : {}), ...(pacing ? { pacing } : {}), thumbnailRef: thumbRef, canvas: `${info.width}x${info.height}`, durationSec: info.duration }, provider: 'ffmpeg', model: 'libx264+libass' }
     } finally { await rm(work, { recursive: true, force: true }) }
   }
 })
