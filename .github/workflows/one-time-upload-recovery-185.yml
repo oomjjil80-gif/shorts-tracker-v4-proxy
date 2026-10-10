@@ -1,4 +1,5 @@
 name: One-time upload text recovery PR185
+# Retry after PR186 production deploy SUCCESS; one POST max, no automatic retries.
 on:
   push:
     branches: ['production/one-time-upload-recovery-185']
