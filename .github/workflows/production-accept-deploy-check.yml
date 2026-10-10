@@ -1,0 +1,30 @@
+name: Production accept deploy check (read-only)
+on:
+  push:
+    branches: ['production/accept-deploy-check']
+    paths: ['.github/workflows/production-accept-deploy-check.yml']
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Probe (GET + a refused accept on a non-waiting job; nothing is written, nothing is paid)
+        env:
+          SYNC_KEY: '${{ secrets.TRACKER_SYNC_KEY }}'
+          API: https://tracker-api-continuity-production.up.railway.app/api/story
+        run: |
+          set -uo pipefail
+          H=(-H "X-Sync-Key: $SYNC_KEY" -H 'Accept: application/json')
+          curl -sS "$API?taskType=job_list&limit=20" "${H[@]}" > list.json
+          DONE=$(jq -r '[.jobs[] | select(.status=="COMPLETE")][0].id' list.json)
+          for i in $(seq 1 40); do
+            r=$(curl -sS -X POST "$API" "${H[@]}" -H 'Content-Type: application/json' -d "{\"taskType\":\"job_style_decision\",\"jobId\":\"$DONE\",\"action\":\"accept\"}" | jq -c '{ok, code: .error.code, message: .error.message}')
+            echo "t=$((i*30))s probe on a COMPLETE job: $r"
+            case "$r" in *"action must be"*) sleep 30;; *) echo "DEPLOYED: accept is known"; break;; esac
+          done
+          echo "--- wisdom_longform jobs (newest first)"
+          for J in $(jq -r '.jobs[] | select(.profile=="wisdom_longform") | .id' list.json | head -5); do
+            g=$(curl -sS "$API?taskType=job_get&id=$J" "${H[@]}" | jq -c '{id:.job.id,status:.job.status,stage:.job.stage,wait:.job.waitReason,updatedAt:.job.updatedAt}')
+            st=$(curl -sS "$API?taskType=job_style&id=$J" "${H[@]}" | jq -c '{status:.style.status,awaiting:.style.awaiting,redrawingThumbnail:.style.redrawingThumbnail,regenerating:.style.regenerating,redrawingRepresentative:.style.redrawingRepresentative,representative:(if .style.representative then {status:.style.representative.status,distance:.style.representative.distance,accepted:.style.representative.accepted} else null end)}')
+            echo "$g $st"
+          done
