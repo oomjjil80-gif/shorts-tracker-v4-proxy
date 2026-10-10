@@ -199,3 +199,99 @@ test('deriver request (stubbed fetch, no paid call): ONE low-cost call over the 
   assert.ok(sent[0].body.input.includes('[0.2] 쇼펜하우어는 혼자 있을 수 있는 사람만이 자유롭다고 말했습니다.') && sent[0].body.input.includes('f1: 고독을 견디는 힘이 자유다'))
   assert.match(sent[0].body.instructions, /no new facts/); assert.match(sent[0].body.instructions, /never "the answer is in the longform"/)
 })
+
+test('UPLOAD TEXT (the 「사다리 우화」 Short): a kit that keeps leaving the thinker out is repaired with the exact name; one still refused is recorded in the package (never silently empty) and job_upload_text restores it from the job\'s own script — one text call, no picture / narration / render, same job, video and thumbnail', async () => {
+  let mode: 'thinker-blind' | 'never' = 'thinker-blind'
+  const repairs: string[][] = []
+  const BADKIT = (i: any) => { repairs.push(i.repair ?? []); const k: any = KIT(i); const fixed = mode === 'thinker-blind' && (i.repair ?? []).some((r: string) => r.includes('must contain "쇼펜하우어"')); return { ...k, metadata: { ...k.metadata, title: fixed ? `쇼펜하우어가 본 ${i.title.replace(/쇼펜하우어[가의는]?\s*/g, '')}` : i.title.replace(/쇼펜하우어[가의는]?\s*/g, '').trim() + ' 이유' } } }
+  let recoverKit: any = async (i: any) => KIT(i)
+  const d = await mkdtemp(join(tmpdir(), 'derived-'))
+  const db = await createTestDb(), store = createJobStore(db), blobs: any = createMemoryBlobStore()
+  ;(blobs as any).presign = async (ref: string) => ({ url: `memory://${ref}`, validUntil: 'x' })
+  const handler = createJobsHttp({ getStore: async () => store, blobs, sourceExists: async () => true, uploadKit: async (i: any) => { calls.recover = (calls.recover || 0) + 1; return recoverKit(i) }, openAiKey: () => 'k' } as any)
+  const call = async (method: string, opts: { body?: any; query?: any } = {}) => {
+    let status = 0, json: any = null
+    const req: any = { method, headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': KEY }, query: opts.query || {}, body: opts.body }
+    const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } }
+    await handler(req, res); return { status, json }
+  }
+  const calls: Record<string, number> = {}, seenBriefs: any[] = [], imagePrompts: string[] = [], deriveInputs: any[] = []
+  const derive = async (i: any) => { calls.derive = (calls.derive || 0) + 1; deriveInputs.push(i); return IDEAS }
+  const executors = stageExecutorsFor(createModuleRegistry({
+    analyze: analyzeExecutor, sourcePlan: { stage: 'PLAN', estimateUsd: () => 0, inputHash: () => 'x', run: async () => { throw new Error('no source shorts here') } } as any,
+    wisdomPlan: createGenerativePlanExecutor({ apiKey: 'k', plan: wisdomPlan(seenBriefs) as any }),
+    wisdomAsset: createGenerativeAssetExecutor({apiKey:'k',imageKey:'gk', image: async (p: string) => { imagePrompts.push(p); return { bytes: await portrait(imagePrompts.length), contentType: 'image/jpeg', provider: 'standin', model: 'portrait' } }, tts: async (t: string) => ({ bytes: await mp3(Math.max(2.5, [...t].length / 7)), contentType: 'audio/mpeg', provider: 'standin', model: 'tone' }) } as any),
+    compile: compileExecutor, render: renderExecutor, autoQc: createAutoQcExecutor(null, async () => null),
+    decision: decisionExecutor, final: finalExecutor,
+    shortsPackage: withWisdomThumbnail(packageExecutor, { apiKey: 'k', imageKey: 'gk', kit: async (i: any) => { calls.kit = (calls.kit || 0) + 1; return (/쇼펜하우어/.test(i.topic) ? BADKIT(i) : KIT(i)) as any }, image: async () => ({ bytes: await portrait(99), contentType: 'image/jpeg', provider: 'standin', model: 'thumb' }) as any }),
+    longformPlan: createLongformPlanExecutor({ apiKey: 'k', planner: planner(calls) as any, research: research(calls) as any, derive: derive as any, log: () => {} }),
+    longformAsset: createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image: async () => { throw new Error('the longform picture is not needed in this test') }, tts: async () => { throw new Error('no longform voice in this test') } } as any),
+    longformRender: longformRenderExecutor, longformPackage: longformPackageExecutor
+  }))
+  const resolveSourceAsset = async (id: string) => { const g: any = await blobs.getJson(`generative-sources/${id}.json`); if (!g) throw Object.assign(new Error('not ready'), { code: 'SOURCE_ASSET_NOT_FOUND' }); return g }
+  const resolveSourceFile = async (asset: any) => { const p = join(d, `${asset.sourceAssetId}.mp4`); await writeFile(p, blobs.binaries.get(asset.blobPath)); return { path: p, cleanup: async () => {} } }
+  const tick = () => runOnce({ store, blobs, executors, resolveSourceAsset, resolveSourceFile, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
+
+  // 1) the Wisdom Longform (파생 쇼츠 자동 추천 is ON by default)
+  const lf = await call('POST', { body: { taskType: 'job_create', profile: 'wisdom_longform', idempotencyKey: 'wisdom-lf-derive-upload', budgetUsd: 5, input: { kind: 'topic', text: TITLE, targetSeconds: 600, aspectRatio: '16:9' } } })
+  assert.equal(lf.status, 201, JSON.stringify(lf.json)); const parentId = lf.json.job.id
+  assert.equal((await call('GET', { query: { taskType: 'job_derived', id: parentId } })).json.status, 'pending')
+  const r1: any = await tick(); assert.equal(r1.stage, 'PLAN'); assert.equal(r1.outcome, 'completed')
+  assert.equal(r1.job.stage, 'ASSET', 'the Longform goes on by itself (no stop for the recommendation)')
+  assert.deepEqual([calls.research, calls.derive], [1, 1])
+  assert.equal(deriveInputs[0].research.fragments[0].id, 'f1', 'the deriver gets the research the Longform already made')
+  assert.equal(deriveInputs[0].script.title, TITLE)
+  const rec = (await call('GET', { query: { taskType: 'job_derived', id: parentId } })).json
+  assert.equal(rec.status, 'ready'); assert.equal(rec.parent.title, TITLE)
+  assert.deepEqual(rec.candidates.map((c: any) => c.shortTitle), ['좋은 사람에게도 거리를 둬야 하는 순간', '쇼펜하우어가 혼자를 두려워하지 않은 이유', '나이 들수록 인간관계를 줄여야 하는 이유'])
+  assert.ok(rec.candidates.every((c: any) => c.id && c.hook && c.corePoint && c.payoff && c.sourceClaim && c.sourceRefs.length))
+  // a PLAN retry never pays for the deriver again (checkpoint)
+  const parentJob = await store.getJob(parentId, (await store.getJob(parentId as any, r1.job.workspaceId))!.workspaceId)
+  await createLongformPlanExecutor({ apiKey: 'k', planner: planner({}) as any, research: research(calls) as any, derive: derive as any, log: () => {} }).run({ job: { ...parentJob, planRef: parentJob!.planRef }, blobs, previous: async () => null, signal: new AbortController().signal } as any)
+  assert.deepEqual([calls.derive, calls.research], [1, 1])
+
+  // 2) the user keeps 2 of 3 (#2 unchecked) -> two child jobs, made on the server from the parent's material
+  const keep = [rec.candidates[1], rec.candidates[0]]
+  const kids: string[] = []
+  for (const c of keep) {
+    const r = await call('POST', { body: { taskType: 'job_create', profile: 'wisdom', idempotencyKey: `derived-${parentId}-${c.id}`, budgetUsd: 5, input: { derivedFrom: { parentJobId: parentId, candidateId: c.id }, targetSeconds: 40, language: 'ko', aspectRatio: '9:16' } } })
+    assert.equal(r.status, 201, JSON.stringify(r.json)); kids.push(r.json.job.id)
+  }
+  assert.equal((await call('POST', { body: { taskType: 'job_create', profile: 'wisdom', idempotencyKey: 'derived-bad-1', budgetUsd: 5, input: { derivedFrom: { parentJobId: parentId, candidateId: 'nope' }, targetSeconds: 40 } } })).status, 404)
+  const again = await call('POST', { body: { taskType: 'job_create', profile: 'wisdom', idempotencyKey: `derived-${parentId}-${keep[0].id}`, budgetUsd: 5, input: { derivedFrom: { parentJobId: parentId, candidateId: keep[0].id }, targetSeconds: 40, language: 'ko', aspectRatio: '9:16' } } })
+  assert.equal(again.json.created, false, 'the same choice twice is the same job')
+  assert.deepEqual((await call('GET', { query: { taskType: 'job_derived', id: parentId } })).json.children.map((x: any) => x.jobId).sort(), [...kids].sort())
+
+  // run: the Schopenhauer Short's kit leaves the name out; the repair names it exactly -> fixed on the 2nd call
+  for (let i = 0; i < 40; i++) { const r: any = await tick(); if (!r.ran) break }
+  const sid = kids[0]
+  let pk = (await call('GET', { query: { taskType: 'job_package', id: sid } })).json
+  assert.ok(pk.upload?.title?.includes('쇼펜하우어'), JSON.stringify(pk.upload))
+  assert.ok(repairs.some((r) => r.some((x) => x.includes('title.missing_named_thinker (the title must contain "쇼펜하우어")'))), JSON.stringify(repairs))
+  // a kit that is refused every time (3 calls): the package records why; the upload fields are not invented
+  mode = 'never'; repairs.length = 0
+  const c3 = rec.candidates[1]
+  const r3 = await call('POST', { body: { taskType: 'job_create', profile: 'wisdom', idempotencyKey: `derived-${parentId}-${c3.id}-again`, budgetUsd: 5, input: { derivedFrom: { parentJobId: parentId, candidateId: c3.id }, targetSeconds: 41, language: 'ko', aspectRatio: '9:16' } } })
+  const bad = r3.json.job.id
+  for (let i = 0; i < 40; i++) { const r: any = await tick(); if (!r.ran) break }
+  assert.equal((await call('GET', { query: { taskType: 'job_get', id: bad } })).json.job.status, 'COMPLETE')
+  pk = (await call('GET', { query: { taskType: 'job_package', id: bad } })).json
+  assert.equal(pk.upload, null); assert.deepEqual(pk.package.metadata, { title: null, description: null, tags: [], pinnedComment: null })
+  assert.ok(pk.package.uploadError?.errors?.includes('title.missing_named_thinker'), JSON.stringify(pk.package.uploadError))
+  assert.equal(repairs.length, 3, 'three kit calls, then it stops (no endless retries)')
+  const video = pk.package.finalRenderRef, thumb = pk.package.thumbnailRef, renderHash = pk.package.renderHash
+  const runsBefore = (await store.listStageRuns(bad)).length, pics = imagePrompts.length
+  // job_upload_text: only the text, from the job's own script; the same job, video and thumbnail
+  const up = await call('POST', { body: { taskType: 'job_upload_text', jobId: bad } })
+  assert.equal(up.status, 200, JSON.stringify(up.json)); assert.deepEqual([up.json.made, up.json.calls, calls.recover], [true, 1, 1])
+  pk = (await call('GET', { query: { taskType: 'job_package', id: bad } })).json
+  for (const k of ['title', 'description', 'tags', 'hashtags', 'pinnedComment']) assert.ok(Array.isArray(pk.upload[k]) ? pk.upload[k].length : String(pk.upload[k] || '').length, `${k} filled`)
+  assert.ok(pk.upload.title.includes('쇼펜하우어') && pk.upload.description.includes(`롱폼 「${TITLE}」`), JSON.stringify(pk.upload))
+  assert.deepEqual([pk.package.finalRenderRef, pk.package.thumbnailRef, pk.package.renderHash], [video, thumb, renderHash], 'video and thumbnail untouched')
+  assert.equal((await store.listStageRuns(bad)).length, runsBefore, 'no stage ran again'); assert.equal(imagePrompts.length, pics, 'no picture')
+  assert.equal((await call('GET', { query: { taskType: 'job_get', id: bad } })).json.job.status, 'COMPLETE')
+  // a repeat costs nothing; a job that has its text, or is not a finished Short, is refused / answered without a call
+  assert.equal((await call('POST', { body: { taskType: 'job_upload_text', jobId: bad } })).json.made, false); assert.equal(calls.recover, 1)
+  assert.equal((await call('POST', { body: { taskType: 'job_upload_text', jobId: sid } })).json.made, false); assert.equal(calls.recover, 1)
+  assert.equal((await call('POST', { body: { taskType: 'job_upload_text', jobId: parentId } })).status, 409)
+})

@@ -1,5 +1,8 @@
 import { styleApprovalRef, imageStyleFeatures, thumbnailTextOf } from '../generative/styleApproval.js'
 import { summaryUsd } from '../generative/usageLedger.js'
+import { wisdomUploadText } from '../generative/wisdomUploadText.js'
+import type { openAiWisdomPublishKit } from '../generative/wisdomThumbnail.js'
+const uploadTextRef = (jobId: string) => `upload-text/${jobId}.json`
 import { approvedThumbnailVersion, composeThumbnailVersion, currentThumbnail, readThumbnailOverride, saveThumbnailVersion } from '../generative/thumbnailOverride.js'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -40,6 +43,9 @@ export type JobsDeps = {
   analyzeReference?: typeof analyzeRegisteredReference
   voicePreview?: (input: any) => Promise<{ playbackUrl: string; validUntil: number; cache: 'HIT' | 'MISS' }>
   trackerTts?: { clips: (input: any) => Promise<any>; assemble: (input: any) => Promise<any>; audio?: (ref: string) => Promise<Buffer> }
+  // job_upload_text: the publish kit (one text call) and its key (tests inject both)
+  uploadKit?: typeof openAiWisdomPublishKit
+  openAiKey?: () => string
 }
 
 function workspaceOf(req: Request): string {
@@ -48,7 +54,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume', 'job_upload_text'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -61,7 +67,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
   JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503,
-  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409
+  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, UPLOAD_TEXT_REFUSED: 502
 }
 
 const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
@@ -242,7 +248,8 @@ export function createJobsHttp(deps: JobsDeps) {
         }
         // Wisdom Shorts: server-made click thumbnail when PACKAGE produced one (older jobs have none)
         const shortsThumb = typeof packageJson?.thumbnailRef === 'string' && packageJson.thumbnailRef.startsWith('renders/') ? await deps.blobs.presign?.(packageJson.thumbnailRef) : null
-        return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, upload: packageJson?.metadata?.title ? packageJson.metadata : null, thumbnailUrl: shortsThumb?.url ?? null, script: script ? { title:script.title, hook:script.hook, ending:script.ending, beats:(script.beats||[]).map((b:any)=>({ narration:b.narration })) } : null })
+        const recovered: any = packageJson?.metadata?.title ? null : await deps.blobs.getJson(uploadTextRef(job.id)).catch(() => null)
+        return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, upload: packageJson?.metadata?.title ? packageJson.metadata : (recovered?.metadata ?? null), ...(recovered ? { uploadRecovered: { at: recovered.at } } : {}), thumbnailUrl: shortsThumb?.url ?? null, script: script ? { title:script.title, hook:script.hook, ending:script.ending, beats:(script.beats||[]).map((b:any)=>({ narration:b.narration })) } : null })
       }
 
       if (taskType === 'job_get') {
@@ -513,6 +520,32 @@ export function createJobsHttp(deps: JobsDeps) {
         need(Number.isFinite(budgetUsd) && budgetUsd > 0 && budgetUsd <= MAX_BUDGET_USD, `budgetUsd must be 0..${MAX_BUDGET_USD}`)
         const job = await store.resumeJob({ jobId, workspaceId, budgetUsd })
         return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)) })
+      }
+
+      // UPLOAD TEXT ONLY for a finished Wisdom Short whose package has none (its upload text was refused at PACKAGE): made
+      // again from the job's OWN script by the same kit and rules — one text call (up to 3 when refused); never a picture,
+      // narration or render; the job, its video and thumbnail stay as they are. Stored once (upload-text/<job>.json); a
+      // repeat returns it without a call.
+      if (taskType === 'job_upload_text') {
+        const jobId = need(String(body.jobId || ''), 'jobId is required')
+        const job = await store.getJob(jobId, workspaceId)
+        if (!job) throw new JobError('NOT_FOUND', 'job not found')
+        if (job.profile !== 'wisdom' || job.status !== 'COMPLETE') throw new JobError('NOT_UPLOAD_RECOVERABLE', `job is ${job.profile} ${job.status}`)
+        const runs = await store.listStageRuns(job.id), pkg = latest(runs, 'PACKAGE'), plan = latest(runs, 'PLAN')
+        const packageJson: any = pkg?.outputRef ? await deps.blobs.getJson(pkg.outputRef) : null
+        if (!packageJson) throw new JobError('NOT_FOUND', 'package not found')
+        if (packageJson.metadata?.title) return res.status(200).json({ ok: true, jobId: job.id, upload: packageJson.metadata, made: false })
+        const kept: any = await deps.blobs.getJson(uploadTextRef(job.id)).catch(() => null)
+        if (kept?.metadata) return res.status(200).json({ ok: true, jobId: job.id, upload: kept.metadata, made: false })
+        const pr: any = plan?.result || {}
+        const script: any = pr.scriptRef ? await deps.blobs.getJson(pr.scriptRef) : null, brief: any = pr.briefRef ? await deps.blobs.getJson(String(pr.briefRef)).catch(() => null) : null
+        if (!script) throw new JobError('PREREQUISITE_MISSING', 'the job has no script')
+        const apiKey = deps.openAiKey?.() ?? process.env.OPENAI_API_KEY ?? ''
+        if (!apiKey) throw new JobError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured')
+        const up = await wisdomUploadText({ script, brief, apiKey, kit: deps.uploadKit })
+        if (!up.metadata) throw new JobError('UPLOAD_TEXT_REFUSED', `upload text refused after ${up.calls} tries: ${up.errors.upload.join(', ')}`)
+        await deps.blobs.putJson(uploadTextRef(job.id), { schema: 'upload-text/1', jobId: job.id, metadata: up.metadata, calls: up.calls, source: 'job_upload_text', at: new Date().toISOString() }, { overwrite: false })
+        return res.status(200).json({ ok: true, jobId: job.id, upload: up.metadata, made: true, calls: up.calls })
       }
 
       if (taskType === 'job_cancel') {
