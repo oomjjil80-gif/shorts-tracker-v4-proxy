@@ -15,6 +15,8 @@ export type StageContext = {
   // Output of the latest successful run of an earlier stage (how stages hand data forward).
   previous: (stage: JobStage) => Promise<StageRun | null>
   signal: AbortSignal
+  // estimated USD of every EARLIER run of this job (all stages and attempts, from their usage ledgers; unpriced = 0)
+  costSoFar?: () => Promise<number>
 }
 
 export type StageResult = {

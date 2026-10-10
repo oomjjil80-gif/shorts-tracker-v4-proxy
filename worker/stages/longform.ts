@@ -14,7 +14,7 @@ import { openAiYasaPlanner, type YasaPlanner } from '../../lib/generative/yasaPl
 import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaScenePrompt, coldOpenErrors, coldOpenCandidates, coldOpenRejections } from '../../lib/generative/yasaLongform.js'
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
-import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
+import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorCostEstimate, budgetGuard, ttsUsdOf, SENIOR_COST, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeGolden, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
 import { VISUAL_STYLE_PROFILES } from '../../lib/generative/visualStyle.js'
@@ -32,6 +32,7 @@ import { openAiStyleJudge } from '../../lib/generative/styleJudge.js'
 import { YADAM_STYLE_VERSION, geminiYadamImage, type YadamDraw } from '../../lib/generative/yadamStyle.js'
 import { composeTitleThumbnail, thumbnailBackgroundPrompt, titleSceneIndex } from '../../lib/generative/titleThumbnail.js'
 import { readThumbnailOverride } from '../../lib/generative/thumbnailOverride.js'
+import { runSpentUsd } from '../../lib/generative/usageLedger.js'
 import { styleApprovalRef } from '../../lib/generative/styleApproval.js'
 import type { StyleJudge } from '../../lib/generative/styleApproval.js'
 import { uploadMetadataErrors } from '../../lib/generative/uploadPackage.js'
@@ -122,7 +123,7 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
   return {
     stage: 'PLAN', estimateUsd: () => 0.3,
     inputHash: (job) => sha256(`longform-plan|${job.planRef}|wisdom_longform/1`),
-    async run({ job, blobs, signal }) {
+    async run({ job, blobs, signal, costSoFar }) {
       if (!isLongform(job)) throw new StageError('PROFILE_UNSUPPORTED', 'longform PLAN only handles longform profiles')
       const brief = (job.planRef ? await blobs.getJson(job.planRef) : null) as LongformBrief | null
       if (!brief || brief.schema !== 'generative-brief/1' || brief.profile !== job.profile) throw new StageError('BRIEF_INVALID', `invalid ${job.profile} brief`)
@@ -263,7 +264,9 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
           } catch (e: any) { derived = { status: 'failed', error: String(e?.message || e).slice(0, 200) } }
         }
       }
-      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, ...(derived ? { derived } : {}), sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(senior ? { pacing: seniorPacing(script as unknown as SeniorScript, Number(brief.creative?.resolved?.voiceSpeed) || 1) } : {}), ...(yasa ? { yasa: { dna: dnaSource, acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars, coldOpen: { beats: coldOpen.sentences.length, estimatedSeconds: Number(([...coldOpen.sentences.map((x: any) => x.say).join(' ')].length / (LONGFORM.charsPerSecond * (Number(brief.creative?.resolved?.voiceSpeed) || 1))).toFixed(1)) } } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, validation: errors } }
+      // Senior: the pictures and the narration this script will cost (ASSET checks it against the budget before paying)
+      const estimate = senior ? seniorCostEstimate({ pictures: seniorScenes(script).length, extraPictures: styleApprovalWanted(job.profile, brief) ? 1 : 0, narrationChars: [...sentencesOf(script).map((x) => x.say).join('')].length, spentUsd: ((await costSoFar?.()) ?? 0) + runSpentUsd(), budgetUsd: job.budgetUsd }) : null
+      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, ...(estimate ? { estimate } : {}), ...(derived ? { derived } : {}), sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(senior ? { pacing: seniorPacing(script as unknown as SeniorScript, Number(brief.creative?.resolved?.voiceSpeed) || 1) } : {}), ...(yasa ? { yasa: { dna: dnaSource, acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars, coldOpen: { beats: coldOpen.sentences.length, estimatedSeconds: Number(([...coldOpen.sentences.map((x: any) => x.say).join(' ')].length / (LONGFORM.charsPerSecond * (Number(brief.creative?.resolved?.voiceSpeed) || 1))).toFixed(1)) } } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, validation: errors } }
     }
   }
 }
@@ -307,7 +310,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
   return {
     stage: 'ASSET', estimateUsd: () => 1.0,
     inputHash: (job) => sha256(`longform-asset|${job.id}|${job.planRev}|wisdom_longform/1`),
-    async run({ job, blobs, previous, signal }) {
+    async run({ job, blobs, previous, signal, costSoFar }) {
       if (!isLongform(job)) throw new StageError('PROFILE_UNSUPPORTED', 'longform ASSET only handles longform profiles')
       needFeatures(featuresOf(deps, job), ['IMAGE', 'TTS'], 'Longform ASSET')
       const mode = longformMode(job.profile), scenes = mode.images === 'scenes'
@@ -322,7 +325,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       // Senior: one picture per story scene, all in the resolved style (watercolor by default) with the Character Bible.
       // Wisdom: the one picture; a style the user picked replaces only its style line (AUTO = the prompt as before).
       const sceneList = scenes ? seniorScenes(script as unknown as SeniorScript) : []
-      const yasa = job.profile === 'yasa_longform'
+      const yasa = job.profile === 'yasa_longform', senior = job.profile === 'senior_longform'
       // Golden Style 1~5 (stored at job_create with its locked reference hash + prompt version), 16:9. FIRST-IMAGE CHARACTER
       // LOCK: the job's first picture (the approved thumbnail picture, or the first scene) is drawn with the Golden
       // reference alone; every later picture gets the Golden reference (style) + that first picture (the people)
@@ -377,6 +380,14 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       if (needImage && !imageKey) throw new StageError('PROVIDER_DOWN', 'GEMINI_API_KEY is not configured (every picture is drawn by Gemini)', true)
       if (needTts && !apiKey) throw new StageError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured', true)
       const sceneImages: any[] = [], madeNow = new Map<string, any>()
+      // BUDGET (Senior): what is still UNPAID (pictures / narration not in the cache) against the job's budget, before the
+      // next paid call; during the run every paid call reserves its price first. Over budget -> the job waits (BUDGET) with
+      // everything made so far stored; job_resume with a bigger budget goes on and pays only for what is missing.
+      const guard = senior && Number.isFinite(job.budgetUsd) ? budgetGuard({ budgetUsd: job.budgetUsd, spentBefore: (await costSoFar?.()) ?? 0 }) : null
+      const ttsMissing = new Set(chunks.map((_, i) => i).filter((i) => !ttsMeta[i]))
+      const left = (fromScene: number) => ({ images: new Set(sceneKeys.filter((k, i) => i >= fromScene && !sceneMeta[i] && !madeNow.has(k))).size, chars: [...ttsMissing].reduce((a, i) => a + [...chunks[i].text].length, 0) })
+      const budgetWait = (l: { images: number; chars: number }) => ({ result: { budget: { ...seniorCostEstimate({ pictures: l.images, narrationChars: l.chars, spentUsd: guard!.spent(), budgetUsd: job.budgetUsd }), stopped: 'before the next paid call', made: { pictures: new Set(sceneKeys).size - l.images, narration: chunks.length - ttsMissing.size } } }, wait: 'BUDGET' as const })
+      if (guard && !seniorCostEstimate({ pictures: left(0).images, narrationChars: left(0).chars, spentUsd: guard.spent(), budgetUsd: job.budgetUsd }).fits) return budgetWait(left(0))
       // 썸네일만 다시 생성 (asked from the phone while the job waited): ONE new thumbnail picture with the character lock,
       // checked against the kept representative; the approved picture stays the lock (every key above is unchanged)
       if (styleLock && approval?.thumbnailRequest) {
@@ -389,7 +400,10 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       // the representative picture first: drawn from the reference and compared with it; only a match unlocks the rest
       if (styleLock) {
         const key = scenes ? sceneKeys[repIndex] : ik, cached = await withBytes(await meta('image', key))
-        const x = await representativeCheck({ jobId: job.id, blobs, record: approval, reference: styleLock, prompt: scenes ? scenePrompts[repIndex] : prompt, sceneId: scenes ? sceneList[repIndex].id : null, apiKey, imageKey, drawRef: drawRepresentative, judge: deps.styleJudge ?? openAiStyleJudge(), cached, freeChecks: !golden })
+        const repCost = !cached && approval?.representative?.status !== 'match' ? 2 * SENIOR_COST.imageUsd : 0 // up to 2 tries
+        if (guard && repCost && !guard.take(repCost)) return budgetWait(left(0))
+        let x: any
+        try { x = await representativeCheck({ jobId: job.id, blobs, record: approval, reference: styleLock, prompt: scenes ? scenePrompts[repIndex] : prompt, sceneId: scenes ? sceneList[repIndex].id : null, apiKey, imageKey, drawRef: drawRepresentative, judge: deps.styleJudge ?? openAiStyleJudge(), cached, freeChecks: !golden }) } finally { if (guard && repCost) guard.done(repCost) }
         if (!x) return { result: { styleApproval: { status: 'approved', representative: approval.representative ?? null } }, wait: 'DECISION' as const }
         if (x !== cached && !(x as any).kept) generated++
         else if ((x as any).kept) reused++
@@ -399,7 +413,11 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
         if (signal.aborted) throw new Error('aborted')
         // the same picture twice in one video (same prompt) is generated once
         let x: any = madeNow.get(sceneKeys[i]) ?? (sceneMeta[i] ? await withBytes(sceneMeta[i]) : null)
-        if (x) reused++; else { x = await draw(scenePrompts[i]); generated++ }
+        if (x) reused++; else {
+          if (guard && !guard.take(SENIOR_COST.imageUsd)) return budgetWait(left(i))
+          try { x = await draw(scenePrompts[i]) } finally { guard?.done(SENIOR_COST.imageUsd) }
+          generated++
+        }
         madeNow.set(sceneKeys[i], x)
         const h = sha256(x.bytes), ref = `generative-assets/images/${h}.jpg`
         if (!cacheEntryIsCanonical(x, ref, h)) {
@@ -434,13 +452,18 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
 
         // one TTS call per sentence (4 at a time); results are placed by index, so order is exactly the script's
         const parts: any[] = new Array(chunks.length), wavs: string[] = new Array(chunks.length)
-        let next = 0
+        let next = 0, budgetHit = false
         const worker = async () => {
-          for (let i = next++; i < chunks.length; i = next++) {
+          for (let i = next++; i < chunks.length && !budgetHit; i = next++) {
             if (signal.aborted) throw new Error('aborted')
             const c = chunks[i], key = ttsKeys[i]
             let au: any = ttsMeta[i] ? await withBytes(ttsMeta[i]) : null
-            if (au) reused++; else { au = await guardedTts(tts as TtsFn, c.text, apiKey, voice); generated++ }
+            if (au) reused++; else {
+              const cost = ttsUsdOf([...c.text].length)
+              if (guard && !guard.take(cost)) { budgetHit = true; return }
+              try { au = await guardedTts(tts as TtsFn, c.text, apiKey, voice) } finally { guard?.done(cost) }
+              generated++; ttsMissing.delete(i)
+            }
             const ah = sha256(au.bytes), ref = `generative-assets/audio/${ah}.mp3`
             const ttsCacheValid = cacheEntryIsCanonical(au, ref, ah)
             if (!ttsCacheValid) {
@@ -455,6 +478,8 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
         // a billing/auth stop from the narration engine ends the job at once (no stage retry pays again)
         try { await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, worker)) }
         catch (e: any) { if (e?.stop) throw new StageError(/quota|credit_balance/.test(String(e?.code)) ? 'PROVIDER_BILLING' : 'PROVIDER_STOP', String(e?.message || e).slice(0, 300), false); throw e }
+        // Senior: a narration chunk would have taken the job over its budget -> wait; every chunk made is stored (cache)
+        if (budgetHit) return budgetWait({ images: 0, chars: left(sceneKeys.length).chars })
         // ONE continuous narration track: the chunks back to back, in order (no gap, no overlap, no music)
         // ONE continuous narration track through the shared narration engine (one loudness pass, probed again)
         const narration = join(work, 'narration.m4a')

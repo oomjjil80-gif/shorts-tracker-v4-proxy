@@ -36,6 +36,8 @@ export function estimateUsd(c: Omit<UsageCall, 'estUsd'>): number | null {
 }
 
 const store = new AsyncLocalStorage<Ledger>()
+// what the CURRENT run has paid so far (the ledger of the stage run this code is called from; 0 outside a run)
+export const runSpentUsd = () => (store.getStore()?.calls ?? []).reduce((a, c) => a + (c.estUsd ?? 0), 0)
 export const withUsageLedger = <T>(label: string, fn: () => Promise<T>) => { const l: Ledger = { calls: [], label }; return { ledger: l, run: store.run(l, fn) } }
 export function summarize(calls: UsageCall[]): UsageSummary {
   const byModel: UsageSummary['byModel'] = {}, unpriced = new Set<string>()

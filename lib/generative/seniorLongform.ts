@@ -5,6 +5,7 @@
 // always looks the same. Wisdom Longform keeps its one-image mode untouched.
 import { composeImagePrompt, type VisualStyleProfile } from './visualStyle.js'
 import { LONGFORM, sentencesOf, type LongformScript, type LongformSentence } from './longform.js'
+import { estimateUsd, runSpentUsd } from './usageLedger.js'
 
 export const SENIOR = {
   acts: 6,
@@ -13,7 +14,7 @@ export const SENIOR = {
   actRoles: ['Hook: a strong event or an emotional question within the first 30 seconds (no greeting, no background first)', 'Conflict: the people, what they want and what stands between them', 'Crisis: the conflict deepens to the worst moment', 'Reversal: the decisive event that turns the story', 'Emotional reward: what the reversal gives back (reconciliation, truth, gratitude)', 'Ending: a quiet aftertaste that stays with the viewer'],
   // PACING: how long one picture stays on screen (narration told over it). A new picture only for a real visible change
   // (expression, action, place, viewpoint); never more than maxHold seconds, never a split just to add pictures.
-  pace: { hookSeconds: 30, targetMin: 8, targetMax: 15, maxHold: 30 },
+  pace: { hookSeconds: 30, targetMin: 20, targetMax: 30, maxHold: 30 },
   // the shot of a scene picture (the image prompt; motion is the renderer's own zoom / pan cycle)
   shots: ['close-up', 'medium', 'wide', 'over-the-shoulder', 'low-angle', 'high-angle'],
   canvas: { w: 1920, h: 1080 },
@@ -31,11 +32,11 @@ export type SeniorScript = Omit<LongformScript, 'schema' | 'sections'> & {
   sections: Array<{ id: string; heading: string; scenes: SeniorScene[]; sentences: SeniorSentence[] }>
 }
 
-// how many scenes each act gets, from the PACING: at least one picture per maxHold (30 s) of narration, at most one per
-// targetMax (15 s) — e.g. 45 min: 15-30 per act (90-180 pictures). A guide for the planner; the 30 s hold is checked.
+// how many scenes each act gets, from the PACING: one picture per targetMax..targetMin (30..20 s) of narration —
+// e.g. 45 min: 15-23 per act (90-138 pictures). A guide for the planner; the 30 s hold is checked.
 export function seniorScenePlan(targetSeconds: number): { acts: number; scenesPerAct: { min: number; max: number }; charsPerAct: number } {
-  const act = Math.max(1, targetSeconds) / SENIOR.acts, { maxHold, targetMax } = SENIOR.pace
-  const min = Math.max(2, Math.ceil(act / maxHold)), max = Math.max(min + 1, Math.ceil(act / targetMax))
+  const act = Math.max(1, targetSeconds) / SENIOR.acts, { targetMin, targetMax } = SENIOR.pace
+  const min = Math.max(2, Math.ceil(act / targetMax)), max = Math.max(min + 1, Math.ceil(act / targetMin))
   const totalChars = Math.max(1, Math.round(targetSeconds * LONGFORM.charsPerSecond))
   return { acts: SENIOR.acts, scenesPerAct: { min, max }, charsPerAct: Math.round(totalChars / SENIOR.acts) }
 }
@@ -60,6 +61,28 @@ export function seniorRepeatErrors(o: any): string[] {
     if (first) e.push(`pacing.repeated_picture:${sc.id}=${first} (the same place, people, action and picture; show a new expression, action or viewpoint)`); else seen.set(k, sc.id)
   }
   return e
+}
+// ---- COST (Senior only): what the pictures and the narration of this script will cost, before ASSET pays for any ----
+// one 16:9 1K Gemini picture incl. its reference-image input (measured ~$0.068 on a real job), rounded up
+export const SENIOR_COST = { imageUsd: 0.07 } as const
+export const ttsUsdOf = (chars: number) => estimateUsd({ api: 'speech', model: 'gpt-4o-mini-tts', inputTokens: 0, cachedTokens: 0, outputTokens: 0, reasoningTokens: 0, images: 0, ttsChars: Math.max(0, chars) }) ?? 0
+const usd = (x: number) => Number(x.toFixed(4))
+export function seniorCostEstimate(o: { pictures: number; extraPictures?: number; narrationChars: number; spentUsd?: number; budgetUsd?: number }) {
+  const images = o.pictures + (o.extraPictures ?? 0), imageUsd = images * SENIOR_COST.imageUsd, ttsUsd = ttsUsdOf(o.narrationChars)
+  const assetUsd = imageUsd + ttsUsd, spent = o.spentUsd ?? 0, total = spent + assetUsd
+  return { images, imageUsd: usd(imageUsd), ttsUsd: usd(ttsUsd), assetUsd: usd(assetUsd), spentUsd: usd(spent), totalUsd: usd(total), ...(o.budgetUsd !== undefined ? { budgetUsd: o.budgetUsd, fits: total <= o.budgetUsd } : {}) }
+}
+// BUDGET GUARD of one ASSET run: every paid call RESERVES its price first; a call that would take the job over its budget
+// is never sent (the stage stops and the job waits for a bigger budget; everything made so far is stored and reused)
+export function budgetGuard(o: { budgetUsd: number; spentBefore: number }) {
+  let inflight = 0
+  const spent = () => o.spentBefore + runSpentUsd()
+  return {
+    spent: () => usd(spent()),
+    // true = paid for (call `done` after the call); false = over budget, do not call
+    take(cost: number) { if (spent() + inflight + cost > o.budgetUsd + 1e-9) return false; inflight += cost; return true },
+    done(cost: number) { inflight = Math.max(0, inflight - cost) }
+  }
 }
 // the measured-in-advance pacing of a whole script (stored with the PLAN result; RENDER reports the real one)
 export function seniorPacing(s: SeniorScript, speed = 1) {

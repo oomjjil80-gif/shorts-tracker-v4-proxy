@@ -667,9 +667,9 @@ async function seniorJob(input: any = {}) {
 test('SENIOR 17-21: Wisdom Longform keeps its single-image mode; Senior is the scenes mode: 6 acts, ~24-30 pictures, watercolor by default', async () => {
   assert.deepEqual([LONGFORM_MODES.wisdom_longform.images, LONGFORM_MODES.senior_longform.images], ['single', 'scenes'])
   assert.equal(longformMode('wisdom_longform').research, true); assert.equal(longformMode('senior_longform').research, false)
-  // PACING: one picture per 15-30 s of narration (60 min: 20-40 per act); the fake planner below draws 4-5 per act
-  assert.deepEqual(seniorScenePlan(3600), { acts: 6, scenesPerAct: { min: 20, max: 40 }, charsPerAct: 3720 })
-  assert.deepEqual(seniorScenePlan(2700).scenesPerAct, { min: 15, max: 30 })
+  // PACING: one picture per 20-30 s of narration (60 min: 20-30 per act; 45 min: 15-23 per act = 90-138); the fake planner below draws 4-5 per act
+  assert.deepEqual(seniorScenePlan(3600), { acts: 6, scenesPerAct: { min: 20, max: 30 }, charsPerAct: 3720 })
+  assert.deepEqual(seniorScenePlan(2700).scenesPerAct, { min: 15, max: 23 })
   const { ctx, runs, brief } = await seniorJob()
   assert.equal(brief.creative!.resolved.visualStyleProfile, 'senior-warm-watercolor')
   const calls: Record<string, number> = {}, research: any[] = []
@@ -820,7 +820,7 @@ test('Golden Style + FIRST-IMAGE CHARACTER LOCK (issue #179, PR #180): Wisdom / 
   assert.ok(s.sent.every((x) => x.body.input[0].text.includes(characterLine(CAST[0] as any))), 'the same mother in every picture')
 })
 
-test('SENIOR PACING: a picture is held 8-15 s (never over 30 s), no picture twice, the hook in the first 30 s, shots in the picture prompt; the checks are Senior-only', async () => {
+test('SENIOR PACING: a picture is held 20-30 s (never over 30 s), no picture twice, the hook in the first 30 s, shots in the picture prompt; the checks are Senior-only', async () => {
   const sc = (id: string, o: any = {}) => ({ id, place: '부엌', time: '아침', characters: ['mother'], action: `act ${id}`, mood: 'warm', shot: 'medium', visual: `v ${id}`, ...o })
   const say = (scene: string, chars: number) => ({ say: '가'.repeat(chars), show: ['가', '나'], accent: '가', color: 'red' as const, scene })
   const cps = LONGFORM.charsPerSecond
@@ -839,7 +839,7 @@ test('SENIOR PACING: a picture is held 8-15 s (never over 30 s), no picture twic
   assert.match(seniorScenePrompt(s, sc('x', { shot: 'close-up' }), wc), /Close-up shot: the face and its expression fill the frame\./)
   const { shot: _drop, ...noShot } = sc('y'); assert.ok(!/shot/i.test(seniorScenePrompt(s, noShot as any, wc).split('Characters')[0].replace(/Style[\s\S]*/, '')))
   // the whole-script report: pictures, seconds per picture, in-target count, holds over 30 s, when the hook is spoken
-  const script: any = { hook: '그날 밤 어머니가 사라졌다', characters: CAST, sections: [{ id: 'a1', scenes: [sc('a1s1'), sc('a1s2'), sc('a1s3')], sentences: [{ ...say('a1s1', 20), say: '그날 밤 어머니가 사라졌다. 아무도 몰랐다.' }, say('a1s1', 40), say('a1s2', Math.round(12 * cps)), say('a1s3', Math.round(40 * cps))] }] }
+  const script: any = { hook: '그날 밤 어머니가 사라졌다', characters: CAST, sections: [{ id: 'a1', scenes: [sc('a1s1'), sc('a1s2'), sc('a1s3')], sentences: [{ ...say('a1s1', 20), say: '그날 밤 어머니가 사라졌다. 아무도 몰랐다.' }, say('a1s1', 40), say('a1s2', Math.round(25 * cps)), say('a1s3', Math.round(40 * cps))] }] }
   const p = seniorPacing(script)
   assert.deepEqual([p.pictures, p.overMaxHold, p.repeated], [3, 1, 0]); assert.ok(p.hookBy !== null && p.hookBy <= SENIOR.pace.hookSeconds, `hook at ${p.hookBy}s`)
   assert.ok(p.inTarget >= 1 && p.maxSeconds >= 40)
@@ -854,10 +854,65 @@ test('SENIOR PACING: a picture is held 8-15 s (never over 30 s), no picture twic
   const o: any = await pl.outline(brief as any, 6, 'k').catch(() => null)
   void o
   const oi = String(sent[0]?.instructions ?? ''), schema = JSON.stringify(sent[0]?.text?.format?.schema ?? sent[0])
-  assert.match(oi, /15-30 VISUAL scenes/); assert.match(oi, /8-15 seconds per picture and NEVER more than 30 seconds/); assert.match(oi, /first 30 seconds \(about 186 Korean characters/)
+  assert.match(oi, /15-23 VISUAL scenes/); assert.match(oi, /20-30 seconds per picture and NEVER more than 30 seconds/); assert.match(oi, /first 30 seconds \(about 186 Korean characters/)
   assert.match(oi, /close-up/); assert.match(oi, /over-the-shoulder/); assert.match(oi, /never the same picture twice/)
   assert.ok(SENIOR.actRoles.map((r) => r.split(':')[0]).join('>') === 'Hook>Conflict>Crisis>Reversal>Emotional reward>Ending')
-  assert.match(schema, /"maxItems":30/); assert.match(schema, /"close-up"/)
+  assert.match(schema, /"maxItems":23/); assert.match(schema, /"close-up"/)
   await pl.section({ brief: brief as any, outline: { title: 't', hook: 'h', sections: [{ id: 'a1', heading: 'h', points: ['p'], scenes: [sc('a1s1')] }] } as any, index: 0, previousTail: [], targetChars: 1000 } as any, 'k').catch(() => null)
-  assert.match(String(sent[1]?.instructions ?? ''), /about 50-93 Korean characters over each scene .* NEVER more than 186 characters/)
+  assert.match(String(sent[1]?.instructions ?? ''), /about 124-186 Korean characters over each scene \(20-30 seconds\) and NEVER more than 186 characters/)
+})
+
+test('SENIOR BUDGET: PLAN estimates pictures + cost; ASSET stops BEFORE the next paid call when the job budget would be crossed (WAITING_USER/BUDGET), keeps everything made, and job_resume goes on without paying twice; scenes are never cut', async () => {
+  const { createTestDb } = await import('./testDb.js'), { createJobStore } = await import('../lib/jobs/store.js'), { createJobsHttp } = await import('../lib/jobs/http.js')
+  const { runOnce } = await import('../worker/runJob.js'), { withLongform } = await import('../worker/stages/longform.js')
+  const { meteredFetch } = await import('../lib/generative/usageLedger.js'), { geminiLongformImage } = await import('../lib/generative/providers.js')
+  const { seniorCostEstimate, SENIOR_COST } = await import('../lib/generative/seniorLongform.js')
+  const KEY = 's'.repeat(32), db: any = await createTestDb(), store = createJobStore(db), blobs: any = createMemoryBlobStore()
+  const handler = createJobsHttp({ getStore: async () => store, blobs, sourceExists: async () => true })
+  const call = async (method: string, o: { body?: any; query?: any } = {}) => { let status = 0, json: any = null; const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } }; await handler({ method, headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': KEY }, query: o.query || {}, body: o.body } as any, res); return { status, json } }
+  const d = await mkdtemp(join(tmpdir(), 'senior-budget-'))
+  // every picture goes through the REAL Gemini request + the metered fetch (the ledger prices it): $0.067 + 30k input tokens
+  const drawn: string[] = []
+  const image = async (p: string, k: string) => { drawn.push(p); const pic = await scenePicture(d, p); return geminiLongformImage(p, k, meteredFetch((async () => new Response(JSON.stringify({ steps: [{ type: 'model_output', content: [{ type: 'image', data: pic.bytes.toString('base64'), mime_type: 'image/jpeg' }] }], usage: { total_input_tokens: 30000 } }), { headers: { 'content-type': 'application/json' } })) as any, () => {})) }
+  let tts = 0
+  const exec = () => withLongform([], [createLongformPlanExecutor({ apiKey: 'k', derive: NO_DERIVE, log: () => {}, planner: seniorPlanner() as any }), createLongformAssetExecutor({ apiKey: 'k', imageKey: 'gk', image, tts: async () => { tts++; return shortTts() } } as any)])
+  const tick = () => runOnce({ store, blobs, executors: exec(), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w1', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
+  const created = await call('POST', { body: { taskType: 'job_create', profile: 'senior_longform', idempotencyKey: 'senior-budget-01', budgetUsd: 2, input: { kind: 'topic', text: FAMILY, targetSeconds: 3600 } } })
+  const jobId = created.json.job.id, job = async () => (await call('GET', { query: { taskType: 'job_get', id: jobId } })).json.job
+  // PLAN: the expected picture count and cost, against the budget
+  await tick()
+  const plan: any = (await store.listStageRuns(jobId)).find((r: any) => r.stage === 'PLAN' && r.status === 'SUCCEEDED')
+  const est = plan.result.estimate
+  assert.equal(est.images, 27); assert.equal(est.imageUsd, Number((27 * SENIOR_COST.imageUsd).toFixed(4))); assert.ok(est.ttsUsd > 0 && est.totalUsd < 2 && est.fits === true && est.budgetUsd === 2, JSON.stringify(est))
+  // ASSET: the estimate fits, but the real pictures cost more ($0.082) -> it stops BEFORE the picture that would cross $2
+  await tick()
+  let j = await job()
+  assert.deepEqual([j.status, j.stage, j.waitReason], ['WAITING_USER', 'ASSET', 'BUDGET'], JSON.stringify(j.runs?.slice(-1)))
+  const first = drawn.length, spentFirst = j.cost.estUsd
+  assert.ok(first > 0 && first < 27, `${first} pictures before the stop`); assert.ok(spentFirst <= 2 && spentFirst + SENIOR_COST.imageUsd > 2, `spent ${spentFirst}`)
+  assert.equal(tts, 0, 'no narration paid after the stop'); assert.equal(j.budgetStop.stopped, 'before the next paid call'); assert.equal(j.budgetStop.images, 27 - first); assert.equal(j.budgetStop.made.pictures, first)
+  assert.equal((await tick() as any).ran, false, 'a job waiting for budget is not run again')
+  // the scenes are never reduced to fit: the script still has all 27
+  assert.equal(seniorScenes((await blobs.getJson(plan.result.scriptRef)) as any).length, 27)
+  // job_resume: the SAME job, a bigger budget; only the missing pictures + the narration are paid
+  assert.equal((await call('POST', { body: { taskType: 'job_resume', jobId, budgetUsd: 0 } })).status, 400)
+  const r = await call('POST', { body: { taskType: 'job_resume', jobId, budgetUsd: 5 } }); assert.equal(r.status, 200, JSON.stringify(r.json)); assert.equal(r.json.job.id, jobId)
+  await tick()
+  j = await job()
+  assert.equal(j.stage, 'RENDER', JSON.stringify(j.runs?.slice(-1)))
+  assert.equal(drawn.length, 27, 'every picture paid exactly once'); assert.equal(new Set(drawn).size, 27)
+  assert.equal(tts, 28, 'each narration chunk once')
+  assert.equal((await call('POST', { body: { taskType: 'job_resume', jobId, budgetUsd: 9 } })).status, 409, 'only a job waiting for budget')
+  // a budget too small for even the estimate (a fresh store: nothing cached yet): ASSET waits BEFORE any paid call
+  const blobs2: any = createMemoryBlobStore(), store2 = createJobStore(await createTestDb())
+  const h2 = createJobsHttp({ getStore: async () => store2, blobs: blobs2, sourceExists: async () => true })
+  const call2 = async (method: string, o: { body?: any; query?: any } = {}) => { let status = 0, json: any = null; const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } }; await h2({ method, headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': KEY }, query: o.query || {}, body: o.body } as any, res); return { status, json } }
+  const tick2 = () => runOnce({ store: store2, blobs: blobs2, executors: exec(), resolveSourceAsset: async () => { throw new Error('none') }, workerId: 'w2', leaseMs: 600_000, heartbeatMs: 3_600_000 } as any)
+  const c2 = await call2('POST', { body: { taskType: 'job_create', profile: 'senior_longform', idempotencyKey: 'senior-budget-02', budgetUsd: 1.2, input: { kind: 'topic', text: FAMILY, targetSeconds: 3600 } } })
+  drawn.length = 0; tts = 0
+  await tick2(); await tick2()
+  const j2 = (await call2('GET', { query: { taskType: 'job_get', id: c2.json.job.id } })).json.job
+  assert.deepEqual([j2.status, j2.waitReason, drawn.length, tts], ['WAITING_USER', 'BUDGET', 0, 0], JSON.stringify({ stage: j2.stage, runs: j2.runs }))
+  assert.ok(j2.budgetStop.totalUsd > 1.2 && j2.budgetStop.fits === false, JSON.stringify(j2.budgetStop))
+  assert.deepEqual(seniorCostEstimate({ pictures: 100, narrationChars: 0, budgetUsd: 10 }), { images: 100, imageUsd: 7, ttsUsd: 0, assetUsd: 7, spentUsd: 0, totalUsd: 7, budgetUsd: 10, fits: true })
 })

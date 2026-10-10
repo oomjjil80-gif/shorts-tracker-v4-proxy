@@ -47,7 +47,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -60,7 +60,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
   JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503,
-  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409
+  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409
 }
 
 const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
@@ -115,6 +115,8 @@ function view(job: Job, runs: StageRun[]) {
     error: job.status === 'FAILED' ? (lastFail?.error as any)?.message ?? 'failed' : null,
     // paid calls of this job so far (every attempt, failed ones too): estimated USD + call counts per stage / model
     cost: jobCost(runs),
+    // a budget stop (Senior ASSET): what is still unpaid and the budget it needs to go on
+    budgetStop: job.status === 'WAITING_USER' && job.waitReason === 'BUDGET' ? ((latest(runs, job.stage)?.result as any)?.budget ?? null) : null,
     runs: runs.map((r) => ({ stage: r.stage, kind: r.kind, attempt: r.attempt, status: r.status, error: r.error, finishedAt: r.finishedAt, paidCalls: usageOfRun(r)?.paidCalls ?? 0, estUsd: usageOfRun(r)?.estUsd ?? 0 }))
   }
 }
@@ -478,6 +480,15 @@ export function createJobsHttp(deps: JobsDeps) {
       if (taskType === 'job_retry_render') {
         // a Longform that failed at RENDER: the SAME job renders again from its stored assets (no new job, no AI call)
         const job = await store.retryLongformRender({ jobId: need(String(body.jobId || ''), 'jobId is required'), workspaceId })
+        return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)) })
+      }
+
+      // a job WAITING for budget (Senior ASSET stopped before a paid call): the SAME job goes on with a bigger budget; the
+      // pictures / narration already made are in the cache, so nothing is paid twice
+      if (taskType === 'job_resume') {
+        const jobId = need(String(body.jobId || ''), 'jobId is required'), budgetUsd = Number(body.budgetUsd)
+        need(Number.isFinite(budgetUsd) && budgetUsd > 0 && budgetUsd <= MAX_BUDGET_USD, `budgetUsd must be 0..${MAX_BUDGET_USD}`)
+        const job = await store.resumeJob({ jobId, workspaceId, budgetUsd })
         return res.status(200).json({ ok: true, job: view(job, await store.listStageRuns(job.id)) })
       }
 
