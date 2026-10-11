@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { normalizeLongformBrief, sleepClassicAss, cardErrors } from '../lib/generative/longform.js'
 import { thumbnailCopyErrors } from '../lib/generative/wisdomThumbnail.js'
-import { isSleepClassic, SLEEP_CHAPTERS, SLEEP_CLASSIC_TITLE, sleepClassicOutline, splitSleepParagraphs, createSleepClassicPlanner, reviewSleepClassicStory, sleepChapterLength } from '../lib/generative/sleepClassic.js'
+import { isSleepClassic, SLEEP_CHAPTERS, SLEEP_CLASSIC_TITLE, sleepClassicOutline, splitSleepParagraphs, createSleepClassicPlanner, reviewSleepClassicStory } from '../lib/generative/sleepClassic.js'
 
 const TOPIC = '오디세이아 제9권 외눈박이 거인 폴리페모스'
 
@@ -22,8 +22,7 @@ test('the published nine-chapter outline is deterministic and matches approved s
   assert.equal(o.sections.length, 9)
   assert.ok(o.sections[5].points.join(' ').includes('아무도 아니다'))
   assert.match(o.sections[8].points.join(' '), /포세이돈/)
-  assert.equal(SLEEP_CHAPTERS.reduce((n, c) => n + c.chars, 0), 15300)
-  assert.equal(sleepChapterLength(8), 2600)
+  assert.ok(SLEEP_CHAPTERS.every(c => !Object.hasOwn(c, 'chars')))
   assert.deepEqual(sleepClassicOutline(), o)
   assert.deepEqual(thumbnailCopyErrors(o.thumbnail.lines, o.title), [], 'production PLAN outline thumbnail gate must PASS')
   assert.deepEqual(cardErrors(splitSleepParagraphs(['오디세이아 이야기를 시작합니다.'])[0]), [], 'narration card must pass existing PLAN validation')
@@ -68,7 +67,7 @@ test('GPT quality gate rejects a false approval with concrete issues', async () 
   assert.equal(result.issues.length, 1)
 })
 
-test('real 2000-character chapter splits into saved plot segments instead of blindly billing three rewrites', async () => {
+test('story beats split naturally, without character/time requirements, and paid parts are cached', async () => {
   const prev = process.env.ANTHROPIC_API_KEY
   process.env.ANTHROPIC_API_KEY = 'test-key'
   const paid: any[] = [], stored = new Map<string, string[]>()
@@ -83,6 +82,8 @@ test('real 2000-character chapter splits into saved plot segments instead of bli
     assert.equal(match[2], '3')
     assert.match(input, /이번 구간에서만 다룰 검증된 사건/)
     assert.ok(!Object.hasOwn(req, 'temperature'))
+    assert.doesNotMatch(input, /(?:목표 길이|자.{0,5}자 제한|공백 제외 약 \d+자|\d+초 분량)/)
+    assert.match(input, /글자 수·문단 수·낭독 시간 제한은 없다/)
     const text = '그는 동굴을 자세히 살피고 동료의 선택을 기다리며 조용하게 다음 행동을 준비했습니다.'
     const paragraphs = Array.from({ length: 3 }, (_v, i) => ('부분 ' + match[1] + ' ' + i + ': ' + text + ' ').repeat(7))
     return new Response(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ paragraphs }) }], stop_reason: 'end_turn' }), { status: 200 })
@@ -91,7 +92,7 @@ test('real 2000-character chapter splits into saved plot segments instead of bli
     const planner = createSleepClassicPlanner(fake, cache)
     const args: any = { brief: {}, outline: sleepClassicOutline(), index: 3, targetChars: 2000, previousTail: [] }
     const first = await planner.section(args, 'unused')
-    assert.equal(paid.length, 3, 'one call per ordered plot segment, not three attempts rewriting the entire chapter')
+    assert.equal(paid.length, 3, 'one call per ordered plot beat group, not paid whole-chapter retries')
     assert.equal(stored.size, 3, 'each paid segment is checkpointed immediately')
     assert.notEqual(paid[0], paid[1])
     assert.notEqual(paid[1], paid[2])
@@ -102,21 +103,24 @@ test('real 2000-character chapter splits into saved plot segments instead of bli
     if (prev === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prev
   }
 })
-test('incomplete chapter fails once after checkpointing instead of paying for blind regeneration', async () => {
+test('short but valid story is accepted without a character or video-duration threshold', async () => {
   const prev = process.env.ANTHROPIC_API_KEY
   process.env.ANTHROPIC_API_KEY = 'test-key'
   let calls = 0
-  const fake: any = async () => {
+  const fake: any = async (_url: string, opts: any) => {
     calls++
-    const text = '그들은 밤바다 너머 희미한 달빛을 바라보며 말을 아꼈습니다. '.repeat(9)
-    return new Response(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ paragraphs: [text] }) }] }), { status: 200 })
+    const input = JSON.parse(opts.body).messages[0].content
+    assert.match(input, /문단 수와 분량은 사건에 따라 자유롭게 결정/)
+    assert.doesNotMatch(input, /\d+자|목표 길이|\d+분/)
+    return new Response(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ paragraphs: ['잠시 기다렸습니다.'] }) }] }), { status: 200 })
   }
   try {
     const p = createSleepClassicPlanner(fake)
-    // Four long story beats: a 2000-character request becomes three short targeted calls.
-    const args: any = { brief: {}, outline: sleepClassicOutline(), index: 3, targetChars: 2000, previousTail: [] }
-    await assert.rejects(p.section(args, 'unused'), (e: any) => e.stop === true && String(e.code).startsWith('SLEEP_'))
-    assert.ok(calls <= 3, 'do not retry the same paid chapter when output is short')
+    const args: any = { brief: {}, outline: sleepClassicOutline(), index: 3, targetChars: 200000, previousTail: [] }
+    const result = await p.section(args, 'unused')
+    assert.equal(calls, 3, 'chapter events rather than requested character count determine subparts')
+    assert.equal(result.sentences.length, 3)
+    assert.equal(result.sentences[0].say, '잠시 기다렸습니다.')
   } finally {
     if (prev === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prev
   }
