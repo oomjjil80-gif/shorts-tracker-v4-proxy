@@ -15,7 +15,7 @@ import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaSc
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
 import { crossReviewFromEnv, runCrossReview, PLAN_CROSS_REVIEW_VERSION, type CrossReviewDeps, type CrossReviewRecord } from '../../lib/generative/planCrossReview.js'
-import { createSleepClassicPlanner, isSleepClassic, reviewSleepClassicStory, SLEEP_CHAPTERS } from '../../lib/generative/sleepClassic.js'
+import { createSleepClassicPlanner, isSleepClassic, reviewSleepClassicStory, repairSleepClassicChapter, sleepReviewIssuesByChapter, SLEEP_CHAPTERS } from '../../lib/generative/sleepClassic.js'
 import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorCostEstimate, budgetGuard, ttsUsdOf, SENIOR_COST, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeGolden, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
@@ -24,7 +24,7 @@ import { VIDEO_ENCODER_THREADS } from '../../lib/media/render.js'
 import { openAiLongformResearcher, researchPath, researchErrors, sectionFragments, RESEARCH_MODEL, type LongformResearcher, type ResearchBundle } from '../../lib/generative/longformResearch.js'
 import {
   LONGFORM, isLongformProfile, longformMode, validateLongformScript, cardErrors, sentencesOf, narrationOf, longformImagePrompt, ttsChunks, cardTimeline, sectionPlan, longformFigure,
-  longformCardsAss, yasaCaptionsAss, sleepClassicAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
+  longformCardsAss, yasaCaptionsAss, sleepClassicAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript, type LongformSentence
 } from '../../lib/generative/longform.js'
 import { thumbnailArgv, thumbnailCopyErrors, LONGFORM_THUMB } from '../../lib/generative/wisdomThumbnail.js'
 import { styleGate, representativeCheck, thumbnailRework, type StyleReference, type DrawRefFn, type CopyWriter } from './styleGate.js'
@@ -254,11 +254,53 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         sections.push(scenes ? { id: String(outline.sections[i].id || `a${i + 1}`), heading: outline.sections[i].heading, ...(yasa ? { act: YASA_ACTS[i]?.key } : {}), ...mergeSameScenes({ scenes: actScenes, sentences: d.sentences as any }) } : { id: String(outline.sections[i].id || `s${i + 1}`), sentences: d.sentences })
         tail = d.sentences.slice(-2).map((x) => x.say)
       }
-      // Sleep Classic: GPT independently verifies all Claude-authored chapters before TTS/IMAGE.
+      // Sleep Classic: GPT independent fact review. On rejection revise ONLY cited
+      // chapters once, preserving the good, already paid chapters and their checkpoints.
+      // Never downgrade this gate: the corrected full story must pass GPT again.
       let sleepReview: any = null
       if (sleep) {
-        sleepReview = await step<any>('sleep-quality', 'SLEEP_REVIEW_INVALID', () => reviewSleepClassicStory(sections, apiKey), (v) => (!v || typeof v.approved !== 'boolean' || !Array.isArray(v.issues) ? ['review.invalid'] : []), { tries: 1 })
-        if (!sleepReview.approved) throw new StageError('SLEEP_STORY_REJECTED', sleepReview.issues.slice(0, 5).join('; ') || 'GPT rejected the story', false)
+        const validReview = (v: any) => (!v || typeof v.approved !== 'boolean' || !Array.isArray(v.issues) ? ['review.invalid'] : [])
+        const initial = await step<any>('sleep-quality', 'SLEEP_REVIEW_INVALID', () => reviewSleepClassicStory(sections, apiKey), validReview, { tries: 1 })
+        sleepReview = initial
+        if (!initial.approved) {
+          let findings: Map<number, string[]>
+          try { findings = sleepReviewIssuesByChapter(initial.issues) }
+          catch (e: any) { throw new StageError('SLEEP_REVIEW_UNMAPPED', String(e.message || e), false) }
+          // Scope repairs to explicit GPT findings; a single paid attempt per affected chapter.
+          for (const [index, errors] of findings) {
+            const path = `${ck}/sleep-repair-v1-chapter-${index + 1}.json`
+            const attemptPath = `${ck}/sleep-repair-v1-chapter-${index + 1}.attempt.json`
+            let stored = (await blobs.getJson(path)) as { sentences?: LongformSentence[] } | null
+            if (!stored) {
+              if (await blobs.getJson(attemptPath)) throw new StageError('SLEEP_REPAIR_RETRY_BLOCKED', 'A paid chapter repair was already attempted; no duplicate paid retry', false)
+              // Write first so a lost response/worker restart never repeats a potentially paid API call.
+              await blobs.putJson(attemptPath, { jobId: job.id, chapter: index + 1, findings: errors }, { overwrite: false })
+              let sentences: LongformSentence[]
+              try {
+                sentences = await repairSleepClassicChapter({
+                  index, sentences: sections[index].sentences, issues: errors,
+                  before: index ? sections[index - 1].sentences.slice(-2).map((x: LongformSentence) => x.say).join(' ') : '',
+                  after: index + 1 < sections.length ? sections[index + 1].sentences.slice(0, 2).map((x: LongformSentence) => x.say).join(' ') : ''
+                })
+              } catch (e: any) {
+                throw new StageError('SLEEP_REPAIR_FAILED', String(e?.message || e).slice(0, 350), false)
+              }
+              const errs = sectionErrors({ sentences })
+              if (errs.length) throw new StageError('SLEEP_REPAIR_INVALID', `chapter ${index + 1}: ${errs.slice(0, 10).join(', ')}`, false)
+              await blobs.putJson(path, { sentences }, { overwrite: true })
+              stored = { sentences }
+            }
+            const errs = sectionErrors(stored)
+            if (errs.length) throw new StageError('SLEEP_REPAIR_INVALID', `stored chapter ${index + 1}: ${errs.slice(0, 10).join(', ')}`, false)
+            sections[index] = { ...sections[index], sentences: stored.sentences }
+          }
+          // Different checkpoint from the first review; ONE second review for the whole story.
+          sleepReview = await step<any>('sleep-quality-after-repair-v1', 'SLEEP_REVIEW_INVALID', () => reviewSleepClassicStory(sections, apiKey), validReview, { tries: 1 })
+          if (!sleepReview.approved) {
+            throw new StageError('SLEEP_STORY_REJECTED', sleepReview.issues.slice(0, 5).join('; ') || 'Corrected story failed independent review', false)
+          }
+          log(`[sleep-classic] job=${job.id} GPT approved after one issue-targeted repair pass chapters=${[...findings.keys()].map(i => i + 1).join(',')}`)
+        }
       }
       // 숨은야담: the COLD OPEN, written last over the main story's own pictures (45~60 s at the voice's speed, 5~8 beats)
       let coldOpen: any = null

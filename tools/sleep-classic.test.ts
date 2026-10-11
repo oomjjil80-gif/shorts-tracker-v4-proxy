@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { normalizeLongformBrief, sleepClassicAss, cardErrors } from '../lib/generative/longform.js'
 import { thumbnailCopyErrors } from '../lib/generative/wisdomThumbnail.js'
-import { isSleepClassic, SLEEP_CHAPTERS, SLEEP_CLASSIC_TITLE, sleepClassicOutline, splitSleepParagraphs, createSleepClassicPlanner, reviewSleepClassicStory } from '../lib/generative/sleepClassic.js'
+import { isSleepClassic, SLEEP_CHAPTERS, SLEEP_CLASSIC_TITLE, SLEEP_INTRO, SLEEP_CANON, sleepClassicOutline, splitSleepParagraphs, createSleepClassicPlanner, reviewSleepClassicStory, repairSleepClassicChapter, sleepReviewIssuesByChapter } from '../lib/generative/sleepClassic.js'
 
 const TOPIC = '오디세이아 제9권 외눈박이 거인 폴리페모스'
 
@@ -126,3 +126,68 @@ test('short but valid story is accepted without a character or video-duration th
   }
 })
 
+
+
+test('actual production GPT findings map exactly chapters 2,4,6,7 (never silently approve)', () => {
+  const findings = [
+    '2장에서 북풍 뒤 사흘 밤낮을 계속 항해하고 나흘째 바람이 잦아든 것으로 서술했다. 원전에서는 해안에서 이틀 밤낮 머물고 사흘째 출항한다.',
+    '4장에서 폴리페모스와 손님 환대 대화, 배 위치 질문과 답변의 인과 순서가 깨졌다.',
+    '6장에서 실제 원전에 없는 직접 인용과 포도주 가죽 부대가 떨어진 일을 창작했다.',
+    '7장에서 올리브 말뚝을 재 속에 감췄다면서 5장의 거름 아래 숨김과 모순됐다.'
+  ]
+  const grouped = sleepReviewIssuesByChapter(findings)
+  assert.deepEqual([...grouped.keys()], [1, 3, 5, 6])
+  assert.equal([...grouped.values()].reduce((x, y) => x + y.length, 0), 4)
+  assert.match(SLEEP_CANON[1], /이틀 밤낮/)
+  assert.match(SLEEP_CANON[3], /배 위치/)
+  assert.match(SLEEP_CANON[5], /포도주/)
+  assert.match(SLEEP_CANON[6], /거름 아래/)
+  assert.throws(() => sleepReviewIssuesByChapter(['항해에 심각한 문제']), /explicit chapter/)
+  assert.throws(() => sleepReviewIssuesByChapter([]), /missing or excessive/)
+  assert.throws(() => sleepReviewIssuesByChapter(['12장에서 오류']), /explicit chapter/)
+})
+test('one charged Claude call corrects ONLY cited chapter and passes no length/time gate', async () => {
+  const old = process.env.ANTHROPIC_API_KEY
+  process.env.ANTHROPIC_API_KEY = 'test-key'
+  const calls: any[] = []
+  const fake: any = async (url: string, opts: any) => {
+    assert.equal(url, 'https://api.anthropic.com/v1/messages')
+    const input = JSON.parse(opts.body).messages[0].content as string
+    calls.push(input)
+    assert.match(input, /2장: 연밥의 땅/)
+    assert.match(input, /북풍 뒤 사흘 밤낮/)
+    assert.match(input, /이틀 밤낮/)
+    assert.match(input, /글자 수·문단 수·낭독 시간은 제한하지 않는다/)
+    assert.doesNotMatch(input, /(?<!제)\d+자|45분 목표/)
+    return new Response(JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ paragraphs: ['그들은 이틀 밤낮 땅에서 쉬고 사흘째 다시 바다를 향해 나섰습니다.'] }) }] }), { status: 200 })
+  }
+  try {
+    const corrected = await repairSleepClassicChapter({ index: 1, sentences: splitSleepParagraphs(['그들은 사흘 밤낮 쉬지 않고 항해했습니다.']), issues: ['2장에서 북풍 뒤 사흘 밤낮 계속 항해한 것으로 서술했다.'], before: '그들은 이스마로스를 떠났습니다.', after: '염소 섬에 닿았습니다.' }, fake)
+    assert.equal(calls.length, 1)
+    assert.equal(corrected.length, 1)
+    assert.match(corrected[0].say, /이틀 밤낮/)
+    assert.doesNotMatch(corrected[0].say, /사흘 밤낮/)
+    assert.ok(corrected.every(x => x.color === 'yellow'))
+  } finally {
+    if (old === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = old
+  }
+})
+test('repair of chapter 1 preserves approved opening while correcting body', async () => {
+  const old = process.env.ANTHROPIC_API_KEY
+  process.env.ANTHROPIC_API_KEY = 'test-key'
+  let paid = 0
+  const fake: any = async () => {
+    paid++
+    return new Response(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ paragraphs: ['이스마로스 해안에서 일행은 바다로 돌아갔습니다.'] }) }] }), { status: 200 })
+  }
+  try {
+    const original = [...splitSleepParagraphs([SLEEP_INTRO]), ...splitSleepParagraphs(['대본 오류.'])]
+    const edited = await repairSleepClassicChapter({ index: 0, sentences: original, issues: ['1장에서 이스마로스 사건 순서가 어긋났다.'] }, fake)
+    assert.equal(paid, 1)
+    assert.equal(edited.length, splitSleepParagraphs([SLEEP_INTRO]).length + 1)
+    assert.equal(edited[0].say, original[0].say)
+    assert.match(edited.at(-1)!.say, /이스마로스 해안/)
+  } finally {
+    if (old === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = old
+  }
+})

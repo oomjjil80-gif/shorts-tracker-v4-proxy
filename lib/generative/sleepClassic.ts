@@ -19,6 +19,20 @@ export const SLEEP_CHAPTERS = [
   { heading: '바다 위에서 밝힌 이름', beats: ['첫 조롱과 첫 돌 투척', '부하들이 위험하니 그만하라고 만류', '이타카의 오디세우스라는 본명을 소리침', '예언자 텔레모스의 예언을 기억하는 거인', '포세이돈에게 귀향 지연·동료 상실·남의 배 귀향·집안 고난을 저주해 달라 기원', '두 번째 바위와 염소 섬 귀환', '제우스가 숫양의 제물을 받지 않고 다음 날 떠남'] }
 ] as const
 
+// Concrete source chronology: protects the author from plausible but invented filler.
+// These are factual accuracy constraints, never a running-time or length target.
+export const SLEEP_CANON = [
+  '파이아케스 왕 앞의 실명 공개는 회상 이야기의 바깥 틀이다. 마론을 살려 얻은 포도주는 훗날 키클롭스 동굴에서 쓴다.',
+  '이스마로스 탈출 후 거센 북풍으로 돛이 찢겨 육지에 닿고 이틀 밤낮 머물렀다. 사흘째 떠나 말레이아 곶에서 다시 북풍과 조류에 밀려 아흐레 떠돈 뒤 로토파고이 땅에 닿는다. 그 순서와 장소를 바꾸지 말라.',
+  '염소 섬은 키클롭스들이 사는 큰 섬 맞은편의 무인 섬이다. 한 척만 따로 동굴을 살핀다.',
+  '폴리페모스가 양떼를 들여오고 바위를 닫는다. 손님 환대의 신을 무시하는 대화와 배 위치를 묻는 질문, 오디세우스의 배에 관한 거짓 답은 앞뒤 인과 순서가 자연스러워야 한다. 실제로 하지 않은 말이나 사후에 언급하는 대화를 꾸며 넣지 않는다.',
+  '아침 두 명을 더 잡아먹은 다음 올리브 말뚝을 깎아 불에 굳히고 거름 아래 숨긴다. 동료 네 명을 뽑아 오디세우스가 합류한다.',
+  '마론의 강한 포도주 세 잔을 마시게 하며 거짓 이름 아무도 아니다를 밝힌다. 도리에 관한 창작 훈계나 포도주가 손에서 떨어지는 사건, 직접 인용을 새로 만들지 않는다.',
+  '올리브 말뚝은 전날 거름 아래 감췄던 동일한 말뚝이다. 재나 화덕에 묻어 두었다고 바꾸지 않는다. 이웃들은 아무도 아니다라는 말을 듣고 돌아간다.',
+  '셋씩 숫양을 묶고 가운데 매달려 빠져나간다. 오디세우스는 가장 큰 숫양의 배를 붙든다.',
+  '첫 조롱 뒤 첫 투석, 동료들 만류, 본명 공개, 폴리페모스의 예언 회상·포세이돈 저주, 두 번째 돌, 숫양 제물과 제우스가 받지 않음 순이다.'
+] as const
+
 export const SLEEP_INTRO = [
   '오늘 밤에는 아주 오래된 이야기를 하나 들려 드리겠습니다.',
   '아주 오래전 고대 그리스에서 노래로 전해지던 이야기입니다. 오디세이아라는 긴 노래에 나오는 모험 가운데 하나지요.',
@@ -94,6 +108,7 @@ export function createSleepClassicPlanner(f: Fetcher = fetch, cache?: SleepChapt
             '확정 작품: ' + SLEEP_CLASSIC_TITLE, '원전: ' + SLEEP_CLASSIC_SOURCE,
             '9장 중 ' + (index + 1) + '장 (' + c.heading + ')의 ' + (part + 1) + '/' + parts + '번째 연속 낭독 구간이다.',
             '이번 구간에서만 다룰 검증된 사건(순서를 바꾸거나 다른 구간 사건을 앞당기지 말 것): ' + beats.join(' → '),
+            '원전 사실관계와 인과 고정: ' + SLEEP_CANON[index],
             '글자 수·문단 수·낭독 시간 제한은 없다. 해당 사건이 자연스럽게 끝날 때까지 서술한다. 반복/분량 늘리기/새 인물/새 사건/가짜 직접 인용은 금지.',
             '위 사건을 시간적 행동과 인물의 선택, 동작 및 자연스러운 원전 맥락으로 풀어 구체적으로 설명하라. 한두 단락으로 줄이지 말고 사건별 변화가 독립적으로 드러나도록 충분히 서술할 것.',
             '낮고 따뜻한 남성 음성으로 읽을 3인칭 이야기체. 잔혹 상세 묘사·고함·무대 지시·챕터명·효과음 금지.',
@@ -166,4 +181,71 @@ export async function reviewSleepClassicStory(sections: Array<{ id: string; sent
     JSON.stringify(source), f)
   if (r.approved !== true || (r.issues ?? []).length) return { ...r, approved: false }
   return r as SleepReview
+}
+
+
+// No new generation on a failed original review. Only chapters explicitly cited by the
+// independent reviewer can be repaired, at most once, and must pass the SAME review again.
+export function sleepReviewIssuesByChapter(issues: string[]): Map<number, string[]> {
+  const out = new Map<number, string[]>()
+  if (!Array.isArray(issues) || !issues.length || issues.length > 8) throw stopSleep('sleep review issues missing or excessive; do not guess edits', 'SLEEP_REVIEW_UNMAPPED')
+  for (const raw of issues) {
+    const message = String(raw ?? '').trim()
+    const match = /^(?:제\s*)?([1-9])\s*장(?:에서는|에서|의|:|：|\s)/.exec(message)
+    if (!match || !message || message.length > 1300) throw stopSleep('GPT review issue lacks a single explicit chapter; do not revise blindly', 'SLEEP_REVIEW_UNMAPPED')
+    const index = Number(match[1]) - 1
+    const old = out.get(index) ?? []
+    old.push(message)
+    out.set(index, old)
+  }
+  return out
+}
+export async function repairSleepClassicChapter(args: {
+  index: number
+  sentences: LongformSentence[]
+  issues: string[]
+  before?: string
+  after?: string
+}, f: Fetcher = fetch): Promise<LongformSentence[]> {
+  const c = SLEEP_CHAPTERS[args.index]
+  if (!c || !Array.isArray(args.issues) || !args.issues.length || !args.sentences?.length) {
+    throw stopSleep('repair requires a valid chapter and explicit GPT findings', 'SLEEP_REPAIR_INVALID')
+  }
+  const apiKey = process.env.ANTHROPIC_API_KEY || ''
+  if (!apiKey) throw stopSleep('Claude key missing for issue-specific repair', 'PROVIDER_AUTH')
+  const original = args.sentences.map(s => s.say).join(' ')
+  const intro = args.index === 0 ? splitSleepParagraphs([SLEEP_INTRO]) : []
+  const before = args.index === 0 ? original.slice(SLEEP_INTRO.length).trim() : original
+  const input = [
+    '호메로스 오디세이아 제9권 한국어 수면 오디오북: GPT 원전 검증에서 오류가 발견된 이 장만 정확하게 고쳐라.',
+    '전체 9장 중 ' + (args.index + 1) + '장: ' + c.heading,
+    '유지할 검증된 원전 사건과 순서: ' + c.beats.join(' → '),
+    '추가로 반드시 지킬 사실관계: ' + SLEEP_CANON[args.index],
+    '독립 GPT 리뷰가 지적한 사실 오류·앞뒤 모순 (모두 수정):\n' + args.issues.join('\n'),
+    '직전 장 마지막(중복 금지): ' + String(args.before || '').slice(-750),
+    '다음 장 첫머리(앞당겨 쓰지 말 것): ' + String(args.after || '').slice(0, 750),
+    '수정 대상 기존 본문(틀리지 않은 서술은 유지하고 틀린 장면만 고쳐 연결하라):\n' + before,
+    '환대와 거짓말의 실제 인과를 유지하라. 원전에 없는 직접 인용, 새로운 물건/행동/인물, 지루한 반복은 추가하지 말 것.',
+    '글자 수·문단 수·낭독 시간은 제한하지 않는다. 사실 오류가 제거되고 이야기가 매끄럽게 끝나면 된다.',
+    args.index === 0 ? '확정된 오프닝은 서버가 따로 보존하므로 결과에 다시 쓰지 마라.' : '',
+    '순수 JSON 객체만 반환: {"paragraphs":["수정한 낭독 대본 문단",...]}. 오류 수정 이외의 다른 장면 변경은 하지 않는다.'
+  ].filter(Boolean).join('\n')
+  const res = await f('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: process.env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5', max_tokens: 7000, messages: [{ role: 'user', content: input }] })
+  })
+  const raw = await res.text().catch(() => '')
+  if (!res.ok) throw stopSleep('Claude targeted story repair HTTP ' + res.status + ' (no automatic repeat)', 'SLEEP_REPAIR_PROVIDER')
+  let parsed: any
+  try {
+    const obj = JSON.parse(raw)
+    if (obj.stop_reason === 'max_tokens') throw new Error('truncated')
+    const t = (obj.content ?? []).filter((c: any) => c?.type === 'text').map((c: any) => String(c.text || '')).join('')
+    const m = /\{[\s\S]*\}/.exec(t)
+    if (!m) throw new Error('missing JSON')
+    parsed = JSON.parse(m[0])
+    if (!Array.isArray(parsed.paragraphs) || !parsed.paragraphs.length || parsed.paragraphs.some((x: any) => typeof x !== 'string' || !x.trim())) throw new Error('empty paragraphs')
+  } catch { throw stopSleep('Claude targeted story repair returned invalid text; do not retry paid call', 'SLEEP_REPAIR_INVALID') }
+  return [...intro, ...splitSleepParagraphs(parsed.paragraphs)]
 }
