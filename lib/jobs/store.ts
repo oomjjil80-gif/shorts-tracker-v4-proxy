@@ -415,6 +415,39 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       })
     },
 
+    // Restore an already-paid, previously FAILED Odyssey manuscript in the SAME job.
+    // This is an explicit authenticated user action, not an AI run. Nothing is queued:
+    // park before ASSET so depleted external credits cannot be consumed accidentally.
+    async restoreSleepPlan(input: { jobId: string; workspaceId: string; scriptRef: string; scriptHash: string; chapterCount: number }): Promise<Job> {
+      const now = clock()
+      return db.transaction(async (tx) => {
+        const job = await lockedJob(tx, input.jobId)
+        if (job.workspaceId !== input.workspaceId) throw new JobError('NOT_FOUND', 'job not found')
+        if (job.profile !== 'wisdom_longform' || !job.planRef || job.cancelRequested) throw new JobError('NOT_SLEEP_RECOVERABLE', 'not a restorable Odyssey Job')
+        if (job.stage === 'ASSET' && job.status === 'WAITING_USER' && job.waitReason === 'PROVIDER_DOWN') {
+          const p = await tx.query(`SELECT * FROM job_stage_runs WHERE job_id=$1 AND stage='PLAN' AND status='SUCCEEDED' AND kind='repair' ORDER BY id DESC LIMIT 1`, [job.id])
+          if (p.rows[0]?.output_ref === input.scriptRef && p.rows[0]?.output_hash === input.scriptHash) return job
+          throw new JobError('RECOVERY_ALREADY_IMPORTED', 'existing imported script differs; refusing overwrite')
+        }
+        if (job.status !== 'FAILED' || job.stage !== 'PLAN') throw new JobError('NOT_SLEEP_RECOVERABLE', `job is ${job.status}/${job.stage}`)
+        const prior = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='PLAN' AND status='SUCCEEDED' LIMIT 1`, [job.id])
+        if (prior.rows[0]) throw new JobError('RECOVERY_ALREADY_IMPORTED', 'PLAN is already complete')
+        const a = await tx.query(`SELECT COALESCE(MAX(attempt),0)+1 AS n FROM job_stage_runs WHERE job_id=$1 AND stage='PLAN' AND kind='repair'`, [job.id])
+        await insertRun(tx, { jobId: job.id, stage: 'PLAN', kind: 'repair', attempt: Number(a.rows[0].n),
+          status: 'SUCCEEDED', inputHash: job.planRef, outputRef: input.scriptRef, outputHash: input.scriptHash,
+          provider: 'offline-manuscript', model: 'human-corrected-existing-chapters', costUsd: 0,
+          usage: {schema: 'usage/1',paidCalls: 0,byModel:{},estUsd:0,unpricedModels:[],unconfirmedUsd:0,costStatus:'confirmed'},
+          result: { profile: job.profile, provider: 'offline-recovery', scriptRef: input.scriptRef,
+            sections: input.chapterCount, manualRecovery: true, aiCalls: 0, approvedByProductionGPT: false,
+            pending: 'PROVIDER_CREDITS', sourceJobId: job.id },
+          startedAt: now, finishedAt: now
+        })
+        const u = await tx.query(`UPDATE production_jobs SET stage='ASSET', status='WAITING_USER', wait_reason='PROVIDER_DOWN',
+          run_after=NULL, ${cleared}, updated_at=$2::timestamptz WHERE id=$1 RETURNING *`, [job.id, iso(now)])
+        return mapJob(u.rows[0])
+      })
+    },
+
     // User/API side: continue a job parked for BUDGET or PROVIDER_DOWN (optionally with a larger budget).
     async resumeJob(input: { jobId: string; workspaceId: string; budgetUsd?: number }): Promise<Job> {
       const now = clock()
