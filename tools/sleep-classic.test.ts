@@ -62,6 +62,61 @@ test('GPT quality gate rejects a false approval with concrete issues', async () 
     assert.match(p.instructions, /independent Korean audiobook/)
     return new Response(JSON.stringify({ output_text: JSON.stringify({ approved: true, fidelity: 2, standalone: 4, bedtime: 5, story: 4, originality: 4, issues: ['부하 희생자 수 불일치'] }) }), { status: 200 })
   }
+
+test('real 2000-character chapter splits into saved plot segments instead of blindly billing three rewrites', async () => {
+  const prev = process.env.ANTHROPIC_API_KEY
+  process.env.ANTHROPIC_API_KEY = 'test-key'
+  const paid: any[] = [], stored = new Map<string, string[]>()
+  const cache = {
+    read: async (chapter: number, part: number) => stored.get(chapter + ':' + part) || null,
+    write: async (chapter: number, part: number, paragraphs: string[]) => { stored.set(chapter + ':' + part, paragraphs) }
+  }
+  const fake: any = async (_url: string, opts: any) => {
+    const req = JSON.parse(opts.body), input: string = req.messages[0].content
+    paid.push(input)
+    const match = /(\d+)\/(\d+)번째 연속 낭독 구간/.exec(input)!
+    assert.equal(match[2], '3')
+    assert.match(input, /이 구간에서만 다룰 검증된 사건/)
+    assert.ok(!Object.hasOwn(req, 'temperature'))
+    const text = '그는 동굴을 자세히 살피고 동료의 선택을 기다리며 조용하게 다음 행동을 준비했습니다.'
+    const paragraphs = Array.from({ length: 3 }, (_v, i) => ('부분 ' + match[1] + ' ' + i + ': ' + text + ' ').repeat(8))
+    return new Response(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ paragraphs }) }], stop_reason: 'end_turn' }), { status: 200 })
+  }
+  try {
+    const planner = createSleepClassicPlanner(fake, cache)
+    const args: any = { brief: {}, outline: sleepClassicOutline(), index: 3, targetChars: 2000, previousTail: [] }
+    const first = await planner.section(args, 'unused')
+    assert.equal(paid.length, 3, 'one call per ordered plot segment, not three attempts rewriting the entire chapter')
+    assert.equal(stored.size, 3, 'each paid segment is checkpointed immediately')
+    assert.notEqual(paid[0], paid[1])
+    assert.notEqual(paid[1], paid[2])
+    const second = await planner.section(args, 'unused')
+    assert.deepEqual(second, first)
+    assert.equal(paid.length, 3, 'restarting chapter uses paid-part checkpoints with zero provider calls')
+  } finally {
+    if (prev === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prev
+  }
+})
+test('incomplete chapter fails once after checkpointing instead of paying for blind regeneration', async () => {
+  const prev = process.env.ANTHROPIC_API_KEY
+  process.env.ANTHROPIC_API_KEY = 'test-key'
+  let calls = 0
+  const fake: any = async () => {
+    calls++
+    const text = '그들은 밤바다 너머 희미한 달빛을 바라보며 말을 아꼈습니다. '.repeat(9)
+    return new Response(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ paragraphs: [text] }) }] }), { status: 200 })
+  }
+  try {
+    const p = createSleepClassicPlanner(fake)
+    // Four long story beats: a 2000-character request becomes three short targeted calls.
+    const args: any = { brief: {}, outline: sleepClassicOutline(), index: 3, targetChars: 2000, previousTail: [] }
+    await assert.rejects(p.section(args, 'unused'), (e: any) => e.stop === true && String(e.code).startsWith('SLEEP_'))
+    assert.ok(calls <= 3, 'do not retry the same paid chapter when output is short')
+  } finally {
+    if (prev === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prev
+  }
+})
+
   const result = await reviewSleepClassicStory([{ id: 's1', sentences: splitSleepParagraphs(['아무도 아니다.']) }], 'test', fake)
   assert.equal(result.approved, false)
   assert.equal(result.issues.length, 1)
