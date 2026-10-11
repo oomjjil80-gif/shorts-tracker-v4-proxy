@@ -192,6 +192,7 @@ test('repair of chapter 1 preserves approved opening while correcting body', asy
   }
 })
 
+const fakeSleepVerdict = (approved: boolean, issues: string[]) => ({approved,issues,fidelity:4,standalone:4,bedtime:4,story:4,originality:4})
 test('auto-repair repeats GPT checks and preserves unrelated chapters', async () => {
  const original = Array.from({length:9}, (_,i)=>({id:'s'+i,sentences:splitSleepParagraphs(['original '+i])}))
  const revised = [], checked = []
@@ -199,9 +200,9 @@ test('auto-repair repeats GPT checks and preserves unrelated chapters', async ()
   sections:original,
   review:async (pass,sections)=>{
    checked.push(pass)
-   if(pass===0) return {approved:false,issues:['2장에서 순서 오류','4장에서 대화 오류']}
-   if(pass===1) return {approved:false,issues:['4장에서 남은 오류']}
-   return {approved:true,issues:[]}
+   if(pass===0) return fakeSleepVerdict(false,['2장에서 순서 오류','4장에서 대화 오류'])
+   if(pass===1) return fakeSleepVerdict(false,['4장에서 남은 오류'])
+   return fakeSleepVerdict(true,[])
   },
   repair:async (pass,index)=>{revised.push(pass+':'+index);return splitSleepParagraphs(['corrected '+pass+':'+index])}
  })
@@ -217,7 +218,7 @@ test('unresolved source issues preserve latest revisions without publishing', as
  let reviews=0,revisions=0
  const result=await runSleepClassicReviewLoop({
   sections:chapters,maxRepairPasses:2,
-  review:async()=>{reviews++;return {approved:false,issues:['7장에서 모순']} },
+  review:async()=>{reviews++;return fakeSleepVerdict(false,['7장에서 모순']) },
   repair:async(pass)=>{revisions++;return splitSleepParagraphs(['repair '+pass])}
  })
  assert.equal(result.approved,false)
