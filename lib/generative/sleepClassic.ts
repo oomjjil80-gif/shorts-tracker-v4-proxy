@@ -82,7 +82,8 @@ export function createSleepClassicPlanner(f: Fetcher = fetch): LongformPlanner {
       ].filter(Boolean).join('\n')
       const res = await f('https://api.anthropic.com/v1/messages', {
         method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({ model: process.env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5', max_tokens: 7000, temperature: 0.5,
+        // Sonnet 5 / later rejects non-default temperature with HTTP 400. Steering belongs in the prompt.
+        body: JSON.stringify({ model: process.env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5', max_tokens: 7000,
           messages: [{ role: 'user', content: input }] })
       })
       const raw = await res.text().catch(() => '')
