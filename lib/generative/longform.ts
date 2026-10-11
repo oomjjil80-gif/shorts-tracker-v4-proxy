@@ -61,10 +61,11 @@ export type LongformRemaster = {
   sourceScriptRef: string
   changes: LongformRemasterChanges
 }
-export type LongformBrief = { schema: 'generative-brief/1'; profile: LongformProfileId; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; creative?: CreativeProfile; yasaStoryDNA?: any; deriveShorts?: false; remaster?: LongformRemaster; voice?: { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
+export type LongformBrief = { schema: 'generative-brief/1'; sleepClassic?: 'odyssey-cyclops-v1'; profile: LongformProfileId; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; creative?: CreativeProfile; yasaStoryDNA?: any; deriveShorts?: false; remaster?: LongformRemaster; voice?: { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
 // one narration sentence and the card shown while it is spoken
 export type LongformSentence = { say: string; show: string[]; accent: string; color: AccentColor }
 export type LongformScript = {
+  sleepClassic?: 'odyssey-cyclops-v1'
   schema: 'wisdom-longform-script/1'
   title: string; hook: string
   figure: { name: string; imagePrompt: string }
@@ -80,6 +81,8 @@ export function normalizeLongformBrief(input: any, profile: LongformProfileId = 
   if (kind !== 'topic' && kind !== 'text') throw new Error('input.kind must be topic or text')
   const text = String(input?.text || '').replace(/\s+/g, ' ').trim()
   if (text.length < 4 || text.length > 30000) throw new Error('input.text must be 4..30000 characters')
+  const sleepClassic = input?.sleepClassic === undefined ? undefined : String(input.sleepClassic)
+  if (sleepClassic !== undefined && (profile !== 'wisdom_longform' || sleepClassic !== 'odyssey-cyclops-v1')) throw new Error('unsupported sleepClassic preset or profile')
   const sample = input?.sample === true
   // any running time the user picks (no min/max); only a non-number, zero or negative value is refused
   const targetSeconds = Number(input?.targetSeconds ?? LONGFORM.targetSeconds.default)
@@ -94,7 +97,7 @@ export function normalizeLongformBrief(input: any, profile: LongformProfileId = 
   }
   // Wisdom Longform recommends derived Shorts by default; only an explicit "off" is stored (other briefs stay byte-identical)
   const noDerive = profile === 'wisdom_longform' && input?.deriveShorts === false
-  return { schema: 'generative-brief/1', profile, kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds: Math.round(targetSeconds), ...(sample ? { sample: true as const } : {}), creative, ...(yasaStoryDNA ? { yasaStoryDNA } : {}), ...(noDerive ? { deriveShorts: false as const } : {}), ...(input?.thumbnailFirst === true && styleApprovalOn(profile) ? { thumbnailFirst: true as const } : {}) }
+  return { schema: 'generative-brief/1', ...(sleepClassic ? { sleepClassic: sleepClassic as 'odyssey-cyclops-v1' } : {}), profile, kind, text, language: 'ko', aspectRatio: '16:9', targetSeconds: Math.round(targetSeconds), ...(sample ? { sample: true as const } : {}), creative, ...(yasaStoryDNA ? { yasaStoryDNA } : {}), ...(noDerive ? { deriveShorts: false as const } : {}), ...(input?.thumbnailFirst === true && styleApprovalOn(profile) ? { thumbnailFirst: true as const } : {}) }
 }
 // Generic Longform REMASTER envelope. A remaster is a new child job on the SAME profile: it reuses the stored
 // script and lets cache identity decide the minimum paid work. Same voice/text => TTS HIT; same picture prompt => image
@@ -221,6 +224,7 @@ export function validateLongformScript(s: any, brief: LongformBrief): string[] {
 // A picture style the user picked (other than the native painterly one) replaces only the style line; the 16:9
 // figure-right / dark-left composition stays mandatory.
 export function longformImagePrompt(s: LongformScript, style?: VisualStyleProfile | null): string {
+  if (s.sleepClassic === 'odyssey-cyclops-v1') return 'Wide 16:9 static still for bedtime audiobook. One dark monochrome charcoal-gray illustration. A closed ancient Greek book beside a weathered classical Greek bust, distant calm night sea, soft shadows, low visual contrast, restful simple composition. No motion, no vibrant colour, no text, no letters, no signatures, no watermark.'
   if (style) return composeImagePrompt({
     content: `Wide 16:9 still for a Korean wisdom video. Subject: ${s.figure.imagePrompt}`, style,
     composition: 'MANDATORY: the person in the RIGHT third of the frame (right 35-40%), turned slightly toward the left, never in the center; the LEFT 60% is broad, very dark, simple negative space with no objects, kept clean for large text added later.'
@@ -269,6 +273,8 @@ const header = (w: number, h: number, outline: number, shadow: number) => [
   `Style: Card,${FONT_FAMILY},${LONGFORM.text.basePx},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,${outline},${shadow},4,0,0,0,1`,
   '', '[Events]', 'Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text'
 ]
+// An empty ASS track keeps the existing encoder contract with no changing text during sleep narration.
+export const sleepClassicAss = () => [...header(LONGFORM.canvas.w, LONGFORM.canvas.h, 0, 0), ''].join('\n')
 // cards 'left' (Wisdom Longform): the block in the dark left column; 'bottom' (Senior Longform): centred subtitle lines
 // at the bottom over the full-frame scene picture. Same card contract and the same hard cuts either way.
 export function longformCardsAss(s: LongformScript, timeline: Array<{ start: number; end: number; k: number }>, placement: 'left' | 'bottom' = 'left'): { ass: string; cards: Array<{ start: number; end: number; lines: string[]; fs: number }> } {
