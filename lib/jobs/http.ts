@@ -56,7 +56,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume', 'job_upload_text', 'job_sleep_draft', 'job_sleep_import'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume', 'job_upload_text', 'job_sleep_draft', 'job_sleep_import', 'job_recover_asset_billing'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -69,7 +69,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
   JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503,
-  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, NOT_SLEEP_RECOVERABLE: 409, RECOVERY_ALREADY_IMPORTED: 409, UPLOAD_TEXT_REFUSED: 502
+  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, NOT_SLEEP_RECOVERABLE: 409, RECOVERY_ALREADY_IMPORTED: 409, NOT_ASSET_BILLING_RECOVERABLE: 409, UPLOAD_TEXT_REFUSED: 502
 }
 
 const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
@@ -252,6 +252,18 @@ export function createJobsHttp(deps: JobsDeps) {
         const shortsThumb = typeof packageJson?.thumbnailRef === 'string' && packageJson.thumbnailRef.startsWith('renders/') ? await deps.blobs.presign?.(packageJson.thumbnailRef) : null
         const recovered: any = packageJson?.metadata?.title ? null : await deps.blobs.getJson(uploadTextRef(job.id)).catch(() => null)
         return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, upload: packageJson?.metadata?.title ? packageJson.metadata : (recovered?.metadata ?? null), ...(recovered ? { uploadRecovered: { at: recovered.at } } : {}), thumbnailUrl: shortsThumb?.url ?? null, script: script ? { title:script.title, hook:script.hook, ending:script.ending, beats:(script.beats||[]).map((b:any)=>({ narration:b.narration })) } : null })
+      }
+
+      if (taskType === 'job_recover_asset_billing') {
+        // Explicit, zero-cost same-Job recovery; credits are NOT charged or checked.
+        // Keep the successful offline PLAN and cached Gemini image; wait for OpenAI TTS funds.
+        const jobId = need(String(input.jobId || ''), 'jobId is required')
+        const job = await store.parkRecoveredOdysseyAssetBilling({jobId, workspaceId})
+        return res.status(200).json({
+          ok: true, job: view(job, await store.listStageRuns(job.id)),
+          unchangedJob: true, zeroPaidCalls: true, status: 'WAITING_USER',
+          waitReason: 'PROVIDER_DOWN', resumeRequiresOpenAiCredits: true
+        })
       }
 
       if (taskType === 'job_sleep_import') {

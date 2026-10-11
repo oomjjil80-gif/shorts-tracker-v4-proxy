@@ -448,6 +448,33 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       })
     },
 
+    // ASSET billing exhaustion is a recoverable wait, not lost creative work.
+    // Scoped to the original Odyssey Job whose saved PLAN came from manual rescue.
+    // Does not enqueue work, re-create scripts, or contact any paid provider.
+    async parkRecoveredOdysseyAssetBilling(input: { jobId: string; workspaceId: string }): Promise<Job> {
+      const now = clock()
+      return db.transaction(async (tx) => {
+        const job = await lockedJob(tx, input.jobId)
+        if (job.workspaceId !== input.workspaceId) throw new JobError('NOT_FOUND', 'job not found')
+        const valid = job.profile === 'wisdom_longform' && job.stage === 'ASSET' && !job.cancelRequested &&
+          ((job.status === 'FAILED') || (job.status === 'WAITING_USER' && job.waitReason === 'PROVIDER_DOWN'))
+        if (!valid) throw new JobError('NOT_ASSET_BILLING_RECOVERABLE', 'not a failed Odyssey ASSET billing job')
+        const plan = await tx.query(
+          `SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='PLAN' AND kind='repair' AND status='SUCCEEDED'
+            AND result_json->>'provider'='offline-recovery' LIMIT 1`, [job.id])
+        const billing = await tx.query(
+          `SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='ASSET' AND status='FAILED'
+            AND error_json->>'code'='PROVIDER_BILLING' LIMIT 1`, [job.id])
+        if (!plan.rows[0] || !billing.rows[0]) throw new JobError('NOT_ASSET_BILLING_RECOVERABLE', 'saved Odyssey PLAN or billing evidence missing')
+        if (job.status === 'WAITING_USER') return job // idempotent read, no billable calls
+        const updated = await tx.query(
+          `UPDATE production_jobs SET status='WAITING_USER', wait_reason='PROVIDER_DOWN',
+            run_after=NULL, ${cleared}, updated_at=$2::timestamptz WHERE id=$1 RETURNING *`,
+          [job.id, iso(now)])
+        return mapJob(updated.rows[0])
+      })
+    },
+
     // User/API side: continue a job parked for BUDGET or PROVIDER_DOWN (optionally with a larger budget).
     async resumeJob(input: { jobId: string; workspaceId: string; budgetUsd?: number }): Promise<Job> {
       const now = clock()
