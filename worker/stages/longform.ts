@@ -139,7 +139,7 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       // OFF retains its existing checkpoint identity. ON uses isolated checkpoints so previously
       // generated OFF sections can never be mixed with a revised ON outline.
       const xr = sleep ? null : deps.crossReview === undefined ? crossReviewFromEnv(process.env, apiKey) : deps.crossReview
-      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}${sleep ? '|sleep-classic/1' : ''}${xr ? `|${PLAN_CROSS_REVIEW_VERSION}` : ''}`)}`
+      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}${sleep ? '|sleep-classic/2' : ''}${xr ? `|${PLAN_CROSS_REVIEW_VERSION}` : ''}`)}`
       const made: string[] = [], reused: string[] = []
       // one checkpointed step: reuse the stored result, else make it (one free repair with the exact errors) and store it
       // memory: every rejected attempt (its errors + what it wrote) is kept next to the checkpoint, ACROSS stage retries,
