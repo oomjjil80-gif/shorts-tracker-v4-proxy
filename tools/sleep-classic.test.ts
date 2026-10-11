@@ -81,7 +81,7 @@ test('real 2000-character chapter splits into saved plot segments instead of bli
     paid.push(input)
     const match = /(\d+)\/(\d+)번째 연속 낭독 구간/.exec(input)!
     assert.equal(match[2], '3')
-    assert.match(input, /이 구간에서만 다룰 검증된 사건/)
+    assert.match(input, /이번 구간에서만 다룰 검증된 사건/)
     assert.ok(!Object.hasOwn(req, 'temperature'))
     const text = '그는 동굴을 자세히 살피고 동료의 선택을 기다리며 조용하게 다음 행동을 준비했습니다.'
     const paragraphs = Array.from({ length: 3 }, (_v, i) => ('부분 ' + match[1] + ' ' + i + ': ' + text + ' ').repeat(7))
