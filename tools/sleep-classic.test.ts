@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { normalizeLongformBrief, sleepClassicAss, cardErrors } from '../lib/generative/longform.js'
 import { thumbnailCopyErrors } from '../lib/generative/wisdomThumbnail.js'
-import { isSleepClassic, SLEEP_CHAPTERS, SLEEP_CLASSIC_TITLE, SLEEP_INTRO, SLEEP_CANON, sleepClassicOutline, splitSleepParagraphs, createSleepClassicPlanner, reviewSleepClassicStory, repairSleepClassicChapter, sleepReviewIssuesByChapter } from '../lib/generative/sleepClassic.js'
+import { isSleepClassic, SLEEP_CHAPTERS, SLEEP_CLASSIC_TITLE, SLEEP_INTRO, SLEEP_CANON, sleepClassicOutline, splitSleepParagraphs, createSleepClassicPlanner, reviewSleepClassicStory, repairSleepClassicChapter, sleepReviewIssuesByChapter, runSleepClassicReviewLoop } from '../lib/generative/sleepClassic.js'
 
 const TOPIC = '오디세이아 제9권 외눈박이 거인 폴리페모스'
 
@@ -190,4 +190,38 @@ test('repair of chapter 1 preserves approved opening while correcting body', asy
   } finally {
     if (old === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = old
   }
+})
+
+test('auto-repair repeats GPT checks and preserves unrelated chapters', async () => {
+ const original = Array.from({length:9}, (_,i)=>({id:'s'+i,sentences:splitSleepParagraphs(['original '+i])}))
+ const revised = [], checked = []
+ const result = await runSleepClassicReviewLoop({
+  sections:original,
+  review:async (pass,sections)=>{
+   checked.push(pass)
+   if(pass===0) return {approved:false,issues:['2장에서 순서 오류','4장에서 대화 오류']}
+   if(pass===1) return {approved:false,issues:['4장에서 남은 오류']}
+   return {approved:true,issues:[]}
+  },
+  repair:async (pass,index)=>{revised.push(pass+':'+index);return splitSleepParagraphs(['corrected '+pass+':'+index])}
+ })
+ assert.deepEqual(checked,[0,1,2])
+ assert.deepEqual(revised,['1:1','1:3','2:3'])
+ assert.equal(result.approved,true)
+ assert.deepEqual(result.revisedChapters,[2,4])
+ assert.equal(result.sections[8].sentences[0].say,'original 8')
+ assert.equal(original[1].sentences[0].say,'original 1')
+})
+test('unresolved source issues preserve latest revisions without publishing', async () => {
+ const chapters=Array.from({length:9},(_,i)=>({id:'s'+i,sentences:splitSleepParagraphs(['source '+i])}))
+ let reviews=0,revisions=0
+ const result=await runSleepClassicReviewLoop({
+  sections:chapters,maxRepairPasses:2,
+  review:async()=>{reviews++;return {approved:false,issues:['7장에서 모순']} },
+  repair:async(pass)=>{revisions++;return splitSleepParagraphs(['repair '+pass])}
+ })
+ assert.equal(result.approved,false)
+ assert.equal(reviews,3)
+ assert.equal(revisions,2)
+ assert.equal(result.sections[6].sentences[0].say,'repair 2')
 })
