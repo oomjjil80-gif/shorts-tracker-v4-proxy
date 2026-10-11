@@ -13,6 +13,7 @@ import { canonicalize } from '../tracker-core/renderManifest.js'
 import { createPgDbFromEnv } from './db.js'
 import { createJobStore, type JobStore } from './store.js'
 import { createVercelJobBlobStore, putAddressed, type JobBlobStore } from './blobs.js'
+import { recoverSleepDraft } from './sleepDraftRecovery.js'
 import { PIPELINES } from './pipeline.js'
 import { isProfileId, getProfile, profileOf } from './profiles.js'
 import { JobError, type Job, type StageRun } from './types.js'
@@ -54,7 +55,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume', 'job_upload_text'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume', 'job_upload_text', 'job_sleep_draft'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -194,7 +195,7 @@ export function createJobsHttp(deps: JobsDeps) {
         try { const r = await voicePreview(input); return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache }) }
         catch (e: any) { if (e instanceof PreviewError) throw new JobError(e.code as any, e.message); throw e }
       }
-      const expectedMethod = taskType === 'job_get' || taskType === 'job_list' || taskType === 'job_style' || taskType === 'job_style_examples' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' ? 'GET' : 'POST'
+      const expectedMethod = taskType === 'job_get' || taskType === 'job_sleep_draft' || taskType === 'job_list' || taskType === 'job_style' || taskType === 'job_style_examples' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' ? 'GET' : 'POST'
       if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)
       if (req.method !== expectedMethod) throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires ${expectedMethod}`)
 
@@ -250,6 +251,18 @@ export function createJobsHttp(deps: JobsDeps) {
         const shortsThumb = typeof packageJson?.thumbnailRef === 'string' && packageJson.thumbnailRef.startsWith('renders/') ? await deps.blobs.presign?.(packageJson.thumbnailRef) : null
         const recovered: any = packageJson?.metadata?.title ? null : await deps.blobs.getJson(uploadTextRef(job.id)).catch(() => null)
         return res.status(200).json({ ok:true, jobId:job.id, package:packageJson, upload: packageJson?.metadata?.title ? packageJson.metadata : (recovered?.metadata ?? null), ...(recovered ? { uploadRecovered: { at: recovered.at } } : {}), thumbnailUrl: shortsThumb?.url ?? null, script: script ? { title:script.title, hook:script.hook, ending:script.ending, beats:(script.beats||[]).map((b:any)=>({ narration:b.narration })) } : null })
+      }
+
+      if (taskType === 'job_sleep_draft') {
+        // Workspace-authenticated, read-only salvage, including FAILED jobs.
+        // Do NOT call PLAN, Claude, GPT, TTS, IMAGE, or restart anything.
+        const id = need(String(req.query?.id || ''), 'id is required')
+        const job = await store.getJob(id, workspaceId)
+        if (!job || job.profile !== 'wisdom_longform' || !job.planRef) throw new JobError('NOT_FOUND', 'Odyssey job not found')
+        const brief: any = await deps.blobs.getJson(job.planRef)
+        if (brief?.sleepClassic !== 'odyssey-cyclops-v1') throw new JobError('NOT_FOUND', 'not an Odyssey sleep job')
+        const draft = await recoverSleepDraft(deps.blobs, job.planRef)
+        return res.status(200).json({ ok:true, jobId:job.id, jobStatus:job.status, ...draft })
       }
 
       if (taskType === 'job_get') {
