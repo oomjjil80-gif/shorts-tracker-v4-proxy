@@ -46,8 +46,8 @@ jobs:
           GEMINI_IMAGE_OTHER="$(printf '%s\n' "$YADAM_STYLE_OTHER" | grep -Ev '^(lib/generative/geminiImage\.ts|lib/generative/goldenStyle\.ts|lib/generative/planner\.ts|assets/style-reference/golden/ref-[1-5]\.jpg|tools/golden-style\.test\.ts|lib/generative/providers\.ts|lib/generative/usageLedger\.ts|worker/stages/generative\.ts|worker/stages/wisdomThumbnail\.ts|tools/gemini-image\.test\.ts|tools/p2-providers\.test\.ts|tools/p2-generative\.test\.ts|tools/pipeline-features\.test\.ts|tools/wisdom-output\.test\.ts|tools/wisdom-thumbnail\.test\.ts|tools/wisdom-derived-shorts\.test\.ts|lib/generative/wisdomUploadText\.ts)$' || true)"
 
           # Isolated feature verification; mandatory typecheck remains unchanged.
-          # Focused authenticated offline import; full suite times out on unrelated video tests.
-          OFFLINE_RESTORE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/jobs/sleepDraftImport\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|tools/sleep-draft-import\.test\.ts|\.github/workflows/verify\.yml) || true)" || true)"
+          # Scoped offline Odyssey plan recovery: also check real store and API tests.
+          OFFLINE_RESTORE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/jobs/sleepDraftImport\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|tools/sleep-draft-import\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           OFFLINE_RESTORE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/jobs/sleepDraftImport\.ts$' || true)"
           SLEEP_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/sleepClassic\.ts|lib/generative/longform\.ts|worker/stages/longform\.ts|tools/sleep-classic\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           SLEEP_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/sleepClassic\.ts$' || true)"
