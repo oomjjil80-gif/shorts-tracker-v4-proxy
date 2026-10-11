@@ -45,7 +45,7 @@ test('real recovered Odyssey PLAN + OpenAI 429 returns SAME FAILED ASSET Job to 
   const again=await call()
   assert.equal(again.code,200,'idempotent, no re-billing')
   assert.deepEqual(await store.listStageRuns(job.id),before)
-  assert.equal((await store.getLatestSucceeded(job.id,'PLAN'))?.result?.provider,'offline-recovery')
+  assert.equal(((await store.getLatestSucceeded(job.id,'PLAN'))?.result as any)?.provider,'offline-recovery')
   assert.equal(await store.claimJob({workerId:'should-not-run',stages:['ASSET']}),null,'explicit paid resume required')
 })
 test('cannot park other users, unrelated profiles, unproven failures or non-recovered manuscripts',async()=>{
