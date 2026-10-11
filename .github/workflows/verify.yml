@@ -46,9 +46,14 @@ jobs:
           GEMINI_IMAGE_OTHER="$(printf '%s\n' "$YADAM_STYLE_OTHER" | grep -Ev '^(lib/generative/geminiImage\.ts|lib/generative/goldenStyle\.ts|lib/generative/planner\.ts|assets/style-reference/golden/ref-[1-5]\.jpg|tools/golden-style\.test\.ts|lib/generative/providers\.ts|lib/generative/usageLedger\.ts|worker/stages/generative\.ts|worker/stages/wisdomThumbnail\.ts|tools/gemini-image\.test\.ts|tools/p2-providers\.test\.ts|tools/p2-generative\.test\.ts|tools/pipeline-features\.test\.ts|tools/wisdom-output\.test\.ts|tools/wisdom-thumbnail\.test\.ts|tools/wisdom-derived-shorts\.test\.ts|lib/generative/wisdomUploadText\.ts)$' || true)"
 
           # Isolated feature verification; mandatory typecheck remains unchanged.
+          # Scoped offline Odyssey plan recovery: also check real store and API tests.
+          OFFLINE_RESTORE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/jobs/sleepDraftImport\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|tools/sleep-draft-import\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
+          OFFLINE_RESTORE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/jobs/sleepDraftImport\.ts$' || true)"
           SLEEP_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/sleepClassic\.ts|lib/generative/longform\.ts|worker/stages/longform\.ts|tools/sleep-classic\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           SLEEP_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/sleepClassic\.ts$' || true)"
-          if [ -z "$SLEEP_OTHER" ] && [ -n "$SLEEP_PRESENT" ]; then
+          if [ -z "$OFFLINE_RESTORE_OTHER" ] && [ -n "$OFFLINE_RESTORE_PRESENT" ]; then
+            echo "mode=odyssey-offline-restore" >> "$GITHUB_OUTPUT"
+          elif [ -z "$SLEEP_OTHER" ] && [ -n "$SLEEP_PRESENT" ]; then
             echo "mode=sleep-classic" >> "$GITHUB_OUTPUT"
           elif [ -z "$PLAN_REVIEW_OTHER" ] && [ -n "$PLAN_REVIEW_PRESENT" ]; then
             echo "mode=plan-cross-review" >> "$GITHUB_OUTPUT"
@@ -70,6 +75,17 @@ jobs:
           else
             echo "mode=full" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify offline Odyssey import, Job store and authenticated API
+        if: steps.scope.outputs.mode == 'odyssey-offline-restore'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/sleep-draft-import.test.ts \
+            tools/sleep-draft-recovery.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
 
       - name: Run focused bedtime classic regression
         if: steps.scope.outputs.mode == 'sleep-classic'
