@@ -135,7 +135,10 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       // 숨은야담: each act sized by its share of the story (the reveal act starts at ~80% of the narration)
       const actChars = yasa ? yasaActChars(Math.round(brief.targetSeconds * LONGFORM.charsPerSecond)) : null
       const targetOf = (i: number) => actChars?.[i] ?? size.charsPerSection
-      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}`)}`
+      // OFF retains its existing checkpoint identity. ON uses isolated checkpoints so previously
+      // generated OFF sections can never be mixed with a revised ON outline.
+      const xr = deps.crossReview === undefined ? crossReviewFromEnv(process.env, apiKey) : deps.crossReview
+      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}${xr ? `|${PLAN_CROSS_REVIEW_VERSION}` : ''}`)}`
       const made: string[] = [], reused: string[] = []
       // one checkpointed step: reuse the stored result, else make it (one free repair with the exact errors) and store it
       // memory: every rejected attempt (its errors + what it wrote) is kept next to the checkpoint, ACROSS stage retries,
@@ -226,7 +229,6 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       let outline = await step<LongformOutline>('outline', 'OUTLINE_INVALID', (r) => planner.outline(pbrief, size.sections, apiKey, r, research), outlineCheck)
       // PLAN_CROSS_REVIEW=on only (default OFF: nothing below runs and the outline is unchanged). Checkpointed: a retry never pays twice.
       let crossReview: CrossReviewRecord | null = null
-      const xr = deps.crossReview === undefined ? crossReviewFromEnv(process.env, apiKey) : deps.crossReview
       if (xr) {
         const xrRef = `${ck}/cross-review.json`, hit = (await blobs.getJson(xrRef).catch(() => null)) as { record: CrossReviewRecord; outline: LongformOutline } | null
         const done = hit?.record?.schema === PLAN_CROSS_REVIEW_VERSION && hit.outline && !outlineCheck(hit.outline).length ? hit : await runCrossReview({ outline, topic: brief.text, deps: xr, revise: (r) => planner.outline(pbrief, size.sections, apiKey, r, research), errorsOf: outlineCheck })
