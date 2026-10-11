@@ -38,9 +38,10 @@ export function parseFindings(text: string): ReviewFinding[] {
   if (!m) throw new Error('Claude review returned no JSON')
   const j = JSON.parse(m[0])
   if (!Array.isArray(j?.findings)) throw new Error('Claude review JSON has no findings array')
-  return j.findings
-    .filter((f: any) => REVIEW_AREAS.includes(f?.area) && String(f?.problem || '').trim())
-    .slice(0, 10)
+  if (j.findings.some((f: any) => !REVIEW_AREAS.includes(f?.area) || !String(f?.problem || '').trim() || !String(f?.reason || '').trim() || !String(f?.direction || '').trim())) {
+    throw new Error('Claude review contains invalid or incomplete findings')
+  }
+  return j.findings.slice(0, 10)
     .map((f: any) => ({ area: f.area, problem: String(f.problem).slice(0, 300), reason: String(f.reason || '').slice(0, 300), direction: String(f.direction || '').slice(0, 300) }))
 }
 
@@ -71,9 +72,11 @@ export function gptDecider(o: { apiKey: string; fetchImpl?: typeof fetch }): Cro
       'You wrote this YouTube longform plan. An independent reviewer raised the numbered findings. For EACH finding decide accept (it is a real problem worth fixing) or reject (it is wrong or would hurt the plan) and give a one-sentence reason. Answer in Korean.',
       `${outlineText(outline, topic)}\n\nFindings:\n${findings.map((x, i) => `${i}. [${x.area}] ${x.problem} / 이유: ${x.reason} / 방향: ${x.direction}`).join('\n')}`, o.fetchImpl)
     const list: any[] = Array.isArray(j?.decisions) ? j.decisions : []
+    if (list.length !== findings.length || new Set(list.map((x) => x?.index)).size !== findings.length) throw new Error('GPT review decisions missing or duplicated')
     return findings.map((_, i) => {
-      const d = list.find((x) => Number(x?.index) === i)
-      return d && (d.action === 'accept' || d.action === 'reject') ? { index: i, action: d.action, reason: String(d.reason || '').slice(0, 300) } : { index: i, action: 'reject' as const, reason: 'no decision returned' }
+      const d = list.find((x) => x?.index === i)
+      if (!d || !['accept', 'reject'].includes(d.action) || !String(d.reason || '').trim()) throw new Error('GPT review decision invalid or missing reason')
+      return { index: i, action: d.action as 'accept' | 'reject', reason: String(d.reason).slice(0, 300) }
     })
   }
 }
@@ -100,13 +103,23 @@ export async function runCrossReview(o: { outline: LongformOutline; topic: strin
   if (!record.findings.length) { record.status = 'no_findings'; return { outline: o.outline, record } }
   try {
     record.order.push('gpt:decide')
-    record.decisions = await o.deps.decider(o.outline, record.findings, o.topic)
+    const decisions = await o.deps.decider(o.outline, record.findings, o.topic)
+    if (!Array.isArray(decisions) || decisions.length !== record.findings.length ||
+        new Set(decisions.map((d) => d?.index)).size !== record.findings.length ||
+        decisions.some((d) => !Number.isInteger(d?.index) || d.index < 0 || d.index >= record.findings.length ||
+          !['accept', 'reject'].includes(d.action) || !String(d.reason || '').trim())) throw new Error('GPT returned incomplete review decisions')
+    record.decisions = decisions
   } catch (e: any) { return fallback(`gpt decision failed: ${String(e?.message || e)}`) }
   const accepted = record.decisions.filter((d) => d.action === 'accept').map((d) => record.findings[d.index]).filter(Boolean)
   if (!accepted.length) { record.status = 'all_rejected'; return { outline: o.outline, record } }
   try {
     record.order.push('gpt:revise')
-    const revised = await o.revise(accepted.map((x) => `[review:${x.area}] ${x.problem} -> ${x.direction}`))
+    const originalJson = JSON.stringify(o.outline)
+    if (originalJson.length > 30000) return fallback('original outline too large for a safe one-pass revision')
+    const revised = await o.revise([
+      `Revise ONLY the accepted review findings. Preserve all unaffected people, scenes, story beats, and values. Original outline JSON: ${originalJson}`,
+      ...accepted.map((x) => `[review:${x.area}] ${x.problem} -> ${x.direction}`)
+    ])
     const errs = o.errorsOf(revised)
     if (errs.length) return fallback(`revised outline invalid: ${errs.slice(0, 5).join(', ')}`)
     record.status = 'revised'; record.fallbackReason = null
