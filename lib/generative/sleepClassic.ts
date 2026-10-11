@@ -177,15 +177,16 @@ export async function reviewSleepClassicStory(sections: Array<{ id: string; sent
     narration: s.sentences.map((x) => x.say).join(' ')
   }))
   const r: any = await respond(apiKey, 'sleep_classic_review', schema,
-    'You are an independent Korean audiobook quality gate reviewing a CLAUDE-authored Odyssey Book IX narration. Check original Homeric plot sequence (two nights inside the cave, six men eaten 2+2+2, first taunt -> first thrown rock -> crew warning -> real name reveal -> Poseidon curse -> second rock), no invented events/characters/quoted statements, standalone plot, calm bedtime style, pacing/repetition and the fact the approved chapter order is retained. Score fidelity, standalone, bedtime, story and originality 1..5. Approve only if accurate and watchable; any consequential factual fabrication or structural break must cause approved=false. Describe only concrete defects in Korean. No rewrite. JSON only.',
+    'You are an independent Korean audiobook quality gate reviewing a CLAUDE-authored Odyssey Book IX narration. Check original Homeric plot sequence (two nights inside the cave, six men eaten 2+2+2, first taunt -> first thrown rock -> crew warning -> real name reveal -> Poseidon curse -> second rock), no invented events/characters/quoted statements, standalone plot, calm bedtime style, pacing/repetition and the fact the approved chapter order is retained. Score fidelity, standalone, bedtime, story and originality 1..5. Approve only if accurate and watchable; any consequential factual fabrication or structural break must cause approved=false. Every issue MUST begin with an explicit chapter number for example, start with the Korean text 2장에서 and then describe the error. Do not include issues for approved chapters. Describe only concrete defects in Korean. No rewrite. JSON only.',
     JSON.stringify(source), f)
   if (r.approved !== true || (r.issues ?? []).length) return { ...r, approved: false }
   return r as SleepReview
 }
 
 
-// No new generation on a failed original review. Only chapters explicitly cited by the
-// independent reviewer can be repaired, at most once, and must pass the SAME review again.
+// Every independent review uses exact chapter references; only cited chapters can be repaired.
+// A rejected revision is *another correction task*, not a terminal failed Job.
+// There is a bounded circuit-breaker for persistent factual contradictions and billing safety.
 export function sleepReviewIssuesByChapter(issues: string[]): Map<number, string[]> {
   const out = new Map<number, string[]>()
   if (!Array.isArray(issues) || !issues.length || issues.length > 8) throw stopSleep('sleep review issues missing or excessive; do not guess edits', 'SLEEP_REVIEW_UNMAPPED')
@@ -248,4 +249,48 @@ export async function repairSleepClassicChapter(args: {
     if (!Array.isArray(parsed.paragraphs) || !parsed.paragraphs.length || parsed.paragraphs.some((x: any) => typeof x !== 'string' || !x.trim())) throw new Error('empty paragraphs')
   } catch { throw stopSleep('Claude targeted story repair returned invalid text; do not retry paid call', 'SLEEP_REPAIR_INVALID') }
   return [...intro, ...splitSleepParagraphs(parsed.paragraphs)]
+}
+
+
+// Coordinator for *automatic* same-job quality repair. This never approves defective
+// narration and never abandons already-generated, checkpointed chapters.
+// Dependencies are injected so review/revision behavior can be tested for FREE.
+export type SleepChapterDraft = { id: string; sentences: LongformSentence[] }
+export const SLEEP_MAX_AUTOMATIC_REPAIR_PASSES = 4
+export async function runSleepClassicReviewLoop(args: {
+  sections: SleepChapterDraft[]
+  review: (pass: number, sections: SleepChapterDraft[]) => Promise<SleepReview>
+  repair: (pass: number, chapterIndex: number, issues: string[], sections: SleepChapterDraft[]) => Promise<LongformSentence[]>
+  maxRepairPasses?: number
+  signal?: AbortSignal
+}): Promise<{ approved: boolean; sections: SleepChapterDraft[]; review: SleepReview; repairPasses: number; revisedChapters: number[] }> {
+  const maximum = args.maxRepairPasses ?? SLEEP_MAX_AUTOMATIC_REPAIR_PASSES
+  if (!Number.isInteger(maximum) || maximum < 0 || maximum > SLEEP_MAX_AUTOMATIC_REPAIR_PASSES) throw new Error('invalid automatic repair cap')
+  const sections = args.sections.map(s => ({ ...s, sentences: [...s.sentences] }))
+  const revised = new Set<number>()
+  for (let pass = 0; pass <= maximum; pass++) {
+    if (args.signal?.aborted) throw new Error('aborted')
+    const review = await args.review(pass, sections)
+    if (!review || typeof review.approved !== 'boolean' || !Array.isArray(review.issues)) throw stopSleep('GPT review malformed; preserve original chapters', 'SLEEP_REVIEW_INVALID')
+    if (review.approved && review.issues.length === 0) {
+      return { approved: true, sections, review, repairPasses: pass, revisedChapters: [...revised].sort((a,b) => a-b) }
+    }
+    // The next repair pass is not run when the circuit breaker trips; preserve
+    // the LAST checked manuscript and return the exact GPT findings for follow-up.
+    if (pass === maximum) {
+      return { approved: false, sections, review, repairPasses: pass, revisedChapters: [...revised].sort((a,b) => a-b) }
+    }
+    const findings = sleepReviewIssuesByChapter(review.issues)
+    for (const [index, issues] of findings) {
+      if (args.signal?.aborted) throw new Error('aborted')
+      if (!sections[index]?.sentences?.length) throw stopSleep('review cited a missing chapter', 'SLEEP_REVIEW_UNMAPPED')
+      const replacement = await args.repair(pass + 1, index, issues, sections)
+      if (!Array.isArray(replacement) || !replacement.length || replacement.some(x => !x?.say?.trim())) {
+        throw stopSleep('repaired chapter invalid; preserve existing draft', 'SLEEP_REPAIR_INVALID')
+      }
+      sections[index] = { ...sections[index], sentences: replacement }
+      revised.add(index + 1)
+    }
+  }
+  throw new Error('unreachable sleep review loop')
 }
