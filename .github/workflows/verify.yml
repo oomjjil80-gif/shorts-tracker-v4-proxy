@@ -45,7 +45,12 @@ jobs:
 
           GEMINI_IMAGE_OTHER="$(printf '%s\n' "$YADAM_STYLE_OTHER" | grep -Ev '^(lib/generative/geminiImage\.ts|lib/generative/goldenStyle\.ts|lib/generative/planner\.ts|assets/style-reference/golden/ref-[1-5]\.jpg|tools/golden-style\.test\.ts|lib/generative/providers\.ts|lib/generative/usageLedger\.ts|worker/stages/generative\.ts|worker/stages/wisdomThumbnail\.ts|tools/gemini-image\.test\.ts|tools/p2-providers\.test\.ts|tools/p2-generative\.test\.ts|tools/pipeline-features\.test\.ts|tools/wisdom-output\.test\.ts|tools/wisdom-thumbnail\.test\.ts|tools/wisdom-derived-shorts\.test\.ts|lib/generative/wisdomUploadText\.ts)$' || true)"
 
-          if [ -z "$PLAN_REVIEW_OTHER" ] && [ -n "$PLAN_REVIEW_PRESENT" ]; then
+          # Isolated feature verification; mandatory typecheck remains unchanged.
+          SLEEP_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/sleepClassic\.ts|lib/generative/longform\.ts|worker/stages/longform\.ts|tools/sleep-classic\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
+          SLEEP_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/sleepClassic\.ts$' || true)"
+          if [ -z "$SLEEP_OTHER" ] && [ -n "$SLEEP_PRESENT" ]; then
+            echo "mode=sleep-classic" >> "$GITHUB_OUTPUT"
+          elif [ -z "$PLAN_REVIEW_OTHER" ] && [ -n "$PLAN_REVIEW_PRESENT" ]; then
             echo "mode=plan-cross-review" >> "$GITHUB_OUTPUT"
           elif [ -z "$LONGFORM_RENDER_OTHER" ]; then
             echo "mode=longform-render" >> "$GITHUB_OUTPUT"
@@ -65,6 +70,13 @@ jobs:
           else
             echo "mode=full" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Run focused bedtime classic regression
+        if: steps.scope.outputs.mode == 'sleep-classic'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 5m npx tsx --test tools/sleep-classic.test.ts tools/plan-cross-review.test.ts
 
       - name: Run focused Longform PLAN cross-review verification
         if: steps.scope.outputs.mode == 'plan-cross-review'

@@ -15,6 +15,7 @@ import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaSc
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
 import { crossReviewFromEnv, runCrossReview, PLAN_CROSS_REVIEW_VERSION, type CrossReviewDeps, type CrossReviewRecord } from '../../lib/generative/planCrossReview.js'
+import { createSleepClassicPlanner, isSleepClassic, sleepChapterLength, reviewSleepClassicStory, SLEEP_CHAPTERS } from '../../lib/generative/sleepClassic.js'
 import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorCostEstimate, budgetGuard, ttsUsdOf, SENIOR_COST, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeGolden, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
@@ -23,7 +24,7 @@ import { VIDEO_ENCODER_THREADS } from '../../lib/media/render.js'
 import { openAiLongformResearcher, researchPath, researchErrors, sectionFragments, RESEARCH_MODEL, type LongformResearcher, type ResearchBundle } from '../../lib/generative/longformResearch.js'
 import {
   LONGFORM, isLongformProfile, longformMode, validateLongformScript, cardErrors, sentencesOf, narrationOf, longformImagePrompt, ttsChunks, cardTimeline, sectionPlan, longformFigure,
-  longformCardsAss, yasaCaptionsAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
+  longformCardsAss, yasaCaptionsAss, sleepClassicAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
 } from '../../lib/generative/longform.js'
 import { thumbnailArgv, thumbnailCopyErrors, LONGFORM_THUMB } from '../../lib/generative/wisdomThumbnail.js'
 import { styleGate, representativeCheck, thumbnailRework, type StyleReference, type DrawRefFn, type CopyWriter } from './styleGate.js'
@@ -128,17 +129,17 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       if (!isLongform(job)) throw new StageError('PROFILE_UNSUPPORTED', 'longform PLAN only handles longform profiles')
       const brief = (job.planRef ? await blobs.getJson(job.planRef) : null) as LongformBrief | null
       if (!brief || brief.schema !== 'generative-brief/1' || brief.profile !== job.profile) throw new StageError('BRIEF_INVALID', `invalid ${job.profile} brief`)
-      const mode = longformMode(job.profile), scenes = mode.images === 'scenes', yasa = job.profile === 'yasa_longform', senior = job.profile === 'senior_longform'
-      const planner = deps.planner ?? (yasa ? openAiYasaPlanner() : scenes ? openAiSeniorPlanner() : openAiLongformPlanner())
+      const mode = longformMode(job.profile), scenes = mode.images === 'scenes', yasa = job.profile === 'yasa_longform', senior = job.profile === 'senior_longform', sleep = isSleepClassic(brief)
+      const planner = deps.planner ?? (sleep ? createSleepClassicPlanner() : yasa ? openAiYasaPlanner() : scenes ? openAiSeniorPlanner() : openAiLongformPlanner())
       // Senior: six acts; 숨은야담: the DNA's eight acts (one section per act); Wisdom: sections sized by the running time
-      const size = yasa ? { sections: YASA_ACTS.length, charsPerSection: 0 } : scenes ? (() => { const p = seniorScenePlan(brief.targetSeconds); return { sections: p.acts, charsPerSection: p.charsPerAct } })() : sectionPlan(brief.targetSeconds)
+      const size = sleep ? { sections: SLEEP_CHAPTERS.length, charsPerSection: 0 } : yasa ? { sections: YASA_ACTS.length, charsPerSection: 0 } : scenes ? (() => { const p = seniorScenePlan(brief.targetSeconds); return { sections: p.acts, charsPerSection: p.charsPerAct } })() : sectionPlan(brief.targetSeconds)
       // 숨은야담: each act sized by its share of the story (the reveal act starts at ~80% of the narration)
       const actChars = yasa ? yasaActChars(Math.round(brief.targetSeconds * LONGFORM.charsPerSecond)) : null
-      const targetOf = (i: number) => actChars?.[i] ?? size.charsPerSection
+      const targetOf = (i: number) => sleep ? sleepChapterLength(i) : actChars?.[i] ?? size.charsPerSection
       // OFF retains its existing checkpoint identity. ON uses isolated checkpoints so previously
       // generated OFF sections can never be mixed with a revised ON outline.
-      const xr = deps.crossReview === undefined ? crossReviewFromEnv(process.env, apiKey) : deps.crossReview
-      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}${xr ? `|${PLAN_CROSS_REVIEW_VERSION}` : ''}`)}`
+      const xr = sleep ? null : deps.crossReview === undefined ? crossReviewFromEnv(process.env, apiKey) : deps.crossReview
+      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}${sleep ? '|sleep-classic/1' : ''}${xr ? `|${PLAN_CROSS_REVIEW_VERSION}` : ''}`)}`
       const made: string[] = [], reused: string[] = []
       // one checkpointed step: reuse the stored result, else make it (one free repair with the exact errors) and store it
       // memory: every rejected attempt (its errors + what it wrote) is kept next to the checkpoint, ACROSS stage retries,
@@ -218,7 +219,7 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       }
       if (!apiKey) throw new StageError('PROVIDER_DOWN', 'the longform script needs the planner (OPENAI_API_KEY)', true)
       // research gathers wisdom sources (Wisdom Longform only; a Senior story is not researched)
-      const { research, ref: rRef, log: rLog } = mode.research ? await longformResearchFor({ blobs, topic: brief.text, sections: size.sections, apiKey, researcher, log, signal }) : { research: null, ref: null, log: { cache: 'OFF' } as Record<string, unknown> }
+      const { research, ref: rRef, log: rLog } = mode.research && !sleep ? await longformResearchFor({ blobs, topic: brief.text, sections: size.sections, apiKey, researcher, log, signal }) : { research: null, ref: null, log: { cache: 'OFF' } as Record<string, unknown> }
       // 숨은야담: the STORY DNA first (sent in with the brief, else made once and checkpointed); every later step sees it
       let dnaSource: 'brief' | 'plan' | null = null, pbrief: any = brief
       if (yasa) {
@@ -247,6 +248,12 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         sections.push(scenes ? { id: String(outline.sections[i].id || `a${i + 1}`), heading: outline.sections[i].heading, ...(yasa ? { act: YASA_ACTS[i]?.key } : {}), ...mergeSameScenes({ scenes: actScenes, sentences: d.sentences as any }) } : { id: String(outline.sections[i].id || `s${i + 1}`), sentences: d.sentences })
         tail = d.sentences.slice(-2).map((x) => x.say)
       }
+      // Sleep Classic: GPT independently verifies all Claude-authored chapters before TTS/IMAGE.
+      let sleepReview: any = null
+      if (sleep) {
+        sleepReview = await step<any>('sleep-quality', 'SLEEP_REVIEW_INVALID', () => reviewSleepClassicStory(sections, apiKey), (v) => (!v || typeof v.approved !== 'boolean' || !Array.isArray(v.issues) ? ['review.invalid'] : []), { tries: 1 })
+        if (!sleepReview.approved) throw new StageError('SLEEP_STORY_REJECTED', sleepReview.issues.slice(0, 5).join('; ') || 'GPT rejected the story', false)
+      }
       // 숨은야담: the COLD OPEN, written last over the main story's own pictures (45~60 s at the voice's speed, 5~8 beats)
       let coldOpen: any = null
       if (yasa) {
@@ -256,11 +263,11 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       }
       // a figure the topic names (the Buddha, a named thinker) stays that person (Wisdom); Senior: the main character
       const figure = scenes ? outline.figure : { name: outline.figure.name, imagePrompt: longformFigure(brief.text, outline.figure.imagePrompt) }
-      const body: any = { schema: mode.script, title: outline.title, hook: outline.hook, figure, thumbnail: outline.thumbnail, ...(scenes ? { characters: (outline as any).characters } : {}), ...(yasa ? { yasaStoryDNA: pbrief.yasaStoryDNA, coldOpen } : {}), sections }
+      const body: any = { ...(sleep ? { sleepClassic: brief.sleepClassic } : {}), schema: mode.script, title: outline.title, hook: outline.hook, figure, thumbnail: outline.thumbnail, ...(scenes ? { characters: (outline as any).characters } : {}), ...(yasa ? { yasaStoryDNA: pbrief.yasaStoryDNA, coldOpen } : {}), sections }
       const narration = narrationOf({ ...body, metadata: { description: '', tags: [], hashtags: [], pinnedComment: '' } })
       const meta = await step<LongformMetadataDraft>('metadata', 'METADATA_INVALID', (r) => planner.metadata({ brief: pbrief, title: outline.title, headings: outline.sections.map((x) => x.heading), narration, repair: r }, apiKey),
         (m) => [...uploadMetadataErrors(m, { narration, format: 'longform' }), ...thumbnailCopyErrors(outline.thumbnail.lines as any, String(m?.title || '')).map((x) => `thumbnail.${x}`)])
-      const script: any = { ...body, title: meta.title, metadata: { description: meta.description, tags: meta.tags, hashtags: meta.hashtags, pinnedComment: meta.pinnedComment } }
+      const script: any = { ...body, title: sleep ? outline.title : meta.title, metadata: { description: meta.description, tags: meta.tags, hashtags: meta.hashtags, pinnedComment: meta.pinnedComment } }
       const errors = validateLongformScript(script, brief)
       if (errors.length) throw new StageError('SCRIPT_INVALID', errors.join(','))
       const stored = await putAddressed(blobs, 'generative-scripts', script)
@@ -280,7 +287,7 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       }
       // Senior: the pictures and the narration this script will cost (ASSET checks it against the budget before paying)
       const estimate = senior ? seniorCostEstimate({ pictures: seniorScenes(script).length, extraPictures: styleApprovalWanted(job.profile, brief) ? 1 : 0, narrationChars: [...sentencesOf(script).map((x) => x.say).join('')].length, ...(await (async () => { const c = (await costSoFar?.()) ?? { confirmed: 0, unconfirmed: 0 }; return { spentUsd: c.confirmed + c.unconfirmed + runSpentUsd(), unconfirmedUsd: c.unconfirmed + runUnconfirmedUsd() } })()), budgetUsd: job.budgetUsd }) : null
-      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, ...(estimate ? { estimate } : {}), ...(derived ? { derived } : {}), sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(senior ? { pacing: seniorPacing(script as unknown as SeniorScript, Number(brief.creative?.resolved?.voiceSpeed) || 1) } : {}), ...(yasa ? { yasa: { dna: dnaSource, acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars, coldOpen: { beats: coldOpen.sentences.length, estimatedSeconds: Number(([...coldOpen.sentences.map((x: any) => x.say).join(' ')].length / (LONGFORM.charsPerSecond * (Number(brief.creative?.resolved?.voiceSpeed) || 1))).toFixed(1)) } } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, ...(crossReview ? { crossReview } : {}), validation: errors } }
+      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, ...(estimate ? { estimate } : {}), ...(derived ? { derived } : {}), sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(senior ? { pacing: seniorPacing(script as unknown as SeniorScript, Number(brief.creative?.resolved?.voiceSpeed) || 1) } : {}), ...(yasa ? { yasa: { dna: dnaSource, acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars, coldOpen: { beats: coldOpen.sentences.length, estimatedSeconds: Number(([...coldOpen.sentences.map((x: any) => x.say).join(' ')].length / (LONGFORM.charsPerSecond * (Number(brief.creative?.resolved?.voiceSpeed) || 1))).toFixed(1)) } } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, ...(crossReview ? { crossReview } : {}), ...(sleepReview ? { sleepReview, scriptWriter: 'claude', chaptersLocked: SLEEP_CHAPTERS.length } : {}), validation: errors } }
     }
   }
 }
@@ -571,10 +578,10 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver;
       const badCards = sents.flatMap((x, k) => cardErrors(x).map((c) => `card ${k + 1}: ${c}`))
       if (badCards.length) throw new StageError('LONGFORM_CONTRACT', badCards.slice(0, 20).join('; '))
       // 숨은야담: the caption is the narration itself (every letter, chunked); Senior / Wisdom: the sentence cards
-      const yasa = job.profile === 'yasa_longform'
+      const yasa = job.profile === 'yasa_longform', sleep = script.sleepClassic === 'odyssey-cyclops-v1'
       const subtitles = (tl: Array<{ start: number; end: number; k: number }>) => { if (yasa) { const y = yasaCaptionsAss(script, tl); return { ass: y.ass, cards: y.cards, sentences: y.sentences } } const c = longformCardsAss(script, tl, mode.cards); return { ass: c.ass, cards: c.cards, sentences: c.cards.length } }
-      const { ass, cards, sentences: drawn } = subtitles(timeline)
-      if (drawn !== sents.length) throw new StageError('LONGFORM_CONTRACT', `${drawn} sentences captioned of ${sents.length}`)
+      const { ass, cards, sentences: drawn } = sleep ? { ass: sleepClassicAss(), cards: [], sentences: 0 } : subtitles(timeline)
+      if (!sleep && drawn !== sents.length) throw new StageError('LONGFORM_CONTRACT', `${drawn} sentences captioned of ${sents.length}`)
       await writeFile(assPath, ass, 'utf8')
       // the video runs exactly as long as the FINAL narration file (measured); an unreadable/empty narration is a defect
       const seconds = Number((await probe(audio)).duration ?? 0)
@@ -667,7 +674,22 @@ export const longformPackageExecutor: StageExecutor = {
     // a Longform job never completes without its upload text and thumbnail
     if (!longformPackageMetadata(script)) throw new StageError('UPLOAD_PACKAGE_INVALID', 'upload text does not pass the upload rules')
     if (!v.thumbnailRef || !(await blobs.getBytes(v.thumbnailRef))) throw new StageError('THUMBNAIL_MISSING', 'longform thumbnail is missing')
-    const pkg = { schema: 'longform-package/1', profile: job.profile, finalRenderRef: v.renderRef, renderHash: v.renderHash, thumbnailRef: v.thumbnailRef, durationSec: v.duration, aspectRatio: '16:9', publishable: true, ...(() => { const m = longformPackageMetadata(script); return { metadata: m, uploadReady: !!m } })(), thumbnailLines: script.thumbnail.lines }
+    // Real measured narration durations, never estimated chapter timestamps.
+    let chapters: Array<{ time: string; title: string; seconds: number }> = []
+    if (script.sleepClassic === 'odyssey-cyclops-v1') {
+      const a = await previous('ASSET')
+      const assets: any = (a?.result as any)?.assetSpecRef ? await blobs.getJson((a!.result as any).assetSpecRef) : null
+      const chunks: any[] = Array.isArray(assets?.chunks) ? assets.chunks : []
+      const counts = script.sections.map((s) => s.sentences.length)
+      if (chunks.length !== counts.reduce((x, y) => x + y, 0) || chunks.some((c) => !(Number(c.seconds) > 0))) throw new StageError('SLEEP_CHAPTER_TIMING_INVALID', 'actual audio chunks do not match locked chapters', false)
+      const fmt = (t: number) => { const n = Math.floor(t); const h = Math.floor(n / 3600); const m = Math.floor(n % 3600 / 60); const sec = String(n % 60).padStart(2, '0'); return (h ? String(h) + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + sec }
+      let n = 0, clock = 0
+      chapters = counts.map((count, i) => { const start = clock; for (let j = 0; j < count; j++) clock += Number(chunks[n++].seconds); return { time: fmt(start), title: SLEEP_CHAPTERS[i].heading, seconds: Number(start.toFixed(3)) } })
+      if (chapters.length !== SLEEP_CHAPTERS.length) throw new StageError('SLEEP_CHAPTER_TIMING_INVALID', 'locked chapter count changed', false)
+    }
+    const metadata = longformPackageMetadata(script)!
+    if (chapters.length) metadata.description += '\n\n장별 목차\n' + chapters.map((c) => c.time + ' ' + c.title).join('\n')
+    const pkg = { schema: 'longform-package/1', profile: job.profile, finalRenderRef: v.renderRef, renderHash: v.renderHash, thumbnailRef: v.thumbnailRef, durationSec: v.duration, aspectRatio: '16:9', publishable: true, metadata, uploadReady: true, ...(chapters.length ? { chapters } : {}), thumbnailLines: script.thumbnail.lines }
     const stored = await putAddressed(blobs, 'packages', pkg)
     return { outputRef: stored.path, outputHash: sha256(stored.path), result: { packageRef: stored.path, finalRenderRef: v.renderRef, renderHash: v.renderHash, thumbnailRef: v.thumbnailRef, durationSec: v.duration, publishable: true } }
   }
