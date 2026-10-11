@@ -22,8 +22,8 @@ const planner = (seq: string[]) => ({
   metadata: async (i: any) => META(i.title)
 })
 const research = async () => ({ bundle: { topic: TITLE, model: 'stand-in', researchedAt: 'now', fragments: ['쇼펜하우어: 고독을 견디는 힘이 자유다', '선을 긋는 것은 관계를 지키는 일', '관계의 수보다 깊이'].map((claim, k) => ({ id: `f${k + 1}`, type: 'interpretation', claim, story: '', sourceTitle: 's', sourceUrl: 'https://example.org', confidence: 'high', usableAsDirectBuddhaQuote: false })), sectionMap: [1, 2, 3].map((section) => ({ section, fragmentIds: [`f${section}`], purpose: 'p' })) }, requests: 1, webSearchCalls: 1 })
-async function run(id: string, seq: string[], crossReview?: CrossReviewDeps | null) {
-  const blobs: any = createMemoryBlobStore()
+async function run(id: string, seq: string[], crossReview?: CrossReviewDeps | null, sharedBlobs?: any) {
+  const blobs: any = sharedBlobs ?? createMemoryBlobStore()
   const b = await putAddressed(blobs, 'generative-briefs', normalizeLongformBrief({ kind: 'topic', text: `${TITLE} ${id}`, targetSeconds: 600, deriveShorts: false }, 'wisdom_longform'))
   const out: any = await createLongformPlanExecutor({ apiKey: 'k', planner: planner(seq) as any, research: research as any, log: () => {}, ...(crossReview !== undefined ? { crossReview } : {}) })
     .run({ job: { id, profile: 'wisdom_longform', planRev: 1, planRef: b.path }, blobs, previous: async () => null, signal: new AbortController().signal } as any)
@@ -65,7 +65,36 @@ test('ON + Claude usage limit: falls back to the original GPT plan, reason recor
   assert.ok(out.outputRef)
 })
 
-test('parseFindings: keeps only the five areas; missing JSON is an error, not a pass', () => {
-  assert.deepEqual(parseFindings('{"findings":[{"area":"hook30s","problem":"p","reason":"r","direction":"d"},{"area":"other","problem":"x"}]}').map((x) => x.area), ['hook30s'])
+test('parseFindings: malformed or incomplete findings are errors, never no_findings', () => {
+  assert.deepEqual(parseFindings('{"findings":[{"area":"hook30s","problem":"p","reason":"r","direction":"d"}]}').map((x) => x.area), ['hook30s'])
+  assert.deepEqual(parseFindings('{"findings":[]}'), [])
+  assert.throws(() => parseFindings('{"findings":[{"area":"other","problem":"x"}]}'))
+  assert.throws(() => parseFindings('{"findings":[{"area":"title","problem":"x"}]}'))
   assert.throws(() => parseFindings('PASS'))
+})
+
+test('switch OFF -> ON for the same brief never reuses stale section checkpoints', async () => {
+  const blobs = createMemoryBlobStore()
+  const off = await run('shared-plan', [], undefined, blobs)
+  assert.equal(off.out.result.crossReview, undefined)
+  const seq: string[] = []
+  const deps: CrossReviewDeps = {
+    reviewer: async () => ({ model: 'claude-mock', findings: [{ area: 'title', problem: 'weak', reason: 'unclear', direction: 'sharpen' }] }),
+    decider: async () => [{ index: 0, action: 'accept', reason: 'valid' }]
+  }
+  const on = await run('shared-plan', seq, deps, blobs)
+  assert.equal(on.script.title, REVISED)
+  assert.ok(on.out.result.checkpoints.made.includes('section-001'))
+  assert.equal(on.out.result.crossReview.status, 'revised')
+})
+
+test('missing GPT decisions falls back rather than silently rejecting all findings', async () => {
+  const deps: CrossReviewDeps = {
+    reviewer: async () => ({ model: 'claude-mock', findings: [{ area: 'catharsis', problem: 'weak', reason: 'no payoff', direction: 'payoff' }] }),
+    decider: async () => []
+  }
+  const { out, script } = await run('invalid-decisions', [], deps)
+  assert.equal(out.result.crossReview.status, 'fallback')
+  assert.match(out.result.crossReview.fallbackReason, /incomplete/)
+  assert.equal(script.title, TITLE)
 })
