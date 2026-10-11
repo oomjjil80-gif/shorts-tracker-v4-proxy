@@ -63,6 +63,11 @@ test('GPT quality gate rejects a false approval with concrete issues', async () 
     return new Response(JSON.stringify({ output_text: JSON.stringify({ approved: true, fidelity: 2, standalone: 4, bedtime: 5, story: 4, originality: 4, issues: ['부하 희생자 수 불일치'] }) }), { status: 200 })
   }
 
+  const result = await reviewSleepClassicStory([{ id: 's1', sentences: splitSleepParagraphs(['아무도 아니다.']) }], 'test', fake)
+  assert.equal(result.approved, false)
+  assert.equal(result.issues.length, 1)
+})
+
 test('real 2000-character chapter splits into saved plot segments instead of blindly billing three rewrites', async () => {
   const prev = process.env.ANTHROPIC_API_KEY
   process.env.ANTHROPIC_API_KEY = 'test-key'
@@ -79,7 +84,7 @@ test('real 2000-character chapter splits into saved plot segments instead of bli
     assert.match(input, /이 구간에서만 다룰 검증된 사건/)
     assert.ok(!Object.hasOwn(req, 'temperature'))
     const text = '그는 동굴을 자세히 살피고 동료의 선택을 기다리며 조용하게 다음 행동을 준비했습니다.'
-    const paragraphs = Array.from({ length: 3 }, (_v, i) => ('부분 ' + match[1] + ' ' + i + ': ' + text + ' ').repeat(8))
+    const paragraphs = Array.from({ length: 3 }, (_v, i) => ('부분 ' + match[1] + ' ' + i + ': ' + text + ' ').repeat(7))
     return new Response(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ paragraphs }) }], stop_reason: 'end_turn' }), { status: 200 })
   }
   try {
@@ -117,7 +122,3 @@ test('incomplete chapter fails once after checkpointing instead of paying for bl
   }
 })
 
-  const result = await reviewSleepClassicStory([{ id: 's1', sentences: splitSleepParagraphs(['아무도 아니다.']) }], 'test', fake)
-  assert.equal(result.approved, false)
-  assert.equal(result.issues.length, 1)
-})
