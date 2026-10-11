@@ -257,7 +257,7 @@ export function createJobsHttp(deps: JobsDeps) {
       if (taskType === 'job_recover_asset_billing') {
         // Explicit, zero-cost same-Job recovery; credits are NOT charged or checked.
         // Keep the successful offline PLAN and cached Gemini image; wait for OpenAI TTS funds.
-        const jobId = need(String(body.jobId || ''), 'jobId is required')
+        const jobId = need(String(input.jobId || ''), 'jobId is required')
         const job = await store.parkRecoveredOdysseyAssetBilling({jobId, workspaceId})
         return res.status(200).json({
           ok: true, job: view(job, await store.listStageRuns(job.id)),
