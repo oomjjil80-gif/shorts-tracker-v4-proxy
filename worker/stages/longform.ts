@@ -674,7 +674,22 @@ export const longformPackageExecutor: StageExecutor = {
     // a Longform job never completes without its upload text and thumbnail
     if (!longformPackageMetadata(script)) throw new StageError('UPLOAD_PACKAGE_INVALID', 'upload text does not pass the upload rules')
     if (!v.thumbnailRef || !(await blobs.getBytes(v.thumbnailRef))) throw new StageError('THUMBNAIL_MISSING', 'longform thumbnail is missing')
-    const pkg = { schema: 'longform-package/1', profile: job.profile, finalRenderRef: v.renderRef, renderHash: v.renderHash, thumbnailRef: v.thumbnailRef, durationSec: v.duration, aspectRatio: '16:9', publishable: true, ...(() => { const m = longformPackageMetadata(script); return { metadata: m, uploadReady: !!m } })(), thumbnailLines: script.thumbnail.lines }
+    // Real measured narration durations, never estimated chapter timestamps.
+    let chapters: Array<{ time: string; title: string; seconds: number }> = []
+    if (script.sleepClassic === 'odyssey-cyclops-v1') {
+      const a = await previous('ASSET')
+      const assets: any = (a?.result as any)?.assetSpecRef ? await blobs.getJson((a!.result as any).assetSpecRef) : null
+      const chunks: any[] = Array.isArray(assets?.chunks) ? assets.chunks : []
+      const counts = script.sections.map((s) => s.sentences.length)
+      if (chunks.length !== counts.reduce((x, y) => x + y, 0) || chunks.some((c) => !(Number(c.seconds) > 0))) throw new StageError('SLEEP_CHAPTER_TIMING_INVALID', 'actual audio chunks do not match locked chapters', false)
+      const fmt = (t: number) => { const n = Math.floor(t); const h = Math.floor(n / 3600); const m = Math.floor(n % 3600 / 60); const sec = String(n % 60).padStart(2, '0'); return (h ? String(h) + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + sec }
+      let n = 0, clock = 0
+      chapters = counts.map((count, i) => { const start = clock; for (let j = 0; j < count; j++) clock += Number(chunks[n++].seconds); return { time: fmt(start), title: SLEEP_CHAPTERS[i].heading, seconds: Number(start.toFixed(3)) } })
+      if (chapters.length !== SLEEP_CHAPTERS.length) throw new StageError('SLEEP_CHAPTER_TIMING_INVALID', 'locked chapter count changed', false)
+    }
+    const metadata = longformPackageMetadata(script)!
+    if (chapters.length) metadata.description += '\n\n장별 목차\n' + chapters.map((c) => c.time + ' ' + c.title).join('\n')
+    const pkg = { schema: 'longform-package/1', profile: job.profile, finalRenderRef: v.renderRef, renderHash: v.renderHash, thumbnailRef: v.thumbnailRef, durationSec: v.duration, aspectRatio: '16:9', publishable: true, metadata, uploadReady: true, ...(chapters.length ? { chapters } : {}), thumbnailLines: script.thumbnail.lines }
     const stored = await putAddressed(blobs, 'packages', pkg)
     return { outputRef: stored.path, outputHash: sha256(stored.path), result: { packageRef: stored.path, finalRenderRef: v.renderRef, renderHash: v.renderHash, thumbnailRef: v.thumbnailRef, durationSec: v.duration, publishable: true } }
   }
