@@ -195,7 +195,7 @@ test('repair of chapter 1 preserves approved opening while correcting body', asy
 const fakeSleepVerdict = (approved: boolean, issues: string[]) => ({approved,issues,fidelity:4,standalone:4,bedtime:4,story:4,originality:4})
 test('auto-repair repeats GPT checks and preserves unrelated chapters', async () => {
  const original = Array.from({length:9}, (_,i)=>({id:'s'+i,sentences:splitSleepParagraphs(['original '+i])}))
- const revised = [], checked = []
+ const revised: string[] = [], checked: number[] = []
  const result = await runSleepClassicReviewLoop({
   sections:original,
   review:async (pass,sections)=>{
