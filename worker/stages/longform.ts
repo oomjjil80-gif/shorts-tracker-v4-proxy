@@ -15,7 +15,7 @@ import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaSc
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
 import { crossReviewFromEnv, runCrossReview, PLAN_CROSS_REVIEW_VERSION, type CrossReviewDeps, type CrossReviewRecord } from '../../lib/generative/planCrossReview.js'
-import { createSleepClassicPlanner, isSleepClassic, sleepChapterLength, reviewSleepClassicStory, SLEEP_CHAPTERS } from '../../lib/generative/sleepClassic.js'
+import { createSleepClassicPlanner, isSleepClassic, reviewSleepClassicStory, SLEEP_CHAPTERS } from '../../lib/generative/sleepClassic.js'
 import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorCostEstimate, budgetGuard, ttsUsdOf, SENIOR_COST, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeGolden, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
@@ -134,11 +134,11 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       const size = sleep ? { sections: SLEEP_CHAPTERS.length, charsPerSection: 0 } : yasa ? { sections: YASA_ACTS.length, charsPerSection: 0 } : scenes ? (() => { const p = seniorScenePlan(brief.targetSeconds); return { sections: p.acts, charsPerSection: p.charsPerAct } })() : sectionPlan(brief.targetSeconds)
       // 숨은야담: each act sized by its share of the story (the reveal act starts at ~80% of the narration)
       const actChars = yasa ? yasaActChars(Math.round(brief.targetSeconds * LONGFORM.charsPerSecond)) : null
-      const targetOf = (i: number) => sleep ? sleepChapterLength(i) : actChars?.[i] ?? size.charsPerSection
+      const targetOf = (i: number) => sleep ? 0 : actChars?.[i] ?? size.charsPerSection // zero is unused for sleep: natural story length
       // OFF retains its existing checkpoint identity. ON uses isolated checkpoints so previously
       // generated OFF sections can never be mixed with a revised ON outline.
       const xr = sleep ? null : deps.crossReview === undefined ? crossReviewFromEnv(process.env, apiKey) : deps.crossReview
-      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}${sleep ? '|sleep-classic/3' : ''}${xr ? `|${PLAN_CROSS_REVIEW_VERSION}` : ''}`)}`
+      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}${sleep ? '|sleep-classic/4' : ''}${xr ? `|${PLAN_CROSS_REVIEW_VERSION}` : ''}`)}`
       const planner = deps.planner ?? (sleep ? createSleepClassicPlanner(fetch, {
         // Save each paid subchapter immediately in R2. Requeues reuse this data.
         read: async (chapter, part) => (await blobs.getJson(`${ck}/sleep-chapter-${chapter + 1}-part-${part + 1}.json`).catch(() => null)) as string[] | null,

@@ -8,15 +8,15 @@ export const SLEEP_CLASSIC_ID = 'odyssey-cyclops-v1'
 export const SLEEP_CLASSIC_TITLE = '잠들기 전 듣는 오디세이아 | 아무도 아니다, 외눈박이 거인의 동굴 (1편)'
 export const SLEEP_CLASSIC_SOURCE = 'Homer, Odyssey, Book IX (ancient public-domain source; no modern Korean translation)'
 export const SLEEP_CHAPTERS = [
-  { heading: '이름을 묻는 저녁, 이스마로스', chars: 1500, beats: ['파이아케스 왕 앞에서 오디세우스 실명 공개', '키코네스인 이스마로스 약탈과 마론의 가족을 살려 얻은 포도주', '출항을 거부한 부하들과 반격, 배마다 여섯 명 희생', '죽은 동료의 이름을 세 번 부름과 북풍'] },
-  { heading: '연밥의 땅', chars: 900, beats: ['로토파고이에게 보낸 정탐꾼', '연밥을 먹고 귀향할 뜻을 잃음', '울며 버티는 이들을 배로 데려와 묶고 출항'] },
-  { heading: '안개 속 염소 섬', chars: 1300, beats: ['키클롭스의 풍습과 법 없이 사는 모습', '무인도 염소 사냥과 포도주 잔치', '건너편에서 들리는 양 울음', '배 한 척과 부하 열두 명 및 마론 포도주를 가져감'] },
-  { heading: '돌문이 닫힌 동굴', chars: 2000, beats: ['치즈를 챙겨 떠나자는 부하들', '손님 환대를 기대한 오디세우스가 기다림', '거인이 돌아와 거대한 바위로 입구를 막음', '손님을 보호하는 신을 무시하고 배의 행방을 묻는 거인', '거인이 첫 저녁 부하 두 명을 잡아먹음'] },
-  { heading: '첫 번째 밤과 올리브 말뚝', chars: 1800, beats: ['거인을 죽여도 입구 바위를 치울 수 없다는 판단', '이튿날 아침 두 명 추가 희생', '올리브 말뚝을 다듬고 불에 굳혀 거름 아래 숨김', '제비로 부하 네 명을 고르고 자신이 합류함', '두 번째 저녁 양 떼를 모두 동굴에 들임'] },
-  { heading: "포도주와 '아무도 아니다'", chars: 1900, beats: ['두 번째 저녁 두 명 더 희생하여 동굴 안에서 합계 여섯 명 사망', '오디세우스가 마론의 포도주를 세 그릇 마시게 함', "거짓 이름을 '아무도 아니다'라고 말함", '맨 마지막에 잡아먹겠다는 끔찍한 선물', '거인이 취해 잠듦'] },
-  { heading: '눈먼 거인과 이웃들', chars: 1700, beats: ['다섯 명이 뜨거운 말뚝을 외눈에 박아 돌림; 잔혹한 직접 묘사 금지', '이웃들이 누구에게 당했는지 묻자 아무도 아니다라고 답해 돌아감', '입구 바위를 치우고 손을 뻗어 지키는 거인'] },
-  { heading: '양의 배 아래', chars: 1600, beats: ['사흘째 아침, 숫양 세 마리씩 묶고 가운데 한 마리 배 밑에 부하 매달기', '오디세우스는 가장 큰 숫양의 배 털을 잡음', '거인이 등만 만지며 양을 보냄', '맨 마지막 숫양에게 거인이 말을 검', '밖에서 일행이 풀려나 배로 향함'] },
-  { heading: '바다 위에서 밝힌 이름', chars: 2600, beats: ['첫 조롱과 첫 돌 투척', '부하들이 위험하니 그만하라고 만류', '이타카의 오디세우스라는 본명을 소리침', '예언자 텔레모스의 예언을 기억하는 거인', '포세이돈에게 귀향 지연·동료 상실·남의 배 귀향·집안 고난을 저주해 달라 기원', '두 번째 바위와 염소 섬 귀환', '제우스가 숫양의 제물을 받지 않고 다음 날 떠남'] }
+  { heading: '이름을 묻는 저녁, 이스마로스', beats: ['파이아케스 왕 앞에서 오디세우스 실명 공개', '키코네스인 이스마로스 약탈과 마론의 가족을 살려 얻은 포도주', '출항을 거부한 부하들과 반격, 배마다 여섯 명 희생', '죽은 동료의 이름을 세 번 부름과 북풍'] },
+  { heading: '연밥의 땅', beats: ['로토파고이에게 보낸 정탐꾼', '연밥을 먹고 귀향할 뜻을 잃음', '울며 버티는 이들을 배로 데려와 묶고 출항'] },
+  { heading: '안개 속 염소 섬', beats: ['키클롭스의 풍습과 법 없이 사는 모습', '무인도 염소 사냥과 포도주 잔치', '건너편에서 들리는 양 울음', '배 한 척과 부하 열두 명 및 마론 포도주를 가져감'] },
+  { heading: '돌문이 닫힌 동굴', beats: ['치즈를 챙겨 떠나자는 부하들', '손님 환대를 기대한 오디세우스가 기다림', '거인이 돌아와 거대한 바위로 입구를 막음', '손님을 보호하는 신을 무시하고 배의 행방을 묻는 거인', '거인이 첫 저녁 부하 두 명을 잡아먹음'] },
+  { heading: '첫 번째 밤과 올리브 말뚝', beats: ['거인을 죽여도 입구 바위를 치울 수 없다는 판단', '이튿날 아침 두 명 추가 희생', '올리브 말뚝을 다듬고 불에 굳혀 거름 아래 숨김', '제비로 부하 네 명을 고르고 자신이 합류함', '두 번째 저녁 양 떼를 모두 동굴에 들임'] },
+  { heading: "포도주와 '아무도 아니다'", beats: ['두 번째 저녁 두 명 더 희생하여 동굴 안에서 합계 여섯 명 사망', '오디세우스가 마론의 포도주를 세 그릇 마시게 함', "거짓 이름을 '아무도 아니다'라고 말함", '맨 마지막에 잡아먹겠다는 끔찍한 선물', '거인이 취해 잠듦'] },
+  { heading: '눈먼 거인과 이웃들', beats: ['다섯 명이 뜨거운 말뚝을 외눈에 박아 돌림; 잔혹한 직접 묘사 금지', '이웃들이 누구에게 당했는지 묻자 아무도 아니다라고 답해 돌아감', '입구 바위를 치우고 손을 뻗어 지키는 거인'] },
+  { heading: '양의 배 아래', beats: ['사흘째 아침, 숫양 세 마리씩 묶고 가운데 한 마리 배 밑에 부하 매달기', '오디세우스는 가장 큰 숫양의 배 털을 잡음', '거인이 등만 만지며 양을 보냄', '맨 마지막 숫양에게 거인이 말을 검', '밖에서 일행이 풀려나 배로 향함'] },
+  { heading: '바다 위에서 밝힌 이름', beats: ['첫 조롱과 첫 돌 투척', '부하들이 위험하니 그만하라고 만류', '이타카의 오디세우스라는 본명을 소리침', '예언자 텔레모스의 예언을 기억하는 거인', '포세이돈에게 귀향 지연·동료 상실·남의 배 귀향·집안 고난을 저주해 달라 기원', '두 번째 바위와 염소 섬 귀환', '제우스가 숫양의 제물을 받지 않고 다음 날 떠남'] }
 ] as const
 
 export const SLEEP_INTRO = [
@@ -31,7 +31,6 @@ export const SLEEP_INTRO = [
 
 export const isSleepClassic = (brief: Pick<LongformBrief, 'profile' | 'sleepClassic'> | null | undefined) =>
   brief?.profile === 'wisdom_longform' && brief?.sleepClassic === SLEEP_CLASSIC_ID
-export const sleepChapterLength = (i: number) => SLEEP_CHAPTERS[i]?.chars ?? 0
 export function sleepClassicOutline(): LongformOutline {
   return {
     title: SLEEP_CLASSIC_TITLE,
@@ -63,7 +62,6 @@ export type SleepChapterPartCache = {
   read: (chapter: number, part: number) => Promise<string[] | null>
   write: (chapter: number, part: number, paragraphs: string[]) => Promise<void>
 }
-const unspacedLength = (s: string) => [...s].filter((c) => !/\s/.test(c)).length
 const stopSleep = (reason: string, code: string) => Object.assign(new Error(reason), { stop: true, code })
 
 // Long bedtime narration MUST be composed in bite-size, non-overlapping plot beats.
@@ -71,38 +69,37 @@ const stopSleep = (reason: string, code: string) => Object.assign(new Error(reas
 export function createSleepClassicPlanner(f: Fetcher = fetch, cache?: SleepChapterPartCache): LongformPlanner {
   return {
     async outline() { return sleepClassicOutline() },
-    async section({ index, previousTail, targetChars }, apiKey) {
+    async section({ index, previousTail }, apiKey) {
       const c = SLEEP_CHAPTERS[index]
       if (!c) throw stopSleep('unknown locked sleep chapter ' + index, 'SLEEP_CHAPTER_UNKNOWN')
       const key = process.env.ANTHROPIC_API_KEY || ''
       if (!key) throw stopSleep('ANTHROPIC_API_KEY missing: sleep classic requires Claude, no GPT fallback', 'PROVIDER_AUTH')
-      // ~900 Korean characters is a tractable *subchapter*. One 2000-character request
-      // frequently returns ~800 characters and was previously charged 3x before failing.
-      const parts = Math.max(1, Math.ceil(targetChars / 900))
+      // Divide only by verified story beats, never a word count or runtime target.
+      // This avoids fabricated padding and lets short events remain short.
+      const parts = Math.max(1, Math.ceil(c.beats.length / 2))
       const whole: string[] = []
       for (let part = 0; part < parts; part++) {
         const start = Math.floor(part * c.beats.length / parts)
         const stop = Math.floor((part + 1) * c.beats.length / parts)
         const beats = c.beats.slice(start, stop)
-        if (!beats.length) throw stopSleep('chapter has too few verified beats for its target length', 'SLEEP_BEATS_SHORT')
+        if (!beats.length) throw stopSleep('chapter is missing verified events', 'SLEEP_BEATS_SHORT')
         let paragraphs: string[] | null = cache ? await cache.read(index, part) : null
         if (paragraphs && (!Array.isArray(paragraphs) || !paragraphs.length || paragraphs.some((p) => typeof p !== 'string' || !p.trim()))) {
           throw stopSleep('corrupt checkpoint for a paid Claude chapter part', 'SLEEP_CHECKPOINT_INVALID')
         }
         if (!paragraphs) {
-          const expected = Math.round(targetChars / parts)
           const tail = whole.slice(-1).join(' ').slice(-850) || previousTail.join(' ').slice(-850)
           const input = [
             '호메로스 오디세이아 제9권을 기반으로, 밤에 듣는 한국어 고전 오디오북의 이야기를 새로 서술하라. 현대 한국어 번역문을 복사하지 말 것.',
             '확정 작품: ' + SLEEP_CLASSIC_TITLE, '원전: ' + SLEEP_CLASSIC_SOURCE,
             '9장 중 ' + (index + 1) + '장 (' + c.heading + ')의 ' + (part + 1) + '/' + parts + '번째 연속 낭독 구간이다.',
             '이번 구간에서만 다룰 검증된 사건(순서를 바꾸거나 다른 구간 사건을 앞당기지 말 것): ' + beats.join(' → '),
-            '이 구간의 목표 길이는 **공백 제외 약 ' + expected + '자**다. 처음부터 끝까지 실제 이야기만 쓰며, 설명/훈계/요약/반복/새 인물/새 사건/가짜 직접 인용은 절대 금지.',
+            '글자 수·문단 수·낭독 시간 제한은 없다. 해당 사건이 자연스럽게 끝날 때까지 서술한다. 반복/분량 늘리기/새 인물/새 사건/가짜 직접 인용은 금지.',
             '위 사건을 시간적 행동과 인물의 선택, 동작 및 자연스러운 원전 맥락으로 풀어 구체적으로 설명하라. 한두 단락으로 줄이지 말고 사건별 변화가 독립적으로 드러나도록 충분히 서술할 것.',
             '낮고 따뜻한 남성 음성으로 읽을 3인칭 이야기체. 잔혹 상세 묘사·고함·무대 지시·챕터명·효과음 금지.',
             index === 0 && part === 0 ? '확정 90초 소개 대본은 별도 삽입된다. 도입을 다시 쓰지 말고 이스마로스 사건부터 시작할 것.' : '직전 본문의 마지막 (중복하지 말고 자연스럽게 이어서): ' + tail,
             part === parts - 1 && index === 8 ? '포세이돈의 저주를 다룬 뒤 다음날 아침 바다에서 차분하게 마무리하라.' : '다음 구간의 사건으로 넘어가지 말고 이번 부분의 마지막 행동에서 끝내라.',
-            '오직 JSON만 반환: {"paragraphs":["완전한 문장으로 구성된 낭독용 문단",...]}. 3~6개의 풍부한 문단을 작성하고, 문단마다 160~350자를 목표로 하되 무리하게 길이를 채우지 말 것.'
+            '오직 JSON만 반환: {"paragraphs":["완전한 문장으로 구성된 낭독용 문단",...]}. 문단 수와 분량은 사건에 따라 자유롭게 결정하고, 장면과 인물의 행동이 자연스럽게 이어지게 한다.'
           ].join('\n')
           const res = await f('https://api.anthropic.com/v1/messages', {
             method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
@@ -128,9 +125,6 @@ export function createSleepClassicPlanner(f: Fetcher = fetch, cache?: SleepChapt
             throw stopSleep('Claude returned an empty chapter part; no paid retry', 'SLEEP_PART_INVALID')
           }
           paragraphs = parsed.paragraphs as string[]
-          if (unspacedLength(paragraphs.join(' ')) < Math.floor(expected * 0.55)) {
-            throw stopSleep('Claude returned too little story for a chapter part; no automatic paid retry', 'SLEEP_PART_TOO_SHORT')
-          }
           if (cache) {
             try { await cache.write(index, part, paragraphs) } catch {
               throw stopSleep('Claude chapter part was generated but checkpoint save failed; stop to avoid charging again', 'SLEEP_CHECKPOINT_WRITE_FAILED')
@@ -141,10 +135,6 @@ export function createSleepClassicPlanner(f: Fetcher = fetch, cache?: SleepChapt
       }
       const core = splitSleepParagraphs(whole)
       const sentences = index === 0 ? [...splitSleepParagraphs([SLEEP_INTRO]), ...core] : core
-      const count = unspacedLength(sentences.map((s) => s.say).join(''))
-      if (count < targetChars * 0.8 || count > targetChars * 1.5) {
-        throw stopSleep('Claude sleep chapter outside 80-150% planned length after saved parts: ' + count + '/' + targetChars + '; no blind regeneration', 'SLEEP_CHAPTER_LENGTH')
-      }
       return { sentences }
     },
     metadata: openAiLongformPlanner(f).metadata
