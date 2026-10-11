@@ -1,6 +1,6 @@
 // Opt-in, locked Odyssey Book IX bedtime audiobook. No changes to existing Wisdom Shorts or talk planner.
 // The nine chapter beats are verified against the public-domain Homer original; Claude writes original Korean narration.
-import { openAiLongformPlanner, type LongformPlanner, type LongformOutline } from './longformPlanner.js'
+import { openAiLongformPlanner, respond, type LongformPlanner, type LongformOutline } from './longformPlanner.js'
 import type { LongformBrief, LongformSentence } from './longform.js'
 import { classifyOpenAiError } from './longformResearch.js'
 
@@ -103,4 +103,32 @@ export function createSleepClassicPlanner(f: Fetcher = fetch): LongformPlanner {
     },
     metadata: openAiLongformPlanner(f).metadata
   }
+}
+
+
+// Actual independent GPT review of the complete Claude-authored narration. Rejects unsafe/incorrect results
+// before any paid TTS or image generation. One checkpointed text call; never invents a replacement story.
+export type SleepReview = { approved: boolean; fidelity: number; standalone: number; bedtime: number; story: number; originality: number; issues: string[] }
+export async function reviewSleepClassicStory(sections: Array<{ id: string; sentences: LongformSentence[] }>, apiKey: string, f: Fetcher = fetch): Promise<SleepReview> {
+  const schema = { type: 'object', additionalProperties: false,
+    required: ['approved', 'fidelity', 'standalone', 'bedtime', 'story', 'originality', 'issues'],
+    properties: {
+      approved: { type: 'boolean' },
+      fidelity: { type: 'integer', minimum: 1, maximum: 5 },
+      standalone: { type: 'integer', minimum: 1, maximum: 5 },
+      bedtime: { type: 'integer', minimum: 1, maximum: 5 },
+      story: { type: 'integer', minimum: 1, maximum: 5 },
+      originality: { type: 'integer', minimum: 1, maximum: 5 },
+      issues: { type: 'array', maxItems: 8, items: { type: 'string' } }
+    } }
+  const source = sections.map((s, i) => ({
+    chapter: i + 1, heading: SLEEP_CHAPTERS[i]?.heading,
+    approvedBeats: SLEEP_CHAPTERS[i]?.beats,
+    narration: s.sentences.map((x) => x.say).join(' ')
+  }))
+  const r: any = await respond(apiKey, 'sleep_classic_review', schema,
+    'You are an independent Korean audiobook quality gate reviewing a CLAUDE-authored Odyssey Book IX narration. Check original Homeric plot sequence (two nights inside the cave, six men eaten 2+2+2, first taunt -> first thrown rock -> crew warning -> real name reveal -> Poseidon curse -> second rock), no invented events/characters/quoted statements, standalone plot, calm bedtime style, pacing/repetition and the fact the approved chapter order is retained. Score fidelity, standalone, bedtime, story and originality 1..5. Approve only if accurate and watchable; any consequential factual fabrication or structural break must cause approved=false. Describe only concrete defects in Korean. No rewrite. JSON only.',
+    JSON.stringify(source), f)
+  if (r.approved !== true || (r.issues ?? []).length) return { ...r, approved: false }
+  return r as SleepReview
 }
