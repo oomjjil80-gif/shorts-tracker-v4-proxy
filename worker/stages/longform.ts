@@ -24,7 +24,7 @@ import { VIDEO_ENCODER_THREADS } from '../../lib/media/render.js'
 import { openAiLongformResearcher, researchPath, researchErrors, sectionFragments, RESEARCH_MODEL, type LongformResearcher, type ResearchBundle } from '../../lib/generative/longformResearch.js'
 import {
   LONGFORM, isLongformProfile, longformMode, validateLongformScript, cardErrors, sentencesOf, narrationOf, longformImagePrompt, ttsChunks, cardTimeline, sectionPlan, longformFigure,
-  longformCardsAss, yasaCaptionsAss, sleepClassicAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript
+  longformCardsAss, yasaCaptionsAss, sleepClassicAss, longformBackgroundArgv, longformVideoArgv, longformPackageMetadata, type LongformBrief, type LongformScript, type LongformSentence
 } from '../../lib/generative/longform.js'
 import { thumbnailArgv, thumbnailCopyErrors, LONGFORM_THUMB } from '../../lib/generative/wisdomThumbnail.js'
 import { styleGate, representativeCheck, thumbnailRework, type StyleReference, type DrawRefFn, type CopyWriter } from './styleGate.js'
