@@ -14,6 +14,7 @@ import { openAiYasaPlanner, type YasaPlanner } from '../../lib/generative/yasaPl
 import { YASA_ACTS, COLD_OPEN, yasaActChars, yasaActErrors, yasaRevealAt, yasaScenePrompt, coldOpenErrors, coldOpenCandidates, coldOpenRejections } from '../../lib/generative/yasaLongform.js'
 import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
+import { crossReviewFromEnv, runCrossReview, PLAN_CROSS_REVIEW_VERSION, type CrossReviewDeps, type CrossReviewRecord } from '../../lib/generative/planCrossReview.js'
 import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorCostEstimate, budgetGuard, ttsUsdOf, SENIOR_COST, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeGolden, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
@@ -117,7 +118,7 @@ export async function longformResearchFor(o: { blobs: JobBlobStore; topic: strin
 // PLAN: research (once per topic, cached) -> outline -> each section -> upload text. Every step is stored as a checkpoint (keyed by the brief + planner
 // version) the moment it passes its checks; a retry reuses every stored step and only writes what is missing, so a long
 // script is never regenerated from the start. targetSeconds only sizes the script (number and length of sections).
-export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: LongformPlanner; research?: LongformResearcher; derive?: typeof openAiDeriveShorts; log?: (line: string) => void } = {}): StageExecutor {
+export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: LongformPlanner; research?: LongformResearcher; derive?: typeof openAiDeriveShorts; log?: (line: string) => void; crossReview?: CrossReviewDeps | null } = {}): StageExecutor {
   const apiKey = deps.apiKey ?? process.env.OPENAI_API_KEY ?? '', researcher = deps.research ?? openAiLongformResearcher(), derive = deps.derive ?? openAiDeriveShorts
   const log = deps.log ?? ((line: string) => console.log(line))
   return {
@@ -134,7 +135,10 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       // 숨은야담: each act sized by its share of the story (the reveal act starts at ~80% of the narration)
       const actChars = yasa ? yasaActChars(Math.round(brief.targetSeconds * LONGFORM.charsPerSecond)) : null
       const targetOf = (i: number) => actChars?.[i] ?? size.charsPerSection
-      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}`)}`
+      // OFF retains its existing checkpoint identity. ON uses isolated checkpoints so previously
+      // generated OFF sections can never be mixed with a revised ON outline.
+      const xr = deps.crossReview === undefined ? crossReviewFromEnv(process.env, apiKey) : deps.crossReview
+      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}${xr ? `|${PLAN_CROSS_REVIEW_VERSION}` : ''}`)}`
       const made: string[] = [], reused: string[] = []
       // one checkpointed step: reuse the stored result, else make it (one free repair with the exact errors) and store it
       // memory: every rejected attempt (its errors + what it wrote) is kept next to the checkpoint, ACROSS stage retries,
@@ -221,7 +225,17 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
         const dna = brief.yasaStoryDNA ?? await step<any>('dna', 'DNA_INVALID', (r) => (planner as YasaPlanner).dna(brief, apiKey, r), (d) => validateYasaStoryDna(d, 'longform', { layers: true }).errors)
         dnaSource = brief.yasaStoryDNA ? 'brief' : 'plan'; pbrief = { ...brief, yasaStoryDNA: dna }
       }
-      const outline = await step<LongformOutline>('outline', 'OUTLINE_INVALID', (r) => planner.outline(pbrief, size.sections, apiKey, r, research), (o) => [...outlineErrors(o, size.sections), ...(scenes ? seniorOutlineErrors(o) : []), ...(senior ? seniorRepeatErrors(o) : [])])
+      const outlineCheck = (o: LongformOutline) => [...outlineErrors(o, size.sections), ...(scenes ? seniorOutlineErrors(o) : []), ...(senior ? seniorRepeatErrors(o) : [])]
+      let outline = await step<LongformOutline>('outline', 'OUTLINE_INVALID', (r) => planner.outline(pbrief, size.sections, apiKey, r, research), outlineCheck)
+      // PLAN_CROSS_REVIEW=on only (default OFF: nothing below runs and the outline is unchanged). Checkpointed: a retry never pays twice.
+      let crossReview: CrossReviewRecord | null = null
+      if (xr) {
+        const xrRef = `${ck}/cross-review.json`, hit = (await blobs.getJson(xrRef).catch(() => null)) as { record: CrossReviewRecord; outline: LongformOutline } | null
+        const done = hit?.record?.schema === PLAN_CROSS_REVIEW_VERSION && hit.outline && !outlineCheck(hit.outline).length ? hit : await runCrossReview({ outline, topic: brief.text, deps: xr, revise: (r) => planner.outline(pbrief, size.sections, apiKey, r, research), errorsOf: outlineCheck })
+        if (done !== hit) await blobs.putJson(xrRef, done, { overwrite: true }).catch(() => { /* checkpoint is an optimisation only */ })
+        outline = done.outline; crossReview = done.record
+        log(`[plan] job=${job.id} cross-review=${crossReview.status} order=${crossReview.order.join('>')} findings=${crossReview.findings.length}${crossReview.fallbackReason ? ` fallback=${JSON.stringify(crossReview.fallbackReason)}` : ''}`)
+      }
       const castIds = new Set<string>(((outline as any).characters ?? []).map((c: any) => String(c?.id)))
       const sections: any[] = []
       let tail: string[] = []
@@ -266,7 +280,7 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       }
       // Senior: the pictures and the narration this script will cost (ASSET checks it against the budget before paying)
       const estimate = senior ? seniorCostEstimate({ pictures: seniorScenes(script).length, extraPictures: styleApprovalWanted(job.profile, brief) ? 1 : 0, narrationChars: [...sentencesOf(script).map((x) => x.say).join('')].length, ...(await (async () => { const c = (await costSoFar?.()) ?? { confirmed: 0, unconfirmed: 0 }; return { spentUsd: c.confirmed + c.unconfirmed + runSpentUsd(), unconfirmedUsd: c.unconfirmed + runUnconfirmedUsd() } })()), budgetUsd: job.budgetUsd }) : null
-      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, ...(estimate ? { estimate } : {}), ...(derived ? { derived } : {}), sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(senior ? { pacing: seniorPacing(script as unknown as SeniorScript, Number(brief.creative?.resolved?.voiceSpeed) || 1) } : {}), ...(yasa ? { yasa: { dna: dnaSource, acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars, coldOpen: { beats: coldOpen.sentences.length, estimatedSeconds: Number(([...coldOpen.sentences.map((x: any) => x.say).join(' ')].length / (LONGFORM.charsPerSecond * (Number(brief.creative?.resolved?.voiceSpeed) || 1))).toFixed(1)) } } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, validation: errors } }
+      return { outputRef: stored.path, outputHash: stored.sha256, result: { profile: job.profile, provider: 'openai', scriptRef: stored.path, ...(estimate ? { estimate } : {}), ...(derived ? { derived } : {}), sections: sections.length, sentences: sentencesOf(script).length, ...(scenes ? { scenes: seniorScenes(script).length } : {}), ...(senior ? { pacing: seniorPacing(script as unknown as SeniorScript, Number(brief.creative?.resolved?.voiceSpeed) || 1) } : {}), ...(yasa ? { yasa: { dna: dnaSource, acts: sections.map((x: any) => x.act), revealAt: Number(yasaRevealAt(sections).toFixed(3)), actTargets: actChars, coldOpen: { beats: coldOpen.sentences.length, estimatedSeconds: Number(([...coldOpen.sentences.map((x: any) => x.say).join(' ')].length / (LONGFORM.charsPerSecond * (Number(brief.creative?.resolved?.voiceSpeed) || 1))).toFixed(1)) } } } : {}), creative: brief.creative ?? null, targetSeconds: brief.targetSeconds, checkpoints: { ref: ck, made, reused }, research: { ref: rRef, ...rLog }, ...(crossReview ? { crossReview } : {}), validation: errors } }
     }
   }
 }

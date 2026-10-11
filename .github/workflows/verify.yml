@@ -34,6 +34,9 @@ jobs:
           echo "Changed files:"
           printf '%s\n' "$CHANGED"
 
+          # PLAN cross-review changes run integration tests against the actual PLAN executor.
+          PLAN_REVIEW_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/planCrossReview\.ts|worker/stages/longform\.ts|tools/plan-cross-review\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
+          PLAN_REVIEW_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/planCrossReview\.ts$' || true)"
           LONGFORM_RENDER_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/seniorLongform\.ts|lib/jobs/blobs\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|worker/stages/longform\.ts|tools/longform-chunked-render\.test\.ts|tools/longform-render-memory\.ts|\.github/workflows/verify\.yml)$' || true)"
           NON_TEST="$(printf '%s\n' "$CHANGED" | grep -Ev '^(tools/.*\.test\.(ts|mjs)|\.github/workflows/verify\.yml)$' || true)"
           TESTS="$(printf '%s\n' "$CHANGED" | grep -E '^tools/.*\.test\.(ts|mjs)$' || true)"
@@ -42,7 +45,9 @@ jobs:
 
           GEMINI_IMAGE_OTHER="$(printf '%s\n' "$YADAM_STYLE_OTHER" | grep -Ev '^(lib/generative/geminiImage\.ts|lib/generative/goldenStyle\.ts|lib/generative/planner\.ts|assets/style-reference/golden/ref-[1-5]\.jpg|tools/golden-style\.test\.ts|lib/generative/providers\.ts|lib/generative/usageLedger\.ts|worker/stages/generative\.ts|worker/stages/wisdomThumbnail\.ts|tools/gemini-image\.test\.ts|tools/p2-providers\.test\.ts|tools/p2-generative\.test\.ts|tools/pipeline-features\.test\.ts|tools/wisdom-output\.test\.ts|tools/wisdom-thumbnail\.test\.ts|tools/wisdom-derived-shorts\.test\.ts|lib/generative/wisdomUploadText\.ts)$' || true)"
 
-          if [ -z "$LONGFORM_RENDER_OTHER" ]; then
+          if [ -z "$PLAN_REVIEW_OTHER" ] && [ -n "$PLAN_REVIEW_PRESENT" ]; then
+            echo "mode=plan-cross-review" >> "$GITHUB_OUTPUT"
+          elif [ -z "$LONGFORM_RENDER_OTHER" ]; then
             echo "mode=longform-render" >> "$GITHUB_OUTPUT"
           elif [ -z "$YADAM_STYLE_OTHER" ]; then
             echo "mode=yadam-style" >> "$GITHUB_OUTPUT"
@@ -60,6 +65,13 @@ jobs:
           else
             echo "mode=full" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Run focused Longform PLAN cross-review verification
+        if: steps.scope.outputs.mode == 'plan-cross-review'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 5m npx tsx --test tools/plan-cross-review.test.ts
 
       - name: Run focused Longform render verification
         if: steps.scope.outputs.mode == 'longform-render'
