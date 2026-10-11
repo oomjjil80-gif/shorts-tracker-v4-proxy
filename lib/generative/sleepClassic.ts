@@ -59,54 +59,97 @@ export function splitSleepParagraphs(paragraphs: string[]): LongformSentence[] {
   return out
 }
 type Fetcher = typeof fetch
-export function createSleepClassicPlanner(f: Fetcher = fetch): LongformPlanner {
+export type SleepChapterPartCache = {
+  read: (chapter: number, part: number) => Promise<string[] | null>
+  write: (chapter: number, part: number, paragraphs: string[]) => Promise<void>
+}
+const unspacedLength = (s: string) => [...s].filter((c) => !/\s/.test(c)).length
+const stopSleep = (reason: string, code: string) => Object.assign(new Error(reason), { stop: true, code })
+
+// Long bedtime narration MUST be composed in bite-size, non-overlapping plot beats.
+// Never throw away one valid paid part to repeat the whole chapter. Save each part BEFORE the next API call.
+export function createSleepClassicPlanner(f: Fetcher = fetch, cache?: SleepChapterPartCache): LongformPlanner {
   return {
     async outline() { return sleepClassicOutline() },
-    async section({ index, previousTail, targetChars, repair }, apiKey) {
+    async section({ index, previousTail, targetChars }, apiKey) {
       const c = SLEEP_CHAPTERS[index]
-      if (!c) throw new Error('unknown locked sleep chapter ' + index)
+      if (!c) throw stopSleep('unknown locked sleep chapter ' + index, 'SLEEP_CHAPTER_UNKNOWN')
       const key = process.env.ANTHROPIC_API_KEY || ''
-      if (!key) throw Object.assign(new Error('ANTHROPIC_API_KEY missing: sleep classic requires Claude, no GPT fallback'), { stop: true, code: 'PROVIDER_AUTH' })
-      const input = [
-        '고전 수면 청취용 오리지널 한국어 이야기 낭독 대본, 총 9장 중 ' + (index + 1) + '장. 책 번역의 직역/복사는 금지.',
-        '원전: ' + SLEEP_CLASSIC_SOURCE, '고정 작품 제목: ' + SLEEP_CLASSIC_TITLE,
-        '이 장 제목: ' + c.heading,
-        '원전 사건(이 순서 유지, 추가 사건/인물/거짓 대사/명언 금지): ' + c.beats.join(' → '),
-        '목표: 공백 제외 약 ' + targetChars + '자. 반복과 억지 분량 채우기 금지, 사건 밀도에 따라 자연스럽게.',
-        '차분한 한국 남성 저음으로 낭독할 3인칭 이야기체. 고함/잔혹 상세 묘사/훈계/의미 없는 반복/비유 남발/챕터 명칭·무대 지시·효과음 금지.',
-        '다른 장 서사를 미리 진행하거나 되풀이하지 말 것. 전 장 마지막: ' + previousTail.join(' '),
-        index === 0 ? '첫 장의 맨 앞은 이미 확정된 90초 도입 대본으로 별도 삽입한다. 도입을 반복하지 말고 이스마로스 사건부터 이어라.' : '이전 장의 인과를 짧게 연결하고 즉시 본 사건으로 이어라.',
-        index === 8 ? '포세이돈의 저주까지 다루고 다음날 바다에서 독립된 이야기를 잔잔하게 끝낸다.' : '다음 장 사건은 미리 설명하지 않는다.',
-        repair?.length ? '이전 형식 오류: ' + repair.join('; ') : '',
-        '순수 JSON 객체만 반환: {"paragraphs":["한글 낭독 문단 1","문단 2",...]}. 문단 하나는 약 200~700자. 자연스러운 문장 끝에서 끊기게 작성.'
-      ].filter(Boolean).join('\n')
-      const res = await f('https://api.anthropic.com/v1/messages', {
-        method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        // Sonnet 5 / later rejects non-default temperature with HTTP 400. Steering belongs in the prompt.
-        body: JSON.stringify({ model: process.env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5', max_tokens: 7000,
-          messages: [{ role: 'user', content: input }] })
-      })
-      const raw = await res.text().catch(() => '')
-      if (!res.ok) {
-        const error = classifyOpenAiError(res.status, raw)
-        throw Object.assign(new Error('Claude sleep classic HTTP ' + res.status), { stop: true, code: error.code })
+      if (!key) throw stopSleep('ANTHROPIC_API_KEY missing: sleep classic requires Claude, no GPT fallback', 'PROVIDER_AUTH')
+      // ~900 Korean characters is a tractable *subchapter*. One 2000-character request
+      // frequently returns ~800 characters and was previously charged 3x before failing.
+      const parts = Math.max(1, Math.ceil(targetChars / 900))
+      const whole: string[] = []
+      for (let part = 0; part < parts; part++) {
+        const start = Math.floor(part * c.beats.length / parts)
+        const stop = Math.floor((part + 1) * c.beats.length / parts)
+        const beats = c.beats.slice(start, stop)
+        if (!beats.length) throw stopSleep('chapter has too few verified beats for its target length', 'SLEEP_BEATS_SHORT')
+        let paragraphs: string[] | null = cache ? await cache.read(index, part) : null
+        if (paragraphs && (!Array.isArray(paragraphs) || !paragraphs.length || paragraphs.some((p) => typeof p !== 'string' || !p.trim()))) {
+          throw stopSleep('corrupt checkpoint for a paid Claude chapter part', 'SLEEP_CHECKPOINT_INVALID')
+        }
+        if (!paragraphs) {
+          const expected = Math.round(targetChars / parts)
+          const tail = whole.slice(-1).join(' ').slice(-850) || previousTail.join(' ').slice(-850)
+          const input = [
+            '호메로스 오디세이아 제9권을 기반으로, 밤에 듣는 한국어 고전 오디오북의 이야기를 새로 서술하라. 현대 한국어 번역문을 복사하지 말 것.',
+            '확정 작품: ' + SLEEP_CLASSIC_TITLE, '원전: ' + SLEEP_CLASSIC_SOURCE,
+            '9장 중 ' + (index + 1) + '장 (' + c.heading + ')의 ' + (part + 1) + '/' + parts + '번째 연속 낭독 구간이다.',
+            '이번 구간에서만 다룰 검증된 사건(순서를 바꾸거나 다른 구간 사건을 앞당기지 말 것): ' + beats.join(' → '),
+            '이 구간의 목표 길이는 **공백 제외 약 ' + expected + '자**다. 처음부터 끝까지 실제 이야기만 쓰며, 설명/훈계/요약/반복/새 인물/새 사건/가짜 직접 인용은 절대 금지.',
+            '위 사건을 시간적 행동과 인물의 선택, 동작 및 자연스러운 원전 맥락으로 풀어 구체적으로 설명하라. 한두 단락으로 줄이지 말고 사건별 변화가 독립적으로 드러나도록 충분히 서술할 것.',
+            '낮고 따뜻한 남성 음성으로 읽을 3인칭 이야기체. 잔혹 상세 묘사·고함·무대 지시·챕터명·효과음 금지.',
+            index === 0 && part === 0 ? '확정 90초 소개 대본은 별도 삽입된다. 도입을 다시 쓰지 말고 이스마로스 사건부터 시작할 것.' : '직전 본문의 마지막 (중복하지 말고 자연스럽게 이어서): ' + tail,
+            part === parts - 1 && index === 8 ? '포세이돈의 저주를 다룬 뒤 다음날 아침 바다에서 차분하게 마무리하라.' : '다음 구간의 사건으로 넘어가지 말고 이번 부분의 마지막 행동에서 끝내라.',
+            '오직 JSON만 반환: {"paragraphs":["완전한 문장으로 구성된 낭독용 문단",...]}. 3~6개의 풍부한 문단을 작성하고, 문단마다 160~350자를 목표로 하되 무리하게 길이를 채우지 말 것.'
+          ].join('\n')
+          const res = await f('https://api.anthropic.com/v1/messages', {
+            method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+            body: JSON.stringify({ model: process.env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5', max_tokens: 7000, messages: [{ role: 'user', content: input }] })
+          })
+          const raw = await res.text().catch(() => '')
+          if (!res.ok) {
+            const error = classifyOpenAiError(res.status, raw)
+            throw stopSleep('Claude sleep classic HTTP ' + res.status, error.code)
+          }
+          let parsed: any
+          try {
+            const obj = JSON.parse(raw)
+            if (obj.stop_reason === 'max_tokens') throw new Error('Claude part truncated')
+            const text = (obj.content ?? []).filter((x: any) => x?.type === 'text').map((x: any) => String(x.text || '')).join('')
+            const match = /\{[\s\S]*\}/.exec(text)
+            if (!match) throw new Error('no JSON')
+            parsed = JSON.parse(match[0])
+          } catch {
+            throw stopSleep('Claude returned invalid/truncated chapter part; no paid retry', 'SLEEP_PART_INVALID')
+          }
+          if (!Array.isArray(parsed.paragraphs) || !parsed.paragraphs.length || parsed.paragraphs.some((p: any) => typeof p !== 'string' || !p.trim())) {
+            throw stopSleep('Claude returned an empty chapter part; no paid retry', 'SLEEP_PART_INVALID')
+          }
+          paragraphs = parsed.paragraphs as string[]
+          if (unspacedLength(paragraphs.join(' ')) < Math.floor(expected * 0.55)) {
+            throw stopSleep('Claude returned too little story for a chapter part; no automatic paid retry', 'SLEEP_PART_TOO_SHORT')
+          }
+          if (cache) {
+            try { await cache.write(index, part, paragraphs) } catch {
+              throw stopSleep('Claude chapter part was generated but checkpoint save failed; stop to avoid charging again', 'SLEEP_CHECKPOINT_WRITE_FAILED')
+            }
+          }
+        }
+        whole.push(...paragraphs)
       }
-      const obj = JSON.parse(raw)
-      const message = (obj.content ?? []).filter((x: any) => x?.type === 'text').map((x: any) => String(x.text || '')).join('')
-      const match = /\{[\s\S]*\}/.exec(message)
-      if (!match) throw new Error('Claude sleep story returned no JSON')
-      const parsed = JSON.parse(match[0])
-      if (!Array.isArray(parsed.paragraphs) || !parsed.paragraphs.length || parsed.paragraphs.some((x: any) => typeof x !== 'string' || !x.trim())) throw new Error('Claude sleep paragraphs missing')
-      const core = splitSleepParagraphs(parsed.paragraphs)
+      const core = splitSleepParagraphs(whole)
       const sentences = index === 0 ? [...splitSleepParagraphs([SLEEP_INTRO]), ...core] : core
-      const count = [...sentences.map((s) => s.say).join('')].filter((ch) => !/\s/.test(ch)).length
-      if (count < targetChars * 0.5 || count > targetChars * 1.7) throw new Error('Claude sleep chapter length out of safe range: ' + count + '/' + targetChars)
+      const count = unspacedLength(sentences.map((s) => s.say).join(''))
+      if (count < targetChars * 0.8 || count > targetChars * 1.5) {
+        throw stopSleep('Claude sleep chapter outside 80-150% planned length after saved parts: ' + count + '/' + targetChars + '; no blind regeneration', 'SLEEP_CHAPTER_LENGTH')
+      }
       return { sentences }
     },
     metadata: openAiLongformPlanner(f).metadata
   }
 }
-
 
 // Actual independent GPT review of the complete Claude-authored narration. Rejects unsafe/incorrect results
 // before any paid TTS or image generation. One checkpointed text call; never invents a replacement story.
