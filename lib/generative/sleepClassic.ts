@@ -87,7 +87,7 @@ export function createSleepClassicPlanner(f: Fetcher = fetch): LongformPlanner {
       const raw = await res.text().catch(() => '')
       if (!res.ok) {
         const error = classifyOpenAiError(res.status, raw)
-        throw Object.assign(new Error('Claude sleep classic HTTP ' + res.status), { stop: error.stop, code: error.code })
+        throw Object.assign(new Error('Claude sleep classic HTTP ' + res.status), { stop: true, code: error.code })
       }
       const obj = JSON.parse(raw)
       const message = (obj.content ?? []).filter((x: any) => x?.type === 'text').map((x: any) => String(x.text || '')).join('')
