@@ -130,7 +130,6 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       const brief = (job.planRef ? await blobs.getJson(job.planRef) : null) as LongformBrief | null
       if (!brief || brief.schema !== 'generative-brief/1' || brief.profile !== job.profile) throw new StageError('BRIEF_INVALID', `invalid ${job.profile} brief`)
       const mode = longformMode(job.profile), scenes = mode.images === 'scenes', yasa = job.profile === 'yasa_longform', senior = job.profile === 'senior_longform', sleep = isSleepClassic(brief)
-      const planner = deps.planner ?? (sleep ? createSleepClassicPlanner() : yasa ? openAiYasaPlanner() : scenes ? openAiSeniorPlanner() : openAiLongformPlanner())
       // Senior: six acts; 숨은야담: the DNA's eight acts (one section per act); Wisdom: sections sized by the running time
       const size = sleep ? { sections: SLEEP_CHAPTERS.length, charsPerSection: 0 } : yasa ? { sections: YASA_ACTS.length, charsPerSection: 0 } : scenes ? (() => { const p = seniorScenePlan(brief.targetSeconds); return { sections: p.acts, charsPerSection: p.charsPerAct } })() : sectionPlan(brief.targetSeconds)
       // 숨은야담: each act sized by its share of the story (the reveal act starts at ~80% of the narration)
@@ -139,7 +138,14 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       // OFF retains its existing checkpoint identity. ON uses isolated checkpoints so previously
       // generated OFF sections can never be mixed with a revised ON outline.
       const xr = sleep ? null : deps.crossReview === undefined ? crossReviewFromEnv(process.env, apiKey) : deps.crossReview
-      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}${sleep ? '|sleep-classic/2' : ''}${xr ? `|${PLAN_CROSS_REVIEW_VERSION}` : ''}`)}`
+      const ck = `longform-plan-checkpoints/${sha256(`${job.planRef}|${LONGFORM_PLANNER_VERSION}${sleep ? '|sleep-classic/3' : ''}${xr ? `|${PLAN_CROSS_REVIEW_VERSION}` : ''}`)}`
+      const planner = deps.planner ?? (sleep ? createSleepClassicPlanner(fetch, {
+        // Save each paid subchapter immediately in R2. Requeues reuse this data.
+        read: async (chapter, part) => (await blobs.getJson(`${ck}/sleep-chapter-${chapter + 1}-part-${part + 1}.json`).catch(() => null)) as string[] | null,
+        write: async (chapter, part, paragraphs) => {
+          await blobs.putJson(`${ck}/sleep-chapter-${chapter + 1}-part-${part + 1}.json`, paragraphs, { overwrite: true })
+        }
+      }) : yasa ? openAiYasaPlanner() : scenes ? openAiSeniorPlanner() : openAiLongformPlanner())
       const made: string[] = [], reused: string[] = []
       // one checkpointed step: reuse the stored result, else make it (one free repair with the exact errors) and store it
       // memory: every rejected attempt (its errors + what it wrote) is kept next to the checkpoint, ACROSS stage retries,
