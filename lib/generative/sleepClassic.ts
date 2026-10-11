@@ -37,7 +37,8 @@ export function sleepClassicOutline(): LongformOutline {
     title: SLEEP_CLASSIC_TITLE,
     hook: '잠자리에 누워 듣는 오디세우스의 외눈박이 거인 이야기',
     figure: { name: '오디세우스', imagePrompt: 'A classical Greek stone bust of Odysseus and a closed ancient book resting beside a softly lit night sea; quiet, monochrome charcoal-gray still, no text, no motion, soothing dark atmosphere' },
-    thumbnail: { lines: [{ text: '아무도 아니다', color: 'yellow' }, { text: '거인의 동굴', color: 'white' }] },
+    // Thumbnail click-copy obeys the existing red/purple/green accent gate; VIDEO remains monochrome.
+    thumbnail: { lines: [{ text: '아무도 아니다', color: 'purple' }, { text: '거인의 동굴', color: 'white' }] },
     sections: SLEEP_CHAPTERS.map((c, i) => ({ id: 's' + (i + 1), heading: c.heading, points: [...c.beats] }))
   }
 }
