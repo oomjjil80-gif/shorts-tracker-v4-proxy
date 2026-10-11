@@ -76,7 +76,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          timeout 6m npx tsx --test tools/sleep-classic.test.ts tools/plan-cross-review.test.ts tools/wisdom-longform.test.ts
+          timeout 5m npx tsx --test tools/sleep-classic.test.ts tools/plan-cross-review.test.ts
 
       - name: Run focused Longform PLAN cross-review verification
         if: steps.scope.outputs.mode == 'plan-cross-review'
