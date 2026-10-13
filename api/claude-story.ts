@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { verifyPromise, promiseBrief } from '../lib/story/titlePromise.js'
 import { validateYasaStoryDna, yasaScriptBrief, isYasa, yasaLongformMinutes, yasaChapterCount } from '../lib/story/yasaStoryDna.js'
 
 function setCors(_req: Request, res: Response) {
@@ -381,6 +382,13 @@ export default async function handler(req: Request, res: Response) {
   const input = req.body?.input || {}
   const test = Boolean(req.body?.test)
 
+  // 제작 6단계(옵트인): promiseFlow면 사용자가 승인·잠근 제목·썸네일 약속 없이는 Claude를 호출하지 않는다. 그 외 요청은 기존과 동일.
+  let promiseSuffix = ''
+  if (!test && input?.promiseFlow === true) {
+    if (!verifyPromise(input?.approvedPromise)) return res.status(409).json({ ok:false, error:{ code:'PROMISE_NOT_APPROVED', message:'제목·썸네일 확정(승인) 전에는 대본을 만들 수 없습니다.' } })
+    promiseSuffix = '\n\n' + promiseBrief(input.approvedPromise)
+  }
+
   try {
     const model = process.env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5'
     if (test) {
@@ -424,7 +432,7 @@ export default async function handler(req: Request, res: Response) {
           : buildSystemPrompt(),
         messages: [{
           role:'user',
-          content: buildChapterPrompt(input, chapterNo, totalChapters, chapterMinutes, previousChapter) + (isYasa(input)
+          content: buildChapterPrompt(input, chapterNo, totalChapters, chapterMinutes, previousChapter) + promiseSuffix + (isYasa(input)
             ? `\n\n${yasaScriptBrief(input.yasaStoryDNA, 'longform')}\n\n[이번 챕터 위치] 전체 ${totalChapters}개 중 ${chapterNo}번 — 전체 진행률 약 ${Math.round(((chapterNo - 1) / totalChapters) * 100)}~${Math.round((chapterNo / totalChapters) * 100)}% 구간의 구조를 따른다.`
             : '')
         }],
@@ -494,7 +502,7 @@ export default async function handler(req: Request, res: Response) {
           system: buildSystemPrompt(),
           messages: [{
             role:'user',
-            content: buildChapterPrompt(input, chapterNo, chapterCount, chapterMinutes, parts[parts.length - 1]?.chapters?.[0] || null)
+            content: buildChapterPrompt(input, chapterNo, chapterCount, chapterMinutes, parts[parts.length - 1]?.chapters?.[0] || null) + promiseSuffix
           }],
           output_config: { format: { type:'json_schema', schema:LONGFORM_DRAFT_SCHEMA } }
         }
@@ -559,7 +567,7 @@ export default async function handler(req: Request, res: Response) {
       model,
       max_tokens: 16000,
       system: buildSystemPrompt(),
-      messages: [{ role:'user', content:buildUserPrompt(input) }],
+      messages: [{ role:'user', content:buildUserPrompt(input) + promiseSuffix }],
       output_config:{ format:{ type:'json_schema', schema:LONGFORM_DRAFT_SCHEMA } }
     }
     const { response, raw, data } = await callClaudeStory(apiKey, payload)

@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { verifyPromise, promiseBrief, isPromiseCategory, checkDraftAgainstPromise, revisionTargets, targetText, mergePartial, rescopeLocations, filterIssuesToScope, type TitlePromise, type Target } from '../lib/story/titlePromise.js'
 import { validateYasaStoryDna, checkYasaScript, isYasa, yasaScriptBrief } from '../lib/story/yasaStoryDna.js'
 
 function setCors(_req: Request, res: Response) {
@@ -145,7 +146,8 @@ const QC_SCHEMA = {
               'content_density', 'causality', 'segment_boundary', 'mixed_core',
               'hierarchy', 'visual_mismatch', 'production_readiness',
               'retention', 'curiosity_gap', 'pacing', 'payoff', 'chapter_role',
-              'legal_risk', 'contamination', 'format_leak'
+              'legal_risk', 'contamination', 'format_leak',
+              'title_promise', 'originality', 'repeat_video', 'immersion', 'thumbnail_overclaim'
             ]
           },
           location: { type: 'string' },
@@ -323,8 +325,35 @@ function userPrompt(input: any, contaminationSignals: ContaminationSignal[], str
     '현재 원고가 실제 제작용 최종 나레이션으로 넘어갈 수 있는지 참고용으로 판정하라. 편집 품질 문제만으로 제작을 막지 마라.',
     '첫 30초 훅, 챕터별 역할, 60~120초 단위의 변화, 챕터 사이 궁금증 연결, 마지막 payoff는 참고 점수로만 점검하라.',
     'retentionStrength, curiosityContinuity, pacing, payoffStrength는 각각 100점 만점으로 채점하되 점수만으로 revision_required/blocked를 만들지 마라.',
-    'contaminationSignals가 있으면 반드시 issues와 revisionInstructions에 반영하고 pass로 판정하지 말라.'
+    'contaminationSignals가 있으면 반드시 issues와 revisionInstructions에 반영하고 pass로 판정하지 말라.',
+    ...(verifyPromise(input?.approvedPromise) ? ['', promiseBrief(input.approvedPromise), PROMISE_QC_RULES] : [])
   ].join('\n')
+}
+
+const PROMISE_QC_RULES = [
+  '[승인된 약속 독립 검수 — 반드시 수행]',
+  '다음 5가지를 각각 점검하고, 문제가 있으면 issues에 severity=required로 넣는다(문제 없으면 넣지 않는다). location은 반드시 "hook", "ending", "chapter N / segment M" 중 하나로 문제 구간만 지정한다.',
+  '1) title_promise: 제목이 약속한 핵심 사건을 대본이 실제로 이행하는가  2) originality: 독창적인가, 흔한 요약인가  3) repeat_video: handoff.recentVideos(최근 영상)와 소재·전개가 반복되는가',
+  '4) immersion: 첫 30초 훅과 중간 보상으로 몰입이 유지되는가  5) thumbnail_overclaim: 썸네일/제목이 대본이 보여주는 것보다 과장되었는가',
+  '제목 자체는 바꾸지 않는다(제목이 문제면 location을 "title"로 표시).'
+].join('\n')
+
+function keepPromiseIssues(qc: any) {
+  return (Array.isArray(qc?.issues) ? qc.issues : []).filter((x: any) => isPromiseCategory(x?.category) && ['blocker', 'required'].includes(String(x?.severity || '').toLowerCase()))
+}
+// 약속 이슈는 기존 "편집 이슈는 경고로 격하" 정책에서 제외한다(승인된 약속을 못 지키면 통과가 아니다).
+function enforcePromise(qc: any, promise: TitlePromise, draft: any, kept: any[]) {
+  const issues = (Array.isArray(qc.issues) ? qc.issues : []).filter((x: any) => !isPromiseCategory(x?.category))
+  const det = checkDraftAgainstPromise(draft, promise)
+  const merged = [...kept]
+  for (const d of det) if (!merged.some((x: any) => x.category === d.category && String(x.location) === d.location && x.claim === d.claim)) merged.push(d)
+  qc.issues = [...merged, ...issues]
+  qc.promise = { promiseId: promise.promiseId, modelFindings: kept.length, deterministicFindings: det.length }
+  if (merged.length && qc.status !== 'blocked') {
+    qc.status = 'revision_required'
+    qc.finalDecision = `승인된 제목·썸네일 약속(${promise.promiseId}) 미이행 구간이 있어 해당 구간만 수정이 필요합니다.`
+  }
+  return qc
 }
 
 function enforceContamination(qc: any, signals: ContaminationSignal[]) {
@@ -512,6 +541,34 @@ const LONGFORM_DRAFT_SCHEMA = {
   }
 } as const
 
+// 구간 수정 전용: 문제 구간의 조각만 받는다(전체 대본 재작성 금지).
+const PARTIAL_SCHEMA = {
+  type:'object', additionalProperties:false, required:['items'],
+  properties:{ items:{ type:'array', items:{ type:'object', additionalProperties:false, required:['target','text','visualHint','factStatus'], properties:{
+    target:{type:'string'}, text:{type:'string'}, visualHint:{type:'string'}, factStatus:{type:'string',enum:['verified','interpretation','verify_before_publish']}
+  } } } }
+} as const
+
+function partialRevisionPrompt(input:any, promise:TitlePromise|null, targets:Target[], issues:any[]) {
+  const draft=input?.draft||{}
+  const seg=(t:Target)=>targetText(draft,t)
+  const around=(t:Target)=>{
+    if(t.kind!=='segment') return {}
+    const segs=draft.chapters.find((c:any)=>Number(c.chapterNo)===t.chapterNo).segments
+    return { before:String(segs[t.index!-1]?.text||''), after:String(segs[t.index!+1]?.text||'') }
+  }
+  return [
+    '당신은 경제·생활 롱폼 대본의 부분 수정 작가다. 아래 "수정 대상 구간"만 고친다. 다른 구간은 건드리지 않고 출력하지도 않는다.',
+    '새로운 외부 사실을 만들지 말고 제공된 handoff와 QC 지시만 사용한다. 앞뒤 문맥(before/after)과 자연스럽게 이어지게 쓴다.',
+    ...(promise ? ['', promiseBrief(promise)] : []),
+    '', '[handoff]', JSON.stringify(input?.handoff||{},null,2),
+    '', '[QC 이슈 — 수정 대상 구간만]', JSON.stringify(issues,null,2),
+    '', '[수정 대상 구간]', JSON.stringify(targets.map((t)=>({ target:t.key, currentText:seg(t), ...(t.kind==='segment'?{ visualHint:String(draft.chapters.find((c:any)=>Number(c.chapterNo)===t.chapterNo).segments[t.index!].visualHint||'') }:{}), ...around(t) })),null,2),
+    '', '각 대상마다 {target, text, visualHint, factStatus} 하나씩만 반환한다. target 값은 위 목록의 값을 그대로 쓴다. hook/ending은 visualHint를 빈 문자열로 둔다.',
+    isYasa(input) ? '\n' + yasaScriptBrief(input.yasaStoryDNA, 'longform') : ''
+  ].join('\n')
+}
+
 function revisionPrompt(input:any, finalize=false) {
   const handoff=input?.handoff||{}
   const draft=input?.draft||{}
@@ -568,6 +625,36 @@ export default async function handler(req: Request, res: Response) {
   const input = req.body?.input || {}
   const test = Boolean(req.body?.test)
   const mode = String(req.body?.mode || '')
+
+  // 제작 6단계: 실패한 구간만 수정 (모델은 문제 구간 조각만 작성, 나머지 구간·자산은 그대로 보존)
+  if (mode === 'revise_partial') {
+    if (!input?.draft || typeof input.draft !== 'object' || !input?.qc) return res.status(400).json({ ok:false, error:'draft and qc are required' })
+    if (input.qc.status !== 'revision_required') return res.status(409).json({ ok:false, error:`Revision is not allowed for QC status: ${String(input.qc.status || 'unknown')}` })
+    const promise = verifyPromise(input?.approvedPromise) ? (input.approvedPromise as TitlePromise) : null
+    const plan = revisionTargets(input.qc.issues, input.draft)
+    // 구간으로 매핑되지 않는 이슈(또는 약속 없는 제목 이슈)는 부분 수정으로 고칠 수 없다: 호출자가 기존 전체 수정(mode:'revise')으로 폴백한다
+    if (!plan.partial || (plan.titleRestore && !promise)) return res.status(200).json({ ok:true, scope:'full_required', unmapped:plan.unmapped.map((x:any)=>({ location:x.location, category:x.category })) })
+    try {
+      let draft = input.draft, changed:string[] = [], ignored:string[] = [], usage:any = null, usedModel = model
+      if (plan.targets.length) {
+        const issues = (input.qc.issues||[]).filter((x:any)=>['blocker','required'].includes(String(x?.severity).toLowerCase()) && String(x?.location).toLowerCase()!=='title')
+        const response = await fetch('https://api.openai.com/v1/responses',{ method:'POST', headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({
+          model, store:false, reasoning:{ effort:'medium' }, instructions:'한국어 롱폼 대본의 지정된 구간만 수정한다. 지정된 JSON Schema를 정확히 따른다.',
+          input:partialRevisionPrompt(input, promise, plan.targets, issues), max_output_tokens:4000, text:{format:{type:'json_schema',name:'longform_partial_revision',strict:true,schema:PARTIAL_SCHEMA}}
+        }) })
+        const raw = await response.text(); let data:any = {}; try{ data = raw ? JSON.parse(raw) : {} }catch{}
+        if (!response.ok) return res.status(response.status).json({ ok:false, error:data?.error?.message || raw || 'OpenAI partial revision failed' })
+        const text = extractText(data); if (!text) return res.status(502).json({ ok:false, error:'OpenAI partial revision had no text output' })
+        let parsed:any; try{ parsed = JSON.parse(text) }catch{ return res.status(502).json({ ok:false, error:'OpenAI partial revision returned invalid JSON', rawText:text }) }
+        const m = mergePartial(input.draft, parsed?.items, plan.targets)
+        draft = m.draft; changed = m.changed; ignored = m.ignored; usage = data?.usage || null; usedModel = data?.model || model
+      }
+      if (promise) draft = { ...draft, title: promise.title } // 제목은 잠긴 값: 모델이 아니라 승인본으로 복원
+      return res.status(200).json({ ok:true, provider:'OpenAI', model:usedModel, scope:'partial', draft, usage,
+        revisedTargets:changed, ignoredTargets:ignored, titleRestored:plan.titleRestore, promiseId:promise?.promiseId ?? null,
+        qcScope:rescopeLocations(changed, draft), revisionCount:1 })
+    } catch(error:any) { return res.status(500).json({ ok:false, error:error?.message || String(error) }) }
+  }
 
   if ((mode === 'revise' || mode === 'finalize') && input?.draft && typeof input.draft === 'object') {
     if (mode === 'revise' && (!input?.qc || input.qc.status !== 'revision_required')) {
@@ -684,10 +771,18 @@ export default async function handler(req: Request, res: Response) {
       return res.status(502).json({ ok: false, error: 'OpenAI returned invalid QC JSON', rawText: text })
     }
 
+    const promise = verifyPromise(input?.approvedPromise) ? (input.approvedPromise as TitlePromise) : null
+    const keptPromiseIssues = promise ? keepPromiseIssues(qc) : []
     qc = enforceContamination(qc, contaminationSignals)
     // Structure/retention/factual quality checks remain advisory; they never auto-block.
     qc = applyLowGateUserDecisionPolicy(qc)
     qc = enforceYasaStoryDna(qc, input)
+    if (promise) {
+      qc = enforcePromise(qc, promise, input.draft, keptPromiseIssues)
+      // 재검수(수정 후): 수정된 구간과 연결 구간의 이슈만 이번 결과로 인정한다
+      if (Array.isArray(input?.qcScope) && input.qcScope.length) qc.issues = filterIssuesToScope(qc.issues, input.qcScope)
+      if (!qc.issues.some((x: any) => ['blocker', 'required'].includes(String(x?.severity).toLowerCase()) && isPromiseCategory(x?.category)) && qc.status === 'revision_required' && !qc.issues.some((x: any) => ['contamination', 'format_leak'].includes(String(x?.category)))) { qc.status = 'pass'; qc.finalDecision = `재검수 범위에서 약속(${promise.promiseId}) 위반 없음.` }
+    }
 
     return res.status(200).json({
       ok: true,

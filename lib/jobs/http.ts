@@ -28,6 +28,7 @@ import { createVoicePreview, PreviewError } from '../generative/voicePreview.js'
 import { createTrackerTts, TrackerTtsError } from '../generative/trackerTts.js'
 import { creativeContentFor, resolveCreativeProfile, imageStyleFor, visualStyleWrap } from '../generative/creativeProfile.js'
 import { openAiTts } from '../generative/providers.js'
+import { lockTitlePromise, finalPromiseCheck } from '../story/titlePromise.js'
 
 // HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
 // (Hobby plan allows 12 functions). CORS is applied by the router. Domain logic stays in store/gate/pipeline.
@@ -64,7 +65,9 @@ export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
 export const CREATIVE_RESOLVE_TASK = 'creative_resolve'
 // Tracker TTS for browser-made content: voice clips in small batches, then one levelled narration (POST; no database)
 export const TTS_CLIPS_TASK = 'tts_clips', TTS_ASSEMBLE_TASK = 'tts_assemble', TTS_AUDIO_TASK = 'tts_audio'
-export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (t.startsWith('job_') || [VOICE_PREVIEW_TASK, CREATIVE_RESOLVE_TASK, TTS_CLIPS_TASK, TTS_ASSEMBLE_TASK, TTS_AUDIO_TASK].includes(t))
+// 제작 6단계: 제목·썸네일 약속 잠금 / 최종본 약속 확인 (POST; no database, no paid call)
+export const PROMISE_LOCK_TASK = 'promise_lock', PROMISE_FINAL_TASK = 'promise_final_check'
+export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (t.startsWith('job_') || [VOICE_PREVIEW_TASK, CREATIVE_RESOLVE_TASK, TTS_CLIPS_TASK, TTS_ASSEMBLE_TASK, TTS_AUDIO_TASK, PROMISE_LOCK_TASK, PROMISE_FINAL_TASK].includes(t))
 
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
@@ -181,6 +184,15 @@ export function createJobsHttp(deps: JobsDeps) {
         if (req.method !== 'GET') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires GET`)
         try { const bytes = await trackerTts.audio!(String(input.ref || '')); res.setHeader('Content-Type', 'audio/mp4'); res.setHeader('Content-Length', String(bytes.length)); return res.status(200).end(bytes) }
         catch (e: any) { if (e instanceof TrackerTtsError) throw new JobError(e.code as any, e.message); throw e }
+      }
+      if (taskType === PROMISE_LOCK_TASK || taskType === PROMISE_FINAL_TASK) {
+        if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
+        if (taskType === PROMISE_LOCK_TASK) {
+          const r = lockTitlePromise(input)
+          if (!r.ok) throw new JobError('BAD_REQUEST', `제목·썸네일을 확정할 수 없습니다: ${r.errors.join('; ')}`)
+          return res.status(200).json({ ok: true, promise: r.promise })
+        }
+        return res.status(200).json({ ok: true, check: finalPromiseCheck(input.approvedPromise, { title: input.title, thumbnailLines: input.thumbnailLines, narration: input.narration }) })
       }
       if (taskType === CREATIVE_RESOLVE_TASK) {
         if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
