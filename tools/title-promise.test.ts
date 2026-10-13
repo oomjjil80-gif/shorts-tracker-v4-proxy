@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import claudeStoryHandler from '../api/claude-story.js'
 import qcHandler from '../api/gpt-script-qc.js'
+import reviseHandler from '../api/claude-longform-revise.js'
 import { createJobsHttp } from '../lib/jobs/http.js'
 import { lockTitlePromise, verifyPromise, finalPromiseCheck, checkDraftAgainstPromise, revisionTargets, parseLocation, mergePartial, rescopeLocations, filterIssuesToScope } from '../lib/story/titlePromise.js'
 
@@ -144,4 +145,18 @@ test('8 job API tasks promise_lock / promise_final_check: auth, POST only, no da
   assert.equal((await run('POST', { taskType: 'promise_lock', ...INPUT, coreEvent: '' })).status, 400)
   const chk = await run('POST', { taskType: 'promise_final_check', approvedPromise: locked.json.promise, title: INPUT.title, thumbnailLines: INPUT.thumbnail.lines, narration: '통장 내역과 자동이체' })
   assert.equal(chk.status, 200); assert.equal(chk.json.check.ok, true)
+})
+
+test('9 Claude is the default fixer: partial request sends ONLY the failing pieces to Anthropic, keeps the approved title, and the legacy whole-draft path is unchanged', async () => {
+  const p = lock(), d = DRAFT(); d.title = '바뀐 제목입니다 정말로'
+  const qc = { ...QC_PASS, status: 'revision_required', issues: [iss('immersion', 'hook'), iss('title_promise', 'title')] }
+  const r = await call(reviseHandler, { input: { partial: true, draft: d, qc, approvedPromise: p, handoff: {} } }, () => ({ items: [{ target: 'hook', text: '월급날 통장 내역을 열면 자동이체가 먼저 가져갑니다.', visualHint: '', factStatus: 'interpretation' }] }))
+  assert.equal(r.status, 200, JSON.stringify(r.json)); assert.equal(r.calls.length, 1); assert.ok(r.calls[0].url.includes('anthropic'))
+  assert.ok(r.calls[0].body.messages[0].content.includes(p.promiseId) && !r.calls[0].body.messages[0].content.includes('하나씩 해지하면'), 'promise in the prompt; whole script not sent')
+  assert.equal(r.json.provider, 'Anthropic'); assert.equal(r.json.scope, 'partial'); assert.deepEqual(r.json.revisedTargets, ['hook']); assert.equal(r.json.draft.title, p.title)
+  assert.deepEqual(r.json.draft.chapters, d.chapters, 'every chapter/segment (and its visualHint asset text) preserved'); assert.deepEqual(r.json.qcScope.sort(), ['hook', 'title'])
+  const full = await call(reviseHandler, { input: { partial: true, draft: d, qc: { ...QC_PASS, status: 'revision_required', issues: [iss('logic', '전체 구조')] }, approvedPromise: p } })
+  assert.equal(full.json.scope, 'full_required'); assert.equal(full.calls.length, 0)
+  const legacy = await call(reviseHandler, { input: { draft: d, qc, handoff: {} } }, () => d)
+  assert.equal(legacy.status, 200); assert.equal(legacy.json.revisionCount, 1); assert.equal(legacy.json.scope, undefined, 'no partial flag -> old whole-draft behaviour')
 })

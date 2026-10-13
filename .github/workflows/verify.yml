@@ -41,7 +41,7 @@ jobs:
           TRENDING_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(db/003_trending\.sql|lib/trending/[A-Za-z]+\.ts|api/story\.ts|worker/index\.ts|tools/trending\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           TRENDING_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/trending/trending\.ts$' || true)"
           # 제작 6단계 (제목·썸네일 약속): opt-in connectors in claude-story / gpt-script-qc / job tasks; focused tests incl. the handlers' existing regressions.
-          PROMISE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/story/titlePromise\.ts|api/claude-story\.ts|api/gpt-script-qc\.ts|api/story\.ts|lib/jobs/http\.ts|tools/title-promise\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
+          PROMISE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/story/titlePromise\.ts|api/claude-story\.ts|api/gpt-script-qc\.ts|api/claude-longform-revise\.ts|api/story\.ts|lib/jobs/http\.ts|tools/title-promise\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           PROMISE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/story/titlePromise\.ts$' || true)"
           LONGFORM_RENDER_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/seniorLongform\.ts|lib/jobs/blobs\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|worker/stages/longform\.ts|tools/longform-chunked-render\.test\.ts|tools/longform-render-memory\.ts|\.github/workflows/verify\.yml)$' || true)"
           NON_TEST="$(printf '%s\n' "$CHANGED" | grep -Ev '^(tools/.*\.test\.(ts|mjs)|\.github/workflows/verify\.yml)$' || true)"

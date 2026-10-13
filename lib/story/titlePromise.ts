@@ -168,3 +168,51 @@ export function finalPromiseCheck(p: any, final: { title?: string; thumbnailLine
   else for (const term of p.mustShow) if (!narration.includes(norm(term))) failures.push({ code: 'PROMISE_NOT_DELIVERED', detail: `"${term}" never appears in the final narration` })
   return { ok: failures.length === 0, promiseId: p.promiseId, failures }
 }
+
+// ── 구간 수정 실행기 (Claude 수정 핸들러와 GPT 폴백이 같은 로직을 쓴다; 모델 호출만 주입) ─────────────
+export const PARTIAL_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['items'],
+  properties: { items: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['target', 'text', 'visualHint', 'factStatus'], properties: {
+    target: { type: 'string' }, text: { type: 'string' }, visualHint: { type: 'string' }, factStatus: { type: 'string', enum: ['verified', 'interpretation', 'verify_before_publish'] }
+  } } } }
+} as const
+
+export function partialRevisionPrompt(input: any, promise: TitlePromise | null, targets: Target[], issues: any[], extra = ''): string {
+  const draft = input?.draft || {}
+  const around = (t: Target) => {
+    if (t.kind !== 'segment') return {}
+    const segs = draft.chapters.find((c: any) => Number(c.chapterNo) === t.chapterNo).segments
+    return { before: String(segs[t.index! - 1]?.text || ''), after: String(segs[t.index! + 1]?.text || '') }
+  }
+  return [
+    '당신은 경제·생활 롱폼 대본의 부분 수정 작가다. 아래 "수정 대상 구간"만 고친다. 다른 구간은 건드리지 않고 출력하지도 않는다.',
+    '새로운 외부 사실을 만들지 말고 제공된 handoff와 QC 지시만 사용한다. 앞뒤 문맥(before/after)과 자연스럽게 이어지게 쓴다.',
+    ...(promise ? ['', promiseBrief(promise)] : []),
+    '', '[handoff]', JSON.stringify(input?.handoff || {}, null, 2),
+    '', '[QC 이슈 — 수정 대상 구간만]', JSON.stringify(issues, null, 2),
+    '', '[수정 대상 구간]', JSON.stringify(targets.map((t) => ({ target: t.key, currentText: targetText(draft, t), ...(t.kind === 'segment' ? { visualHint: String(draft.chapters.find((c: any) => Number(c.chapterNo) === t.chapterNo).segments[t.index!].visualHint || '') } : {}), ...around(t) })), null, 2),
+    '', '각 대상마다 {target, text, visualHint, factStatus} 하나씩만 반환한다. target 값은 위 목록의 값을 그대로 쓴다. hook/ending은 visualHint를 빈 문자열로 둔다.',
+    extra
+  ].join('\n')
+}
+
+export type PartialModelCall = (prompt: string) => Promise<{ items: any[]; usage: any; model: string; provider: string }>
+export async function runPartialRevision(input: any, call: PartialModelCall, extraPrompt = ''): Promise<{ status: number; body: any }> {
+  if (!input?.draft || typeof input.draft !== 'object' || !input?.qc) return { status: 400, body: { ok: false, error: 'draft and qc are required' } }
+  if (input.qc.status !== 'revision_required') return { status: 409, body: { ok: false, error: `Revision is not allowed for QC status: ${String(input.qc.status || 'unknown')}` } }
+  const promise = verifyPromise(input?.approvedPromise) ? (input.approvedPromise as TitlePromise) : null
+  const plan = revisionTargets(input.qc.issues, input.draft)
+  // 구간으로 매핑되지 않는 이슈(또는 약속 없는 제목 이슈)는 부분 수정으로 고칠 수 없다: 호출자가 기존 전체 수정으로 폴백한다 (모델 호출 없음)
+  if (!plan.partial || (plan.titleRestore && !promise)) return { status: 200, body: { ok: true, scope: 'full_required', unmapped: plan.unmapped.map((x: any) => ({ location: x.location, category: x.category })) } }
+  try {
+    let draft = input.draft, changed: string[] = [], ignored: string[] = [], usage: any = null, model = '', provider = ''
+    if (plan.targets.length) {
+      const issues = (input.qc.issues || []).filter((x: any) => FIXABLE.has(String(x?.severity).toLowerCase()) && String(x?.location).toLowerCase() !== 'title')
+      const r = await call(partialRevisionPrompt(input, promise, plan.targets, issues, extraPrompt))
+      const m = mergePartial(input.draft, r.items, plan.targets)
+      draft = m.draft; changed = m.changed; ignored = m.ignored; usage = r.usage; model = r.model; provider = r.provider
+    }
+    if (promise) draft = { ...draft, title: promise.title } // 제목은 잠긴 값: 모델이 아니라 승인본으로 복원
+    return { status: 200, body: { ok: true, provider: provider || null, model: model || null, scope: 'partial', draft, usage, revisedTargets: changed, ignoredTargets: ignored, titleRestored: plan.titleRestore, promiseId: promise?.promiseId ?? null, qcScope: rescopeLocations(changed, draft), revisionCount: 1 } }
+  } catch (e: any) { return { status: Number(e?.status) || 500, body: { ok: false, error: e?.message || String(e) } } }
+}

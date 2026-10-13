@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { verifyPromise, promiseBrief, isPromiseCategory, checkDraftAgainstPromise, revisionTargets, targetText, mergePartial, rescopeLocations, filterIssuesToScope, type TitlePromise, type Target } from '../lib/story/titlePromise.js'
+import { verifyPromise, promiseBrief, isPromiseCategory, checkDraftAgainstPromise, filterIssuesToScope, runPartialRevision, PARTIAL_SCHEMA, type TitlePromise } from '../lib/story/titlePromise.js'
 import { validateYasaStoryDna, checkYasaScript, isYasa, yasaScriptBrief } from '../lib/story/yasaStoryDna.js'
 
 function setCors(_req: Request, res: Response) {
@@ -541,34 +541,6 @@ const LONGFORM_DRAFT_SCHEMA = {
   }
 } as const
 
-// 구간 수정 전용: 문제 구간의 조각만 받는다(전체 대본 재작성 금지).
-const PARTIAL_SCHEMA = {
-  type:'object', additionalProperties:false, required:['items'],
-  properties:{ items:{ type:'array', items:{ type:'object', additionalProperties:false, required:['target','text','visualHint','factStatus'], properties:{
-    target:{type:'string'}, text:{type:'string'}, visualHint:{type:'string'}, factStatus:{type:'string',enum:['verified','interpretation','verify_before_publish']}
-  } } } }
-} as const
-
-function partialRevisionPrompt(input:any, promise:TitlePromise|null, targets:Target[], issues:any[]) {
-  const draft=input?.draft||{}
-  const seg=(t:Target)=>targetText(draft,t)
-  const around=(t:Target)=>{
-    if(t.kind!=='segment') return {}
-    const segs=draft.chapters.find((c:any)=>Number(c.chapterNo)===t.chapterNo).segments
-    return { before:String(segs[t.index!-1]?.text||''), after:String(segs[t.index!+1]?.text||'') }
-  }
-  return [
-    '당신은 경제·생활 롱폼 대본의 부분 수정 작가다. 아래 "수정 대상 구간"만 고친다. 다른 구간은 건드리지 않고 출력하지도 않는다.',
-    '새로운 외부 사실을 만들지 말고 제공된 handoff와 QC 지시만 사용한다. 앞뒤 문맥(before/after)과 자연스럽게 이어지게 쓴다.',
-    ...(promise ? ['', promiseBrief(promise)] : []),
-    '', '[handoff]', JSON.stringify(input?.handoff||{},null,2),
-    '', '[QC 이슈 — 수정 대상 구간만]', JSON.stringify(issues,null,2),
-    '', '[수정 대상 구간]', JSON.stringify(targets.map((t)=>({ target:t.key, currentText:seg(t), ...(t.kind==='segment'?{ visualHint:String(draft.chapters.find((c:any)=>Number(c.chapterNo)===t.chapterNo).segments[t.index!].visualHint||'') }:{}), ...around(t) })),null,2),
-    '', '각 대상마다 {target, text, visualHint, factStatus} 하나씩만 반환한다. target 값은 위 목록의 값을 그대로 쓴다. hook/ending은 visualHint를 빈 문자열로 둔다.',
-    isYasa(input) ? '\n' + yasaScriptBrief(input.yasaStoryDNA, 'longform') : ''
-  ].join('\n')
-}
-
 function revisionPrompt(input:any, finalize=false) {
   const handoff=input?.handoff||{}
   const draft=input?.draft||{}
@@ -626,34 +598,20 @@ export default async function handler(req: Request, res: Response) {
   const test = Boolean(req.body?.test)
   const mode = String(req.body?.mode || '')
 
-  // 제작 6단계: 실패한 구간만 수정 (모델은 문제 구간 조각만 작성, 나머지 구간·자산은 그대로 보존)
+  // 제작 6단계: 실패한 구간만 수정 (모델은 문제 구간 조각만 작성, 나머지 구간·자산은 그대로 보존). 기본 수정 주체는 Claude(claude-longform-revise)이고 이것은 GPT 폴백이다.
   if (mode === 'revise_partial') {
-    if (!input?.draft || typeof input.draft !== 'object' || !input?.qc) return res.status(400).json({ ok:false, error:'draft and qc are required' })
-    if (input.qc.status !== 'revision_required') return res.status(409).json({ ok:false, error:`Revision is not allowed for QC status: ${String(input.qc.status || 'unknown')}` })
-    const promise = verifyPromise(input?.approvedPromise) ? (input.approvedPromise as TitlePromise) : null
-    const plan = revisionTargets(input.qc.issues, input.draft)
-    // 구간으로 매핑되지 않는 이슈(또는 약속 없는 제목 이슈)는 부분 수정으로 고칠 수 없다: 호출자가 기존 전체 수정(mode:'revise')으로 폴백한다
-    if (!plan.partial || (plan.titleRestore && !promise)) return res.status(200).json({ ok:true, scope:'full_required', unmapped:plan.unmapped.map((x:any)=>({ location:x.location, category:x.category })) })
-    try {
-      let draft = input.draft, changed:string[] = [], ignored:string[] = [], usage:any = null, usedModel = model
-      if (plan.targets.length) {
-        const issues = (input.qc.issues||[]).filter((x:any)=>['blocker','required'].includes(String(x?.severity).toLowerCase()) && String(x?.location).toLowerCase()!=='title')
-        const response = await fetch('https://api.openai.com/v1/responses',{ method:'POST', headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({
-          model, store:false, reasoning:{ effort:'medium' }, instructions:'한국어 롱폼 대본의 지정된 구간만 수정한다. 지정된 JSON Schema를 정확히 따른다.',
-          input:partialRevisionPrompt(input, promise, plan.targets, issues), max_output_tokens:4000, text:{format:{type:'json_schema',name:'longform_partial_revision',strict:true,schema:PARTIAL_SCHEMA}}
-        }) })
-        const raw = await response.text(); let data:any = {}; try{ data = raw ? JSON.parse(raw) : {} }catch{}
-        if (!response.ok) return res.status(response.status).json({ ok:false, error:data?.error?.message || raw || 'OpenAI partial revision failed' })
-        const text = extractText(data); if (!text) return res.status(502).json({ ok:false, error:'OpenAI partial revision had no text output' })
-        let parsed:any; try{ parsed = JSON.parse(text) }catch{ return res.status(502).json({ ok:false, error:'OpenAI partial revision returned invalid JSON', rawText:text }) }
-        const m = mergePartial(input.draft, parsed?.items, plan.targets)
-        draft = m.draft; changed = m.changed; ignored = m.ignored; usage = data?.usage || null; usedModel = data?.model || model
-      }
-      if (promise) draft = { ...draft, title: promise.title } // 제목은 잠긴 값: 모델이 아니라 승인본으로 복원
-      return res.status(200).json({ ok:true, provider:'OpenAI', model:usedModel, scope:'partial', draft, usage,
-        revisedTargets:changed, ignoredTargets:ignored, titleRestored:plan.titleRestore, promiseId:promise?.promiseId ?? null,
-        qcScope:rescopeLocations(changed, draft), revisionCount:1 })
-    } catch(error:any) { return res.status(500).json({ ok:false, error:error?.message || String(error) }) }
+    const out = await runPartialRevision(input, async (prompt) => {
+      const response = await fetch('https://api.openai.com/v1/responses',{ method:'POST', headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({
+        model, store:false, reasoning:{ effort:'medium' }, instructions:'한국어 롱폼 대본의 지정된 구간만 수정한다. 지정된 JSON Schema를 정확히 따른다.',
+        input:prompt, max_output_tokens:4000, text:{format:{type:'json_schema',name:'longform_partial_revision',strict:true,schema:PARTIAL_SCHEMA}}
+      }) })
+      const raw = await response.text(); let data:any = {}; try{ data = raw ? JSON.parse(raw) : {} }catch{}
+      if (!response.ok) throw Object.assign(new Error(data?.error?.message || raw || 'OpenAI partial revision failed'), { status:response.status })
+      const text = extractText(data); if (!text) throw Object.assign(new Error('OpenAI partial revision had no text output'), { status:502 })
+      let parsed:any; try{ parsed = JSON.parse(text) }catch{ throw Object.assign(new Error('OpenAI partial revision returned invalid JSON'), { status:502 }) }
+      return { items:parsed?.items, usage:data?.usage || null, model:data?.model || model, provider:'OpenAI' }
+    }, isYasa(input) ? '\n' + yasaScriptBrief(input.yasaStoryDNA, 'longform') : '')
+    return res.status(out.status).json(out.body)
   }
 
   if ((mode === 'revise' || mode === 'finalize') && input?.draft && typeof input.draft === 'object') {
