@@ -28,7 +28,7 @@ import { createVoicePreview, PreviewError } from '../generative/voicePreview.js'
 import { createTrackerTts, TrackerTtsError } from '../generative/trackerTts.js'
 import { creativeContentFor, resolveCreativeProfile, imageStyleFor, visualStyleWrap } from '../generative/creativeProfile.js'
 import { openAiTts } from '../generative/providers.js'
-import { lockTitlePromise, finalPromiseCheck } from '../story/titlePromise.js'
+import { issueTitlePromise, finalPromiseCheck } from '../story/titlePromise.js'
 
 // HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
 // (Hobby plan allows 12 functions). CORS is applied by the router. Domain logic stays in store/gate/pipeline.
@@ -71,7 +71,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
-  JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503,
+  JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503, PROMISE_SIGNING_NOT_CONFIGURED: 503,
   PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, NOT_SLEEP_RECOVERABLE: 409, RECOVERY_ALREADY_IMPORTED: 409, NOT_ASSET_BILLING_RECOVERABLE: 409, UPLOAD_TEXT_REFUSED: 502
 }
 
@@ -188,8 +188,8 @@ export function createJobsHttp(deps: JobsDeps) {
       if (taskType === PROMISE_LOCK_TASK || taskType === PROMISE_FINAL_TASK) {
         if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
         if (taskType === PROMISE_LOCK_TASK) {
-          const r = lockTitlePromise(input)
-          if (!r.ok) throw new JobError('BAD_REQUEST', `제목·썸네일을 확정할 수 없습니다: ${r.errors.join('; ')}`)
+          const r = issueTitlePromise(input) // 서버가 서명한 승인만 유효하다
+          if (!r.ok) throw new JobError((r.code === 'PROMISE_SIGNING_NOT_CONFIGURED' ? 'PROMISE_SIGNING_NOT_CONFIGURED' : 'BAD_REQUEST') as any, `제목·썸네일을 확정할 수 없습니다: ${r.errors.join('; ')}`)
           return res.status(200).json({ ok: true, promise: r.promise })
         }
         return res.status(200).json({ ok: true, check: finalPromiseCheck(input.approvedPromise, { title: input.title, thumbnailLines: input.thumbnailLines, narration: input.narration }) })

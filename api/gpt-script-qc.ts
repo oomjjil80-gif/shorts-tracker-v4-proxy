@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { verifyPromise, promiseBrief, isPromiseCategory, checkDraftAgainstPromise, filterIssuesToScope, runPartialRevision, PARTIAL_SCHEMA, type TitlePromise } from '../lib/story/titlePromise.js'
+import { verifyPromise, promiseBrief, isPromiseCategory, checkDraftAgainstPromise, filterIssuesToScope, carryOverUnresolved, runPartialRevision, PARTIAL_SCHEMA, type TitlePromise } from '../lib/story/titlePromise.js'
 import { validateYasaStoryDna, checkYasaScript, isYasa, yasaScriptBrief } from '../lib/story/yasaStoryDna.js'
 
 function setCors(_req: Request, res: Response) {
@@ -338,6 +338,14 @@ const PROMISE_QC_RULES = [
   '제목 자체는 바꾸지 않는다(제목이 문제면 location을 "title"로 표시).'
 ].join('\n')
 
+// 필수/블로커 이슈가 하나라도 남아 있으면 통과가 아니다(범위 밖에서 이어받은 이슈 포함). 남은 게 없을 때만 통과.
+function settlePromiseStatus(qc: any, promise: TitlePromise) {
+  const open = (Array.isArray(qc.issues) ? qc.issues : []).filter((x: any) => ['blocker', 'required'].includes(String(x?.severity).toLowerCase()))
+  if (open.length && qc.status !== 'blocked') { qc.status = 'revision_required'; qc.finalDecision = `승인된 제목·썸네일 약속(${promise.promiseId}) 관련 미해결 필수 이슈 ${open.length}건이 남아 있습니다.` }
+  else if (!open.length && qc.status === 'revision_required') { qc.status = 'pass'; qc.finalDecision = `미해결 필수 이슈 없음 · 약속(${promise.promiseId}) 위반 없음.` }
+  return qc
+}
+
 function keepPromiseIssues(qc: any) {
   return (Array.isArray(qc?.issues) ? qc.issues : []).filter((x: any) => isPromiseCategory(x?.category) && ['blocker', 'required'].includes(String(x?.severity || '').toLowerCase()))
 }
@@ -615,6 +623,7 @@ export default async function handler(req: Request, res: Response) {
   }
 
   if ((mode === 'revise' || mode === 'finalize') && input?.draft && typeof input.draft === 'object') {
+    if (mode === 'revise' && verifyPromise(input?.approvedPromise) && input?.confirmFullRewrite !== true) return res.status(409).json({ ok:false, error:{ code:'FULL_REWRITE_NOT_CONFIRMED', message:'전체 대본 재작성은 사용자의 명시적 승인(confirmFullRewrite) 없이는 실행하지 않습니다.' } })
     if (mode === 'revise' && (!input?.qc || input.qc.status !== 'revision_required')) {
       return res.status(409).json({ ok:false, error:`Revision is not allowed for QC status: ${String(input?.qc?.status || 'unknown')}` })
     }
@@ -659,6 +668,7 @@ export default async function handler(req: Request, res: Response) {
     return res.status(400).json({ ok: false, error: 'Claude longform draft is required' })
   }
 
+  if (!test && Array.isArray(input?.qcScope) && input.qcScope.length && !Array.isArray(input?.priorIssues)) return res.status(400).json({ ok: false, error: { code: 'PRIOR_ISSUES_REQUIRED', message: 'a scoped re-check needs the previous QC issues (priorIssues) so unresolved ones outside the scope are not lost' } })
   try {
     const contaminationSignals = test ? [] : detectContamination(input?.draft)
     const structureSignals = test ? [] : detectStructureSignals(input?.draft)
@@ -737,11 +747,14 @@ export default async function handler(req: Request, res: Response) {
     qc = enforceYasaStoryDna(qc, input)
     if (promise) {
       qc = enforcePromise(qc, promise, input.draft, keptPromiseIssues)
-      // 재검수(수정 후): 수정된 구간과 연결 구간의 이슈만 이번 결과로 인정한다
-      if (Array.isArray(input?.qcScope) && input.qcScope.length) qc.issues = filterIssuesToScope(qc.issues, input.qcScope)
-      if (!qc.issues.some((x: any) => ['blocker', 'required'].includes(String(x?.severity).toLowerCase()) && isPromiseCategory(x?.category)) && qc.status === 'revision_required' && !qc.issues.some((x: any) => ['contamination', 'format_leak'].includes(String(x?.category)))) { qc.status = 'pass'; qc.finalDecision = `재검수 범위에서 약속(${promise.promiseId}) 위반 없음.` }
+      // 부분 재검수: 수정 범위만 다시 본다. 단, (1) 결정적 약속 검사는 범위와 무관하게 항상 유지하고 (2) 범위 밖의 이전 미해결 필수 이슈는 해결된 것이 아니므로 그대로 남긴다.
+      if (Array.isArray(input?.qcScope) && input.qcScope.length) {
+        const inScope = filterIssuesToScope(qc.issues, input.qcScope)
+        qc.issues = [...qc.issues.filter((x: any) => x?.deterministic || inScope.includes(x)), ...carryOverUnresolved(input.priorIssues, input.qcScope)]
+        qc.promise.scoped = true; qc.promise.carriedOver = qc.issues.filter((x: any) => x?.carriedOver).length
+      }
+      qc = settlePromiseStatus(qc, promise)
     }
-
     return res.status(200).json({
       ok: true,
       provider: 'OpenAI',

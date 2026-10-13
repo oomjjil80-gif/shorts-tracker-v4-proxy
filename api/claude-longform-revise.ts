@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { runPartialRevision, PARTIAL_SCHEMA } from '../lib/story/titlePromise.js'
+import { runPartialRevision, verifyPromise, PARTIAL_SCHEMA } from '../lib/story/titlePromise.js'
 import { isYasa, yasaScriptBrief } from '../lib/story/yasaStoryDna.js'
 
 function setCors(req: Request, res: Response) {
@@ -227,6 +227,9 @@ export default async function handler(req: Request, res: Response) {
     }, isYasa(input) ? '\n' + yasaScriptBrief(input.yasaStoryDNA, 'longform') : '')
     return res.status(out.status).json(out.body)
   }
+
+  // 승인된 약속이 있는 대본의 전체 재작성은 자동으로 실행하지 않는다: 사용자의 명시적 승인(confirmFullRewrite)이 있어야 한다.
+  if (!finalizeForProduction && verifyPromise(input?.approvedPromise) && input?.confirmFullRewrite !== true) return res.status(409).json({ ok: false, error: { code: 'FULL_REWRITE_NOT_CONFIRMED', message: '전체 대본 재작성은 사용자의 명시적 승인(confirmFullRewrite) 없이는 실행하지 않습니다.' } })
 
   try {
     const payload = {

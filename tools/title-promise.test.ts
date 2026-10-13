@@ -6,13 +6,14 @@ import claudeStoryHandler from '../api/claude-story.js'
 import qcHandler from '../api/gpt-script-qc.js'
 import reviseHandler from '../api/claude-longform-revise.js'
 import { createJobsHttp } from '../lib/jobs/http.js'
-import { lockTitlePromise, verifyPromise, finalPromiseCheck, checkDraftAgainstPromise, revisionTargets, parseLocation, mergePartial, rescopeLocations, filterIssuesToScope } from '../lib/story/titlePromise.js'
+import { lockTitlePromise, issueTitlePromise, verifyPromise, finalPromiseCheck, checkDraftAgainstPromise, revisionTargets, parseLocation, mergePartial, rescopeLocations, filterIssuesToScope } from '../lib/story/titlePromise.js'
 
 process.env.OPENAI_API_KEY ||= 'test-openai-key'
 process.env.ANTHROPIC_API_KEY ||= 'test-anthropic-key'
+process.env.TITLE_PROMISE_SECRET = 'test-promise-secret-0123456789'
 
 const INPUT = { title: '월급날 통장이 비는 진짜 이유', thumbnail: { concept: '월급이 자동이체로 빠져나가는 텅 빈 통장', lines: ['월급이', '사라진 이유'] }, coreEvent: '월급이 들어오자마자 자동이체로 빠져나가는 구조를 실제 통장 내역으로 보여준다', mustShow: ['자동이체', '통장 내역'] }
-const lock = () => { const r = lockTitlePromise(INPUT, new Date('2026-10-13T00:00:00Z')); assert.equal(r.ok, true); return (r as any).promise }
+const lock = () => { const r = issueTitlePromise(INPUT, new Date('2026-10-13T00:00:00Z')); assert.equal(r.ok, true); return (r as any).promise }
 const seg = (text: string) => ({ speaker: '내레이션', text, visualHint: `v:${text.slice(0, 6)}`, factStatus: 'interpretation' })
 const DRAFT = () => ({ title: INPUT.title, hook: '월급이 들어오면 자동이체가 먼저 가져갑니다.', targetMinutes: 5,
   chapters: [
@@ -48,6 +49,18 @@ test('1 lock: validated + stable promiseId; a promise that names nothing visible
   assert.equal(lockTitlePromise({ ...INPUT, mustShow: ['전혀다른단어'] }).ok, false, 'core event must be visible in title/thumbnail')
   assert.equal(lockTitlePromise({ ...INPUT, coreEvent: '짧음' }).ok, false)
   assert.equal(verifyPromise({ ...p, title: '다른 제목입니다 정말로' }), false); assert.equal(verifyPromise(null), false)
+})
+
+test('1b approval integrity: only the server-signed approval counts; a client-rebuilt (self-consistent sha256) promise, a swapped signature or a changed approvedAt is rejected; no secret = fail closed', () => {
+  const p = lock(), rebuilt = (lockTitlePromise(INPUT, new Date('2026-10-13T00:00:00Z')) as any).promise // 내용·식별자는 맞지만 서명이 없다
+  assert.equal(rebuilt.signature, undefined); assert.equal(verifyPromise(rebuilt), false, 'client-side rebuild is not an approval')
+  assert.equal(verifyPromise({ ...rebuilt, signature: 'a'.repeat(64) }), false, 'made-up signature')
+  assert.equal(verifyPromise({ ...p, approvedAt: '2030-01-01T00:00:00.000Z' }), false, 'approvedAt is signed')
+  assert.equal(verifyPromise({ ...p, signature: p.signature.slice(0, -2) + (p.signature.endsWith('00') ? '11' : '00') }), false)
+  assert.equal(verifyPromise(p, 'another-server-secret-0000'), false, 'signed by a different secret')
+  assert.equal(verifyPromise(p, null), false, 'no secret configured -> nothing verifies')
+  assert.equal((issueTitlePromise(INPUT, new Date(), null) as any).code, 'PROMISE_SIGNING_NOT_CONFIGURED')
+  assert.equal(verifyPromise(p), true)
 })
 
 test('2 Claude: promiseFlow without an approved promise never reaches Claude (409, 0 calls); with it the prompt carries the promiseId; legacy requests are untouched', async () => {
@@ -111,25 +124,50 @@ test('5 revise_partial: ONE small GPT call returns only the failing pieces; titl
   assert.equal(t.calls.length, 0); assert.equal(t.json.draft.title, p.title); assert.deepEqual(t.json.revisedTargets, [])
   // unmappable -> full revise needed; no model call
   const u = await call(qcHandler, { mode: 'revise_partial', input: { draft: d, qc: { ...QC_PASS, status: 'revision_required', issues: [iss('logic', '전체 구조')] }, approvedPromise: p } })
-  assert.equal(u.json.scope, 'full_required'); assert.equal(u.calls.length, 0)
-  // legacy revise path is unchanged (whole-draft schema)
+  assert.equal(u.json.scope, 'manual_required'); assert.equal(u.calls.length, 0); assert.match(u.json.reason, /automatic whole-script rewrite is not performed/)
+  // whole-draft rewrite with an approved promise needs the user's explicit confirmation (never automatic)
+  const noConfirm = await call(qcHandler, { mode: 'revise', input: { draft: d, qc, approvedPromise: p, handoff: {} } }, () => d)
+  assert.equal(noConfirm.status, 409); assert.equal(noConfirm.json.error.code, 'FULL_REWRITE_NOT_CONFIRMED'); assert.equal(noConfirm.calls.length, 0)
+  const confirmed = await call(qcHandler, { mode: 'revise', input: { draft: d, qc, approvedPromise: p, confirmFullRewrite: true, handoff: {} } }, () => d)
+  assert.equal(confirmed.status, 200); assert.equal(confirmed.calls.length, 1)
+  // legacy revise path (no promise) is unchanged (whole-draft schema)
   const legacy = await call(qcHandler, { mode: 'revise', input: { draft: d, qc, handoff: {} } }, () => d)
   assert.equal(legacy.json.draft.title, d.title); assert.equal(legacy.calls[0].body.text.format.name, 'longform_script_revision')
 })
 
-test('6 re-QC after the fix is limited to the revised scope; a fixed script passes', async () => {
+test('6 scoped re-QC: only the revised scope is re-judged, but earlier unresolved required issues outside it are kept (never silently dropped to PASS); deterministic promise checks are never scoped away', async () => {
   const p = lock(), d = DRAFT(), scope = rescopeLocations(['c1s2'], d)
-  const r = await call(qcHandler, { input: { draft: d, approvedPromise: p, qcScope: scope, handoff: {} } }, () => ({ ...QC_PASS, issues: [iss('immersion', 'chapter 2 / segment 2'), iss('repeat_video', 'chapter 1 / segment 2')] }))
-  assert.equal(r.json.qc.issues.filter((x: any) => x.category === 'immersion').length, 0, 'outside the scope -> not counted')
-  assert.equal(r.json.qc.status, 'revision_required'); assert.equal(r.json.qc.issues.length, 1)
-  const clean = await call(qcHandler, { input: { draft: d, approvedPromise: p, qcScope: scope, handoff: {} } }, () => QC_PASS)
-  assert.equal(clean.json.qc.status, 'pass'); assert.equal(clean.json.qc.promise.promiseId, p.promiseId)
+  const prior = [iss('immersion', 'chapter 2 / segment 2'), iss('repeat_video', 'chapter 1 / segment 2'), iss('logic', '전체 구조')]
+  const r = await call(qcHandler, { input: { draft: d, approvedPromise: p, qcScope: scope, priorIssues: prior, handoff: {} } }, () => ({ ...QC_PASS, issues: [iss('immersion', 'chapter 2 / segment 1')] }))
+  assert.equal(r.status, 200, JSON.stringify(r.json))
+  const locs = r.json.qc.issues.map((x: any) => `${x.category}@${x.location}`).sort()
+  assert.deepEqual(locs, ['immersion@chapter 2 / segment 2', 'logic@전체 구조'], 'outside-scope prior issues carried over; the in-scope prior one (c1s2) was re-judged and is gone; the new out-of-scope model finding is not counted')
+  assert.ok(r.json.qc.issues.every((x: any) => x.carriedOver)); assert.equal(r.json.qc.status, 'revision_required'); assert.equal(r.json.qc.promise.carriedOver, 2)
+  // nothing left unresolved -> pass
+  const clean = await call(qcHandler, { input: { draft: d, approvedPromise: p, qcScope: scope, priorIssues: [iss('repeat_video', 'chapter 1 / segment 2')], handoff: {} } }, () => QC_PASS)
+  assert.equal(clean.json.qc.status, 'pass'); assert.equal(clean.json.qc.promise.promiseId, p.promiseId); assert.equal(clean.json.qc.issues.length, 0)
+  // a scoped re-check without the previous issues is refused (it cannot know what is still open)
+  const noPrior = await call(qcHandler, { input: { draft: d, approvedPromise: p, qcScope: scope, handoff: {} } }, () => QC_PASS)
+  assert.equal(noPrior.status, 400); assert.equal(noPrior.json.error.code, 'PRIOR_ISSUES_REQUIRED'); assert.equal(noPrior.calls.length, 0)
+  // deterministic check (a must-show term vanished from the script) stays even though 'hook' is outside the scope
+  const broken = DRAFT(); broken.hook = '월급 이야기'; broken.chapters[1].segments[0].text = '정리해야 합니다.'; broken.chapters[0].segments[0].text = '내역을 봅니다.'
+  const det = await call(qcHandler, { input: { draft: broken, approvedPromise: p, qcScope: scope, priorIssues: [], handoff: {} } }, () => QC_PASS)
+  assert.equal(det.json.qc.status, 'revision_required'); assert.ok(det.json.qc.issues.some((x: any) => x.deterministic && x.category === 'title_promise'))
   assert.equal(checkDraftAgainstPromise(d, p).length, 0)
+})
+
+test('6b partial revision must return EVERY requested segment; a half-fixed script is an error, not a success', async () => {
+  const p = lock(), d = DRAFT()
+  const qc = { ...QC_PASS, status: 'revision_required', issues: [iss('immersion', 'hook'), iss('repeat_video', 'chapter 1 / segment 2')] }
+  const half = await call(reviseHandler, { input: { partial: true, draft: d, qc, approvedPromise: p, handoff: {} } }, () => ({ items: [{ target: 'hook', text: '새 훅 자동이체', visualHint: '', factStatus: 'interpretation' }] }))
+  assert.equal(half.status, 502); assert.equal(half.json.ok, false); assert.equal(half.json.error.code, 'PARTIAL_INCOMPLETE'); assert.deepEqual(half.json.error.missing, ['c1s2']); assert.equal(half.json.draft, undefined)
+  const empty = await call(qcHandler, { mode: 'revise_partial', input: { draft: d, qc, approvedPromise: p, handoff: {} } }, () => ({ items: [{ target: 'hook', text: '새 훅', visualHint: '', factStatus: 'interpretation' }, { target: 'c1s2', text: '   ', visualHint: '', factStatus: 'interpretation' }] }))
+  assert.equal(empty.status, 502); assert.deepEqual(empty.json.error.missing, ['c1s2'])
 })
 
 test('7 final check: the finished video keeps the approved title, thumbnail lines and delivers the core event; missing inputs never pass', () => {
   const p = lock(), ok = finalPromiseCheck(p, { title: p.title, thumbnailLines: ['월급이', '사라진 이유'], narration: '통장 내역을 보면 자동이체가 먼저 빠집니다.' })
-  assert.deepEqual([ok.ok, ok.promiseId, ok.failures], [true, p.promiseId, []])
+  assert.deepEqual([ok.ok, ok.promiseId, ok.failures, ok.method, ok.verifiesVideoContent], [true, p.promiseId, [], 'text_match', false])
   const bad = finalPromiseCheck(p, { title: '다른 제목', thumbnailLines: ['엉뚱한 문구'], narration: '월급 이야기' })
   assert.deepEqual(bad.failures.map((f) => f.code).sort(), ['PROMISE_NOT_DELIVERED', 'PROMISE_NOT_DELIVERED', 'THUMBNAIL_CHANGED', 'THUMBNAIL_CHANGED', 'TITLE_CHANGED'])
   assert.deepEqual(finalPromiseCheck(p, {}).failures.map((f) => f.code).sort(), ['MISSING_NARRATION', 'MISSING_THUMBNAIL', 'MISSING_TITLE'])
@@ -141,7 +179,11 @@ test('8 job API tasks promise_lock / promise_final_check: auth, POST only, no da
   const run = async (method: string, body: any, key = 'k'.repeat(32)) => { let status = 0, json: any; await handler({ method, headers: key ? { 'x-sync-key': key } : {}, query: method === 'GET' ? body : {}, body } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } } as any); return { status, json } }
   assert.equal((await run('POST', { taskType: 'promise_lock', ...INPUT }, '')).status, 401)
   assert.equal((await run('GET', { taskType: 'promise_lock' })).status, 405)
-  const locked = await run('POST', { taskType: 'promise_lock', ...INPUT }); assert.equal(locked.status, 200); assert.equal(verifyPromise(locked.json.promise), true)
+  const locked = await run('POST', { taskType: 'promise_lock', ...INPUT }); assert.equal(locked.status, 200); assert.equal(verifyPromise(locked.json.promise), true); assert.match(locked.json.promise.signature, /^[0-9a-f]{64}$/)
+  const saved = { a: process.env.TITLE_PROMISE_SECRET, b: process.env.OPENAI_API_KEY, c: process.env.ANTHROPIC_API_KEY }
+  delete process.env.TITLE_PROMISE_SECRET; delete process.env.OPENAI_API_KEY; delete process.env.ANTHROPIC_API_KEY
+  try { assert.equal((await run('POST', { taskType: 'promise_lock', ...INPUT })).status, 503, 'no signing secret -> no approval can be issued') }
+  finally { process.env.TITLE_PROMISE_SECRET = saved.a!; process.env.OPENAI_API_KEY = saved.b!; process.env.ANTHROPIC_API_KEY = saved.c! }
   assert.equal((await run('POST', { taskType: 'promise_lock', ...INPUT, coreEvent: '' })).status, 400)
   const chk = await run('POST', { taskType: 'promise_final_check', approvedPromise: locked.json.promise, title: INPUT.title, thumbnailLines: INPUT.thumbnail.lines, narration: '통장 내역과 자동이체' })
   assert.equal(chk.status, 200); assert.equal(chk.json.check.ok, true)
@@ -156,7 +198,10 @@ test('9 Claude is the default fixer: partial request sends ONLY the failing piec
   assert.equal(r.json.provider, 'Anthropic'); assert.equal(r.json.scope, 'partial'); assert.deepEqual(r.json.revisedTargets, ['hook']); assert.equal(r.json.draft.title, p.title)
   assert.deepEqual(r.json.draft.chapters, d.chapters, 'every chapter/segment (and its visualHint asset text) preserved'); assert.deepEqual(r.json.qcScope.sort(), ['hook', 'title'])
   const full = await call(reviseHandler, { input: { partial: true, draft: d, qc: { ...QC_PASS, status: 'revision_required', issues: [iss('logic', '전체 구조')] }, approvedPromise: p } })
-  assert.equal(full.json.scope, 'full_required'); assert.equal(full.calls.length, 0)
+  assert.equal(full.json.scope, 'manual_required'); assert.equal(full.calls.length, 0)
+  const noConfirm = await call(reviseHandler, { input: { draft: d, qc, approvedPromise: p, handoff: {} } }, () => d)
+  assert.equal(noConfirm.status, 409); assert.equal(noConfirm.json.error.code, 'FULL_REWRITE_NOT_CONFIRMED'); assert.equal(noConfirm.calls.length, 0, 'no paid call without explicit confirmation')
+  assert.equal((await call(reviseHandler, { input: { draft: d, qc, approvedPromise: p, confirmFullRewrite: true, handoff: {} } }, () => d)).status, 200)
   const legacy = await call(reviseHandler, { input: { draft: d, qc, handoff: {} } }, () => d)
   assert.equal(legacy.status, 200); assert.equal(legacy.json.revisionCount, 1); assert.equal(legacy.json.scope, undefined, 'no partial flag -> old whole-draft behaviour')
 })
