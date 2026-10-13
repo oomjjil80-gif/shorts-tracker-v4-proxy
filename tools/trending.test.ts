@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createTestDb } from './testDb.js'
-import { collectTrending, rankTrending, trendingSnapshot } from '../lib/trending/trending.js'
+import { collectTrending, rankTrending, trendingSnapshot, latestCollected, COLLECTED_MAX } from '../lib/trending/trending.js'
 import { createTrendingHttp } from '../lib/trending/http.js'
 
 const GROUPS = { KR: ['KR'], GLOBAL: ['US', 'JP'] }
@@ -83,4 +83,30 @@ test('API: needs X-Sync-Key, GET only, returns the snapshot with the candidate-p
   const r = await call('GET', 'k'.repeat(30))
   assert.equal(r.status, 200); assert.equal(r.json.KR.items[0].deltaPerHour, 500); assert.deepEqual(r.json.GLOBAL.items, [])
   assert.match(r.json.note, /공식 급상승 순위가 아닙니다/)
+})
+
+test('수집 영상: shown from the FIRST collection (no baseline), view-count order, KR/GLOBAL separate, ranking unchanged', async () => {
+  const d = await db()
+  await collectTrending(d, { apiKey: 'k', fetchImpl: api({ KR: [['k1', 1000], ['k2', 5000], ['k3', 100]], US: [['g1', 10_000], ['g2', 2000]], JP: [['g1', 10_500]] }).f, now: T0, groups: GROUPS })
+  assert.deepEqual((await rankTrending(d, 'KR', ['KR'])).items, [], 'no growth baseline yet -> no TOP 20')
+  const kr = await latestCollected(d, 'KR'), gl = await latestCollected(d, 'GLOBAL')
+  assert.deepEqual(kr.items.map((x) => [x.videoId, x.viewCount]), [['k2', 5000], ['k1', 1000], ['k3', 100]])
+  assert.deepEqual(gl.items.map((x) => [x.videoId, x.viewCount]), [['g1', 10_500], ['g2', 2000]], 'cross-region duplicate kept once')
+  assert.equal(kr.total, 3); assert.equal(kr.collectedAt, T0.toISOString())
+  assert.deepEqual([kr.items[0].title, kr.items[0].channel, kr.items[0].thumbnailUrl, kr.items[0].url], ['t-k2', 'c', 'https://i.ytimg.com/k2.jpg', 'https://www.youtube.com/watch?v=k2'])
+  const snap: any = await trendingSnapshot(d)
+  assert.equal(snap.collected.KR.items.length, 3); assert.deepEqual(snap.KR.items, []); assert.equal(snap.GLOBAL.ranked, 0)
+  // only the LATEST batch is listed; a video that dropped out of the chart is not shown as current
+  await collectTrending(d, { apiKey: 'k', fetchImpl: api({ KR: [['k1', 1900], ['k2', 5300]] }).f, now: new Date(T0.getTime() + H), groups: GROUPS })
+  assert.deepEqual((await latestCollected(d, 'KR')).items.map((x) => x.videoId), ['k2', 'k1'])
+  assert.deepEqual((await rankTrending(d, 'KR', ['KR'])).items.map((x) => [x.videoId, x.deltaPerHour]), [['k1', 900], ['k2', 300]], 'TOP 20 rule unchanged')
+  assert.equal((await latestCollected(await db(), 'KR')).collectedAt, null, 'empty DB -> empty list, nothing invented')
+})
+
+test('수집 영상 is capped for the response but reports the real total', async () => {
+  const d = await db(), ids = Array.from({ length: COLLECTED_MAX + 5 }, (_, i) => `v${String(i).padStart(3, '0')}`)
+  const mk = (rows: Array<[string, number]>) => ({ f: (async (u: URL) => new Response(JSON.stringify({ items: u.searchParams.get('regionCode') === 'KR' ? rows.map(([i, v]) => vid(i, v)) : [] }), { status: 200 })) as any })
+  await collectTrending(d, { apiKey: 'k', fetchImpl: mk(ids.map((i, n) => [i, n + 1] as [string, number])).f, now: T0, groups: GROUPS })
+  const kr = await latestCollected(d, 'KR')
+  assert.equal(kr.items.length, COLLECTED_MAX); assert.equal(kr.total, COLLECTED_MAX + 5); assert.equal(kr.items[0].viewCount, COLLECTED_MAX + 5)
 })
