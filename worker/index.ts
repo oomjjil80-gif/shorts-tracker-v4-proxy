@@ -10,6 +10,7 @@ import { runOnce } from './runJob.js'
 import { runStyleExamplesOnce } from './oneoffStyleExamples.js'
 import { installUsageMeter } from '../lib/generative/usageLedger.js'
 import { runStartupRechecks } from './startupRechecks.js'
+import { collectTrending } from '../lib/trending/trending.js'
 import { get as blobGet } from '../lib/objectStorage.js'
 import { createBlobSourceFileResolver } from './sourceFile.js'
 import { analyzeExecutor } from './stages/analyze.js'
@@ -85,7 +86,14 @@ async function main() {
   let stopping = false
   for (const sig of ['SIGTERM', 'SIGINT'] as const) process.on(sig, () => { stopping = true })
   console.log(`[worker ${workerId}] started`)
+  // 급상승 탐색: hourly real view-count collection (needs YOUTUBE_API_KEY; the DB claim keeps it to one run per hour). Never blocks jobs.
+  let trendCheckedAt = 0
   while (!stopping) {
+    if (process.env.YOUTUBE_API_KEY && process.env.TRENDING_COLLECT !== 'off' && Date.now() - trendCheckedAt > 60_000) {
+      trendCheckedAt = Date.now()
+      try { const r = await collectTrending(db, { apiKey: process.env.YOUTUBE_API_KEY }); if (r.ran) console.log(`[worker ${workerId}] [trending] KR=${r.inserted.KR} GLOBAL=${r.inserted.GLOBAL}${r.errors.length ? ` errors=${JSON.stringify(r.errors)}` : ''}`) }
+      catch (e: any) { console.error(`[worker ${workerId}] [trending] failed: ${String(e?.message || e).replace(/key=[^&\s]+/g, 'key=[hidden]')}`) }
+    }
     try {
       const resolveSourceAsset = async (id:string) => {
         if (id.startsWith('src_gen_')) {

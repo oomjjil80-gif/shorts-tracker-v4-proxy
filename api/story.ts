@@ -192,6 +192,10 @@ export default async function handler(req: Request, res: Response) {
     const { defaultJobsHttp } = await import('../lib/jobs/http.js')
     return defaultJobsHttp(req, res)
   }
+  if (sourceRequest?.taskType === 'trending_get') {
+    const { defaultTrendingHttp } = await import('../lib/trending/http.js')
+    return defaultTrendingHttp(req, res)
+  }
   if (['GET', 'POST'].includes(req.method || '') && ['source_asset', 'source_latest', 'source_playback', 'source_download', 'source_frame', 'source_frames', 'source_contact_sheet'].includes(sourceRequest?.taskType)) {
     res.setHeader('Cache-Control', 'private, no-store')
     try {
