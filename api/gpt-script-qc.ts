@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { verifyPromise, promiseBrief, isPromiseCategory, checkDraftAgainstPromise, filterIssuesToScope, carryOverUnresolved, runPartialRevision, PARTIAL_SCHEMA, type TitlePromise } from '../lib/story/titlePromise.js'
 import { validateYasaStoryDna, checkYasaScript, isYasa, yasaScriptBrief } from '../lib/story/yasaStoryDna.js'
 
 function setCors(_req: Request, res: Response) {
@@ -145,7 +146,8 @@ const QC_SCHEMA = {
               'content_density', 'causality', 'segment_boundary', 'mixed_core',
               'hierarchy', 'visual_mismatch', 'production_readiness',
               'retention', 'curiosity_gap', 'pacing', 'payoff', 'chapter_role',
-              'legal_risk', 'contamination', 'format_leak'
+              'legal_risk', 'contamination', 'format_leak',
+              'title_promise', 'originality', 'repeat_video', 'immersion', 'thumbnail_overclaim'
             ]
           },
           location: { type: 'string' },
@@ -323,8 +325,43 @@ function userPrompt(input: any, contaminationSignals: ContaminationSignal[], str
     '현재 원고가 실제 제작용 최종 나레이션으로 넘어갈 수 있는지 참고용으로 판정하라. 편집 품질 문제만으로 제작을 막지 마라.',
     '첫 30초 훅, 챕터별 역할, 60~120초 단위의 변화, 챕터 사이 궁금증 연결, 마지막 payoff는 참고 점수로만 점검하라.',
     'retentionStrength, curiosityContinuity, pacing, payoffStrength는 각각 100점 만점으로 채점하되 점수만으로 revision_required/blocked를 만들지 마라.',
-    'contaminationSignals가 있으면 반드시 issues와 revisionInstructions에 반영하고 pass로 판정하지 말라.'
+    'contaminationSignals가 있으면 반드시 issues와 revisionInstructions에 반영하고 pass로 판정하지 말라.',
+    ...(verifyPromise(input?.approvedPromise) ? ['', promiseBrief(input.approvedPromise), PROMISE_QC_RULES] : [])
   ].join('\n')
+}
+
+const PROMISE_QC_RULES = [
+  '[승인된 약속 독립 검수 — 반드시 수행]',
+  '다음 5가지를 각각 점검하고, 문제가 있으면 issues에 severity=required로 넣는다(문제 없으면 넣지 않는다). location은 반드시 "hook", "ending", "chapter N / segment M" 중 하나로 문제 구간만 지정한다.',
+  '1) title_promise: 제목이 약속한 핵심 사건을 대본이 실제로 이행하는가  2) originality: 독창적인가, 흔한 요약인가  3) repeat_video: handoff.recentVideos(최근 영상)와 소재·전개가 반복되는가',
+  '4) immersion: 첫 30초 훅과 중간 보상으로 몰입이 유지되는가  5) thumbnail_overclaim: 썸네일/제목이 대본이 보여주는 것보다 과장되었는가',
+  '제목 자체는 바꾸지 않는다(제목이 문제면 location을 "title"로 표시).'
+].join('\n')
+
+// 필수/블로커 이슈가 하나라도 남아 있으면 통과가 아니다(범위 밖에서 이어받은 이슈 포함). 남은 게 없을 때만 통과.
+function settlePromiseStatus(qc: any, promise: TitlePromise) {
+  const open = (Array.isArray(qc.issues) ? qc.issues : []).filter((x: any) => ['blocker', 'required'].includes(String(x?.severity).toLowerCase()))
+  if (open.length && qc.status !== 'blocked') { qc.status = 'revision_required'; qc.finalDecision = `승인된 제목·썸네일 약속(${promise.promiseId}) 관련 미해결 필수 이슈 ${open.length}건이 남아 있습니다.` }
+  else if (!open.length && qc.status === 'revision_required') { qc.status = 'pass'; qc.finalDecision = `미해결 필수 이슈 없음 · 약속(${promise.promiseId}) 위반 없음.` }
+  return qc
+}
+
+function keepPromiseIssues(qc: any) {
+  return (Array.isArray(qc?.issues) ? qc.issues : []).filter((x: any) => isPromiseCategory(x?.category) && ['blocker', 'required'].includes(String(x?.severity || '').toLowerCase()))
+}
+// 약속 이슈는 기존 "편집 이슈는 경고로 격하" 정책에서 제외한다(승인된 약속을 못 지키면 통과가 아니다).
+function enforcePromise(qc: any, promise: TitlePromise, draft: any, kept: any[]) {
+  const issues = (Array.isArray(qc.issues) ? qc.issues : []).filter((x: any) => !isPromiseCategory(x?.category))
+  const det = checkDraftAgainstPromise(draft, promise)
+  const merged = [...kept]
+  for (const d of det) if (!merged.some((x: any) => x.category === d.category && String(x.location) === d.location && x.claim === d.claim)) merged.push(d)
+  qc.issues = [...merged, ...issues]
+  qc.promise = { promiseId: promise.promiseId, modelFindings: kept.length, deterministicFindings: det.length }
+  if (merged.length && qc.status !== 'blocked') {
+    qc.status = 'revision_required'
+    qc.finalDecision = `승인된 제목·썸네일 약속(${promise.promiseId}) 미이행 구간이 있어 해당 구간만 수정이 필요합니다.`
+  }
+  return qc
 }
 
 function enforceContamination(qc: any, signals: ContaminationSignal[]) {
@@ -569,7 +606,24 @@ export default async function handler(req: Request, res: Response) {
   const test = Boolean(req.body?.test)
   const mode = String(req.body?.mode || '')
 
+  // 제작 6단계: 실패한 구간만 수정 (모델은 문제 구간 조각만 작성, 나머지 구간·자산은 그대로 보존). 기본 수정 주체는 Claude(claude-longform-revise)이고 이것은 GPT 폴백이다.
+  if (mode === 'revise_partial') {
+    const out = await runPartialRevision(input, async (prompt) => {
+      const response = await fetch('https://api.openai.com/v1/responses',{ method:'POST', headers:{Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({
+        model, store:false, reasoning:{ effort:'medium' }, instructions:'한국어 롱폼 대본의 지정된 구간만 수정한다. 지정된 JSON Schema를 정확히 따른다.',
+        input:prompt, max_output_tokens:4000, text:{format:{type:'json_schema',name:'longform_partial_revision',strict:true,schema:PARTIAL_SCHEMA}}
+      }) })
+      const raw = await response.text(); let data:any = {}; try{ data = raw ? JSON.parse(raw) : {} }catch{}
+      if (!response.ok) throw Object.assign(new Error(data?.error?.message || raw || 'OpenAI partial revision failed'), { status:response.status })
+      const text = extractText(data); if (!text) throw Object.assign(new Error('OpenAI partial revision had no text output'), { status:502 })
+      let parsed:any; try{ parsed = JSON.parse(text) }catch{ throw Object.assign(new Error('OpenAI partial revision returned invalid JSON'), { status:502 }) }
+      return { items:parsed?.items, usage:data?.usage || null, model:data?.model || model, provider:'OpenAI' }
+    }, isYasa(input) ? '\n' + yasaScriptBrief(input.yasaStoryDNA, 'longform') : '')
+    return res.status(out.status).json(out.body)
+  }
+
   if ((mode === 'revise' || mode === 'finalize') && input?.draft && typeof input.draft === 'object') {
+    if (mode === 'revise' && verifyPromise(input?.approvedPromise) && input?.confirmFullRewrite !== true) return res.status(409).json({ ok:false, error:{ code:'FULL_REWRITE_NOT_CONFIRMED', message:'전체 대본 재작성은 사용자의 명시적 승인(confirmFullRewrite) 없이는 실행하지 않습니다.' } })
     if (mode === 'revise' && (!input?.qc || input.qc.status !== 'revision_required')) {
       return res.status(409).json({ ok:false, error:`Revision is not allowed for QC status: ${String(input?.qc?.status || 'unknown')}` })
     }
@@ -614,6 +668,7 @@ export default async function handler(req: Request, res: Response) {
     return res.status(400).json({ ok: false, error: 'Claude longform draft is required' })
   }
 
+  if (!test && Array.isArray(input?.qcScope) && input.qcScope.length && !Array.isArray(input?.priorIssues)) return res.status(400).json({ ok: false, error: { code: 'PRIOR_ISSUES_REQUIRED', message: 'a scoped re-check needs the previous QC issues (priorIssues) so unresolved ones outside the scope are not lost' } })
   try {
     const contaminationSignals = test ? [] : detectContamination(input?.draft)
     const structureSignals = test ? [] : detectStructureSignals(input?.draft)
@@ -684,11 +739,22 @@ export default async function handler(req: Request, res: Response) {
       return res.status(502).json({ ok: false, error: 'OpenAI returned invalid QC JSON', rawText: text })
     }
 
+    const promise = verifyPromise(input?.approvedPromise) ? (input.approvedPromise as TitlePromise) : null
+    const keptPromiseIssues = promise ? keepPromiseIssues(qc) : []
     qc = enforceContamination(qc, contaminationSignals)
     // Structure/retention/factual quality checks remain advisory; they never auto-block.
     qc = applyLowGateUserDecisionPolicy(qc)
     qc = enforceYasaStoryDna(qc, input)
-
+    if (promise) {
+      qc = enforcePromise(qc, promise, input.draft, keptPromiseIssues)
+      // 부분 재검수: 수정 범위만 다시 본다. 단, (1) 결정적 약속 검사는 범위와 무관하게 항상 유지하고 (2) 범위 밖의 이전 미해결 필수 이슈는 해결된 것이 아니므로 그대로 남긴다.
+      if (Array.isArray(input?.qcScope) && input.qcScope.length) {
+        const inScope = filterIssuesToScope(qc.issues, input.qcScope)
+        qc.issues = [...qc.issues.filter((x: any) => x?.deterministic || inScope.includes(x)), ...carryOverUnresolved(input.priorIssues, input.qcScope)]
+        qc.promise.scoped = true; qc.promise.carriedOver = qc.issues.filter((x: any) => x?.carriedOver).length
+      }
+      qc = settlePromiseStatus(qc, promise)
+    }
     return res.status(200).json({
       ok: true,
       provider: 'OpenAI',

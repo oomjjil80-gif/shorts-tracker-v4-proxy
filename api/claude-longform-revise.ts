@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { runPartialRevision, verifyPromise, PARTIAL_SCHEMA } from '../lib/story/titlePromise.js'
 import { isYasa, yasaScriptBrief } from '../lib/story/yasaStoryDna.js'
 
 function setCors(req: Request, res: Response) {
@@ -209,6 +210,26 @@ export default async function handler(req: Request, res: Response) {
   if (!finalizeForProduction && input.qc.status !== 'revision_required') {
     return res.status(409).json({ ok: false, error: `Revision is not allowed for QC status: ${String(input.qc.status || 'unknown')}` })
   }
+
+  // 제작 6단계(옵트인): 실패한 구간만 수정. 기존 전체 수정 경로는 partial 요청이 아니면 그대로다.
+  if (input?.partial === true && !finalizeForProduction) {
+    const out = await runPartialRevision(input, async (prompt) => {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST', headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({ model, max_tokens: 4000, system: '한국어 롱폼 대본의 지정된 구간만 수정한다. 지정된 JSON 구조만 반환한다.', messages: [{ role: 'user', content: prompt }], output_config: { format: { type: 'json_schema', schema: PARTIAL_SCHEMA } } })
+      })
+      const raw = await response.text(); let data: any = {}; try { data = raw ? JSON.parse(raw) : {} } catch {}
+      if (!response.ok) throw Object.assign(new Error(data?.error?.message || raw || 'Anthropic partial revision failed'), { status: response.status })
+      if (data?.stop_reason === 'max_tokens') throw Object.assign(new Error('Claude partial revision was truncated'), { status: 502 })
+      const text = textFromClaude(data); if (!text) throw Object.assign(new Error('Claude partial revision had no text output'), { status: 502 })
+      let parsed: any; try { parsed = extractJson(text) } catch { throw Object.assign(new Error('Claude partial revision returned invalid JSON'), { status: 502 }) }
+      return { items: parsed?.items, usage: data?.usage || null, model: data?.model || model, provider: 'Anthropic' }
+    }, isYasa(input) ? '\n' + yasaScriptBrief(input.yasaStoryDNA, 'longform') : '')
+    return res.status(out.status).json(out.body)
+  }
+
+  // 승인된 약속이 있는 대본의 전체 재작성은 자동으로 실행하지 않는다: 사용자의 명시적 승인(confirmFullRewrite)이 있어야 한다.
+  if (!finalizeForProduction && verifyPromise(input?.approvedPromise) && input?.confirmFullRewrite !== true) return res.status(409).json({ ok: false, error: { code: 'FULL_REWRITE_NOT_CONFIRMED', message: '전체 대본 재작성은 사용자의 명시적 승인(confirmFullRewrite) 없이는 실행하지 않습니다.' } })
 
   try {
     const payload = {

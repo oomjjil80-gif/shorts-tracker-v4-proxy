@@ -40,6 +40,9 @@ jobs:
           # 급상승 탐색 (new tables + read-only trending_get route + hourly worker tick): focused tests incl. the api/story.ts router and Source Collector regression.
           TRENDING_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(db/003_trending\.sql|lib/trending/[A-Za-z]+\.ts|api/story\.ts|worker/index\.ts|tools/trending\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           TRENDING_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/trending/trending\.ts$' || true)"
+          # 제작 6단계 (제목·썸네일 약속): opt-in connectors in claude-story / gpt-script-qc / job tasks; focused tests incl. the handlers' existing regressions.
+          PROMISE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/story/titlePromise\.ts|api/claude-story\.ts|api/gpt-script-qc\.ts|api/claude-longform-revise\.ts|api/story\.ts|lib/jobs/http\.ts|tools/title-promise\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
+          PROMISE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/story/titlePromise\.ts$' || true)"
           LONGFORM_RENDER_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/seniorLongform\.ts|lib/jobs/blobs\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|worker/stages/longform\.ts|tools/longform-chunked-render\.test\.ts|tools/longform-render-memory\.ts|\.github/workflows/verify\.yml)$' || true)"
           NON_TEST="$(printf '%s\n' "$CHANGED" | grep -Ev '^(tools/.*\.test\.(ts|mjs)|\.github/workflows/verify\.yml)$' || true)"
           TESTS="$(printf '%s\n' "$CHANGED" | grep -E '^tools/.*\.test\.(ts|mjs)$' || true)"
@@ -64,6 +67,8 @@ jobs:
             echo "mode=sleep-classic" >> "$GITHUB_OUTPUT"
           elif [ -z "$TRENDING_OTHER" ] && [ -n "$TRENDING_PRESENT" ]; then
             echo "mode=trending" >> "$GITHUB_OUTPUT"
+          elif [ -z "$PROMISE_OTHER" ] && [ -n "$PROMISE_PRESENT" ]; then
+            echo "mode=title-promise" >> "$GITHUB_OUTPUT"
           elif [ -z "$PLAN_REVIEW_OTHER" ] && [ -n "$PLAN_REVIEW_PRESENT" ]; then
             echo "mode=plan-cross-review" >> "$GITHUB_OUTPUT"
           elif [ -z "$LONGFORM_RENDER_OTHER" ]; then
@@ -124,6 +129,18 @@ jobs:
             tools/source-collector.test.ts \
             tools/jobs-api.test.ts \
             tools/jobs-store.test.ts
+
+      - name: Run focused 제목·썸네일 약속 6단계 verification (promise gate, QC, partial revise, final check + handler regressions)
+        if: steps.scope.outputs.mode == 'title-promise'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/title-promise.test.ts \
+            tools/yasa-story-dna.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts \
+            tools/function-count.test.ts
 
       - name: Run focused Longform PLAN cross-review verification
         if: steps.scope.outputs.mode == 'plan-cross-review'
