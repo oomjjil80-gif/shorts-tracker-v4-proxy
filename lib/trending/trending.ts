@@ -99,10 +99,25 @@ export async function rankTrending(db: Queryable, group: TrendGroup, regions: st
   return { group, regions, collectedAt: T.toISOString(), candidates: cur.length, ranked: items.length, items: top }
 }
 
+// 수집 영상: the latest collected batch as-is (view count order), shown even before any growth baseline exists.
+// NOT a surge ranking — rankTrending above stays the only place growth is computed.
+export const COLLECTED_MAX = 100
+export type CollectedVideo = { videoId: string; title: string; channel: string; thumbnailUrl: string; url: string; viewCount: number; regionCode: string; collectedAt: string }
+export type CollectedList = { group: TrendGroup; collectedAt: string | null; total: number; items: CollectedVideo[] }
+export async function latestCollected(db: Queryable, group: TrendGroup): Promise<CollectedList> {
+  const t = (await db.query<{ t: Date }>(`SELECT max(observed_at) AS t FROM trend_observations WHERE list_group=$1`, [group])).rows[0]?.t
+  if (!t) return { group, collectedAt: null, total: 0, items: [] }
+  const T = new Date(t)
+  const rows = (await db.query<any>(`SELECT video_id, title, channel, thumbnail_url, view_count, region_code FROM trend_observations WHERE list_group=$1 AND observed_at=$2 ORDER BY view_count DESC, video_id LIMIT $3`, [group, T, COLLECTED_MAX])).rows
+  const total = Number((await db.query<any>(`SELECT count(*)::int AS n FROM trend_observations WHERE list_group=$1 AND observed_at=$2`, [group, T])).rows[0]?.n ?? rows.length)
+  return { group, collectedAt: T.toISOString(), total, items: rows.map((r: any) => ({ videoId: r.video_id, title: r.title, channel: r.channel, thumbnailUrl: r.thumbnail_url, url: `https://www.youtube.com/watch?v=${r.video_id}`, viewCount: Number(r.view_count), regionCode: r.region_code, collectedAt: T.toISOString() })) }
+}
+
 export async function trendingSnapshot(db: Queryable) {
   const st = (await db.query<any>(`SELECT last_run_at, last_status, last_error FROM trend_state WHERE key='collect'`)).rows[0]
   return {
     KR: await rankTrending(db, 'KR'), GLOBAL: await rankTrending(db, 'GLOBAL'),
+    collected: { KR: await latestCollected(db, 'KR'), GLOBAL: await latestCollected(db, 'GLOBAL') },
     collector: st ? { lastRunAt: new Date(st.last_run_at).toISOString(), status: st.last_status, error: st.last_error } : null,
     note: '관측 가능한 후보 영상(각 지역 YouTube 인기 차트) 안의 순위이며 플랫폼 전체의 공식 급상승 순위가 아닙니다.'
   }
