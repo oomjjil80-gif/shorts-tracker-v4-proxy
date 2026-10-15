@@ -192,6 +192,10 @@ export default async function handler(req: Request, res: Response) {
     const { defaultJobsHttp } = await import('../lib/jobs/http.js')
     return defaultJobsHttp(req, res)
   }
+  if (typeof sourceRequest?.taskType === 'string' && sourceRequest.taskType.startsWith('cardnews_')) {
+    const { defaultCardnewsHttp } = await import('../lib/cardnews/http.js')
+    return defaultCardnewsHttp(req, res)
+  }
   if (sourceRequest?.taskType === 'trending_get') {
     const { defaultTrendingHttp } = await import('../lib/trending/http.js')
     return defaultTrendingHttp(req, res)
