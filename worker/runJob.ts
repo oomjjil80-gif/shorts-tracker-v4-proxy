@@ -64,7 +64,8 @@ export async function runOnce(deps: RunDeps): Promise<RunOutcome> {
       return { ran: true, jobId: job.id, stage: job.stage, outcome: done.status === 'CANCELLED' ? 'cancelled' : done.status === 'WAITING_USER' ? 'waiting' : 'completed', job: done }
     } catch (e: any) {
       if (leaseLost || e instanceof LeaseLostError) { spend(); return { ran: true, jobId: job.id, stage: job.stage, outcome: 'lease_lost' } }
-      const retryable = e instanceof StageError ? e.retryable : true
+      const quotaExhausted = /(?:credit_balance_exhausted|insufficient_quota|no credits remaining)/i.test(String(e?.message || e))
+      const retryable = !quotaExhausted && (e instanceof StageError ? e.retryable : true)
       const failed = await store.failStage({ jobId: job.id, workerId, attempt, retryable, usage: spend(), error: { code: e?.code || 'STAGE_FAILED', message: String(e?.message || e), details: e?.details ?? null } })
       return { ran: true, jobId: job.id, stage: job.stage, outcome: failed.status === 'CANCELLED' ? 'cancelled' : failed.status === 'FAILED' ? 'failed' : 'retry', job: failed }
     }
