@@ -1,6 +1,6 @@
 import { sha256, putAddressed } from '../../lib/jobs/blobs.js'
 import { WISDOM_PROFILE } from '../../lib/generative/contracts.js'
-import { deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual, wisdomCaptionEvents, thinkerDisplayName } from '../../lib/generative/wisdom.js'
+import { fixedWisdomScript, deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual, wisdomCaptionEvents, thinkerDisplayName } from '../../lib/generative/wisdom.js'
 import { StageError, type StageExecutor } from '../types.js'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -54,7 +54,10 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   // the picture style resolved at job_create: AUTO keeps the planner's own Wisdom style (the prompts as before)
   const styleOverride=creativeStyleOverride(brief.creative)
   let script:any, visualBible:any=null, provider='deterministic', fallbackReason:string|undefined
-  if(apiKey){try{
+  // a user-confirmed script (brief.fixedScript) is used verbatim: no AI plan, no rewrite, no repair rewrite
+  const fixed=!!brief.fixedScript
+  if(fixed){script=fixedWisdomScript(brief.fixedScript);provider='fixed'}
+  else if(apiKey){try{
    const made=await aiPlan(brief,apiKey)
    const candidate=anchorNamedThinkerVisual(applyVisualBible(made.script,styledVisualBible(made.visualBible,styleOverride)),String(brief.text||'')).script
    const candidateErrors=validateWisdomScript(candidate,brief)
@@ -67,7 +70,7 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
   let semanticQc=evaluateWisdomSemanticQc(String(brief.text||''),script)
   // One free PLAN repair is allowed before any paid image/TTS assets. Never lower semantic QC.
   // Feed the exact failed dimensions back into the planner so the second draft must repair them explicitly.
-  if(semanticQc.reasons.length && apiKey){
+  if(semanticQc.reasons.length && apiKey && !fixed){
    try{
     const repairBrief={...brief,text:`${brief.text}\n\n[MANDATORY REPAIR] Previous draft failed semantic QC: ${semanticQc.reasons.join(', ')}. Rewrite the whole script once. Preserve the topic, but make every failed dimension explicit. If "turn" failed, include a clear mid-script reversal such as "하지만 핵심은 단순히 사람 수를 줄이는 것이 아니다" followed by the deeper insight and payoff. Do not mention this repair instruction in narration.`}
     const repaired=await aiPlan(repairBrief,apiKey)
