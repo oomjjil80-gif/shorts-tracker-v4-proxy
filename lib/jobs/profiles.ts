@@ -3,7 +3,7 @@ import type { JobStage } from './types.js'
 // One table for every production Profile: its stage order, the module that runs each stage (id in
 // worker/modules/registry.ts, which adapts the existing executors) and the few job-level facts that used to be
 // `profile === ...` checks elsewhere. No workflow engine: stages still run one at a time in this fixed order.
-export type ProfileId = 'source_shorts' | 'wisdom' | 'wisdom_longform' | 'senior_longform' | 'yasa_longform'
+export type ProfileId = 'source_shorts' | 'wisdom' | 'yasa_shorts' | 'wisdom_longform' | 'senior_longform' | 'yasa_longform'
 // Production features a Profile selects, in order (worker/modules/features.ts checks the order and what each needs).
 // A feature that is not selected is never called. Job stages are unchanged: features run inside the existing stages.
 export type FeatureId = 'PLAN' | 'ANALYZE' | 'IMAGE' | 'TTS' | 'CAPTION' | 'SOUND' | 'RENDER' | 'LONGFORM_RENDER' | 'QC' | 'THUMBNAIL' | 'PACKAGE'
@@ -39,6 +39,14 @@ export const PROFILES: Readonly<Record<ProfileId, ProfileSpec>> = {
     features: ['PLAN', 'IMAGE', 'TTS', 'ANALYZE', 'CAPTION', 'RENDER', 'QC', 'THUMBNAIL', 'PACKAGE'],
     modules: { PLAN: 'wisdom.plan', ASSET: 'wisdom.asset', ANALYZE: 'shorts.analyze', ...SHORTS_TAIL }
   },
+  // 9:16 숨은야담 Shorts: the SAME Wisdom Shorts pipeline and modules under its own profile id (jobs, results and upload text
+  // are recognisably 야담); a confirmed script (brief.fixedScript) is used verbatim
+  yasa_shorts: {
+    id: 'yasa_shorts', input: 'wisdom_brief', provides: ['brief'], packageView: 'shorts',
+    stages: ['PLAN', 'ASSET', 'ANALYZE', 'COMPILE', 'RENDER', 'AUTO_QC', 'DECISION', 'FINAL', 'PACKAGE'],
+    features: ['PLAN', 'IMAGE', 'TTS', 'ANALYZE', 'CAPTION', 'RENDER', 'QC', 'THUMBNAIL', 'PACKAGE'],
+    modules: { PLAN: 'wisdom.plan', ASSET: 'wisdom.asset', ANALYZE: 'shorts.analyze', ...SHORTS_TAIL }
+  },
   // 16:9 Wisdom Longform: one static image + narration + left key-phrase cards (worker/stages/longform.ts)
   wisdom_longform: {
     id: 'wisdom_longform', input: 'longform_brief', provides: ['brief'], packageView: 'longform',
@@ -64,6 +72,8 @@ export const PROFILES: Readonly<Record<ProfileId, ProfileSpec>> = {
   }
 }
 
+// the generative 9:16 Shorts profiles that share the Wisdom Shorts pipeline
+export const isWisdomShorts = (id: unknown): boolean => id === 'wisdom' || id === 'yasa_shorts'
 export const isProfileId = (id: string): id is ProfileId => Object.prototype.hasOwnProperty.call(PROFILES, id)
 export const profileOf = (id: string): ProfileSpec | null => (isProfileId(id) ? PROFILES[id] : null)
 export function getProfile(id: string): ProfileSpec {

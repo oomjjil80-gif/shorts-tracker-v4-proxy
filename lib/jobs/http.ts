@@ -16,7 +16,7 @@ import { createVercelJobBlobStore, putAddressed, type JobBlobStore } from './blo
 import { recoverSleepDraft } from './sleepDraftRecovery.js'
 import { makeSavedOdysseyScript, offlineOdysseyFingerprint } from './sleepDraftImport.js'
 import { PIPELINES } from './pipeline.js'
-import { isProfileId, getProfile, profileOf } from './profiles.js'
+import { isProfileId, getProfile, profileOf, isWisdomShorts } from './profiles.js'
 import { JobError, type Job, type StageRun } from './types.js'
 import { validateReferenceProfile, stableHash } from '../reference/contracts.js'
 import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
@@ -501,7 +501,7 @@ export function createJobsHttp(deps: JobsDeps) {
             if (!scriptRef) throw new JobError('PREREQUISITE_MISSING', 'the source job has no finished script (PLAN)')
             try { brief = longformRemasterBrief(src.planRef ? await deps.blobs.getJson(src.planRef) : null, { sourceJobId: src.id, sourceScriptRef: scriptRef, changes: body.input.changes }) } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
           } else
-          try { brief = longform ? normalizeLongformBrief(body.input, profile as any) : normalizeGenerativeBrief(body.input) } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
+          try { brief = longform ? normalizeLongformBrief(body.input, profile as any) : normalizeGenerativeBrief(body.input, profile === 'yasa_shorts' ? 'yasa_shorts' : 'wisdom') } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
           if (derivedFrom) (brief as any).derivedFrom = derivedFrom
           generativeHash = longform ? longformBriefHash(brief as any) : generativeBriefHash(brief as any)
           const storedBrief = await putAddressed(deps.blobs, 'generative-briefs', brief)
@@ -587,7 +587,7 @@ export function createJobsHttp(deps: JobsDeps) {
         const jobId = need(String(body.jobId || ''), 'jobId is required')
         const job = await store.getJob(jobId, workspaceId)
         if (!job) throw new JobError('NOT_FOUND', 'job not found')
-        if (job.profile !== 'wisdom' || job.status !== 'COMPLETE') throw new JobError('NOT_UPLOAD_RECOVERABLE', `job is ${job.profile} ${job.status}`)
+        if (!isWisdomShorts(job.profile) || job.status !== 'COMPLETE') throw new JobError('NOT_UPLOAD_RECOVERABLE', `job is ${job.profile} ${job.status}`)
         const runs = await store.listStageRuns(job.id), pkg = latest(runs, 'PACKAGE'), plan = latest(runs, 'PLAN')
         const packageJson: any = pkg?.outputRef ? await deps.blobs.getJson(pkg.outputRef) : null
         if (!packageJson) throw new JobError('NOT_FOUND', 'package not found')

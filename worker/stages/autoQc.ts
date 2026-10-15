@@ -1,3 +1,4 @@
+import { isWisdomShorts } from '../../lib/jobs/profiles.js'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -91,7 +92,7 @@ export function createAutoQcExecutor(referenceProfile: ReferenceProfile | null =
 
           // Content (editorial) gate — separate from the technical gate above; recorded, never merged into it.
           try {
-            if(job.profile==='wisdom'){
+            if(isWisdomShorts(job.profile)){
               const scriptRef=(planRun?.result as any)?.scriptRef
               const script:any=scriptRef?await blobs.getJson(scriptRef):null
               const assetRun=await previous('ASSET'), assets:any=assetRun?.outputRef?await blobs.getJson(assetRun.outputRef):null

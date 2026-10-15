@@ -1,3 +1,4 @@
+import { isWisdomShorts } from '../../lib/jobs/profiles.js'
 import { runGate, runCheck, type CheckResult, type GateResult } from '../../lib/qc/gate.js'
 import { putAddressed } from '../../lib/jobs/blobs.js'
 import { sha256 } from '../../lib/jobs/blobs.js'
@@ -16,7 +17,7 @@ async function compileOne(ctx: Pick<StageContext, 'job' | 'blobs'>, sourceAsset:
   // Generated Wisdom media is authoritative: older ASSET runs may have a timed plan
   // based on intended segment durations that exceeds the real concatenated MP4.
   // Normalize only the compile-time copy; paid assets and immutable stored plans stay untouched.
-  if (job.profile === 'wisdom' && Number(sourceAsset.duration) > 0 && plan?.variantPlan) {
+  if (isWisdomShorts(job.profile) && Number(sourceAsset.duration) > 0 && plan?.variantPlan) {
     const mediaEnd = Number(Number(sourceAsset.duration).toFixed(2))
     const vp = plan.variantPlan
     if (Array.isArray(vp.beats) && vp.beats.length) vp.beats = vp.beats.map((b:any) => ({ ...b, trimEnd: Math.min(Number(b.trimEnd ?? mediaEnd), mediaEnd) }))
@@ -73,7 +74,7 @@ export const compileExecutor: StageExecutor = {
 
     // Variants come from PLAN only while that PLAN output is still the job's current plan (a revision resets this).
     const planRun = await previous('PLAN')
-    const assetRun = job.profile === 'wisdom' ? await previous('ASSET') : null
+    const assetRun = isWisdomShorts(job.profile) ? await previous('ASSET') : null
     const timedPlanRef = (assetRun?.result as any)?.timedPlanRef as string | undefined
     const planned = (planRun?.result as any)?.variants as Array<{ variantId: string; label: string; planRef: string }> | undefined
     const useVariants = !!planned?.length && planRun?.outputRef === job.planRef

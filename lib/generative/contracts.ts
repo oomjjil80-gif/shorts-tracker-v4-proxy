@@ -5,7 +5,7 @@ import { resolveCreativeProfile, type CreativeProfile } from './creativeProfile.
 export type GenerativeInputKind = 'topic' | 'text'
 export type GenerativeBrief = {
   schema: 'generative-brief/1'
-  profile: 'wisdom'
+  profile: 'wisdom' | 'yasa_shorts'
   kind: GenerativeInputKind
   text: string
   language: 'ko'
@@ -50,7 +50,7 @@ export const WISDOM_PROFILE: WisdomProfile = {
   targetSeconds:{min:35,max:75}, visualContinuity:'low',
   narration:{tone:'calm_clear',maxCharsPerBeat:90}
 }
-export function normalizeGenerativeBrief(input:any): GenerativeBrief {
+export function normalizeGenerativeBrief(input:any, profile:'wisdom'|'yasa_shorts'='wisdom'): GenerativeBrief {
   const fixedScript=input?.fixedScript?normalizeFixedScript(input.fixedScript):undefined
   const kind=(fixedScript?'text':String(input?.kind||'')) as GenerativeInputKind
   if(kind!=='topic'&&kind!=='text') throw new Error('input.kind must be topic or text')
@@ -59,7 +59,7 @@ export function normalizeGenerativeBrief(input:any): GenerativeBrief {
   const targetSeconds=Number(input?.targetSeconds??55)
   if(!Number.isFinite(targetSeconds)||targetSeconds<35||targetSeconds>75) throw new Error('targetSeconds must be 35..75 for wisdom')
   // Creative Settings (voice/tone/speed/picture style): AUTO keeps the Wisdom Shorts house voice and its own style
-  const creative=resolveCreativeProfile('wisdom',input,text)
-  return {schema:'generative-brief/1',profile:'wisdom',kind,text,language:'ko',aspectRatio:'9:16',targetSeconds,creative,...(fixedScript?{fixedScript}:{})}
+  const creative=resolveCreativeProfile(profile,input,text)
+  return {schema:'generative-brief/1',profile,kind,text,language:'ko',aspectRatio:'9:16',targetSeconds,creative,...(fixedScript?{fixedScript}:{})}
 }
 export function generativeBriefHash(b:GenerativeBrief){return createHash('sha256').update(canonicalize(b)).digest('hex')}

@@ -1,3 +1,4 @@
+import { isWisdomShorts } from '../../lib/jobs/profiles.js'
 // Wisdom SHORTS publishing kit, made after PACKAGE (the video is already final and untouched): the click thumbnail and
 // the YouTube upload text, both from the actual script. Non-blocking: each part that fails or does not pass its rules is
 // left out (recorded in the result), and the package stays exactly as the Shorts PACKAGE stage wrote it otherwise.
@@ -27,10 +28,10 @@ export function withWisdomThumbnail(pkg: StageExecutor, deps: { apiKey?: string;
   const imageKey = deps.imageKey ?? process.env.GEMINI_API_KEY ?? '' // the picture: Gemini
   return {
     ...pkg,
-    estimateUsd: (job) => pkg.estimateUsd(job) + (job.profile === 'wisdom' ? 0.07 : 0),
+    estimateUsd: (job) => pkg.estimateUsd(job) + (isWisdomShorts(job.profile) ? 0.07 : 0),
     async run(ctx) {
       const res = await pkg.run(ctx)
-      if (ctx.job.profile !== 'wisdom' || !apiKey) return res
+      if (!isWisdomShorts(ctx.job.profile) || !apiKey) return res
       const { job, blobs, previous } = ctx
       const thumbnail = (deps.features ?? profileFeatures)(job).has('THUMBNAIL')
       const work = await mkdtemp(join(tmpdir(), 'wisdom-kit-'))

@@ -1,3 +1,4 @@
+import { isWisdomShorts } from './profiles.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type { Queryable, SqlDb } from './db.js'
 import { firstStage, nextStage } from './pipeline.js'
@@ -345,7 +346,7 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
         const qcBlocked = job.status === 'WAITING_USER' && job.waitReason === 'QC_BLOCKED' && job.stage === 'AUTO_QC'
         const completed = job.status === 'COMPLETE' && job.stage === 'PACKAGE'
         const awaitingDecision = job.status === 'WAITING_USER' && job.waitReason === 'DECISION' && job.stage === 'DECISION'
-        const generativeWisdom = job.profile === 'wisdom'
+        const generativeWisdom = isWisdomShorts(job.profile)
         const failedPlan = generativeWisdom && job.status === 'FAILED' && job.stage === 'PLAN'
         if (!stages.includes('PLAN') || (stages.includes('ASSET') && !generativeWisdom) || (!qcBlocked && !completed && !awaitingDecision && !failedPlan)) throw new JobError('NOT_PLAN_RECHECKABLE', 'job is not a safe re-plan state')
         const analyzed = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='ANALYZE' AND status='SUCCEEDED' LIMIT 1`, [job.id])
@@ -364,7 +365,7 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
         const qcBlocked = job.status === 'WAITING_USER' && job.waitReason === 'QC_BLOCKED' && job.stage === 'AUTO_QC'
         const completed = job.status === 'COMPLETE' && job.stage === 'PACKAGE'
         const awaitingDecision = job.status === 'WAITING_USER' && job.waitReason === 'DECISION' && job.stage === 'DECISION'
-        if (job.profile !== 'wisdom' || (!qcBlocked && !completed && !awaitingDecision)) throw new JobError('NOT_ASSET_RECHECKABLE', 'job is not a safe Wisdom asset recheck state')
+        if (!isWisdomShorts(job.profile) || (!qcBlocked && !completed && !awaitingDecision)) throw new JobError('NOT_ASSET_RECHECKABLE', 'job is not a safe Wisdom asset recheck state')
         const plan = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='PLAN' AND status='SUCCEEDED' LIMIT 1`, [job.id])
         const asset = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 AND stage='ASSET' AND status='SUCCEEDED' LIMIT 1`, [job.id])
         if (!plan.rows[0] || !asset.rows[0]) throw new JobError('PREREQUISITE_MISSING', 'ASSET recheck requires successful PLAN and ASSET')

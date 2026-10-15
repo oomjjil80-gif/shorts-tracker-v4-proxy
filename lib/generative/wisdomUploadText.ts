@@ -34,7 +34,7 @@ export async function wisdomUploadText(o: { script: any; brief: any; apiKey: str
   let made: any = null, errs = { copy: [] as string[], upload: [] as string[] }, calls = 0
   for (let i = 0; i < (o.attempts ?? 3); i++) {
     const repair = i ? [...errs.copy.map((x) => 'thumbnail ' + x), ...errs.upload.map((x) => explain(x, thinker, made?.metadata?.pinnedComment))] : undefined
-    made = await kit({ topic, title: script.title, hook: script.hook, narration, ...(repair ? { repair } : {}) }, o.apiKey); calls++
+    made = await kit({ topic, title: script.title, hook: script.hook, narration, ...(brief?.profile === 'yasa_shorts' ? { family: 'yasa' as const } : {}), ...(repair ? { repair } : {}) }, o.apiKey); calls++
     errs = check(made)
     // the thumbnail copy keeps its one repair (as before); only a refused UPLOAD TEXT gets the further tries
     if (!errs.upload.length && (!errs.copy.length || i >= 1)) break

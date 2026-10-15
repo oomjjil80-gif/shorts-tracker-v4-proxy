@@ -105,7 +105,7 @@ export function validateWisdomScript(s:any, brief:GenerativeBrief): string[] {
  if(total<25||total>120)e.push('totalSeconds')
  if(Math.abs(total-Number(s?.totalSeconds||0))>.1)e.push('totalSeconds.mismatch')
  // targetSeconds is editorial guidance, not a quality gate. Do not fail a good Short for running longer/shorter.
- if(brief.profile!=='wisdom')e.push('profile')
+ if(brief.profile!=='wisdom'&&brief.profile!=='yasa_shorts')e.push('profile')
  e.push(...namedThinkerVisualErrors(String(brief.text||''),s))
  return e
 }
