@@ -1,3 +1,4 @@
+import { isWisdomShorts } from '../../lib/jobs/profiles.js'
 import { sha256, putAddressed } from '../../lib/jobs/blobs.js'
 import { WISDOM_PROFILE } from '../../lib/generative/contracts.js'
 import { fixedWisdomScript, deterministicWisdomDraft, validateWisdomScript, anchorNamedThinkerVisual, wisdomCaptionEvents, thinkerDisplayName } from '../../lib/generative/wisdom.js'
@@ -38,19 +39,19 @@ export function createGenerativePlanExecutor(deps:{apiKey?:string;plan?:typeof o
  stage:'PLAN', estimateUsd:()=>0.05,
  inputHash:(job)=>sha256(`gen-plan|${job.profile}|${job.planRef}|wisdom/1`),
  async run({job,blobs,previous}){
-  if(job.profile!=='wisdom') throw new StageError('PROFILE_UNSUPPORTED','generative PLAN only handles wisdom')
+  if(!isWisdomShorts(job.profile)) throw new StageError('PROFILE_UNSUPPORTED','generative PLAN only handles wisdom/yasa shorts')
   if(!job.planRef) throw new StageError('BRIEF_MISSING','wisdom requires a generative brief')
   let briefRef=job.planRef
   let brief:any=await blobs.getJson(briefRef)
-  if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom'){
+  if(!brief||brief.schema!=='generative-brief/1'||brief.profile!==job.profile){
    const priorPlan=await previous('PLAN')
    const preserved=String((priorPlan?.result as any)?.briefRef||'')
    if(preserved){
     const recovered:any=await blobs.getJson(preserved)
-    if(recovered?.schema==='generative-brief/1'&&recovered?.profile==='wisdom'){briefRef=preserved;brief=recovered}
+    if(recovered?.schema==='generative-brief/1'&&recovered?.profile===job.profile){briefRef=preserved;brief=recovered}
    }
   }
-  if(!brief||brief.schema!=='generative-brief/1'||brief.profile!=='wisdom')throw new StageError('BRIEF_INVALID','invalid wisdom brief')
+  if(!brief||brief.schema!=='generative-brief/1'||brief.profile!==job.profile)throw new StageError('BRIEF_INVALID','invalid wisdom brief')
   // the picture style resolved at job_create: AUTO keeps the planner's own Wisdom style (the prompts as before)
   const styleOverride=creativeStyleOverride(brief.creative)
   let script:any, visualBible:any=null, provider='deterministic', fallbackReason:string|undefined
@@ -112,7 +113,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:st
  stage:'ASSET', estimateUsd:()=>0.75,
  inputHash:(job)=>sha256(`gen-asset|${job.id}|${job.planRev}|wisdom/2`),
  async run({job,attempt,blobs,previous,signal}){
-  if(job.profile!=='wisdom')throw new StageError('PROFILE_UNSUPPORTED','generative ASSET only handles wisdom')
+  if(!isWisdomShorts(job.profile))throw new StageError('PROFILE_UNSUPPORTED','generative ASSET only handles wisdom/yasa shorts')
   const features=(deps.features??profileFeatures)(job); needFeatures(features,['IMAGE','TTS'],'Wisdom ASSET')
   if(!apiKey)throw new StageError('PROVIDER_DOWN','OPENAI_API_KEY is not configured',true)
   if(!imageKey)throw new StageError('PROVIDER_DOWN','GEMINI_API_KEY is not configured (every picture is drawn by Gemini)',true)
@@ -189,7 +190,7 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:st
    bytes+=im.bytes.length+au.bytes.length
    items.push({beatId:b.id,durationSec:b.durationSec,narration:b.narration,image:{status:'ready',ref:ip,sha256:ih,contentType:im.contentType,provider:im.provider,model:im.model},tts:{status:'ready',ref:ap,sha256:ah,contentType:au.contentType,provider:au.provider,model:au.model}})
   }
-  const manifest={schema:'generative-assets/1',profile:'wisdom',scriptRef,items,...(anchoredBeatId?{namedThinkerAnchor:{beatId:anchoredBeatId,imagePrompt:script.beats[0].imagePrompt}}:{})}
+  const manifest={schema:'generative-assets/1',profile:job.profile,scriptRef,items,...(anchoredBeatId?{namedThinkerAnchor:{beatId:anchoredBeatId,imagePrompt:script.beats[0].imagePrompt}}:{})}
   const stored=await putAddressed(blobs,'generative-assets',manifest)
   const work=await mkdtemp(join(tmpdir(),'wisdom-asset-'))
   try{

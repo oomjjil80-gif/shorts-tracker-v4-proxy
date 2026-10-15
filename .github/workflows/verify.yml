@@ -49,6 +49,9 @@ jobs:
           # 확정 대본 (history Reels): optional brief.fixedScript used verbatim by the Wisdom PLAN; focused tests incl. Wisdom regression.
           FIXED_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/contracts\.ts|lib/generative/wisdom\.ts|worker/stages/generative\.ts|tools/fixed-script\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           FIXED_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^tools/fixed-script\.test\.ts$' || true)"
+          # 야담 쇼츠 (yasa_shorts profile = the Wisdom Shorts pipeline under its own id): focused tests incl. Wisdom Shorts / 야담 롱폼 regressions.
+          YASA_SHORTS_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/jobs/(profiles|store|http)\.ts|lib/generative/(contracts|wisdom|wisdomThumbnail|wisdomUploadText)\.ts|worker/stages/(generative|compile|autoQc|wisdomThumbnail)\.ts|tools/(yasa-shorts|pipeline-features|profile-modules|creative-profile)\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
+          YASA_SHORTS_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^tools/yasa-shorts\.test\.ts$' || true)"
           LONGFORM_RENDER_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/seniorLongform\.ts|lib/jobs/blobs\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|worker/stages/longform\.ts|tools/longform-chunked-render\.test\.ts|tools/longform-render-memory\.ts|\.github/workflows/verify\.yml)$' || true)"
           NON_TEST="$(printf '%s\n' "$CHANGED" | grep -Ev '^(tools/.*\.test\.(ts|mjs)|\.github/workflows/verify\.yml)$' || true)"
           TESTS="$(printf '%s\n' "$CHANGED" | grep -E '^tools/.*\.test\.(ts|mjs)$' || true)"
@@ -71,6 +74,8 @@ jobs:
             echo "mode=odyssey-offline-restore" >> "$GITHUB_OUTPUT"
           elif [ -z "$SLEEP_OTHER" ] && [ -n "$SLEEP_PRESENT" ]; then
             echo "mode=sleep-classic" >> "$GITHUB_OUTPUT"
+          elif [ -z "$YASA_SHORTS_OTHER" ] && [ -n "$YASA_SHORTS_PRESENT" ]; then
+            echo "mode=yasa-shorts" >> "$GITHUB_OUTPUT"
           elif [ -z "$FIXED_OTHER" ] && [ -n "$FIXED_PRESENT" ]; then
             echo "mode=fixed-script" >> "$GITHUB_OUTPUT"
           elif [ -z "$CARDNEWS_OTHER" ] && [ -n "$CARDNEWS_PRESENT" ]; then
@@ -138,6 +143,26 @@ jobs:
             tools/function-count.test.ts \
             tools/jobs-api.test.ts \
             tools/jobs-store.test.ts
+
+      - name: Run focused 야담 쇼츠 verification (yasa_shorts profile + Wisdom Shorts / 야담 롱폼 regressions)
+        if: steps.scope.outputs.mode == 'yasa-shorts'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 12m npx tsx --test \
+            tools/yasa-shorts.test.ts \
+            tools/fixed-script.test.ts \
+            tools/pipeline-features.test.ts \
+            tools/profile-modules.test.ts \
+            tools/creative-profile.test.ts \
+            tools/creative-all-content.test.ts \
+            tools/p2-planner.test.ts \
+            tools/wisdom-output.test.ts \
+            tools/wisdom-longform.test.ts \
+            tools/yasa-longform-job.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts \
+            tools/function-count.test.ts
 
       - name: Run focused 확정 대본 verification (fixed script PLAN + Wisdom regression)
         if: steps.scope.outputs.mode == 'fixed-script'
