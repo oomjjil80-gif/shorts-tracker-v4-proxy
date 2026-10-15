@@ -1,4 +1,4 @@
-import { WISDOM_PROFILE, type GenerativeBrief } from './contracts.js'
+import { WISDOM_PROFILE, type GenerativeBrief, type FixedScript } from './contracts.js'
 export type WisdomBeat={id:string,narration:string,visualGoal:string,imagePrompt:string,durationSec:number}
 export type WisdomScript={schema:'wisdom-script/1',title:string,hook:string,beats:WisdomBeat[],ending:string,totalSeconds:number}
 // Named historical thinkers: aliases detect the topic; `likeness` is the public-domain visual identity an image model
@@ -119,4 +119,10 @@ export function deterministicWisdomDraft(brief:GenerativeBrief): WisdomScript {
  const beats=Array.from({length:count},(_,i)=>{const idea=base[i%base.length];return {id:`b${i+1}`,narration:idea,visualGoal:`시청자가 “${idea.slice(0,60)}”의 의미를 즉시 이해`,imagePrompt:`vertical 9:16 editorial illustration, calm reflective wisdom theme, visually express: ${idea.slice(0,180)}, no readable text, no watermark`,durationSec:Number(duration.toFixed(2))}})
  const total=Number(beats.reduce((n,b)=>n+b.durationSec,0).toFixed(2))
  return {schema:'wisdom-script/1',title:source.slice(0,40),hook:beats[0].narration,beats,ending:beats[beats.length-1].narration,totalSeconds:total}
+}
+
+// A user-confirmed script becomes the Wisdom script exactly as written (no AI plan, no rewrite).
+export function fixedWisdomScript(f:FixedScript):WisdomScript{
+ const beats=f.beats.map((b,i)=>({id:`b${i+1}`,narration:b.narration,visualGoal:b.visualGoal,durationSec:b.durationSec,imagePrompt:`${f.stylePrefix?`${f.stylePrefix}. `:''}Scene: ${b.imagePrompt}. no readable text, no watermark`}))
+ return {schema:'wisdom-script/1',title:f.title,hook:beats[0].narration,beats,ending:beats[beats.length-1].narration,totalSeconds:Number(beats.reduce((n,b)=>n+b.durationSec,0).toFixed(2))}
 }
