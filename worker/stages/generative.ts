@@ -133,14 +133,14 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:st
   if(frameEnabled&&frame?.status!=='approved'){
    if(frame?.status==='pending'&&!frame.regenerate)return {wait:'DECISION',result:{firstFramePending:true}}
    const style=String(frame?.style||planBrief.firstFrameStyle||'miniature')
-   const styles:Record<string,string>={miniature:'조선시대 3D 미니어처 디오라마, 비실사',animation:'조선시대 애니메이션, 비실사',watercolor:'조선시대 수채화, 비실사',ink:'조선시대 수묵담채, 비실사'}
+   const styles:Record<string,string>={miniature:'조선시대 3D 미니어처 디오라마, 비실사',animation:'한국 전통 2D 손그림 사극 애니메이션, 평면 셀 애니메이션, 명확한 외곽선, 단순한 색면, 일러스트 배경, 3D 렌더링 금지, 디오라마 금지, 미니어처 금지, 실사 질감 금지',watercolor:'조선시대 수채화, 비실사',ink:'조선시대 수묵담채, 비실사'}
    if(!styles[style])throw new StageError('BAD_FIRST_FRAME_STYLE','invalid style')
    const beat=planned.beats?.[0]
    if(!beat?.imagePrompt)throw new StageError('SCRIPT_INVALID','first image prompt missing')
-   const im=await image(`${styles[style]}. 세로 9:16, 글자 없음. ${beat.imagePrompt}`,imageKey)
+   const im=await image(`${styles[style]}. 세로 9:16, 글자 없음. ${beat.imagePrompt}. ${style==='animation'?'최종 결과는 반드시 평면 2D 애니메이션 프레임이어야 하며 모형·장난감·3D 인물 표현은 제외한다.':''}`,imageKey)
    const hash=sha256(im.bytes),ref=`generative-assets/images/${hash}.jpg`
    await blobs.putBytes(ref,im.bytes,im.contentType)
-   frame={status:'pending',attempt:Number(frame?.attempt||0)+1,style,ref,sha256:hash,contentType:im.contentType,regenerate:false}
+   frame={status:'pending',attempt:Number(frame?.attempt||0)+1,style,ref,sha256:hash,contentType:im.contentType,regenerate:false,history:[...(Array.isArray(frame?.history)?frame.history:(frame?.ref?[{attempt:frame.attempt,style:frame.style,ref:frame.ref,sha256:frame.sha256,contentType:frame.contentType}]:[])),{attempt:Number(frame?.attempt||0)+1,style,ref,sha256:hash,contentType:im.contentType}]}
    await blobs.putJson(framePath,frame,{overwrite:true})
    return {wait:'DECISION',result:{firstFramePending:true,attempt:frame.attempt}}
   }
