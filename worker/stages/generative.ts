@@ -126,15 +126,36 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:st
   const planBriefRef=String((p?.result as any)?.briefRef||'')
   const planBrief:any=planBriefRef?await blobs.getJson(planBriefRef).catch(()=>null):null
   const voice=briefVoice(planBrief,'wisdom')
+
+  const frameEnabled=job.profile==='yasa_shorts'&&planBrief?.thumbnailFirst===true
+  const framePath=`yasa-first-frame/${job.id}.json`
+  let frame:any=frameEnabled?await blobs.getJson(framePath).catch(()=>null):null
+  if(frameEnabled&&frame?.status!=='approved'){
+   if(frame?.status==='pending'&&!frame.regenerate)return {wait:'DECISION',result:{firstFramePending:true}}
+   const style=String(frame?.style||planBrief.firstFrameStyle||'miniature')
+   const styles:Record<string,string>={miniature:'조선시대 3D 미니어처 디오라마, 비실사',animation:'조선시대 애니메이션, 비실사',watercolor:'조선시대 수채화, 비실사',ink:'조선시대 수묵담채, 비실사'}
+   if(!styles[style])throw new StageError('BAD_FIRST_FRAME_STYLE','invalid style')
+   const beat=planned.beats?.[0]
+   if(!beat?.imagePrompt)throw new StageError('SCRIPT_INVALID','first image prompt missing')
+   const im=await image(`${styles[style]}. 세로 9:16, 글자 없음. ${beat.imagePrompt}`,imageKey)
+   const hash=sha256(im.bytes),ref=`generative-assets/images/${hash}.jpg`
+   await blobs.putBytes(ref,im.bytes,im.contentType)
+   frame={status:'pending',attempt:Number(frame?.attempt||0)+1,style,ref,sha256:hash,contentType:im.contentType,regenerate:false}
+   await blobs.putJson(framePath,frame,{overwrite:true})
+   return {wait:'DECISION',result:{firstFramePending:true,attempt:frame.attempt}}
+  }
+  const approvedBytes:Buffer|null=frameEnabled?await blobs.getBytes(frame.ref):null
+  if(frameEnabled&&(!approvedBytes||sha256(approvedBytes)!==frame.sha256))throw new StageError('FIRST_FRAME_MISSING','approved frame missing')
+
   // Golden Style (stored at job_create with its locked version): every beat picture = the locked reference + text;
   // otherwise exactly as before (the Wisdom Shorts LOCK: same prompt, same model call, same cache key)
-  const golden=creativeGolden(planBrief?.creative), gTag=golden?goldenCacheTag(golden):''
+  const golden=frameEnabled?null:creativeGolden(planBrief?.creative), gTag=golden?goldenCacheTag(golden):''
   // FIRST-IMAGE CHARACTER LOCK: beat 1 is drawn with the Golden reference alone and becomes the job's lock (stored before
   // any later beat); every later beat = the Golden reference (style) + beat 1 (the people). A resume reads the same lock.
   let identity:GoldenIdentity|null=golden?await readGoldenLock(blobs as any,job.id,golden):null
-  const drawBeat=(p:string,k:string,i:number)=>golden?goldenImage(golden,p,'2:3',k,deps.imageFetch??fetch,i===0?null:identity):image(p,k)
+  const drawBeat=(p:string,k:string,i:number)=>frameEnabled&&i>0?geminiShortsImageWithReference('첫 이미지와 같은 그림체, 인물, 질감을 유지하세요. 글자 없음. '+p,approvedBytes!,imageKey,deps.imageFetch??fetch):golden?goldenImage(golden,p,'2:3',k,deps.imageFetch??fetch,i===0?null:identity):image(p,k)
   // beat 1's key: the Golden version; every later beat's key also carries the lock (no lock yet = nothing cached for it)
-  const imageKeyOf=(b:any,i:number)=>!golden||i===0?sha256('image-v1|'+b.imagePrompt+gTag):identity?sha256('image-v1|'+b.imagePrompt+gTag+goldenLockTag(identity)):null
+  const imageKeyOf=(b:any,i:number)=>frameEnabled?sha256('yasa-approved-v1|'+frame.sha256+'|'+i+'|'+b.imagePrompt):!golden||i===0?sha256('image-v1|'+b.imagePrompt+gTag):identity?sha256('image-v1|'+b.imagePrompt+gTag+goldenLockTag(identity)):null
   // New PLANs already contain identity locks. For legacy already-paid ASSET reruns, preserve the
   // old paid prompts except the one deterministic named-thinker anchor so an upgrade never silently re-buys media.
   const opening=[planned.title,planned.hook,...(planned.beats||[]).slice(0,2).map((b:any)=>b?.narration)].join(' ')
@@ -171,7 +192,8 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:st
    if(golden&&i>0&&!identity)throw new StageError('GOLDEN_LOCK_MISSING','the first picture (character lock) must exist before any later picture',false)
    const ik=imageKeyOf(b,i)!, ak=sha256(ttsCacheIdentity(voice,b.narration))
    const imageCacheHit=!!im, ttsCacheHit=!!au
-   if(im)reused++;else{im=await drawBeat(b.imagePrompt,imageKey,i);generated++}
+   if(frameEnabled&&i===0){im={bytes:approvedBytes!,contentType:frame.contentType||'image/jpeg',provider:'gemini',model:'approved-first-frame'};reused++}
+   else if(im)reused++;else{im=await drawBeat(b.imagePrompt,imageKey,i);generated++}
    // beat 1 decided: it is the character lock of this job from now on (create-once; a resume reads it back)
    if(golden&&i===0&&!identity)identity=(await goldenLockFor(blobs as any,job.id,golden,async()=>im,'first-beat')).identity
    if(au)reused++;else{au=await tts(b.narration,apiKey,voice);generated++}
