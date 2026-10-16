@@ -52,6 +52,9 @@ jobs:
           # 야담 쇼츠 (yasa_shorts profile = the Wisdom Shorts pipeline under its own id): focused tests incl. Wisdom Shorts / 야담 롱폼 regressions.
           YASA_SHORTS_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/jobs/(profiles|store|http)\.ts|lib/generative/(contracts|wisdom|wisdomThumbnail|wisdomUploadText)\.ts|worker/stages/(generative|compile|autoQc|wisdomThumbnail)\.ts|tools/(yasa-shorts|pipeline-features|profile-modules|creative-profile)\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           YASA_SHORTS_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^tools/yasa-shorts\.test\.ts$' || true)"
+          # 블록 엔진 (Recipe + 승인 강제를 worker/runJob.ts에 연결): focused tests incl. Job API / worker / pipeline regressions.
+          BLOCK_ENGINE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(db/004_job_blocks\.sql|lib/jobs/(recipe|recipes|blockStore|blockRuntime|blockScheduler|legacyBlockMapping|http|types)\.ts|worker/(runJob|index)\.ts|tools/(block-engine|recipe-contract|testDb)\.ts|\.github/workflows/verify\.yml)$' || true)"
+          BLOCK_ENGINE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^tools/block-engine\.test\.ts$' || true)"
           LONGFORM_RENDER_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/seniorLongform\.ts|lib/jobs/blobs\.ts|lib/jobs/http\.ts|lib/jobs/store\.ts|worker/stages/longform\.ts|tools/longform-chunked-render\.test\.ts|tools/longform-render-memory\.ts|\.github/workflows/verify\.yml)$' || true)"
           NON_TEST="$(printf '%s\n' "$CHANGED" | grep -Ev '^(tools/.*\.test\.(ts|mjs)|\.github/workflows/verify\.yml)$' || true)"
           TESTS="$(printf '%s\n' "$CHANGED" | grep -E '^tools/.*\.test\.(ts|mjs)$' || true)"
@@ -74,6 +77,8 @@ jobs:
             echo "mode=odyssey-offline-restore" >> "$GITHUB_OUTPUT"
           elif [ -z "$SLEEP_OTHER" ] && [ -n "$SLEEP_PRESENT" ]; then
             echo "mode=sleep-classic" >> "$GITHUB_OUTPUT"
+          elif [ -z "$BLOCK_ENGINE_OTHER" ] && [ -n "$BLOCK_ENGINE_PRESENT" ]; then
+            echo "mode=block-engine" >> "$GITHUB_OUTPUT"
           elif [ -z "$YASA_SHORTS_OTHER" ] && [ -n "$YASA_SHORTS_PRESENT" ]; then
             echo "mode=yasa-shorts" >> "$GITHUB_OUTPUT"
           elif [ -z "$FIXED_OTHER" ] && [ -n "$FIXED_PRESENT" ]; then
@@ -143,6 +148,22 @@ jobs:
             tools/function-count.test.ts \
             tools/jobs-api.test.ts \
             tools/jobs-store.test.ts
+
+      - name: Run focused 블록 엔진 verification (recipes, approvals, reuse, worker gate + Job API / worker / pipeline regressions)
+        if: steps.scope.outputs.mode == 'block-engine'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 12m npx tsx --test \
+            tools/block-engine.test.ts \
+            tools/recipe-contract.test.ts \
+            tools/worker.test.ts \
+            tools/p1-pipeline.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts \
+            tools/pipeline-features.test.ts \
+            tools/profile-modules.test.ts \
+            tools/function-count.test.ts
 
       - name: Run focused 야담 쇼츠 verification (yasa_shorts profile + Wisdom Shorts / 야담 롱폼 regressions)
         if: steps.scope.outputs.mode == 'yasa-shorts'

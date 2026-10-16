@@ -7,6 +7,8 @@ import { createJobStore } from '../lib/jobs/store.js'
 import { createVercelJobBlobStore } from '../lib/jobs/blobs.js'
 import { getSourceAsset } from '../lib/sourceAssetRegistry.js'
 import { runOnce } from './runJob.js'
+import { createBlockStore } from '../lib/jobs/blockStore.js'
+import { createBlockGate } from '../lib/jobs/blockRuntime.js'
 import { runStyleExamplesOnce } from './oneoffStyleExamples.js'
 import { installUsageMeter } from '../lib/generative/usageLedger.js'
 import { runStartupRechecks } from './startupRechecks.js'
@@ -54,6 +56,8 @@ async function main() {
   }))
   const db = await createPgDbFromEnv()
   const store = createJobStore(db)
+  // block engine: jobs bound to a Recipe are gated on their approvals; every other job runs exactly as before
+  const blocks = createBlockGate(createBlockStore(db), async (jobId, stage) => { const r: any = await store.getLatestSucceeded(jobId, stage); return r ? { inputHash: r.inputHash ?? null, outputRef: r.outputRef ?? null, outputHash: r.outputHash ?? null, result: r.result ?? null } : null })
   const assetRerunJobIds = await runStartupRechecks(store, process.env, (line) => console.log(`[worker ${workerId}] ${line}`))
   const decisionJobId = String(process.env.DECISION_RECOMMENDED_JOB_ID || '').trim()
   if (decisionJobId && assetRerunJobIds.has(decisionJobId)) console.log(`[worker ${workerId}] DECISION_RECOMMENDED_JOB_ID skipped: SUPERSEDED_BY_PLAN_OR_ASSET_RECHECK job=${decisionJobId}`)
@@ -103,7 +107,7 @@ async function main() {
         }
         return getSourceAsset(id) as any
       }
-      const out = await runOnce({ store, blobs, workerId, executors, resolveSourceAsset, resolveSourceFile: createBlobSourceFileResolver(blobGet as any), leaseMs: 120_000 })
+      const out = await runOnce({ store, blobs, workerId, executors, resolveSourceAsset, resolveSourceFile: createBlobSourceFileResolver(blobGet as any), leaseMs: 120_000, blocks })
       if (out.ran) {
         let detail = ''
         if (out.outcome === 'failed' || out.outcome === 'retry') {
