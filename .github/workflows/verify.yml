@@ -2,7 +2,7 @@ name: verify
 on:
   pull_request:
   push:
-    branches: [p1-5-reference-contracts-v1]
+    branches: [p1-5-reference-contracts-v1, feat/yasa-shorts-first-frame-approval-207]
 concurrency:
   group: verify-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
