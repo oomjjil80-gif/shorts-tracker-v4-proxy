@@ -338,7 +338,7 @@ export function createJobsHttp(deps: JobsDeps) {
         if(frameJob?.profile==='yasa_shorts'){
           const rec:any=await deps.blobs.getJson(`yasa-first-frame/${frameJob.id}.json`).catch(()=>null)
           const url=rec?.ref&&deps.blobs.presign?(await deps.blobs.presign(rec.ref).catch(()=>null))?.url??null:null
-          const versions=await Promise.all((rec?.history||[]).map(async(h:any)=>({attempt:h.attempt,style:h.style,thumbnailUrl:(await deps.blobs.presign(h.ref).catch(()=>null))?.url||null})))
+          const versions=await Promise.all((rec?.history||[]).map(async(h:any)=>({attempt:h.attempt,style:h.style,thumbnailUrl:deps.blobs.presign?(await deps.blobs.presign(h.ref).catch(()=>null))?.url||null:null})))
           return res.status(200).json({ok:true,style:rec?{status:rec.status,awaiting:frameJob.status==='WAITING_USER'&&frameJob.stage==='ASSET',attempt:rec.attempt,thumbnailUrl:url,firstFrameStyle:rec.style,regenerating:rec.regenerate===true,versions}:null})
         }
       }
