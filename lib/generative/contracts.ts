@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
 import { canonicalize } from '../tracker-core/renderManifest.js'
 import { resolveCreativeProfile, type CreativeProfile } from './creativeProfile.js'
-import { resolveYasaFirstFrameStyle, type YasaFirstFrameStyle } from './styleApproval.js'
 
 export type GenerativeInputKind = 'topic' | 'text'
 export type GenerativeBrief = {
@@ -14,7 +13,7 @@ export type GenerativeBrief = {
   targetSeconds: number
   creative?: CreativeProfile
   thumbnailFirst?: boolean
-  firstFrameStyle?: YasaFirstFrameStyle
+  firstFrameStyle?: 'miniature' | 'animation' | 'watercolor' | 'ink'
   // a user-confirmed script (history/yasa Reels): PLAN uses it verbatim — no rewrite, no AI plan, no semantic QC
   fixedScript?: FixedScript
   // a Short derived from a Wisdom Longform (set by job_create from the parent's stored recommendation)
@@ -64,7 +63,9 @@ export function normalizeGenerativeBrief(input:any, profile:'wisdom'|'yasa_short
   // Creative Settings (voice/tone/speed/picture style): AUTO keeps the Wisdom Shorts house voice and its own style
   const creative=resolveCreativeProfile(profile,input,text)
   const thumbnailFirst = profile === 'yasa_shorts' && input?.thumbnailFirst === true
-  const firstFrameStyle = thumbnailFirst ? resolveYasaFirstFrameStyle(input?.firstFrameStyle) : undefined
+  const selectedStyle = input?.firstFrameStyle ?? 'miniature'
+  if (thumbnailFirst && !['miniature','animation','watercolor','ink'].includes(selectedStyle)) throw new Error('firstFrameStyle must be miniature, animation, watercolor or ink')
+  const firstFrameStyle = thumbnailFirst ? selectedStyle : undefined
   return {schema:'generative-brief/1',profile,kind,text,language:'ko',aspectRatio:'9:16',targetSeconds,creative,...(thumbnailFirst?{thumbnailFirst,firstFrameStyle}:{}),...(fixedScript?{fixedScript}:{})}
 }
 export function generativeBriefHash(b:GenerativeBrief){return createHash('sha256').update(canonicalize(b)).digest('hex')}
