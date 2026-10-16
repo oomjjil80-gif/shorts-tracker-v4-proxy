@@ -31,3 +31,14 @@ test('unknown blocks and duplicate blocks fail closed', () => {
   assert.match(recipeErrors({ ...recipe, steps: [{ block: 'NOT_A_BLOCK' as any }] }).join(' '), /unknown block/)
   assert.match(recipeErrors({ ...recipe, steps: [recipe.steps[0], recipe.steps[0]] }).join(' '), /duplicate/)
 })
+
+import { legacyBlockMapping } from '../lib/jobs/legacyBlockMapping.js'
+import { PROFILES } from '../lib/jobs/profiles.js'
+test('all six existing profiles map every stage to a common block without changing dispatch', () => {
+  for (const profile of Object.values(PROFILES)) {
+    const mapped = legacyBlockMapping(profile.id)
+    assert.deepEqual(mapped.map(m => m.stage), profile.stages)
+    assert.deepEqual(mapped.map(m => m.module), profile.stages.map(stage => profile.modules[stage]))
+    assert.ok(mapped.every(m => m.note.includes('compatibility only')))
+  }
+})
