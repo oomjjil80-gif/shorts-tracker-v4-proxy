@@ -17,6 +17,7 @@ export function nextBlockDecision(recipe: ContentRecipe, progress: readonly Bloc
     if (!recipe.steps.some(s => s.block === item.block && s.skipReason === undefined)) {
       return { state: 'INVALID', errors: [`unexpected progress for ${item.block}`] }
     }
+    if (item.status === 'SKIPPED') return { state: 'INVALID', errors: [`unexpected SKIPPED progress for ${item.block}`] }
     byBlock.set(item.block, item)
   }
   for (const step of recipe.steps) {
