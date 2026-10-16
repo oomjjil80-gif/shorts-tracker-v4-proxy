@@ -60,5 +60,5 @@ test('scheduler stops before asset creation until style approved', () => {
 })
 test('scheduler fails closed for duplicate and unexpected persisted progress', () => {
   assert.equal(nextBlockDecision(recipe, [{ block: 'RESEARCH', status: 'SUCCEEDED' }, { block: 'RESEARCH', status: 'SUCCEEDED' }]).state, 'INVALID')
-  assert.equal(nextBlockDecision(recipe, [{ block: 'RENDER', status: 'SKIPPED' }]).state, 'READY')
+  assert.equal(nextBlockDecision(recipe, [{ block: 'RENDER', status: 'SKIPPED' }]).state, 'INVALID')
 })
