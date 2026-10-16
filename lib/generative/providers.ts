@@ -33,6 +33,10 @@ export async function geminiLongformImage(prompt:string,apiKey:string,f:FetchLik
  return geminiImage({prompt,aspectRatio:'16:9',imageSize:'1K'},apiKey,f)
 }
 // Style-locked picture: drawn FROM the approved reference image, so the art style is carried by the picture itself.
+// Yasa Shorts: the approved 9:16 first frame is an actual Gemini reference for all subsequent frames.
+export async function geminiShortsImageWithReference(prompt:string,reference:Buffer,apiKey:string,f:FetchLike=fetch):Promise<GeneratedBinary>{
+ return geminiImage({prompt,aspectRatio:'9:16',imageSize:'1K',references:[{bytes:reference,mime:sniffImageMime(reference)}]},apiKey,f)
+}
 export async function geminiImageWithReference(prompt:string,reference:Buffer,apiKey:string,f:FetchLike=fetch):Promise<GeneratedBinary>{
  return geminiImage({prompt,aspectRatio:'16:9',imageSize:'1K',references:[{bytes:reference,mime:sniffImageMime(reference)}]},apiKey,f)
 }
