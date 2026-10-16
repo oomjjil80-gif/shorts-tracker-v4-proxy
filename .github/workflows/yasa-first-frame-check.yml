@@ -1,0 +1,23 @@
+name: yasa-first-frame-check
+on:
+  pull_request:
+    paths:
+      - 'lib/generative/**'
+      - 'lib/jobs/http.ts'
+      - 'worker/stages/generative.ts'
+      - 'tools/yasa-first-frame.test.ts'
+      - '.github/workflows/yasa-first-frame-check.yml'
+  workflow_dispatch:
+jobs:
+  first-frame:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npx tsx --test tools/yasa-first-frame.test.ts tools/p2-generative.test.ts tools/p2-providers.test.ts
