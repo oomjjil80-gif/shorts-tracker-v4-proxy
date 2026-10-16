@@ -105,6 +105,8 @@ export const generativePlanExecutor=createGenerativePlanExecutor()
 
 // Feature modules inside this stage: IMAGE (deps.image) and TTS (deps.tts), both needed to compose the beats, and
 // CAPTION (the timed caption events). A feature the profile does not select is never called.
+const scriptFirstBeat=(script:any)=>{const first=script?.beats?.[0];if(!first?.imagePrompt)throw new StageError('SCRIPT_INVALID','missing first image prompt');return first}
+
 export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:string; imageFetch?:typeof fetch; image?:typeof geminiWisdomImage; tts?:typeof openAiTts; features?:FeatureResolver}={}):StageExecutor {
  const image=deps.image??geminiWisdomImage, tts=deps.tts??openAiTts, apiKey=deps.apiKey??process.env.OPENAI_API_KEY??''
  // pictures: Gemini with its own key; narration stays on OpenAI
