@@ -42,3 +42,23 @@ test('all six existing profiles map every stage to a common block without changi
     assert.ok(mapped.every(m => m.note.includes('compatibility only')))
   }
 })
+
+import { nextBlockDecision } from '../lib/jobs/blockScheduler.js'
+test('scheduler stops at packaging approval before script paid work', () => {
+  const progress: BlockProgress[] = [{ block: 'RESEARCH', status: 'SUCCEEDED' }, { block: 'PACKAGING', status: 'SUCCEEDED' }]
+  assert.deepEqual(nextBlockDecision(recipe, progress), { state: 'WAITING_APPROVAL', block: 'PACKAGING' })
+  assert.deepEqual(nextBlockDecision(recipe, [...progress.slice(0, -1), { block: 'PACKAGING', status: 'APPROVED' }]), { state: 'READY', block: 'SCRIPT', paid: true })
+})
+test('scheduler stops before asset creation until style approved', () => {
+  const progress: BlockProgress[] = [
+    { block: 'RESEARCH', status: 'SUCCEEDED' }, { block: 'PACKAGING', status: 'APPROVED' },
+    { block: 'SCRIPT', status: 'SUCCEEDED' }, { block: 'REVIEW', status: 'SUCCEEDED' },
+    { block: 'SCRIPT_APPROVAL', status: 'APPROVED' }, { block: 'STYLE_APPROVAL', status: 'SUCCEEDED' }
+  ]
+  assert.deepEqual(nextBlockDecision(recipe, progress), { state: 'WAITING_APPROVAL', block: 'STYLE_APPROVAL' })
+  assert.deepEqual(nextBlockDecision(recipe, [...progress.slice(0, -1), { block: 'STYLE_APPROVAL', status: 'APPROVED' }]), { state: 'READY', block: 'ASSETS', paid: true })
+})
+test('scheduler fails closed for duplicate and unexpected persisted progress', () => {
+  assert.equal(nextBlockDecision(recipe, [{ block: 'RESEARCH', status: 'SUCCEEDED' }, { block: 'RESEARCH', status: 'SUCCEEDED' }]).state, 'INVALID')
+  assert.equal(nextBlockDecision(recipe, [{ block: 'RENDER', status: 'SKIPPED' }]).state, 'READY')
+})
