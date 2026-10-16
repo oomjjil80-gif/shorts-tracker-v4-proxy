@@ -165,6 +165,9 @@ test('StageError carries retryability', () => {
 test('orphan recovery: RUNNING job with a null lease is reclaimable instead of staying stuck forever', async () => {
   const { db, store, submit, run } = await setup()
   const job = await submit('idem-null-lease-01')
+  // Simulate a legacy/corrupt orphan row that the current DB constraint normally forbids.
+  // The constraint is dropped only in this isolated in-memory test database.
+  await db.query(`ALTER TABLE production_jobs DROP CONSTRAINT production_jobs_lease`)
   await db.query(`UPDATE production_jobs SET status='RUNNING', lease_owner=NULL, lease_until=NULL, heartbeat_at=NULL WHERE id=$1`, [job.id])
   const out = await run('recovery-worker')
   assert.equal(out.ran && out.outcome, 'completed')
