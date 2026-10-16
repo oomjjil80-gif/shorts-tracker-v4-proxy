@@ -10,6 +10,22 @@ import { runOk } from '../media/ffmpeg.js'
 import { thumbnailCopyErrors, type ThumbLine } from './wisdomThumbnail.js'
 import { revealWords } from './yasaLongform.js'
 
+// Yasa Shorts first-frame choices. A redraw keeps the current style unless the user explicitly selects another one.
+// These presets are intentionally separate from the Longform thumbnail approval flow.
+export const YASA_FIRST_FRAME_STYLES = {
+  miniature: '조선시대 역사 3D 미니어처 디오라마, 정교한 건축 모형, 따뜻한 색감, 부드러운 조명, 비실사 일러스트',
+  animation: '조선시대 역사 애니메이션 배경화, 섬세한 손그림 질감, 영화적인 구도, 비실사',
+  watercolor: '조선시대 역사 수채화 일러스트, 자연스러운 붓질, 은은한 채색, 비실사',
+  ink: '조선시대 역사 수묵담채 일러스트, 먹선과 절제된 채색, 전통 회화 질감, 비실사'
+} as const
+export type YasaFirstFrameStyle = keyof typeof YASA_FIRST_FRAME_STYLES
+export const DEFAULT_YASA_FIRST_FRAME_STYLE: YasaFirstFrameStyle = 'miniature'
+export function resolveYasaFirstFrameStyle(selected: unknown, current: YasaFirstFrameStyle = DEFAULT_YASA_FIRST_FRAME_STYLE): YasaFirstFrameStyle {
+  if (selected === undefined || selected === null || selected === '') return current
+  if (typeof selected === 'string' && Object.prototype.hasOwnProperty.call(YASA_FIRST_FRAME_STYLES, selected)) return selected as YasaFirstFrameStyle
+  throw new Error('지원하지 않는 첫 화면 화풍입니다.')
+}
+
 // Which profiles go through it. Off = the profile behaves exactly as before (Wisdom Shorts: its LOCKed pipeline).
 export const STYLE_APPROVAL: Readonly<Record<string, { enabled: boolean; note?: string }>> = {
   yasa_longform: { enabled: true },
