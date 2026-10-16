@@ -50,6 +50,7 @@ jobs:
           FIXED_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/contracts\.ts|lib/generative/wisdom\.ts|worker/stages/generative\.ts|tools/fixed-script\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           FIXED_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^tools/fixed-script\.test\.ts$' || true)"
           # First-frame approval: narrow, free regression tests; avoid expensive longform render tests.
+          # PR-triggered verification rerun for the current first-frame branch.
           FIRST_FRAME_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/(contracts|providers|styleApproval)\.ts|lib/jobs/http\.ts|worker/stages/generative\.ts|tools/yasa-first-frame\.test\.ts|\.github/workflows/verify\.yml)
           YASA_SHORTS_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/jobs/(profiles|store|http)\.ts|lib/generative/(contracts|wisdom|wisdomThumbnail|wisdomUploadText)\.ts|worker/stages/(generative|compile|autoQc|wisdomThumbnail)\.ts|tools/(yasa-shorts|pipeline-features|profile-modules|creative-profile)\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           YASA_SHORTS_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^tools/yasa-shorts\.test\.ts$' || true)"
