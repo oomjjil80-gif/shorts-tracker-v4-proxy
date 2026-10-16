@@ -338,7 +338,8 @@ export function createJobsHttp(deps: JobsDeps) {
         if(frameJob?.profile==='yasa_shorts'){
           const rec:any=await deps.blobs.getJson(`yasa-first-frame/${frameJob.id}.json`).catch(()=>null)
           const url=rec?.ref&&deps.blobs.presign?(await deps.blobs.presign(rec.ref).catch(()=>null))?.url??null:null
-          return res.status(200).json({ok:true,style:rec?{status:rec.status,awaiting:frameJob.status==='WAITING_USER'&&frameJob.stage==='ASSET',attempt:rec.attempt,thumbnailUrl:url,firstFrameStyle:rec.style,regenerating:rec.regenerate===true}:null})
+          const versions=await Promise.all((rec?.history||[]).map(async(h:any)=>({attempt:h.attempt,style:h.style,thumbnailUrl:(await deps.blobs.presign(h.ref).catch(()=>null))?.url||null})))
+          return res.status(200).json({ok:true,style:rec?{status:rec.status,awaiting:frameJob.status==='WAITING_USER'&&frameJob.stage==='ASSET',attempt:rec.attempt,thumbnailUrl:url,firstFrameStyle:rec.style,regenerating:rec.regenerate===true,versions}:null})
         }
       }
       if (taskType === 'job_style') {
@@ -382,14 +383,20 @@ export function createJobsHttp(deps: JobsDeps) {
         const frameJob=await store.getJob(String(body.jobId),workspaceId)
         if(frameJob?.profile==='yasa_shorts'){
           const action=String(body.action||'')
-          need(['approve','regenerate'].includes(action),'action must be approve or regenerate')
+          need(['approve','regenerate','select'].includes(action),'unsupported action')
           const ref=`yasa-first-frame/${frameJob.id}.json`
           const rec:any=await deps.blobs.getJson(ref).catch(()=>null)
           if(!rec||rec.status!=='pending'||rec.regenerate)throw new JobError('NO_THUMBNAIL','no pending first frame')
           if(frameJob.status!=='WAITING_USER'||frameJob.waitReason!=='DECISION'||frameJob.stage!=='ASSET')throw new JobError('NOT_AWAITING_THUMBNAIL','job is not awaiting approval')
           if(body.attempt!==undefined&&Number(body.attempt)!==rec.attempt)throw new JobError('NO_THUMBNAIL','stale attempt')
           if(action==='approve')rec.status='approved'
-          else {
+          else if(action==='select'){
+            const h=(rec.history||[]).find((x:any)=>Number(x.attempt)===Number(body.selectedAttempt))
+            if(!h)throw new JobError('NO_THUMBNAIL','image not found')
+            Object.assign(rec,{ref:h.ref,sha256:h.sha256,contentType:h.contentType,style:h.style,regenerate:false})
+            await deps.blobs.putJson(ref,rec,{overwrite:true})
+            return res.status(200).json({ok:true,style:{status:rec.status,attempt:rec.attempt}})
+          }else {
             const style=body.firstFrameStyle===undefined?rec.style:String(body.firstFrameStyle)
             need(['miniature','animation','watercolor','ink'].includes(style),'unsupported first-frame style')
             rec.style=style;rec.regenerate=true
