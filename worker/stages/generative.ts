@@ -7,7 +7,7 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runOk, probe } from '../../lib/media/ffmpeg.js'
-import { geminiWisdomImage, openAiTts } from '../../lib/generative/providers.js'
+import { geminiWisdomImage, geminiShortsImageWithReference, openAiTts } from '../../lib/generative/providers.js'
 import { openAiWisdomPlan, applyVisualBible, styledVisualBible } from '../../lib/generative/planner.js'
 import { briefVoice, creativeGolden, creativeStyleOverride } from '../../lib/generative/creativeProfile.js'
 import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, readGoldenLock, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
@@ -140,8 +140,9 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:st
    const beat=planned.beats?.[0]
    if(!beat?.imagePrompt)throw new StageError('SCRIPT_INVALID','first image prompt missing')
    const scene=`${styles[style]}. 세로 9:16, 글자 없음. ${beat.imagePrompt}`
-   const req=await yadamImageRequest({scene})
-   const im=await geminiImage({...req,aspectRatio:'9:16'},imageKey,deps.imageFetch??fetch)
+   const im=style==='miniature'
+    ?await image(scene,imageKey)
+    :await geminiImage({...await yadamImageRequest({scene}),aspectRatio:'9:16'},imageKey,deps.imageFetch??fetch)
    const hash=sha256(im.bytes),ref=`generative-assets/images/${hash}.jpg`
    await blobs.putBytes(ref,im.bytes,im.contentType)
    frame={status:'pending',attempt:Number(frame?.attempt||0)+1,style,ref,sha256:hash,contentType:im.contentType,regenerate:false,history:[...(Array.isArray(frame?.history)?frame.history:(frame?.ref?[{attempt:frame.attempt,style:frame.style,ref:frame.ref,sha256:frame.sha256,contentType:frame.contentType}]:[])),{attempt:Number(frame?.attempt||0)+1,style,ref,sha256:hash,contentType:im.contentType}]}
@@ -157,9 +158,9 @@ export function createGenerativeAssetExecutor(deps:{apiKey?:string; imageKey?:st
   // FIRST-IMAGE CHARACTER LOCK: beat 1 is drawn with the Golden reference alone and becomes the job's lock (stored before
   // any later beat); every later beat = the Golden reference (style) + beat 1 (the people). A resume reads the same lock.
   let identity:GoldenIdentity|null=golden?await readGoldenLock(blobs as any,job.id,golden):null
-  const drawBeat=(p:string,k:string,i:number)=>frameEnabled&&i>0?geminiImage({...await yadamImageRequest({scene:'첫 이미지와 같은 인물과 그림체를 유지하세요. '+p,approved:approvedBytes!}),aspectRatio:'9:16'},imageKey,deps.imageFetch??fetch):golden?goldenImage(golden,p,'2:3',k,deps.imageFetch??fetch,i===0?null:identity):image(p,k)
+  const drawBeat=(p:string,k:string,i:number)=>frameEnabled&&i>0?(frame.style==='miniature'?geminiShortsImageWithReference('첫 이미지와 같은 3D 미니어처 디오라마 스타일과 인물을 유지하세요. 글자 없음. '+p,approvedBytes!,imageKey,deps.imageFetch??fetch):geminiImage({...await yadamImageRequest({scene:'첫 이미지와 같은 인물과 그림체를 유지하세요. '+p,approved:approvedBytes!}),aspectRatio:'9:16'},imageKey,deps.imageFetch??fetch)):golden?goldenImage(golden,p,'2:3',k,deps.imageFetch??fetch,i===0?null:identity):image(p,k)
   // beat 1's key: the Golden version; every later beat's key also carries the lock (no lock yet = nothing cached for it)
-  const imageKeyOf=(b:any,i:number)=>frameEnabled?sha256('yasa-approved-v2|'+YADAM_STYLE_VERSION+'|'+frame.sha256+'|'+i+'|'+b.imagePrompt):!golden||i===0?sha256('image-v1|'+b.imagePrompt+gTag):identity?sha256('image-v1|'+b.imagePrompt+gTag+goldenLockTag(identity)):null
+  const imageKeyOf=(b:any,i:number)=>frameEnabled?sha256('yasa-approved-v3|'+(frame.style==='miniature'?'miniature':YADAM_STYLE_VERSION)+'|'+frame.sha256+'|'+i+'|'+b.imagePrompt):!golden||i===0?sha256('image-v1|'+b.imagePrompt+gTag):identity?sha256('image-v1|'+b.imagePrompt+gTag+goldenLockTag(identity)):null
   // New PLANs already contain identity locks. For legacy already-paid ASSET reruns, preserve the
   // old paid prompts except the one deterministic named-thinker anchor so an upgrade never silently re-buys media.
   const opening=[planned.title,planned.hook,...(planned.beats||[]).slice(0,2).map((b:any)=>b?.narration)].join(' ')
