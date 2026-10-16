@@ -333,6 +333,14 @@ export function createJobsHttp(deps: JobsDeps) {
         for (const [k, ref] of Object.entries<string>(rec.files ?? {})) { if (!String(ref).startsWith(`${base}/`)) continue; const s = await deps.blobs.presign?.(ref, 30 * 60_000).catch(() => null); if (s) files[k] = s.url }
         return res.status(200).json({ ok: true, run, order: rec.order ?? [], errors: rec.errors ?? {}, report: rec.report ?? {}, files })
       }
+      if (taskType === 'job_style' && req.query?.id) {
+        const frameJob=await store.getJob(String(req.query.id),workspaceId)
+        if(frameJob?.profile==='yasa_shorts'){
+          const rec:any=await deps.blobs.getJson(`yasa-first-frame/${frameJob.id}.json`).catch(()=>null)
+          const url=rec?.ref&&deps.blobs.presign?(await deps.blobs.presign(rec.ref).catch(()=>null))?.url??null:null
+          return res.status(200).json({ok:true,style:rec?{status:rec.status,awaiting:frameJob.status==='WAITING_USER'&&frameJob.stage==='ASSET',attempt:rec.attempt,thumbnailUrl:url,firstFrameStyle:rec.style,regenerating:rec.regenerate===true}:null})
+        }
+      }
       if (taskType === 'job_style') {
         const id = need(String(req.query?.id || ''), 'id is required')
         const job = await store.getJob(id, workspaceId)
@@ -370,6 +378,27 @@ export function createJobsHttp(deps: JobsDeps) {
 
       // 승인 / 다시 생성 of the thumbnail: the SAME job continues (approve -> the pictures in that style; regenerate -> one
       // new thumbnail). Only a job waiting for its thumbnail; the decision names the attempt the user saw.
+      if(taskType==='job_style_decision'&&body.jobId){
+        const frameJob=await store.getJob(String(body.jobId),workspaceId)
+        if(frameJob?.profile==='yasa_shorts'){
+          const action=String(body.action||'')
+          need(['approve','regenerate'].includes(action),'action must be approve or regenerate')
+          const ref=`yasa-first-frame/${frameJob.id}.json`
+          const rec:any=await deps.blobs.getJson(ref).catch(()=>null)
+          if(!rec||rec.status!=='pending'||rec.regenerate)throw new JobError('NO_THUMBNAIL','no pending first frame')
+          if(frameJob.status!=='WAITING_USER'||frameJob.waitReason!=='DECISION'||frameJob.stage!=='ASSET')throw new JobError('NOT_AWAITING_THUMBNAIL','job is not awaiting approval')
+          if(body.attempt!==undefined&&Number(body.attempt)!==rec.attempt)throw new JobError('NO_THUMBNAIL','stale attempt')
+          if(action==='approve')rec.status='approved'
+          else {
+            const style=body.firstFrameStyle===undefined?rec.style:String(body.firstFrameStyle)
+            need(['miniature','animation','watercolor','ink'].includes(style),'unsupported first-frame style')
+            rec.style=style;rec.regenerate=true
+          }
+          await deps.blobs.putJson(ref,rec,{overwrite:true})
+          const next=await store.resumeStyleApproval({jobId:frameJob.id,workspaceId})
+          return res.status(200).json({ok:true,job:view(next,await store.listStageRuns(next.id)),style:{status:rec.status,attempt:rec.attempt}})
+        }
+      }
       if (taskType === 'job_style_decision') {
         const jobId = need(String(body.jobId || ''), 'jobId is required'), action = String(body.action || '')
         need(['approve', 'regenerate', 'representative', 'thumbnail_redraw', 'thumbnail_text', 'accept'].includes(action), 'action must be approve, regenerate, representative, thumbnail_redraw, thumbnail_text or accept')
