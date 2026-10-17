@@ -16,11 +16,11 @@ import type { StageExecutor } from '../worker/types.js'
 
 const WS = 'ws1', KEY = 'k'.repeat(32)
 
-async function rig(extra: Record<string, RecipeBinding> = {}) {
+async function rig(extra: Record<string, RecipeBinding> = {}, script: any = { title: '우물 속 노랫소리', beats: [{ id: 'b1', narration: '첫 장면 낭독' }] }) {
   const db = await createTestDb()
   const store = createJobStore(db)
   const blobs = createMemoryBlobStore()
-  await blobs.putJson('scripts/s1.json', { title: '우물 속 노랫소리', beats: [{ id: 'b1', narration: '첫 장면 낭독' }] })
+  await blobs.putJson('scripts/s1.json', script)
   const blocks = createBlockStore(db, undefined, (id) => extra[id] ?? recipeFor(id))
   const calls: Record<string, number> = {}
   let planSeed = 'v1'
@@ -326,4 +326,37 @@ test('Longform script approval preview includes cold open and every section sent
   assert.equal(scriptApprovalPreview({ title: 'empty', sections: [] }), null)
   assert.equal(scriptApprovalPreview(null), null)
   assert.equal(scriptApprovalPreview({ title: 'short', beats: [{ id: 'b1', narration: '쇼츠 대본' }] })?.beats[0].narration, '쇼츠 대본')
+})
+
+test('Longform HTTP approval: full narration preview, stale hash rejected, approval requeues exactly once, edit reopens PLAN', async () => {
+  const t = await rig({}, { title: '시니어 이야기', coldOpen: { sentences: [{ say: '도입 장면' }] }, sections: [{ sentences: [{ say: '첫 번째 본문' }, { say: '두 번째 본문' }] }] })
+  const job = await t.newJob('senior_longform', 'idem-longform-http')
+  await t.blocks.bind(job.id, 'senior_longform', 'longform_script_approval')
+  // HTTP authenticates workspace by SHA-256(sync key); align this synthetic worker job with the API workspace.
+  const { createHash } = await import('node:crypto')
+  const httpWorkspace = createHash('sha256').update(KEY).digest('hex')
+  await t.db.query('UPDATE production_jobs SET workspace_id=$2 WHERE id=$1', [job.id, httpWorkspace])
+  const handler = createJobsHttp({ getStore: async () => t.store, getBlocks: async () => t.blocks, blobs: t.blobs })
+  const call = async (method: string, b: any, q: any = {}) => {
+    let status = 0, json: any = null
+    await handler({ method, headers: { 'x-sync-key': KEY }, query: q, body: b } as any,
+      { setHeader() {}, status(c: number) { status = c; return this }, json(x: any) { json = x; return this }, end() { return this } } as any)
+    return { status, json }
+  }
+  assert.deepEqual(await t.drive(), ['PLAN:completed', 'ASSET:waiting'])
+  assert.equal(t.calls.ASSET ?? 0, 0)
+  const v = await call('GET', null, { taskType: 'job_blocks', id: job.id })
+  assert.equal(v.status, 200)
+  assert.deepEqual(v.json.preview.beats.map((x: any) => x.narration), ['도입 장면', '첫 번째 본문', '두 번째 본문'])
+  const hash = v.json.blocks.find((x: any) => x.block === 'SCRIPT_APPROVAL').artifactHash
+  assert.equal((await call('POST', { taskType: 'job_block_approve', jobId: job.id, block: 'SCRIPT_APPROVAL', artifactHash: 'f'.repeat(64) })).status, 409)
+  assert.equal(t.calls.ASSET ?? 0, 0)
+  const ok = await call('POST', { taskType: 'job_block_approve', jobId: job.id, block: 'SCRIPT_APPROVAL', artifactHash: hash })
+  assert.equal(ok.status, 200); assert.equal(ok.json.requeued, true)
+  const again = await call('POST', { taskType: 'job_block_approve', jobId: job.id, block: 'SCRIPT_APPROVAL', artifactHash: hash })
+  assert.equal(again.status, 200); assert.equal(again.json.already, true); assert.equal(again.json.requeued, false)
+  assert.equal((await t.store.getJob(job.id, httpWorkspace))!.status, 'QUEUED')
+  await t.drive()
+  assert.equal(t.calls.ASSET, 1); assert.equal(t.calls.RENDER, 1)
+  assert.equal((await t.store.getJob(job.id, httpWorkspace))!.status, 'COMPLETE')
 })
