@@ -16,11 +16,11 @@ import type { StageExecutor } from '../worker/types.js'
 
 const WS = 'ws1', KEY = 'k'.repeat(32)
 
-async function rig(extra: Record<string, RecipeBinding> = {}) {
+async function rig(extra: Record<string, RecipeBinding> = {}, script: any = { title: '우물 속 노랫소리', beats: [{ id: 'b1', narration: '첫 장면 낭독' }] }) {
   const db = await createTestDb()
   const store = createJobStore(db)
   const blobs = createMemoryBlobStore()
-  await blobs.putJson('scripts/s1.json', { title: '우물 속 노랫소리', beats: [{ id: 'b1', narration: '첫 장면 낭독' }] })
+  await blobs.putJson('scripts/s1.json', script)
   const blocks = createBlockStore(db, undefined, (id) => extra[id] ?? recipeFor(id))
   const calls: Record<string, number> = {}
   let planSeed = 'v1'
@@ -329,14 +329,13 @@ test('Longform script approval preview includes cold open and every section sent
 })
 
 test('Longform HTTP approval: full narration preview, stale hash rejected, approval requeues exactly once, edit reopens PLAN', async () => {
-  const t = await rig()
+  const t = await rig({}, { title: '시니어 이야기', coldOpen: { sentences: [{ say: '도입 장면' }] }, sections: [{ sentences: [{ say: '첫 번째 본문' }, { say: '두 번째 본문' }] }] })
   const job = await t.newJob('senior_longform', 'idem-longform-http')
   await t.blocks.bind(job.id, 'senior_longform', 'longform_script_approval')
   // HTTP authenticates workspace by SHA-256(sync key); align this synthetic worker job with the API workspace.
   const { createHash } = await import('node:crypto')
   const httpWorkspace = createHash('sha256').update(KEY).digest('hex')
   await t.db.query('UPDATE production_jobs SET workspace_id=$2 WHERE id=$1', [job.id, httpWorkspace])
-  await t.blobs.putJson('scripts/s1.json', { title: '시니어 이야기', coldOpen: { sentences: [{ say: '도입 장면' }] }, sections: [{ sentences: [{ say: '첫 번째 본문' }, { say: '두 번째 본문' }] }] })
   const handler = createJobsHttp({ getStore: async () => t.store, getBlocks: async () => t.blocks, blobs: t.blobs })
   const call = async (method: string, b: any, q: any = {}) => {
     let status = 0, json: any = null
