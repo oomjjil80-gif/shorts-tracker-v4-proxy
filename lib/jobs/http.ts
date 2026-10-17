@@ -32,7 +32,7 @@ import { createVoicePreview, PreviewError } from '../generative/voicePreview.js'
 import { createTrackerTts, TrackerTtsError } from '../generative/trackerTts.js'
 import { creativeContentFor, resolveCreativeProfile, imageStyleFor, visualStyleWrap } from '../generative/creativeProfile.js'
 import { openAiTts } from '../generative/providers.js'
-import { issueTitlePromise, finalPromiseCheck } from '../story/titlePromise.js'
+import { issueTitlePromise, finalPromiseCheck, verifyPromise, promiseBrief } from '../story/titlePromise.js'
 
 // HTTP adapter for Production Jobs. It is NOT a Vercel function: api/story.ts routes taskType job_* here
 // (Hobby plan allows 12 functions). CORS is applied by the router. Domain logic stays in store/gate/pipeline.
@@ -515,6 +515,15 @@ export function createJobsHttp(deps: JobsDeps) {
         need(isProfileId(profile), `unknown profile: ${profile}`)
         const longform = getProfile(profile).input === 'longform_brief'
         const generative = getProfile(profile).input !== 'source_asset'
+        // Optional signed title/thumbnail approval. Never trust an unsigned client-side object.
+        // Once approved, the promise is included in the server-owned brief BEFORE any paid PLAN call.
+        const approvedPromise = body.input?.approvedPromise
+        if (approvedPromise !== undefined) {
+          need(generative, 'title promise is supported for generative jobs only')
+          need(verifyPromise(approvedPromise), 'title/thumbnail approval is missing or invalid')
+          need(!body.input?.remasterOf && !body.input?.derivedFrom, 'title promise is not supported for derived/remaster jobs')
+          body.input = { ...body.input, text: [promiseBrief(approvedPromise), String(body.input.text || '')].join('\n') }
+        }
         let generativeBriefRef: string | null = null
         let reuseActive = false // a new (non-remaster) brief: the same one still running is handed back, never paid twice
         let generativeHash = ''
