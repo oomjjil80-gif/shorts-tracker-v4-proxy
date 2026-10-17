@@ -522,7 +522,7 @@ export function createJobsHttp(deps: JobsDeps) {
           need(generative, 'title promise is supported for generative jobs only')
           need(verifyPromise(approvedPromise), 'title/thumbnail approval is missing or invalid')
           need(!body.input?.remasterOf && !body.input?.derivedFrom, 'title promise is not supported for derived/remaster jobs')
-          body.input = { ...body.input, text: [promiseBrief(approvedPromise), String(body.input.text || '')].join('\\n') }
+          body.input = { ...body.input, text: [promiseBrief(approvedPromise), String(body.input.text || '')].join('\n') }
         }
         let generativeBriefRef: string | null = null
         let reuseActive = false // a new (non-remaster) brief: the same one still running is handed back, never paid twice
