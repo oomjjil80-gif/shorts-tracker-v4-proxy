@@ -180,6 +180,9 @@ export function createBlockStore(db: SqlDb, clock: () => Date = () => new Date()
         if (!b || !b.enforced || !stage) throw new JobError('BAD_REQUEST', `${block} cannot be edited in this job`)
         if (job.status !== 'WAITING_USER' || job.wait_reason !== 'BLOCK_APPROVAL') throw new JobError('NOT_EDITABLE', `job is ${job.status}/${job.wait_reason}`)
         const invalidated = await this_invalidateAfter(tx, jobId, b, block, true)
+        // An explicit user edit must re-run the selected stage even when its upstream input is unchanged.
+        // Keep its prior output for audit; downstream stages may still reuse matching results.
+        await tx.query(`UPDATE job_blocks SET input_hash=NULL, updated_at=now() WHERE job_id=$1 AND block=$2`, [jobId, block])
         await tx.query(`UPDATE production_jobs SET stage=$2, status='QUEUED', wait_reason=NULL, run_after=NULL, updated_at=$3::timestamptz WHERE id=$1`, [jobId, stage, iso(clock())])
         return { stage, invalidated }
       })

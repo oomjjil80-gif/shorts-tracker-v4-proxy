@@ -111,14 +111,14 @@ test('E. 이전 버전 승인은 무효: 대본이 바뀌면 승인이 풀리고
   await t.blocks.approve(job.id, WS, GATE, v2); await t.drive(); assert.equal(t.calls.ASSET, 1)
 })
 
-test('F. 부분 수정: 입력이 같으면 해당 블록은 다시 만들지 않고(비용 0) 이전 승인도 그대로 복원', async () => {
+test('F. 사용자 대본 재생성: 같은 입력이어도 선택한 블록은 다시 실행하고 결과가 같으면 승인 복원', async () => {
   const t = await rig(); const job = await t.newJob()
   await t.blocks.bind(job.id, 'wisdom', 'wisdom_shorts_script_approval'); await t.drive()
   const h = (await t.blocks.rows(job.id)).find((r) => r.block === GATE)!.artifactHash!
   await t.blocks.edit(job.id, WS, 'SCRIPT')
   const seen = await t.drive()
-  assert.deepEqual(seen, ['PLAN:completed', 'ASSET:waiting']); assert.equal(t.calls.PLAN, 1, 'PLAN executor was NOT run again')
-  const runs = await t.store.listStageRuns(job.id); assert.ok(runs.filter((x) => x.stage === 'PLAN' && x.status === 'SUCCEEDED').length === 2 && runs.filter((x) => x.stage === 'PLAN').every((x) => x.costUsd === 0 || x.costUsd === 0.01))
+  assert.deepEqual(seen, ['PLAN:completed', 'ASSET:waiting']); assert.equal(t.calls.PLAN, 2, 'explicit edit must regenerate the PLAN script')
+  const runs = await t.store.listStageRuns(job.id); assert.equal(runs.filter((x) => x.stage === 'PLAN' && x.status === 'SUCCEEDED').length, 2, 'both generations complete'); assert.equal(t.calls.PLAN, 2, 'both used the real stage executor')
   assert.equal((await t.blocks.rows(job.id)).find((r) => r.block === GATE)!.artifactHash, h, 'same result, same artifact')
   await assert.rejects(t.blocks.edit(job.id, WS, GATE), (e: any) => e.code === 'BAD_REQUEST')
 })
@@ -140,7 +140,7 @@ test('G. 새 콘텐츠 유형 = Recipe 추가만: 기존 지혜 쇼츠 모듈 + 
   await assert.rejects(t.blocks.approve(job.id, WS, 'STYLE_APPROVAL', 'a'.repeat(64)), (e: any) => e.code === 'STALE_APPROVAL')
   await t.blocks.approve(job.id, WS, 'STYLE_APPROVAL', await hashOf('STYLE_APPROVAL'))
   await t.drive(); assert.equal(t.calls.ASSET, 1)
-  // editing the SCRIPT with unchanged inputs leaves both approvals standing: nothing is asked or produced twice
+  // If regenerated content is identical, downstream approvals can be retained by artifact hash.
 })
 
 test('H. 기존 Job 호환: 레시피가 없는 작업은 게이트 없이 이전과 똑같이 끝까지 실행, 게이트 유무가 호출 횟수를 바꾸지 않음', async () => {
