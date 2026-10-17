@@ -4,7 +4,7 @@ export type JobStatus = (typeof JOB_STATUSES)[number]
 export const JOB_STAGES = ['ANALYZE', 'PLAN', 'ASSET', 'COMPILE', 'RENDER', 'AUTO_QC', 'DECISION', 'FINAL', 'PACKAGE'] as const
 export type JobStage = (typeof JOB_STAGES)[number]
 
-export const WAIT_REASONS = ['DECISION', 'BUDGET', 'QC_BLOCKED', 'PROVIDER_DOWN'] as const
+export const WAIT_REASONS = ['DECISION', 'BUDGET', 'QC_BLOCKED', 'PROVIDER_DOWN', 'BLOCK_APPROVAL'] as const
 export type WaitReason = (typeof WAIT_REASONS)[number]
 
 // REPAIR is not a status: it is a kind of stage run.

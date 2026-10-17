@@ -17,6 +17,10 @@ import { recoverSleepDraft } from './sleepDraftRecovery.js'
 import { makeSavedOdysseyScript, offlineOdysseyFingerprint } from './sleepDraftImport.js'
 import { PIPELINES } from './pipeline.js'
 import { isProfileId, getProfile, profileOf, isWisdomShorts } from './profiles.js'
+import { createBlockStore, toProgress, type BlockStore } from './blockStore.js'
+import { BLOCK_IDS, BLOCKS, type BlockId } from './recipe.js'
+import { nextBlockDecision } from './blockScheduler.js'
+import { recipeFor, recipeSnapshot } from './recipes.js'
 import { JobError, type Job, type StageRun } from './types.js'
 import { validateReferenceProfile, stableHash } from '../reference/contracts.js'
 import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
@@ -41,6 +45,8 @@ const MAX_BUDGET_USD = 50
 
 export type JobsDeps = {
   getStore: () => Promise<JobStore>
+  // block engine (recipes, block progress, approvals); absent = recipe-bound jobs cannot be created and job_blocks reports legacy
+  getBlocks?: () => Promise<BlockStore>
   blobs: JobBlobStore
   sourceExists?: (sourceAssetId: string) => Promise<boolean>
   analyzeReference?: typeof analyzeRegisteredReference
@@ -57,7 +63,7 @@ function workspaceOf(req: Request): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume', 'job_upload_text', 'job_sleep_draft', 'job_sleep_import', 'job_recover_asset_billing'] as const
+export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume', 'job_upload_text', 'job_sleep_draft', 'job_sleep_import', 'job_recover_asset_billing', 'job_blocks', 'job_block_approve', 'job_block_edit'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
@@ -71,7 +77,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
-  JOB_BUSY: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503, PROMISE_SIGNING_NOT_CONFIGURED: 503,
+  JOB_BUSY: 409, STALE_APPROVAL: 409, JOB_ALREADY_STARTED: 409, NOT_AWAITING_APPROVAL: 409, NOT_EDITABLE: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503, PROMISE_SIGNING_NOT_CONFIGURED: 503,
   PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, NOT_SLEEP_RECOVERABLE: 409, RECOVERY_ALREADY_IMPORTED: 409, NOT_ASSET_BILLING_RECOVERABLE: 409, UPLOAD_TEXT_REFUSED: 502
 }
 
@@ -208,7 +214,7 @@ export function createJobsHttp(deps: JobsDeps) {
         try { const r = await voicePreview(input); return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache }) }
         catch (e: any) { if (e instanceof PreviewError) throw new JobError(e.code as any, e.message); throw e }
       }
-      const expectedMethod = taskType === 'job_get' || taskType === 'job_sleep_draft' || taskType === 'job_list' || taskType === 'job_style' || taskType === 'job_style_examples' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' ? 'GET' : 'POST'
+      const expectedMethod = taskType === 'job_get' || taskType === 'job_sleep_draft' || taskType === 'job_list' || taskType === 'job_style' || taskType === 'job_style_examples' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' || taskType === 'job_blocks' ? 'GET' : 'POST'
       if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)
       if (req.method !== expectedMethod) throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires ${expectedMethod}`)
 
@@ -539,6 +545,8 @@ export function createJobsHttp(deps: JobsDeps) {
           } else
           try { brief = longform ? normalizeLongformBrief(body.input, profile as any) : normalizeGenerativeBrief(body.input, profile === 'yasa_shorts' ? 'yasa_shorts' : 'wisdom') } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
           if (derivedFrom) (brief as any).derivedFrom = derivedFrom
+          // a Recipe is part of what the job IS: the same brief with and without approvals are two different jobs (never handed to each other)
+          if (body.input?.recipe !== undefined) (brief as any).recipe = String(body.input.recipe)
           generativeHash = longform ? longformBriefHash(brief as any) : generativeBriefHash(brief as any)
           const storedBrief = await putAddressed(deps.blobs, 'generative-briefs', brief)
           generativeBriefRef = storedBrief.path
@@ -546,6 +554,15 @@ export function createJobsHttp(deps: JobsDeps) {
           sourceAssetId = `${longform ? 'src_genlf_' : 'src_gen_'}${generativeHash.slice(0,32)}`
         } else {
           sourceAssetId = matching(body.sourceAssetId, /^src_[A-Za-z0-9_]{8,120}$/, 'sourceAssetId is invalid')
+        }
+        // a Recipe is saved in the SAME transaction that creates the job (store.createJob): no worker can see the job without its gate,
+        // and if the recipe cannot be saved the job is not created at all.
+        let recipeSnap: ReturnType<typeof recipeSnapshot> | undefined
+        if (body.input?.recipe !== undefined) {
+          const rb = recipeFor(String(body.input.recipe))
+          need(rb && rb.enforced, `unknown recipe ${String(body.input.recipe)}`)
+          need(deps.getBlocks, 'recipes are not available on this server')
+          try { recipeSnap = recipeSnapshot(String(body.input.recipe), profile) } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
         }
         const idempotencyKey = matching(body.idempotencyKey, /^[A-Za-z0-9_.:-]{8,128}$/, 'idempotencyKey must be 8-128 chars [A-Za-z0-9_.:-]')
         const budgetUsd = body.budgetUsd === undefined ? DEFAULT_BUDGET_USD : Number(body.budgetUsd)
@@ -582,7 +599,7 @@ export function createJobsHttp(deps: JobsDeps) {
           await putAddressed(deps.blobs,'production-briefs',bundle.brief)
         }
         if (generativeBriefRef) planRef = generativeBriefRef
-        const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, referenceProfileRef, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}|${referenceProfileHash}|${generativeHash}`, reuseActiveSamePlan: !!generativeBriefRef && reuseActive })
+        const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, referenceProfileRef, recipe: recipeSnap, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}|${referenceProfileHash}|${generativeHash}`, reuseActiveSamePlan: !!generativeBriefRef && reuseActive })
         // a derived Short is recorded on its parent (one child per candidate)
         const derivedParent = body.input?.derivedFrom === undefined && generativeBriefRef ? ((await deps.blobs.getJson(generativeBriefRef)) as any)?.derivedFrom : null
         if (derivedParent?.parentLongformJobId) {
@@ -641,6 +658,46 @@ export function createJobsHttp(deps: JobsDeps) {
         return res.status(200).json({ ok: true, jobId: job.id, upload: up.metadata, made: true, calls: up.calls })
       }
 
+      // ── block engine: what the job is waiting for, approve exactly what was shown, or change a block
+      if (taskType === 'job_blocks') {
+        const jobId = need(String(req.query?.id || ''), 'id is required')
+        const job = await store.getJob(jobId, workspaceId)
+        if (!job) throw new JobError('NOT_FOUND', 'job not found')
+        const blocks = deps.getBlocks ? await deps.getBlocks() : null
+        const b = blocks ? await blocks.bindingOf(job.id) : null
+        if (!blocks || !b) return res.status(200).json({ ok: true, jobId: job.id, legacy: true, recipe: null, blocks: [] })
+        const rows = await blocks.rows(job.id), progress = toProgress(b, rows)
+        const decision = nextBlockDecision(b.recipe, progress)
+        const out = []
+        for (const step of b.recipe.steps) {
+          const row = rows.find((r) => r.block === step.block), spec = BLOCKS[step.block]
+          const gate = !!spec.approval && !Object.values(b.stageBlocks).includes(step.block)
+          const shown = progress.find((p) => p.block === step.block)?.status ?? 'PENDING'
+          out.push({ block: step.block, skipped: step.skipReason ?? null, approval: gate, paid: !!spec.paid, status: step.skipReason !== undefined ? 'SKIPPED' : shown, artifactHash: row?.artifactHash ?? null, awaitingApproval: decision.state === 'WAITING_APPROVAL' && decision.block === step.block })
+        }
+        // the thing to look at before approving: the script the gate holds (the nearest earlier block that stored one)
+        let preview: any = null
+        if (decision.state === 'WAITING_APPROVAL') {
+          const idx = b.recipe.steps.findIndex((s) => s.block === decision.block)
+          const src = [...rows].filter((r) => b.recipe.steps.findIndex((s) => s.block === r.block) < idx && (r.result as any)?.r?.scriptRef).pop()
+          const script: any = src ? await deps.blobs.getJson(String((src.result as any).r.scriptRef)).catch(() => null) : null
+          if (script?.beats) preview = { title: script.title ?? '', beats: script.beats.map((x: any) => ({ id: x.id, narration: x.narration })) }
+        }
+        return res.status(200).json({ ok: true, jobId: job.id, legacy: false, recipe: b.recipeId, enforced: b.enforced, status: job.status, waitReason: job.waitReason, decision, blocks: out, preview })
+      }
+      if (taskType === 'job_block_approve' || taskType === 'job_block_edit') {
+        const jobId = need(String(body.jobId || ''), 'jobId is required')
+        const block = need(BLOCK_IDS.includes(body.block) ? (body.block as BlockId) : null, 'block is invalid')
+        need(deps.getBlocks, 'recipes are not available on this server')
+        const blocks = await deps.getBlocks!()
+        if (taskType === 'job_block_approve') {
+          const hash = matching(body.artifactHash, /^[0-9a-f]{64}$/, 'artifactHash must be a SHA-256 hex')
+          const r = await blocks.approve(jobId, workspaceId, block, hash)
+          return res.status(200).json({ ok: true, jobId, block, ...r })
+        }
+        const r = await blocks.edit(jobId, workspaceId, block)
+        return res.status(200).json({ ok: true, jobId, block, ...r })
+      }
       if (taskType === 'job_cancel') {
         const jobId = need(String(body.jobId || ''), 'jobId is required')
         const job = await store.requestCancel({ jobId, workspaceId })
@@ -657,7 +714,12 @@ export function createJobsHttp(deps: JobsDeps) {
 }
 
 let cachedStore: Promise<JobStore> | null = null
+let cachedBlocks: Promise<BlockStore> | null = null
 export const defaultJobsHttp = createJobsHttp({
+  getBlocks: () => {
+    if (!process.env.DATABASE_URL) return Promise.reject(new JobError('JOBS_DB_NOT_CONFIGURED', 'Production Job database (DATABASE_URL) is not configured'))
+    cachedBlocks ??= createPgDbFromEnv().then((db) => createBlockStore(db)); cachedBlocks.catch(() => { cachedBlocks = null }); return cachedBlocks
+  },
   getStore: () => {
     if (!process.env.DATABASE_URL) return Promise.reject(new JobError('JOBS_DB_NOT_CONFIGURED', 'Production Job database (DATABASE_URL) is not configured'))
     cachedStore ??= createPgDbFromEnv().then((db) => createJobStore(db))

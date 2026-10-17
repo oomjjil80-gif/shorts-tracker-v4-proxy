@@ -3,6 +3,7 @@ import type { JobBlobStore } from '../lib/jobs/blobs.js'
 import { LeaseLostError, type Job } from '../lib/jobs/types.js'
 import { StageError, type SourceAssetLike, type SourceFile, type StageExecutor } from './types.js'
 import { summarize, summaryUsd, withUsageLedger } from '../lib/generative/usageLedger.js'
+import type { BlockGate } from '../lib/jobs/blockRuntime.js'
 
 export type RunDeps = {
   store: JobStore
@@ -13,6 +14,8 @@ export type RunDeps = {
   workerId: string
   leaseMs?: number
   heartbeatMs?: number
+  // block engine (optional): a job bound to a Recipe is gated on its approvals before any paid call; absent = every job runs as before
+  blocks?: BlockGate
 }
 
 export type RunOutcome =
@@ -26,9 +29,31 @@ export async function runOnce(deps: RunDeps): Promise<RunOutcome> {
   const { store, blobs, workerId } = deps
   const leaseMs = deps.leaseMs ?? 60_000
   const executors = new Map(deps.executors.map((e) => [e.stage, e]))
-  const job = await store.claimJob({ workerId, stages: [...executors.keys()], leaseMs })
+  const job = await store.claimJob({ workerId, stages: [...executors.keys()], leaseMs, canGate: !!deps.blocks })
   if (!job) return { ran: false }
   const exec = executors.get(job.stage)!
+
+  // Recipe gate: runs before the budget check and before any paid call. A job without a recipe is never touched (PASS).
+  let gate: Awaited<ReturnType<BlockGate['before']>> = { kind: 'PASS' }
+  if (deps.blocks) {
+    try { gate = await deps.blocks.before(job, exec.inputHash(job)) }
+    catch (e) { await store.releaseLease({ jobId: job.id, workerId }).catch(() => {}); throw e }
+    if (gate.kind === 'WAIT') {
+      const parked = await store.setWaiting({ jobId: job.id, workerId, reason: 'BLOCK_APPROVAL' })
+      return { ran: true, jobId: job.id, stage: job.stage, outcome: 'waiting', job: parked }
+    }
+    if (gate.kind === 'INVALID') {
+      const { attempt } = await store.startStageRun({ jobId: job.id, workerId, inputHash: exec.inputHash(job) })
+      const failed = await store.failStage({ jobId: job.id, workerId, attempt, retryable: false, error: { code: 'BLOCK_STATE_INVALID', message: gate.reason, details: null } })
+      return { ran: true, jobId: job.id, stage: job.stage, outcome: failed.status === 'CANCELLED' ? 'cancelled' : 'failed', job: failed }
+    }
+    if (gate.kind === 'REUSE') {
+      // identical inputs were produced (and possibly approved) before: record the stage from the stored result, no executor, no cost
+      const { attempt } = await store.startStageRun({ jobId: job.id, workerId, inputHash: exec.inputHash(job) })
+      const done = await store.completeStage({ jobId: job.id, workerId, attempt, outputRef: gate.outputRef, outputHash: gate.outputHash, result: { ...(gate.result as object ?? {}), reusedBlock: gate.block }, costUsd: 0, planRef: gate.planRef })
+      return { ran: true, jobId: job.id, stage: job.stage, outcome: done.status === 'CANCELLED' ? 'cancelled' : done.status === 'WAITING_USER' ? 'waiting' : 'completed', job: done }
+    }
+  }
 
   if (job.spentUsd + exec.estimateUsd(job) > job.budgetUsd) {
     const parked = await store.setWaiting({ jobId: job.id, workerId, reason: 'BUDGET' })
@@ -61,6 +86,7 @@ export async function runOnce(deps: RunDeps): Promise<RunOutcome> {
       let done = await store.completeStage({ jobId: job.id, workerId, attempt, outputRef: res.outputRef, outputHash: res.outputHash, result: res.result, usage: res.usage !== undefined && res.usage !== null && typeof res.usage === "object" ? { ...(res.usage as object), ledger: spend() } : spend(), costUsd: res.costUsd, provider: res.provider, model: res.model, kind: res.kind, wait: res.wait, planRef: res.planRef })
       // a derived Short takes its recommended publishable variant without a second confirmation (else it waits as usual)
       if (done.status === 'WAITING_USER' && done.waitReason === 'DECISION' && (res.result as any)?.autoApprove === true) done = await store.approveRecommended({ jobId: job.id }).catch(() => done)
+      if (gate.kind === 'RUN' && deps.blocks) await deps.blocks.after(job, gate, res).catch((e) => console.error(`[blocks] could not record ${gate.kind === 'RUN' ? gate.block : ''} for ${job.id}: ${e?.message || e} (self-heals on the next stage)`))
       return { ran: true, jobId: job.id, stage: job.stage, outcome: done.status === 'CANCELLED' ? 'cancelled' : done.status === 'WAITING_USER' ? 'waiting' : 'completed', job: done }
     } catch (e: any) {
       if (leaseLost || e instanceof LeaseLostError) { spend(); return { ran: true, jobId: job.id, stage: job.stage, outcome: 'lease_lost' } }

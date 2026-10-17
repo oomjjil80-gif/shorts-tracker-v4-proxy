@@ -73,6 +73,8 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       workspaceId: string; profile: string; sourceAssetId: string; idempotencyKey: string
       budgetUsd?: number; planRef?: string | null; referenceProfileRef?: string | null; requestFingerprint?: string
       reuseActiveSamePlan?: boolean
+      // a Job that must run under a Recipe is created WITH its recipe row in one transaction: no worker can ever see it without the gate
+      recipe?: { recipeId: string; recipeJson: string; stageBlocksJson: string; hash: string }
     }): Promise<{ job: Job; created: boolean }> {
       const now = clock()
       // the SAME generated brief (content-addressed planRef) already being made in this workspace: hand back that job
@@ -85,16 +87,25 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
       const stage = firstStage(input.profile, hasPlan)
       const requestHash = createHash('sha256').update(input.requestFingerprint ?? `${input.profile}|${input.sourceAssetId}`).digest('hex')
       const id = `job_${randomUUID()}`
-      const ins = await db.query(
-        `INSERT INTO production_jobs (id, workspace_id, profile, source_asset_id, reference_profile_ref, status, stage, idempotency_key, request_hash, budget_usd, plan_rev, plan_ref, created_at, updated_at)
+      const insertSql = `INSERT INTO production_jobs (id, workspace_id, profile, source_asset_id, reference_profile_ref, status, stage, idempotency_key, request_hash, budget_usd, plan_rev, plan_ref, created_at, updated_at)
          VALUES ($1,$2,$3,$4,$5,'QUEUED',$6,$7,$8,$9,$10,$11,$12,$12)
-         ON CONFLICT (workspace_id, idempotency_key) DO NOTHING RETURNING *`,
-        [id, input.workspaceId, input.profile, input.sourceAssetId, input.referenceProfileRef ?? null, stage, input.idempotencyKey, requestHash, input.budgetUsd ?? 0, hasPlan ? 1 : 0, input.planRef ?? null, iso(now)]
-      )
+         ON CONFLICT (workspace_id, idempotency_key) DO NOTHING RETURNING *`
+      const insertParams = [id, input.workspaceId, input.profile, input.sourceAssetId, input.referenceProfileRef ?? null, stage, input.idempotencyKey, requestHash, input.budgetUsd ?? 0, hasPlan ? 1 : 0, input.planRef ?? null, iso(now)]
+      const ins = input.recipe
+        ? await db.transaction(async (tx) => {
+            const r = await tx.query(insertSql, insertParams)
+            if (r.rows[0]) await tx.query(`INSERT INTO job_recipes (job_id, recipe_id, recipe, stage_blocks, recipe_hash) VALUES ($1,$2,$3::jsonb,$4::jsonb,$5)`, [id, input.recipe!.recipeId, input.recipe!.recipeJson, input.recipe!.stageBlocksJson, input.recipe!.hash])
+            return r
+          })
+        : await db.query(insertSql, insertParams)
       if (ins.rows[0]) return { job: mapJob(ins.rows[0]), created: true }
       const ex = await db.query('SELECT * FROM production_jobs WHERE workspace_id = $1 AND idempotency_key = $2', [input.workspaceId, input.idempotencyKey])
       const job = mapJob(ex.rows[0])
       if (job.requestHash !== requestHash) throw new JobError('IDEMPOTENCY_KEY_REUSED', 'idempotencyKey was already used with a different request')
+      if (input.recipe) {
+        const have = await db.query('SELECT recipe_id FROM job_recipes WHERE job_id=$1', [job.id])
+        if (have.rows[0]?.recipe_id !== input.recipe.recipeId) throw new JobError('IDEMPOTENCY_KEY_REUSED', 'idempotencyKey was already used by a job without this recipe')
+      }
       return { job, created: false }
     },
 
@@ -141,7 +152,8 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
 
     // Atomically take the oldest runnable job for one of `stages`. A RUNNING job whose lease expired
     // (crashed worker) is runnable again. Cancel-requested jobs are never claimed; orphaned ones are closed first.
-    async claimJob(input: { workerId: string; stages: readonly JobStage[]; leaseMs?: number }): Promise<Job | null> {
+    // canGate=false: this worker cannot enforce Recipes, so it never takes a Recipe-bound job (it would run it ungated). Omitted = as before.
+    async claimJob(input: { workerId: string; stages: readonly JobStage[]; leaseMs?: number; canGate?: boolean }): Promise<Job | null> {
       const now = clock()
       const until = new Date(now.getTime() + (input.leaseMs ?? DEFAULT_LEASE_MS))
       await db.query(
@@ -152,6 +164,7 @@ export function createJobStore(db: SqlDb, options: StoreOptions = {}) {
          WHERE id = (
            SELECT id FROM production_jobs
            WHERE NOT cancel_requested AND stage = ANY($4::text[])
+             ${input.canGate === false ? `AND NOT EXISTS (SELECT 1 FROM job_recipes r WHERE r.job_id = production_jobs.id AND r.recipe_id NOT LIKE 'legacy\\_%')` : ''}
              AND (run_after IS NULL OR run_after <= $3::timestamptz)
              AND (status='QUEUED' OR (status='RUNNING' AND (lease_until IS NULL OR lease_until < $3::timestamptz)))
            ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
