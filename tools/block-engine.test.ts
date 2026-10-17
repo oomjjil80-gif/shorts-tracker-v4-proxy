@@ -305,3 +305,14 @@ test('Recipe binding accepts an injected profile registry without modifying prod
   assert.ok(bindingErrors(alternate, 'custom_wisdom').some((error) => error.includes('unknown profile')))
   assert.ok(bindingErrors(alternate, 'custom_wisdom', { custom_wisdom: { stages: ['PLAN'] as JobStage[] } }).some((error) => error.includes('not in profile')))
 })
+
+test('Longform opt-in approval recipe binds all three existing profiles without changing legacy jobs', () => {
+  for (const profile of ['wisdom_longform', 'senior_longform', 'yasa_longform']) {
+    const binding = RECIPES.longform_script_approval
+    assert.deepEqual(bindingErrors(binding, profile), [])
+    const snapshot = recipeSnapshot('longform_script_approval', profile)
+    assert.equal(snapshot.recipeId, 'longform_script_approval')
+    assert.equal(JSON.parse(snapshot.stageBlocksJson).ASSET, 'ASSETS')
+    assert.equal(RECIPES['legacy_' + profile].enforced, false)
+  }
+})
