@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { createTestDb } from './testDb.js'
 import { createJobStore } from '../lib/jobs/store.js'
 import { createMemoryBlobStore } from '../lib/jobs/blobs.js'
-import { createJobsHttp } from '../lib/jobs/http.js'
+import { createJobsHttp, scriptApprovalPreview } from '../lib/jobs/http.js'
 import { createBlockStore } from '../lib/jobs/blockStore.js'
 import { createBlockGate } from '../lib/jobs/blockRuntime.js'
 import { RECIPES, bindingErrors, recipeFor, type RecipeBinding } from '../lib/jobs/recipes.js'
@@ -315,4 +315,15 @@ test('Longform opt-in approval recipe binds all three existing profiles without 
     assert.equal(JSON.parse(snapshot.stageBlocksJson).ASSET, 'ASSETS')
     assert.equal(RECIPES['legacy_' + profile].enforced, false)
   }
+})
+
+test('Longform script approval preview includes cold open and every section sentence; no blank approvals', () => {
+  const script = { title: '긴 이야기', coldOpen: { sentences: [{ say: '첫 번째 도입' }] }, sections: [
+    { heading: '1장', sentences: [{ say: '첫 장 본문' }, { say: '이어지는 이야기' }] },
+    { heading: '2장', sentences: [{ say: '마지막 장' }] }
+  ] }
+  assert.deepEqual(scriptApprovalPreview(script)?.beats.map((b) => b.narration), ['첫 번째 도입', '첫 장 본문', '이어지는 이야기', '마지막 장'])
+  assert.equal(scriptApprovalPreview({ title: 'empty', sections: [] }), null)
+  assert.equal(scriptApprovalPreview(null), null)
+  assert.equal(scriptApprovalPreview({ title: 'short', beats: [{ id: 'b1', narration: '쇼츠 대본' }] })?.beats[0].narration, '쇼츠 대본')
 })
