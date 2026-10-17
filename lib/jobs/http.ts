@@ -20,7 +20,7 @@ import { isProfileId, getProfile, profileOf, isWisdomShorts } from './profiles.j
 import { createBlockStore, toProgress, type BlockStore } from './blockStore.js'
 import { BLOCK_IDS, BLOCKS, type BlockId } from './recipe.js'
 import { nextBlockDecision } from './blockScheduler.js'
-import { recipeFor, bindingErrors } from './recipes.js'
+import { recipeFor, recipeSnapshot } from './recipes.js'
 import { JobError, type Job, type StageRun } from './types.js'
 import { validateReferenceProfile, stableHash } from '../reference/contracts.js'
 import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
@@ -77,7 +77,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
-  JOB_BUSY: 409, STALE_APPROVAL: 409, NOT_AWAITING_APPROVAL: 409, NOT_EDITABLE: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503, PROMISE_SIGNING_NOT_CONFIGURED: 503,
+  JOB_BUSY: 409, STALE_APPROVAL: 409, JOB_ALREADY_STARTED: 409, NOT_AWAITING_APPROVAL: 409, NOT_EDITABLE: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503, PROMISE_SIGNING_NOT_CONFIGURED: 503,
   PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, NOT_SLEEP_RECOVERABLE: 409, RECOVERY_ALREADY_IMPORTED: 409, NOT_ASSET_BILLING_RECOVERABLE: 409, UPLOAD_TEXT_REFUSED: 502
 }
 
@@ -555,11 +555,14 @@ export function createJobsHttp(deps: JobsDeps) {
         } else {
           sourceAssetId = matching(body.sourceAssetId, /^src_[A-Za-z0-9_]{8,120}$/, 'sourceAssetId is invalid')
         }
+        // a Recipe is saved in the SAME transaction that creates the job (store.createJob): no worker can see the job without its gate,
+        // and if the recipe cannot be saved the job is not created at all.
+        let recipeSnap: ReturnType<typeof recipeSnapshot> | undefined
         if (body.input?.recipe !== undefined) {
           const rb = recipeFor(String(body.input.recipe))
           need(rb && rb.enforced, `unknown recipe ${String(body.input.recipe)}`)
-          const bad = bindingErrors(rb!, profile)
-          need(!bad.length, `recipe cannot be used with ${profile}: ${bad.join('; ')}`)
+          need(deps.getBlocks, 'recipes are not available on this server')
+          try { recipeSnap = recipeSnapshot(String(body.input.recipe), profile) } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
         }
         const idempotencyKey = matching(body.idempotencyKey, /^[A-Za-z0-9_.:-]{8,128}$/, 'idempotencyKey must be 8-128 chars [A-Za-z0-9_.:-]')
         const budgetUsd = body.budgetUsd === undefined ? DEFAULT_BUDGET_USD : Number(body.budgetUsd)
@@ -596,15 +599,7 @@ export function createJobsHttp(deps: JobsDeps) {
           await putAddressed(deps.blobs,'production-briefs',bundle.brief)
         }
         if (generativeBriefRef) planRef = generativeBriefRef
-        const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, referenceProfileRef, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}|${referenceProfileHash}|${generativeHash}`, reuseActiveSamePlan: !!generativeBriefRef && reuseActive })
-        // a Recipe is saved WITH the job before any worker can pass its first gate; if that fails the job is cancelled, never left ungated
-        const recipeId = body.input?.recipe === undefined ? null : String(body.input.recipe)
-        if (recipeId) {
-          try {
-            need(deps.getBlocks, 'recipes are not available on this server')
-            await (await deps.getBlocks!()).bind(job.id, profile, recipeId)
-          } catch (e) { await store.requestCancel({ jobId: job.id, workspaceId }).catch(() => {}); throw e }
-        }
+        const { job, created } = await store.createJob({ workspaceId, profile, sourceAssetId, idempotencyKey, budgetUsd, planRef, referenceProfileRef, recipe: recipeSnap, requestFingerprint: `${profile}|${sourceAssetId}|${planHash}|${referenceProfileHash}|${generativeHash}`, reuseActiveSamePlan: !!generativeBriefRef && reuseActive })
         // a derived Short is recorded on its parent (one child per candidate)
         const derivedParent = body.input?.derivedFrom === undefined && generativeBriefRef ? ((await deps.blobs.getJson(generativeBriefRef)) as any)?.derivedFrom : null
         if (derivedParent?.parentLongformJobId) {

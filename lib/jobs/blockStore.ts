@@ -6,7 +6,7 @@ import type { Queryable, SqlDb } from './db.js'
 import { BLOCKS, type BlockId, type BlockProgress, type ContentRecipe } from './recipe.js'
 import { nextBlockDecision } from './blockScheduler.js'
 import { JobError, type JobStage } from './types.js'
-import { recipeFor, bindingErrors, type RecipeBinding } from './recipes.js'
+import { recipeFor, recipeSnapshot, type RecipeBinding } from './recipes.js'
 
 export type BlockRow = {
   block: BlockId
@@ -101,20 +101,20 @@ export function createBlockStore(db: SqlDb, clock: () => Date = () => new Date()
     bindingOf: (jobId: string) => bindingOf(db, jobId),
     rows: (jobId: string) => rowsOf(db, jobId),
 
-    // Save the recipe snapshot a job runs under (once). Fail closed on an unknown/miswired recipe.
+    // Save the recipe snapshot of a job that has NOT started (normally createJob does this atomically; this is for tests and tools).
+    // A job whose stages already ran can never be bound afterwards: that would be a fail-open gate.
     async bind(jobId: string, profile: string, recipeId: string): Promise<{ recipeId: string; created: boolean }> {
-      const binding = lookup(recipeId)
-      if (!binding) throw new JobError('BAD_REQUEST', `unknown recipe ${recipeId}`)
-      const errors = bindingErrors(binding, profile)
-      if (errors.length) throw new JobError('BAD_REQUEST', `recipe ${recipeId} is invalid: ${errors.join('; ')}`)
-      const snap = JSON.stringify(binding.recipe)
-      const r = await db.query(
-        `INSERT INTO job_recipes (job_id, recipe_id, recipe, stage_blocks, recipe_hash) VALUES ($1,$2,$3::jsonb,$4::jsonb,$5) ON CONFLICT (job_id) DO NOTHING RETURNING recipe_id`,
-        [jobId, recipeId, snap, JSON.stringify(binding.stageBlocks), sha(snap)])
-      if (r.rows[0]) return { recipeId, created: true }
-      const existing = await bindingOf(db, jobId)
-      if (existing?.recipeId !== recipeId) throw new JobError('IDEMPOTENCY_KEY_REUSED', `job already runs under recipe ${existing?.recipeId}`)
-      return { recipeId, created: false }
+      let snap
+      try { snap = recipeSnapshot(recipeId, profile, lookup) } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
+      return db.transaction(async (tx) => {
+        await lockJob(tx, jobId)
+        const have = await bindingOf(tx, jobId)
+        if (have) { if (have.recipeId !== recipeId) throw new JobError('IDEMPOTENCY_KEY_REUSED', `job already runs under recipe ${have.recipeId}`); return { recipeId, created: false } }
+        const ran = await tx.query(`SELECT 1 FROM job_stage_runs WHERE job_id=$1 LIMIT 1`, [jobId])
+        if (ran.rows[0]) throw new JobError('JOB_ALREADY_STARTED', 'a recipe cannot be added to a job whose stages have already run')
+        await tx.query(`INSERT INTO job_recipes (job_id, recipe_id, recipe, stage_blocks, recipe_hash) VALUES ($1,$2,$3::jsonb,$4::jsonb,$5)`, [jobId, snap.recipeId, snap.recipeJson, snap.stageBlocksJson, snap.hash])
+        return { recipeId, created: true }
+      })
     },
 
     // Called by the worker right before a bound stage would run. RUN = go ahead and pay; REUSE = identical inputs were done

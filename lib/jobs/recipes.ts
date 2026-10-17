@@ -1,6 +1,7 @@
 // Recipe registry for the block engine. A content type = a Profile (stages/modules that already exist) + a Recipe (which blocks
 // run, in what order, where the user must approve) + a binding of the Profile's stages to the Recipe's blocks. Adding a content
 // type is adding an entry here — there is no per-content engine.
+import { createHash } from 'node:crypto'
 import { BLOCK_IDS, BLOCKS, recipeErrors, type BlockId, type ContentRecipe } from './recipe.js'
 import { PROFILES } from './profiles.js'
 import type { JobStage } from './types.js'
@@ -45,6 +46,17 @@ export const RECIPES: Readonly<Record<string, RecipeBinding>> = Object.freeze({
     enforced: true, profiles: ['wisdom', 'yasa_shorts']
   }
 })
+
+// The exact rows saved with a Job (job_recipes): built once, validated against the Profile, used by createJob and bind alike.
+export type RecipeSnapshot = Readonly<{ recipeId: string; recipeJson: string; stageBlocksJson: string; hash: string }>
+export function recipeSnapshot(recipeId: string, profile: string, lookup: (id: string) => RecipeBinding | null = recipeFor): RecipeSnapshot {
+  const binding = lookup(recipeId)
+  if (!binding) throw new Error(`unknown recipe ${recipeId}`)
+  const errors = bindingErrors(binding, profile)
+  if (errors.length) throw new Error(`recipe ${recipeId} is invalid: ${errors.join('; ')}`)
+  const recipeJson = JSON.stringify(binding.recipe)
+  return { recipeId, recipeJson, stageBlocksJson: JSON.stringify(binding.stageBlocks), hash: createHash('sha256').update(recipeJson).digest('hex') }
+}
 
 export const recipeFor = (id: string): RecipeBinding | null => (Object.prototype.hasOwnProperty.call(RECIPES, id) ? RECIPES[id] : null)
 

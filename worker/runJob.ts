@@ -29,7 +29,7 @@ export async function runOnce(deps: RunDeps): Promise<RunOutcome> {
   const { store, blobs, workerId } = deps
   const leaseMs = deps.leaseMs ?? 60_000
   const executors = new Map(deps.executors.map((e) => [e.stage, e]))
-  const job = await store.claimJob({ workerId, stages: [...executors.keys()], leaseMs })
+  const job = await store.claimJob({ workerId, stages: [...executors.keys()], leaseMs, canGate: !!deps.blocks })
   if (!job) return { ran: false }
   const exec = executors.get(job.stage)!
 

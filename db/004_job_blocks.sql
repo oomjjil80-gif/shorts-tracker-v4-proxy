@@ -2,16 +2,20 @@
 -- A job without a row in job_recipes is a legacy job: it runs exactly as before (no gate). Nothing here deletes or rewrites
 -- existing jobs, stage runs or assets.
 
--- a job may now wait for a user approval of a block's result before any later paid work
+-- A job may now wait for a user approval of a block's result before any later paid work: wait_reason gains 'BLOCK_APPROVAL'.
+-- Only the ONE constraint that is a CHECK on the single column production_jobs.wait_reason is replaced. It is found by structure
+-- (pg_constraint.conkey = {wait_reason}), never by name guess or by searching its text, so production_jobs_wait (status <-> wait_reason),
+-- production_jobs_lease and any other constraint are left alone. Re-running this file drops and re-creates the same constraint.
 DO $$
-DECLARE c text;
+DECLARE att smallint; c text;
 BEGIN
-  FOR c IN SELECT conname FROM pg_constraint WHERE conrelid = 'production_jobs'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%PROVIDER_DOWN%' LOOP
+  SELECT attnum INTO att FROM pg_attribute WHERE attrelid = 'production_jobs'::regclass AND attname = 'wait_reason' AND NOT attisdropped;
+  IF att IS NULL THEN RAISE EXCEPTION 'production_jobs.wait_reason not found; apply 001_jobs.sql first'; END IF;
+  FOR c IN SELECT conname FROM pg_constraint WHERE conrelid = 'production_jobs'::regclass AND contype = 'c' AND conkey = ARRAY[att] LOOP
     EXECUTE format('ALTER TABLE production_jobs DROP CONSTRAINT %I', c);
   END LOOP;
+  EXECUTE 'ALTER TABLE production_jobs ADD CONSTRAINT production_jobs_wait_reason_check CHECK (wait_reason IS NULL OR wait_reason IN (''DECISION'',''BUDGET'',''QC_BLOCKED'',''PROVIDER_DOWN'',''BLOCK_APPROVAL''))';
 END $$;
-ALTER TABLE production_jobs ADD CONSTRAINT production_jobs_wait_reason_check
-  CHECK (wait_reason IS NULL OR wait_reason IN ('DECISION','BUDGET','QC_BLOCKED','PROVIDER_DOWN','BLOCK_APPROVAL'));
 
 CREATE TABLE IF NOT EXISTS job_recipes (
   job_id       text PRIMARY KEY REFERENCES production_jobs(id) ON DELETE CASCADE,
