@@ -332,6 +332,10 @@ test('Longform HTTP approval: full narration preview, stale hash rejected, appro
   const t = await rig()
   const job = await t.newJob('senior_longform', 'idem-longform-http')
   await t.blocks.bind(job.id, 'senior_longform', 'longform_script_approval')
+  // HTTP authenticates workspace by SHA-256(sync key); align this synthetic worker job with the API workspace.
+  const { createHash } = await import('node:crypto')
+  const httpWorkspace = createHash('sha256').update(KEY).digest('hex')
+  await t.db.query('UPDATE production_jobs SET workspace_id=$2 WHERE id=$1', [job.id, httpWorkspace])
   await t.blobs.putJson('scripts/s1.json', { title: '시니어 이야기', coldOpen: { sentences: [{ say: '도입 장면' }] }, sections: [{ sentences: [{ say: '첫 번째 본문' }, { say: '두 번째 본문' }] }] })
   const handler = createJobsHttp({ getStore: async () => t.store, getBlocks: async () => t.blocks, blobs: t.blobs })
   const call = async (method: string, b: any, q: any = {}) => {
@@ -352,8 +356,8 @@ test('Longform HTTP approval: full narration preview, stale hash rejected, appro
   assert.equal(ok.status, 200); assert.equal(ok.json.requeued, true)
   const again = await call('POST', { taskType: 'job_block_approve', jobId: job.id, block: 'SCRIPT_APPROVAL', artifactHash: hash })
   assert.equal(again.status, 200); assert.equal(again.json.already, true); assert.equal(again.json.requeued, false)
-  assert.equal((await t.store.getJob(job.id, WS))!.status, 'QUEUED')
+  assert.equal((await t.store.getJob(job.id, httpWorkspace))!.status, 'QUEUED')
   await t.drive()
   assert.equal(t.calls.ASSET, 1); assert.equal(t.calls.RENDER, 1)
-  assert.equal((await t.store.getJob(job.id, WS))!.status, 'COMPLETE')
+  assert.equal((await t.store.getJob(job.id, httpWorkspace))!.status, 'COMPLETE')
 })
