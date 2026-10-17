@@ -26,6 +26,25 @@ export const RECIPES: Readonly<Record<string, RecipeBinding>> = Object.freeze({
   ...Object.fromEntries(Object.keys(PROFILES).map(compat)),
   // 지혜/야담 쇼츠 with a script check: the script (PLAN) is written first, then NOTHING paid (images, voice, render) runs
   // until the user approves exactly that script. Same Profile, same modules.
+  longform_script_approval: {
+    recipe: {
+      id: 'longform_script_approval',
+      provides: ['brief', 'research', 'packaging', 'reviewedScript', 'approvedStyle'],
+      steps: [
+        { block: 'RESEARCH', skipReason: '기존 Longform PLAN이 조사합니다' },
+        { block: 'PACKAGING', skipReason: '기존 제목·썸네일 제작 흐름을 유지합니다' },
+        { block: 'SCRIPT' },
+        { block: 'REVIEW', skipReason: '대본 검토는 기존 PLAN 내부에서 처리합니다' },
+        { block: 'SCRIPT_APPROVAL' },
+        { block: 'STYLE_APPROVAL', skipReason: '기존 스타일 승인 흐름을 유지합니다' },
+        { block: 'ASSETS' },
+        { block: 'RENDER' },
+        { block: 'FINAL_REVIEW', skipReason: '기존 Longform 완료 검토를 유지합니다' }
+      ]
+    },
+    stageBlocks: { PLAN: 'SCRIPT', ASSET: 'ASSETS', RENDER: 'RENDER' },
+    enforced: true, profiles: ['wisdom_longform', 'senior_longform', 'yasa_longform']
+  },
   wisdom_shorts_script_approval: {
     recipe: {
       id: 'wisdom_shorts_script_approval',
