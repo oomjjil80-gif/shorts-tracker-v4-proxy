@@ -27,6 +27,7 @@ import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
 import { buildReferenceProductionBrief } from '../reference/profile.js'
 import { normalizeGenerativeBrief, generativeBriefHash } from '../generative/contracts.js'
 import { normalizeLongformBrief, longformBriefHash, longformRemasterBrief } from '../generative/longform.js'
+import { sentencesOf, type LongformScript } from '../generative/longform.js'
 import { derivedSourceText, type DerivedShortsDoc } from '../generative/derivedShorts.js'
 import { createVoicePreview, PreviewError } from '../generative/voicePreview.js'
 import { createTrackerTts, TrackerTtsError } from '../generative/trackerTts.js'
@@ -681,7 +682,13 @@ export function createJobsHttp(deps: JobsDeps) {
           const idx = b.recipe.steps.findIndex((s) => s.block === decision.block)
           const src = [...rows].filter((r) => b.recipe.steps.findIndex((s) => s.block === r.block) < idx && (r.result as any)?.r?.scriptRef).pop()
           const script: any = src ? await deps.blobs.getJson(String((src.result as any).r.scriptRef)).catch(() => null) : null
-          if (script?.beats) preview = { title: script.title ?? '', beats: script.beats.map((x: any) => ({ id: x.id, narration: x.narration })) }
+          if (script?.beats?.length) preview = { title: script.title ?? '', beats: script.beats.map((x: any) => ({ id: x.id, narration: x.narration })) }
+          else if (Array.isArray(script?.sections) && script.sections.length) {
+            // Longform stores sections[].sentences[].say, not Shorts beats.
+            // Never show an empty script while offering approval of paid assets.
+            const sentences = sentencesOf(script as LongformScript)
+            if (sentences.length) preview = { title: script.title ?? '', beats: sentences.map((x: any, i: number) => ({ id: String(i + 1), narration: x.say })) }
+          }
         }
         return res.status(200).json({ ok: true, jobId: job.id, legacy: false, recipe: b.recipeId, enforced: b.enforced, status: job.status, waitReason: job.waitReason, decision, blocks: out, preview })
       }
