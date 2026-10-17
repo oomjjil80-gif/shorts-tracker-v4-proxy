@@ -681,7 +681,7 @@ export function createJobsHttp(deps: JobsDeps) {
           const idx = b.recipe.steps.findIndex((s) => s.block === decision.block)
           const src = [...rows].filter((r) => b.recipe.steps.findIndex((s) => s.block === r.block) < idx && (r.result as any)?.r?.scriptRef).pop()
           const script: any = src ? await deps.blobs.getJson(String((src.result as any).r.scriptRef)).catch(() => null) : null
-          if (script?.beats) preview = { title: script.title ?? '', beats: script.beats.map((x: any) => ({ id: x.id, narration: x.narration })) }
+          if (script) preview = scriptApprovalPreview(script)
         }
         return res.status(200).json({ ok: true, jobId: job.id, legacy: false, recipe: b.recipeId, enforced: b.enforced, status: job.status, waitReason: job.waitReason, decision, blocks: out, preview })
       }
@@ -732,3 +732,17 @@ export const defaultJobsHttp = createJobsHttp({
     try { await getSourceAsset(id); return true } catch (e: any) { if (e?.code === 'SOURCE_ASSET_NOT_FOUND') return false; throw e }
   }
 })
+
+// Both Shorts (beats) and Longform (coldOpen/sections/sentences) must show the actual
+// narration before approval. Never show an empty script with an enabled approve button.
+export function scriptApprovalPreview(script: any): { title: string; beats: Array<{ id: string; narration: string }> } | null {
+  if (!script || typeof script !== 'object') return null
+  const sentences = Array.isArray(script.beats) ? script.beats
+    : [...(Array.isArray(script.coldOpen?.sentences) ? script.coldOpen.sentences : []),
+       ...(Array.isArray(script.sections) ? script.sections.flatMap((section: any) => Array.isArray(section?.sentences) ? section.sentences : []) : [])]
+  const beats = sentences.map((s: any, i: number) => ({
+    id: String(s?.id ?? i + 1),
+    narration: String(s?.narration ?? s?.say ?? '').trim()
+  })).filter((s: { narration: string }) => s.narration.length > 0)
+  return beats.length ? { title: String(script.title ?? ''), beats } : null
+}
