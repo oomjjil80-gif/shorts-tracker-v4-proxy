@@ -295,3 +295,13 @@ test('K5. createJob 재호출(멱등): 같은 키는 같은 Job·Recipe 1행, �
   await assert.rejects(t.store.createJob({ ...base }).then((r) => r), () => true).catch(() => {}) // plain replay of a gated key is allowed to return the job
   await assert.rejects(t.store.createJob({ ...base, recipe: { ...snap, recipeId: 'other' } }), (e: any) => e.code === 'IDEMPOTENCY_KEY_REUSED')
 })
+
+
+test('Recipe binding accepts an injected profile registry without modifying production profiles', () => {
+  const recipe = RECIPES.wisdom_shorts_script_approval
+  const alternate = { ...recipe, profiles: ['custom_wisdom'] }
+  const stages = ['PLAN', 'ASSET', 'RENDER'] as JobStage[]
+  assert.deepEqual(bindingErrors(alternate, 'custom_wisdom', { custom_wisdom: { stages } }), [])
+  assert.ok(bindingErrors(alternate, 'custom_wisdom').some((error) => error.includes('unknown profile')))
+  assert.ok(bindingErrors(alternate, 'custom_wisdom', { custom_wisdom: { stages: ['PLAN'] as JobStage[] } }).some((error) => error.includes('not in profile')))
+})
