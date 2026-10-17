@@ -7,10 +7,19 @@
 -- (pg_constraint.conkey = {wait_reason}), never by name guess or by searching its text, so production_jobs_wait (status <-> wait_reason),
 -- production_jobs_lease and any other constraint are left alone. Re-running this file drops and re-creates the same constraint.
 DO $$
-DECLARE att smallint; c text;
+DECLARE att smallint; c text; n integer; definition text;
 BEGIN
   SELECT attnum INTO att FROM pg_attribute WHERE attrelid = 'production_jobs'::regclass AND attname = 'wait_reason' AND NOT attisdropped;
   IF att IS NULL THEN RAISE EXCEPTION 'production_jobs.wait_reason not found; apply 001_jobs.sql first'; END IF;
+  -- Fail closed before any DDL if the live schema differs from the known legacy shape.
+  SELECT count(*), max(pg_get_constraintdef(oid)) INTO n, definition
+    FROM pg_constraint
+   WHERE conrelid = 'production_jobs'::regclass AND contype = 'c' AND conkey = ARRAY[att];
+  IF n <> 1 OR definition IS NULL OR
+     definition NOT LIKE '%DECISION%' OR definition NOT LIKE '%BUDGET%' OR
+     definition NOT LIKE '%QC_BLOCKED%' OR definition NOT LIKE '%PROVIDER_DOWN%' THEN
+    RAISE EXCEPTION 'Unexpected production_jobs.wait_reason CHECK (count %, definition %); migration aborted without changes', n, definition;
+  END IF;
   FOR c IN SELECT conname FROM pg_constraint WHERE conrelid = 'production_jobs'::regclass AND contype = 'c' AND conkey = ARRAY[att] LOOP
     EXECUTE format('ALTER TABLE production_jobs DROP CONSTRAINT %I', c);
   END LOOP;
