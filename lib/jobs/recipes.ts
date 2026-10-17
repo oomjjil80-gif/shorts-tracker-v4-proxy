@@ -62,9 +62,9 @@ export const recipeFor = (id: string): RecipeBinding | null => (Object.prototype
 
 // Wiring checks (run in tests and before a job is bound): a valid recipe, bound stages that exist in the Profile and in
 // the recipe, bound blocks that are not approvals, every active non-approval block reachable through a stage.
-export function bindingErrors(b: RecipeBinding, profileId: string): string[] {
+export function bindingErrors(b: RecipeBinding, profileId: string, profiles: Readonly<Record<string, Pick<(typeof PROFILES)[keyof typeof PROFILES], 'stages'>>> = PROFILES): string[] {
   const errors = recipeErrors(b.recipe)
-  const profile = (PROFILES as Record<string, (typeof PROFILES)[keyof typeof PROFILES]>)[profileId]
+  const profile = profiles[profileId]
   if (!profile) return [...errors, `unknown profile ${profileId}`]
   if (!b.profiles.includes(profileId)) errors.push(`${b.recipe.id}: not meant for profile ${profileId}`)
   const active = new Set(b.recipe.steps.filter((s) => s.skipReason === undefined).map((s) => s.block))
