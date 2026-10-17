@@ -361,7 +361,7 @@ export function createJobsHttp(deps: JobsDeps) {
         const ov = rec.status === 'approved' ? await readThumbnailOverride(deps.blobs, job.id) : null
         const shown = rec.status === 'approved' ? (ov?.current ?? approvedThumbnailVersion(rec)) : null
         return res.status(200).json({ ok: true, style: {
-          status: rec.status, awaiting, attempt: cur?.n ?? 0, attempts: rec.attempts?.length ?? 0, thumbnailUrl: await url(ov?.current.thumbnailRef ?? cur?.thumbnailRef),
+          status: rec.status, awaiting, attempt: cur?.n ?? 0, attempts: rec.attempts?.length ?? 0, versions: rec.status === 'pending' ? await Promise.all((rec.attempts ?? []).slice(0, -1).map(async (a: any) => ({ attempt: a.n, thumbnailUrl: await url(a.thumbnailRef) }))) : [], thumbnailUrl: await url(ov?.current.thumbnailRef ?? cur?.thumbnailRef),
           thumbnailText: shown?.text ?? null, redrawingThumbnail: !!rec.thumbnailRequest,
           replacement: ov ? { n: ov.current.n, source: ov.current.source, text: ov.current.text, imageIssues: ov.current.imageIssues, check: ov.current.check ? { ok: ov.current.check.ok, score: ov.current.check.judge?.score ?? null, differences: ov.current.check.judge?.differences ?? [] } : null, versions: ov.history.length } : null,
           copy: (rec.attempts?.at(-1)?.lines ?? []).map((l: any) => String(l?.text || '')), issues: ov ? ov.current.imageIssues : [...(rec.attempts?.at(-1)?.copyIssues ?? []), ...(rec.attempts?.at(-1)?.imageIssues ?? [])],
@@ -414,7 +414,7 @@ export function createJobsHttp(deps: JobsDeps) {
       }
       if (taskType === 'job_style_decision') {
         const jobId = need(String(body.jobId || ''), 'jobId is required'), action = String(body.action || '')
-        need(['approve', 'regenerate', 'representative', 'thumbnail_redraw', 'thumbnail_text', 'accept'].includes(action), 'action must be approve, regenerate, representative, thumbnail_redraw, thumbnail_text or accept')
+        need(['approve', 'regenerate', 'select', 'representative', 'thumbnail_redraw', 'thumbnail_text', 'accept'].includes(action), 'action must be approve, regenerate, representative, thumbnail_redraw, thumbnail_text or accept')
         const job = await store.getJob(jobId, workspaceId)
         if (!job) throw new JobError('NOT_FOUND', 'job not found')
         // 문구만 바꾸기: the current thumbnail picture + the user's words (no AI call, no job state change). Allowed until the
@@ -470,6 +470,16 @@ export function createJobsHttp(deps: JobsDeps) {
         else if (mismatch && action === 'regenerate') { rec.status = 'pending'; delete rec.approved; delete rec.representative; rec.regenerate = true }
         else if (!rec || rec.status !== 'pending' || !cur || action === 'representative') throw new JobError('NO_THUMBNAIL', 'no thumbnail is waiting')
         if (!mismatch && body.attempt !== undefined && Number(body.attempt) !== cur.n) throw new JobError('NO_THUMBNAIL', `attempt ${body.attempt} is not the current thumbnail (${cur.n})`)
+        if (!mismatch && action === 'select') {
+          const chosen = (rec.attempts ?? []).find((a: any) => a.n === Number(body.selectedAttempt))
+          if (!chosen || !chosen.backgroundRef || !chosen.thumbnailRef) throw new JobError('NO_THUMBNAIL', 'previous thumbnail not found')
+          const bg = await deps.blobs.getBytes(chosen.backgroundRef)
+          if (!bg) throw new JobError('NO_THUMBNAIL', 'previous thumbnail picture is missing')
+          rec.attempts.push({ ...chosen, n: cur.n + 1 })
+          rec.regenerate = false
+          await deps.blobs.putJson(styleApprovalRef(job.id), rec, { overwrite: true })
+          return res.status(200).json({ ok: true, style: { status: rec.status, attempt: cur.n + 1 } })
+        }
         if (mismatch) { /* handled above */ } else if (action === 'approve') {
           const bg = await deps.blobs.getBytes(cur.backgroundRef)
           if (!bg) throw new JobError('NO_THUMBNAIL', 'the thumbnail picture is missing')
