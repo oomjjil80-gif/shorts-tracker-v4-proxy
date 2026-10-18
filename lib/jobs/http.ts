@@ -1,4 +1,4 @@
-import { styleApprovalRef, imageStyleFeatures, thumbnailTextOf } from '../generative/styleApproval.js'
+import { styleApprovalRef, imageStyleFeatures, thumbnailTextOf, parseLongformThumbnailStyle } from '../generative/styleApproval.js'
 import { summaryUsd } from '../generative/usageLedger.js'
 import { wisdomUploadText } from '../generative/wisdomUploadText.js'
 import type { openAiWisdomPublishKit } from '../generative/wisdomThumbnail.js'
@@ -480,12 +480,19 @@ export function createJobsHttp(deps: JobsDeps) {
           await deps.blobs.putJson(styleApprovalRef(job.id), rec, { overwrite: true })
           return res.status(200).json({ ok: true, style: { status: rec.status, attempt: cur.n + 1 } })
         }
+        // A longform style choice must never be silently ignored: the actual drawing engine
+        // is still pinned to the job's resolved creative profile. Reject before mutating
+        // the approval record or resuming a paid ASSET stage until engine routing exists.
+        if (action === 'regenerate' && body.firstFrameStyle !== undefined && body.firstFrameStyle !== '') {
+          try { rec.pendingVisualStyle = parseLongformThumbnailStyle(body.firstFrameStyle) } catch { throw new JobError('BAD_REQUEST', '지원하지 않는 롱폼 그림체입니다.') }
+        }
         if (mismatch) { /* handled above */ } else if (action === 'approve') {
           const bg = await deps.blobs.getBytes(cur.backgroundRef)
           if (!bg) throw new JobError('NO_THUMBNAIL', 'the thumbnail picture is missing')
           const dir = await mkdtemp(join(tmpdir(), 'style-approve-')), f = join(dir, 'bg.jpg')
           try { await writeFile(f, bg); rec.approved = { n: cur.n, backgroundRef: cur.backgroundRef, thumbnailRef: cur.thumbnailRef, features: await imageStyleFeatures(f), at: new Date().toISOString() } } finally { await rm(dir, { recursive: true, force: true }) }
           rec.status = 'approved'
+          if (rec.pendingVisualStyle) rec.approvedVisualStyle = rec.pendingVisualStyle
         } else rec.regenerate = true
         await deps.blobs.putJson(styleApprovalRef(job.id), rec, { overwrite: true })
         const next = await store.resumeStyleApproval({ jobId: job.id, workspaceId })

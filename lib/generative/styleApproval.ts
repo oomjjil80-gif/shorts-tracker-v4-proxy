@@ -42,10 +42,31 @@ export const styleApprovalWanted = (profile: string, brief: any) => styleApprova
 // art styles apart (measured on the 5 real 그림체 previews: 9 of 10 different-style pairs were within STYLE_MATCH on colour)
 export type StyleTexture = { edge: number; strong: number; detail: number; lines: number; flat: number; satSd: number }
 export type StyleFeatures = { brightness: number; saturation: number; contrast: number; hue: number[]; palette: string[]; texture?: StyleTexture }
+// Thumbnail style overrides are opt-in and never rewrite the original creative brief.
+// Legacy Yasa Shorts presets intentionally are not accepted by Longform.
+export const LONGFORM_THUMBNAIL_STYLES = [
+  'senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic',
+  'realistic-documentary', 'bright-editorial',
+  'golden-1', 'golden-2', 'golden-3', 'golden-4', 'golden-5', 'miniature'
+] as const
+export type LongformThumbnailStyle = (typeof LONGFORM_THUMBNAIL_STYLES)[number]
+export function parseLongformThumbnailStyle(value: unknown): LongformThumbnailStyle | null {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value === 'string' && (LONGFORM_THUMBNAIL_STYLES as readonly string[]).includes(value)) return value as LongformThumbnailStyle
+  throw new Error('지원하지 않는 롱폼 그림체입니다.')
+}
+
 export type StyleApprovalRecord = {
   schema: 'style-approval/1'
   status: 'pending' | 'approved'
   attempts: Array<{ n: number; backgroundRef: string; thumbnailRef: string; lines: ThumbLine[]; copyIssues: string[]; imageIssues: string[]; example?: { style: string; file: string; sha: string }; at: string }>
+  // A requested replacement style is scoped to the NEXT thumbnail attempt, never the
+  // immutable job brief or any previously approved image. The engine must explicitly
+  // consume this field before accepting style overrides through the API.
+  pendingVisualStyle?: LongformThumbnailStyle
+  // The chosen style is promoted only when its thumbnail is approved; previous
+  // approved images and immutable job creation settings remain untouched.
+  approvedVisualStyle?: LongformThumbnailStyle
   regenerate?: boolean
   redrawRepresentative?: boolean
   // 썸네일만 다시 생성 (after approval): ONE new thumbnail picture; the approved picture stays the style / character lock

@@ -18,7 +18,7 @@ import { crossReviewFromEnv, runCrossReview, PLAN_CROSS_REVIEW_VERSION, type Cro
 import { createSleepClassicPlanner, isSleepClassic, reviewSleepClassicStory, repairSleepClassicChapter, runSleepClassicReviewLoop, SLEEP_MAX_AUTOMATIC_REPAIR_PASSES, SLEEP_CHAPTERS } from '../../lib/generative/sleepClassic.js'
 import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorCostEstimate, budgetGuard, ttsUsdOf, SENIOR_COST, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeGolden, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
-import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
+import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, goldenSpec, isGoldenStyle, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
 import { VISUAL_STYLE_PROFILES } from '../../lib/generative/visualStyle.js'
 import { VIDEO_ENCODER_THREADS } from '../../lib/media/render.js'
 import { openAiLongformResearcher, researchPath, researchErrors, sectionFragments, RESEARCH_MODEL, type LongformResearcher, type ResearchBundle } from '../../lib/generative/longformResearch.js'
@@ -424,14 +424,30 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       // Golden Style 1~5 (stored at job_create with its locked reference hash + prompt version), 16:9. FIRST-IMAGE CHARACTER
       // LOCK: the job's first picture (the approved thumbnail picture, or the first scene) is drawn with the Golden
       // reference alone; every later picture gets the Golden reference (style) + that first picture (the people)
-      const golden = creativeGolden(brief?.creative), gTag = golden ? goldenCacheTag(golden) : ''
+      const approvalChoice: any = styleApprovalWanted(job.profile, brief)
+        ? await blobs.getJson(styleApprovalRef(job.id)).catch(() => null) : null
+      const selectedStyle = approvalChoice?.pendingVisualStyle ?? approvalChoice?.approvedVisualStyle ?? null
+      // Explicit thumbnail choices override drawing only; the original brief and voice remain immutable.
+      const golden = selectedStyle
+        ? (isGoldenStyle(selectedStyle) ? goldenSpec(selectedStyle) : null)
+        : creativeGolden(brief?.creative)
+      const gTag = golden ? goldenCacheTag(golden) : ''
       let goldenIdentity: GoldenIdentity | null = null
       const goldenDraw = golden ? (p: string, k: string) => goldenImage(golden, p, '16:9', k, deps.imageFetch ?? fetch, goldenIdentity) : null
       // 야담: every picture is drawn by the ONE style contract (yadamStyle.ts: the reference frames + its text); the scene
       // prompt says only what the picture shows. Senior keeps its resolved style (watercolor by default).
-      const sceneStyle = scenes && !yasa ? ((brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES['senior-warm-watercolor']) : null
-      const scenePrompts = sceneList.map((sc) => (yasa ? yasaScenePrompt(script as unknown as SeniorScript, sc) : seniorScenePrompt(script as unknown as SeniorScript, sc, sceneStyle!)))
-      const prompt = scenes ? scenePrompts[0] : longformImagePrompt(script, creativeStyleOverride(brief?.creative)), chunks = ttsChunks(script)
+      const useYadam = yasa && !selectedStyle
+      const chosenProfile = selectedStyle && selectedStyle !== 'miniature'
+        ? VISUAL_STYLE_PROFILES[selectedStyle as keyof typeof VISUAL_STYLE_PROFILES] : null
+      const miniaturePrompt = 'Highly detailed handcrafted 3D miniature diorama, physical scale-model characters and buildings, realistic tiny materials, cinematic macro photography, soft studio lighting, no text or lettering.'
+      const overrideStyle = chosenProfile && !golden
+        ? `Style: ${chosenProfile.promptPrefix}. Composition: ${chosenProfile.compositionHints}. Avoid: ${chosenProfile.negativePrompt}.`
+        : selectedStyle === 'miniature' ? miniaturePrompt : ''
+      const sceneStyle = scenes && !useYadam ? (selectedStyle === 'miniature'
+        ? { ...VISUAL_STYLE_PROFILES['senior-warm-watercolor'], promptPrefix: miniaturePrompt, negativePrompt: 'watercolor, ink wash, flat illustration, full-size real buildings, text, watermark', compositionHints: 'miniature scale clearly visible, macro lens depth of field' }
+        : chosenProfile || (brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES['senior-warm-watercolor']) : null
+      const scenePrompts = sceneList.map((sc) => (useYadam ? yasaScenePrompt(script as unknown as SeniorScript, sc) : seniorScenePrompt(script as unknown as SeniorScript, sc, sceneStyle!)))
+      const prompt = scenes ? scenePrompts[0] : longformImagePrompt(script, creativeStyleOverride(brief?.creative)) + (overrideStyle ? `\n${overrideStyle}` : ''), chunks = ttsChunks(script)
       // BUDGET (Senior): every paid call of this stage — the thumbnail, the first-scene lock, a thumbnail redraw, the
       // representative, each scene, each narration chunk, the copy / style checks — reserves its price BEFORE it is sent;
       // one that would take the job over its budget is never sent: the job waits (BUDGET) with what it needs, everything
@@ -454,15 +470,15 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       const repIndex = scenes ? Math.min(sceneList.length - 1, Math.floor(sceneList.length * 0.4)) : -1
       let styleLock: StyleReference | null = null, approval: any = null, thumbPrompt = ''
       if (styleApprovalWanted(job.profile, brief)) {
-        thumbPrompt = thumbnailBackgroundPrompt(script.title, scenes ? scenePrompts[titleSceneIndex(script.title, sceneList.map((sc: any) => ({ id: sc.id, text: [sc.visual, sc.action, ...((script as any).sections ?? []).flatMap((x: any) => (x.sentences ?? []).filter((y: any) => y.scene === sc.id).map((y: any) => y.say))].join(' ') })), repIndex)] : prompt, { styleNeutral: yasa || !!golden })
-        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, imageKey, backgroundPrompt: thumbPrompt, draw: (p: string, k: string) => paid(IMG, () => (goldenDraw ? goldenDraw(p, k) : yasa ? yadamDraw(p, k) : image(p, k))), copyWriter, signal })
+        thumbPrompt = thumbnailBackgroundPrompt(script.title, scenes ? scenePrompts[titleSceneIndex(script.title, sceneList.map((sc: any) => ({ id: sc.id, text: [sc.visual, sc.action, ...((script as any).sections ?? []).flatMap((x: any) => (x.sentences ?? []).filter((y: any) => y.scene === sc.id).map((y: any) => y.say))].join(' ') })), repIndex)] : prompt, { styleNeutral: useYadam || !!golden }) + (overrideStyle ? `\n${overrideStyle}` : '')
+        const gate = await styleGate({ jobId: job.id, blobs, script, profile: job.profile, apiKey, imageKey, backgroundPrompt: thumbPrompt, draw: (p: string, k: string) => paid(IMG, () => (goldenDraw ? goldenDraw(p, k) : useYadam ? yadamDraw(p, k) : image(p, k))), copyWriter, signal })
         if (gate.wait) return { result: { styleApproval: { status: 'pending', attempt: gate.record.attempts.length, thumbnailRef: gate.record.attempts.at(-1)?.thumbnailRef ?? null } }, wait: 'DECISION' }
         // 야담: the approved picture keeps the people and place consistent; the drawing stays the contract's (no measured colour text)
-        styleLock = yasa || golden ? { ...gate.reference, text: '' } : gate.reference; approval = gate.record
+        styleLock = useYadam || golden ? { ...gate.reference, text: '' } : gate.reference; approval = gate.record
       }
       // the character lock of a Golden job: stored before any later picture is drawn, the same bytes on every resume / retry
       const lockTag = styleLock ? `|ref:${styleLock.sha}` : ''
-      const scenePrefix = yasa ? `${YADAM_STYLE_VERSION}|scene|` : styleLock ? 'longform-scene-image-ref-v1|' : 'longform-scene-image-v1|'
+      const scenePrefix = useYadam ? `${YADAM_STYLE_VERSION}|scene|` : styleLock ? 'longform-scene-image-ref-v1|' : 'longform-scene-image-v1|'
       const firstIsScene = !!golden && !styleLock && scenes, firstKey = firstIsScene ? sha256(scenePrefix + scenePrompts[0] + lockTag + gTag) : ''
       let lockDrawn = 0
       if (golden && styleLock) goldenIdentity = (await goldenLockFor(blobs, job.id, golden, async () => ({ bytes: styleLock!.bytes }), 'approved-thumbnail')).identity
@@ -477,8 +493,8 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
         }, 'first-scene')).identity
       }
       const idTag = goldenLockTag(goldenIdentity)
-      const draw = (p: string) => (goldenDraw ? goldenDraw(p, imageKey) : yasa ? yadamDraw(p, imageKey, { approved: styleLock?.bytes ?? null }) : styleLock ? imageRef(`${p}\n\n${styleLock.text}`, styleLock.bytes, imageKey) : image(p, imageKey))
-      const drawRepresentative: DrawRefFn = goldenDraw ? (p, _ref, k) => goldenDraw(p.trim(), k) : yasa ? (p, ref, k) => yadamDraw(p.trim(), k, { approved: ref }) : imageRef
+      const draw = (p: string) => (goldenDraw ? goldenDraw(p, imageKey) : useYadam ? yadamDraw(p, imageKey, { approved: styleLock?.bytes ?? null }) : styleLock ? imageRef(`${p}\n\n${styleLock.text}`, styleLock.bytes, imageKey) : image(p, imageKey))
+      const drawRepresentative: DrawRefFn = goldenDraw ? (p, _ref, k) => goldenDraw(p.trim(), k) : useYadam ? (p, ref, k) => yadamDraw(p.trim(), k, { approved: ref }) : imageRef
       // paid calls only on a cache miss (an ASSET rerun reuses every picture and every narration chunk); the prompt (and so
       // the style, and the approved reference picture) is part of every image key
       const ik = sha256((styleLock ? 'longform-image-ref-v1|' : 'longform-image-v1|') + prompt + lockTag + gTag + idTag)

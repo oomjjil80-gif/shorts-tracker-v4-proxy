@@ -52,7 +52,8 @@ test('nothing of the old 야담 styles is left on a production path; the other c
   // one 야담 style id, offered to 야담 only
   // 야담: its one style + the user-approved Golden 1~5 (issue #179), nothing else
   const yasaStyles = [YADAM_STYLE_ID, 'golden-1', 'golden-2', 'golden-3', 'golden-4', 'golden-5']
-  assert.deepEqual([...creativeStylesFor('yasa_longform')], yasaStyles); assert.deepEqual([...creativeStylesFor('yasa_shorts')], yasaStyles)
+  const longformStyles = [YADAM_STYLE_ID, 'senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial', ...yasaStyles.slice(1)]
+  assert.deepEqual([...creativeStylesFor('yasa_longform')], longformStyles); assert.deepEqual([...creativeStylesFor('yasa_shorts')], yasaStyles)
   assert.deepEqual([...VISUAL_STYLE_KEYS], ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial', YADAM_STYLE_ID, 'golden-1', 'golden-2', 'golden-3', 'golden-4', 'golden-5'])
   // senior / wisdom / general / economy styles: exactly the definitions on main before this change
   const keep = ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial']

@@ -142,13 +142,21 @@ test('voice preview resolves through the same resolver: AUTO follows the content
   assert.throws(() => previewVoice({ profile: 'nope' }), /no voice preview/)
 })
 
-test('야담 그림체: the reference contract by default (+ Golden 1~5), no other 야담 style can be chosen; the scene prompt says only what is shown, with the Joseon LOCK', async () => {
+test('야담 그림체: the reference contract by default (+ Golden 1~5), longform allows shared styles while shorts retains its legacy lock; the scene prompt says only what is shown, with the Joseon LOCK', async () => {
   const { creativeStylesFor } = await import('../lib/generative/creativeProfile.js')
   const { YADAM_STYLE_ID } = await import('../lib/generative/yadamStyle.js')
   const { yasaScenePrompt, JOSEON_LOCK, JOSEON_FORBIDDEN } = await import('../lib/generative/yasaLongform.js')
+  const shared = ['senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial']
+  const golden = ['golden-1', 'golden-2', 'golden-3', 'golden-4', 'golden-5']
+  assert.deepEqual([...creativeStylesFor('yasa_longform')], [YADAM_STYLE_ID, ...shared, ...golden])
+  assert.deepEqual([...creativeStylesFor('yasa_shorts')], [YADAM_STYLE_ID, ...golden])
   for (const c of ['yasa_longform', 'yasa_shorts'] as const) {
-    assert.deepEqual([...creativeStylesFor(c)], [YADAM_STYLE_ID, 'golden-1', 'golden-2', 'golden-3', 'golden-4', 'golden-5']); assert.equal(creativeAutoDefaults(c).visualStyleProfile, YADAM_STYLE_ID)
-    for (const old of ['korean_drama_illustration', 'webtoon_historical', 'historical-dramatic', 'senior-warm-watercolor']) assert.throws(() => resolveCreativeProfile(c, { visualStyleProfile: old }, ''), /visualStyleProfile/)
+    assert.equal(creativeAutoDefaults(c).visualStyleProfile, YADAM_STYLE_ID)
+    for (const old of ['korean_drama_illustration', 'webtoon_historical']) assert.throws(() => resolveCreativeProfile(c, { visualStyleProfile: old }, ''), /visualStyleProfile/)
+  }
+  for (const style of shared) {
+    assert.equal(resolveCreativeProfile('yasa_longform', { visualStyleProfile: style }, '').resolved.visualStyleProfile, style)
+    assert.throws(() => resolveCreativeProfile('yasa_shorts', { visualStyleProfile: style }, ''), /visualStyleProfile/)
   }
   assert.deepEqual(creativeAutoDefaults('yasa_longform'), { voiceProfile: 'female-senior', voiceTone: 'calm', voiceSpeed: 1, voiceProfileId: 'ko-lf-female-senior-calm-1.0-yadam-v1', visualStyleProfile: YADAM_STYLE_ID })
   assert.equal(resolveCreativeProfile('yasa_longform', { voiceSpeed: 0.9 }, '').resolved.voiceSpeed, 0.9, '0.9x only when chosen')
