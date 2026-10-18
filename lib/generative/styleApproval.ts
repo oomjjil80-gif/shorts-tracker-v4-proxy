@@ -63,7 +63,10 @@ export type StyleApprovalRecord = {
   // A requested replacement style is scoped to the NEXT thumbnail attempt, never the
   // immutable job brief or any previously approved image. The engine must explicitly
   // consume this field before accepting style overrides through the API.
-  pendingVisualStyle?: string
+  pendingVisualStyle?: LongformThumbnailStyle
+  // The chosen style is promoted only when its thumbnail is approved; previous
+  // approved images and immutable job creation settings remain untouched.
+  approvedVisualStyle?: LongformThumbnailStyle
   regenerate?: boolean
   redrawRepresentative?: boolean
   // 썸네일만 다시 생성 (after approval): ONE new thumbnail picture; the approved picture stays the style / character lock
