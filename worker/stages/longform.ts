@@ -443,8 +443,10 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       const overrideStyle = chosenProfile && !golden
         ? `Style: ${chosenProfile.promptPrefix}. Composition: ${chosenProfile.compositionHints}. Avoid: ${chosenProfile.negativePrompt}.`
         : selectedStyle === 'miniature' ? miniaturePrompt : ''
-      const sceneStyle = scenes && !useYadam ? (chosenProfile || (brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES['senior-warm-watercolor']) : null
-      const scenePrompts = sceneList.map((sc) => (useYadam ? yasaScenePrompt(script as unknown as SeniorScript, sc) : seniorScenePrompt(script as unknown as SeniorScript, sc, sceneStyle!)) + (selectedStyle === 'miniature' ? `\n${miniaturePrompt}` : ''))
+      const sceneStyle = scenes && !useYadam ? (selectedStyle === 'miniature'
+        ? { ...VISUAL_STYLE_PROFILES['senior-warm-watercolor'], promptPrefix: miniaturePrompt, negativePrompt: 'watercolor, ink wash, flat illustration, full-size real buildings, text, watermark', compositionHints: 'miniature scale clearly visible, macro lens depth of field' }
+        : chosenProfile || (brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES['senior-warm-watercolor']) : null
+      const scenePrompts = sceneList.map((sc) => (useYadam ? yasaScenePrompt(script as unknown as SeniorScript, sc) : seniorScenePrompt(script as unknown as SeniorScript, sc, sceneStyle!)))
       const prompt = scenes ? scenePrompts[0] : longformImagePrompt(script, creativeStyleOverride(brief?.creative)) + (overrideStyle ? `\n${overrideStyle}` : ''), chunks = ttsChunks(script)
       // BUDGET (Senior): every paid call of this stage — the thumbnail, the first-scene lock, a thumbnail redraw, the
       // representative, each scene, each narration chunk, the copy / style checks — reserves its price BEFORE it is sent;
