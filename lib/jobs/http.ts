@@ -484,8 +484,7 @@ export function createJobsHttp(deps: JobsDeps) {
         // is still pinned to the job's resolved creative profile. Reject before mutating
         // the approval record or resuming a paid ASSET stage until engine routing exists.
         if (action === 'regenerate' && body.firstFrameStyle !== undefined && body.firstFrameStyle !== '') {
-          try { parseLongformThumbnailStyle(body.firstFrameStyle) } catch { throw new JobError('BAD_REQUEST', '지원하지 않는 롱폼 그림체입니다.') }
-          throw new JobError('BAD_REQUEST', '롱폼 그림체 변경은 이미지 생성 엔진 연결 전까지 사용할 수 없습니다. 현재 그림체 유지를 선택해 주세요.')
+          try { rec.pendingVisualStyle = parseLongformThumbnailStyle(body.firstFrameStyle) } catch { throw new JobError('BAD_REQUEST', '지원하지 않는 롱폼 그림체입니다.') }
         }
         if (mismatch) { /* handled above */ } else if (action === 'approve') {
           const bg = await deps.blobs.getBytes(cur.backgroundRef)
@@ -493,6 +492,7 @@ export function createJobsHttp(deps: JobsDeps) {
           const dir = await mkdtemp(join(tmpdir(), 'style-approve-')), f = join(dir, 'bg.jpg')
           try { await writeFile(f, bg); rec.approved = { n: cur.n, backgroundRef: cur.backgroundRef, thumbnailRef: cur.thumbnailRef, features: await imageStyleFeatures(f), at: new Date().toISOString() } } finally { await rm(dir, { recursive: true, force: true }) }
           rec.status = 'approved'
+          if (rec.pendingVisualStyle) rec.approvedVisualStyle = rec.pendingVisualStyle
         } else rec.regenerate = true
         await deps.blobs.putJson(styleApprovalRef(job.id), rec, { overwrite: true })
         const next = await store.resumeStyleApproval({ jobId: job.id, workspaceId })
