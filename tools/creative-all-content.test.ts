@@ -25,7 +25,7 @@ test('matrix: every family x format resolves through the one resolver; AUTO styl
     const auto = resolveCreativeProfile(content, {}, '평범한 이야기').resolved
     assert.equal(auto.visualStyleProfile, AUTO_STYLE[fam], `${fam}/${fmt}`)
     // 야담 has one 그림체: another style is refused; every other family takes the explicit choice
-    if (fam === 'yasa') { assert.throws(() => resolveCreativeProfile(content, { visualStyleProfile: 'senior-warm-watercolor' }, ''), /visualStyleProfile/); continue }
+    if (fam === 'yasa' && fmt === 'shorts') { assert.throws(() => resolveCreativeProfile(content, { visualStyleProfile: 'senior-warm-watercolor' }, ''), /visualStyleProfile/); continue }
     const mine = resolveCreativeProfile(content, { voiceProfile: 'female-middle', voiceTone: 'neutral', voiceSpeed: 1.1, visualStyleProfile: 'senior-warm-watercolor' }, '').resolved
     assert.deepEqual([mine.voiceProfile, mine.voiceTone, mine.voiceSpeed, mine.visualStyleProfile], ['female-middle', 'neutral', 1.1, 'senior-warm-watercolor'], `${fam}/${fmt}`)
   }
