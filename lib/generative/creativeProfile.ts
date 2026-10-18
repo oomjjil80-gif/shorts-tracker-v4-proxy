@@ -49,7 +49,7 @@ const CONTENT_RULES: Readonly<Record<CreativeContent, ContentRule>> = {
   // 야담 (쇼츠 and 롱폼): the ONE reference style contract (yadamStyle.ts); no other 야담 style can be chosen
   yasa_shorts: { voice: 'topic-mature', fallback: 'male-middle', style: YADAM_STYLE_ID, styles: [YADAM_STYLE_ID, ...GOLDEN_STYLE_IDS] },
   // 숨은야담 롱폼: an old tale told by a grandmother (female-senior, calm, 1.0x, the storyteller reading)
-  yasa_longform: { voice: 'fixed', fixed: YADAM_VOICE.key, speed: YADAM_VOICE.speed, style: YADAM_STYLE_ID, styles: [YADAM_STYLE_ID, ...GOLDEN_STYLE_IDS] },
+  yasa_longform: { voice: 'fixed', fixed: YADAM_VOICE.key, speed: YADAM_VOICE.speed, style: YADAM_STYLE_ID, styles: [YADAM_STYLE_ID, 'senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic', 'realistic-documentary', 'bright-editorial', ...GOLDEN_STYLE_IDS] },
   general_shorts: { voice: 'topic', style: 'bright-editorial' },
   general_longform: { voice: 'topic', style: 'bright-editorial' },
   // the economy channel bible already draws a premium documentary/editorial look: AUTO keeps its prompts as they are
