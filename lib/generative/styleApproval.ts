@@ -46,6 +46,10 @@ export type StyleApprovalRecord = {
   schema: 'style-approval/1'
   status: 'pending' | 'approved'
   attempts: Array<{ n: number; backgroundRef: string; thumbnailRef: string; lines: ThumbLine[]; copyIssues: string[]; imageIssues: string[]; example?: { style: string; file: string; sha: string }; at: string }>
+  // A requested replacement style is scoped to the NEXT thumbnail attempt, never the
+  // immutable job brief or any previously approved image. The engine must explicitly
+  // consume this field before accepting style overrides through the API.
+  pendingVisualStyle?: string
   regenerate?: boolean
   redrawRepresentative?: boolean
   // 썸네일만 다시 생성 (after approval): ONE new thumbnail picture; the approved picture stays the style / character lock
