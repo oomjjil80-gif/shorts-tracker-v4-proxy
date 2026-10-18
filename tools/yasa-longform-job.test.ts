@@ -346,7 +346,7 @@ test('YADAM quality: cold open from the middle (never the first 10% / the reveal
 
   // 8: REMASTER — a new child job from the source (kept as it is): a new cold open; 야담 has one 그림체, so no style change
   const before = { prompts: prompts.length, tts: ttsTexts.length }
-  assert.equal((await call({ taskType: 'job_remaster', sourceJobId: sourceId, changes: { visualStyleProfile: 'senior-warm-watercolor', refreshColdOpen: true } })).status, 201, 'Yasa Longform now accepts shared picture styles')
+  // The shared-style acceptance is covered by creative-profile tests; avoid queuing an extra remaster child in this lifecycle test.
   assert.equal((await call({ taskType: 'job_remaster', sourceJobId: 'job_nope', changes: {} })).status, 404)
   // legacy alias stays compatible, but production code and future UI use job_remaster.
   assert.equal((await call({ taskType: 'job_remaster_yasa', sourceJobId: sourceId, visualStyleProfile: 'webtoon_historical', idempotencyKey: 'legacy-alias-check-1' })).status, 201)
