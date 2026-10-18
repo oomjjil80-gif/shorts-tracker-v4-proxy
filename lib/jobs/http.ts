@@ -1,4 +1,4 @@
-import { styleApprovalRef, imageStyleFeatures, thumbnailTextOf } from '../generative/styleApproval.js'
+import { styleApprovalRef, imageStyleFeatures, thumbnailTextOf, parseLongformThumbnailStyle } from '../generative/styleApproval.js'
 import { summaryUsd } from '../generative/usageLedger.js'
 import { wisdomUploadText } from '../generative/wisdomUploadText.js'
 import type { openAiWisdomPublishKit } from '../generative/wisdomThumbnail.js'
@@ -484,6 +484,7 @@ export function createJobsHttp(deps: JobsDeps) {
         // is still pinned to the job's resolved creative profile. Reject before mutating
         // the approval record or resuming a paid ASSET stage until engine routing exists.
         if (action === 'regenerate' && body.firstFrameStyle !== undefined && body.firstFrameStyle !== '') {
+          try { parseLongformThumbnailStyle(body.firstFrameStyle) } catch { throw new JobError('BAD_REQUEST', '지원하지 않는 롱폼 그림체입니다.') }
           throw new JobError('BAD_REQUEST', '롱폼 그림체 변경은 이미지 생성 엔진 연결 전까지 사용할 수 없습니다. 현재 그림체 유지를 선택해 주세요.')
         }
         if (mismatch) { /* handled above */ } else if (action === 'approve') {
