@@ -42,6 +42,20 @@ export const styleApprovalWanted = (profile: string, brief: any) => styleApprova
 // art styles apart (measured on the 5 real 그림체 previews: 9 of 10 different-style pairs were within STYLE_MATCH on colour)
 export type StyleTexture = { edge: number; strong: number; detail: number; lines: number; flat: number; satSd: number }
 export type StyleFeatures = { brightness: number; saturation: number; contrast: number; hue: number[]; palette: string[]; texture?: StyleTexture }
+// Thumbnail style overrides are opt-in and never rewrite the original creative brief.
+// Legacy Yasa Shorts presets intentionally are not accepted by Longform.
+export const LONGFORM_THUMBNAIL_STYLES = [
+  'senior-warm-watercolor', 'wisdom-painterly', 'historical-dramatic',
+  'realistic-documentary', 'bright-editorial',
+  'golden-1', 'golden-2', 'golden-3', 'golden-4', 'golden-5', 'miniature'
+] as const
+export type LongformThumbnailStyle = (typeof LONGFORM_THUMBNAIL_STYLES)[number]
+export function parseLongformThumbnailStyle(value: unknown): LongformThumbnailStyle | null {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value === 'string' && (LONGFORM_THUMBNAIL_STYLES as readonly string[]).includes(value)) return value as LongformThumbnailStyle
+  throw new Error('지원하지 않는 롱폼 그림체입니다.')
+}
+
 export type StyleApprovalRecord = {
   schema: 'style-approval/1'
   status: 'pending' | 'approved'
