@@ -480,6 +480,12 @@ export function createJobsHttp(deps: JobsDeps) {
           await deps.blobs.putJson(styleApprovalRef(job.id), rec, { overwrite: true })
           return res.status(200).json({ ok: true, style: { status: rec.status, attempt: cur.n + 1 } })
         }
+        // A longform style choice must never be silently ignored: the actual drawing engine
+        // is still pinned to the job's resolved creative profile. Reject before mutating
+        // the approval record or resuming a paid ASSET stage until engine routing exists.
+        if (action === 'regenerate' && body.firstFrameStyle !== undefined && body.firstFrameStyle !== '') {
+          throw new JobError('BAD_REQUEST', '롱폼 그림체 변경은 이미지 생성 엔진 연결 전까지 사용할 수 없습니다. 현재 그림체 유지를 선택해 주세요.')
+        }
         if (mismatch) { /* handled above */ } else if (action === 'approve') {
           const bg = await deps.blobs.getBytes(cur.backgroundRef)
           if (!bg) throw new JobError('NO_THUMBNAIL', 'the thumbnail picture is missing')
