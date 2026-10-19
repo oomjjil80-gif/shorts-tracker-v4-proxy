@@ -1,0 +1,39 @@
+name: Cardnews 4x5 one-shot smoke
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Single paid image request, validate dimensions
+        env:
+          IMAGE_API_URL: ${{ secrets.CARDNEWS_IMAGE_API_URL }}
+        run: |
+          python3 - <<'PY'
+          import os,json,urllib.request,urllib.error,base64,struct,io
+          url=os.environ.get('IMAGE_API_URL','').strip()
+          if not url.startswith('https://') or not url.endswith('/api/image'):
+              raise SystemExit('BLOCKED: configure secret CARDNEWS_IMAGE_API_URL as https://<trusted-host>/api/image')
+          body={'contractVersion':'1.5','taskType':'cut_image','providerId':'gemini','modelId':'gemini-3.1-flash-image','input':{'prompt':'Ancient Roman stone dome interior, a round oculus at the top, a single beam of sunlight. Vertical 4:5 editorial illustration, no text, no logo.','aspectRatio':'4:5','imageSize':'1K','cutIndex':0,'references':[],'profile':'cardnews'}}
+          req=urllib.request.Request(url,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','Accept':'application/json'},method='POST')
+          try:
+              with urllib.request.urlopen(req,timeout=150) as resp: data=json.load(resp)
+          except urllib.error.HTTPError as e:
+              raise SystemExit(f'IMAGE_API_HTTP_{e.code}: stopped, no retry')
+          img=data.get('image') or {}
+          b64=img.get('base64') or data.get('imageBase64') or data.get('base64')
+          if not b64: raise SystemExit('FAIL: image response has no base64')
+          raw=base64.b64decode(b64,validate=True)
+          if raw.startswith(b'\x89PNG\r\n\x1a\n'):
+              width,height=struct.unpack('>II',raw[16:24])
+          elif raw.startswith(b'\xff\xd8'):
+              from PIL import Image
+              width,height=Image.open(io.BytesIO(raw)).size
+          else: raise SystemExit('FAIL: unsupported image format')
+          print(f'Image returned: {width}x{height}; bytes={len(raw)}; API calls=1')
+          if width>=height or abs(width/height-0.8)>0.025: raise SystemExit('FAIL: image is not 4:5')
+          print('PASS: one actual 4:5 image; frontend PNG composition remains UNVERIFIED')
+          PY
