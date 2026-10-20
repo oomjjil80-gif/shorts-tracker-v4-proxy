@@ -44,7 +44,12 @@ export function normalizeCards(list: any, { min = CARD_LIMITS.min as number } = 
 const clamp = (s: string, n: number) => (s.length <= n ? s : s.slice(0, n - 1).replace(/\s+\S*$/, '') + '…')
 const fitCard = (c: Card): Card => ({ ...c, headline: clamp(c.headline, CARD_LIMITS.headline), body: clamp(c.body, CARD_LIMITS.body) })
 
-const RULES = `카드뉴스(인스타그램 4:5) 규칙: 첫 장=훅(숫자·질문·반전), 중간=전개, 마지막=결말. 제목 문구 ${CARD_LIMITS.headline}자 이하, 본문 ${CARD_LIMITS.body}자 이하. 소재에 없는 사실을 만들지 않는다. 과장 표현 금지. 한국어.`
+const RULES = `카드뉴스(인스타그램 4:5) 편집 품질 계약. 정확히 첫 장=강한 궁금증을 만드는 훅, 중간=서로 다른 새 정보와 증거를 한 장씩 공개, 마지막=정체·결론 공개. 각 장 제목은 ${CARD_LIMITS.headline}자 이하, 본문은 ${CARD_LIMITS.body}자 이하. 한국어. 소재에 없는 사실을 지어내거나 과장하지 않는다.
+최우선: 소재의 첫 문장을 표지·첫 장에 그대로 복사하지 말고 시청자가 다음 장을 넘기게 만드는 자연스러운 완결형 한국어 제목을 작성한다. 의미 없는 말줄임표·문장 중간 잘림·"천장엔?" 같은 불완전한 제목 금지.
+첫 장은 정체·지명·고유명사를 숨겨도 설명이 성립하면 숨긴다. 단, 마지막 장에서 공개할 사실을 첫 장이나 중간 장에서 먼저 누설하지 않는다.
+2~끝에서 각 장은 이전 장과 다른 질문에 답해야 한다. 같은 사실을 단어만 바꾸어 반복하거나 "물이 들어온다→물이 흐른다"처럼 정보량 없이 장 수를 채우지 않는다. 소재 정보가 부족하면 근거 없는 내용을 추가하지 말고 확인 가능한 구조·원인·효과·대비·역사적 맥락을 분리해 설명한다.
+각 장마다 독립적인 시각 증거 또는 장면 하나가 있어야 한다. 텍스트만 읽어야 이해되는 추상 문구 대신 실제 그릴 수 있는 물체·행동·단면·비교를 택한다.
+최종 출력 전에 덱 전체를 내부 검토해 약한 훅, 앞뒤 중복, 조기 정체 공개, 소재와 무관한 주장, 부자연스러운 제목이 있으면 같은 생성 호출 안에서 바로 수정한다. `
 const PLAN_PROPS = { type: 'object', additionalProperties: false, required: ['subject', 'composition', 'distinction'], properties: { subject: { type: 'string' }, composition: { type: 'string' }, distinction: { type: 'string' } } }
 const CARDS_SCHEMA = (n: number) => ({ type: 'object', additionalProperties: false, required: ['cards'], properties: { cards: { type: 'array', minItems: n, maxItems: n, items: { type: 'object', additionalProperties: false, required: ['headline', 'body', 'visualPlan'], properties: { headline: { type: 'string' }, body: { type: 'string' }, visualPlan: PLAN_PROPS } } } } })
 const PLAN_FIX_SCHEMA = { type: 'object', additionalProperties: false, required: ['cards'], properties: { cards: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'visualPlan'], properties: { id: { type: 'string' }, visualPlan: PLAN_PROPS } } } } }
