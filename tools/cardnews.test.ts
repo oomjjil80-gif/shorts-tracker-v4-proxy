@@ -15,7 +15,7 @@ function rig() {
   const deps = {
     gpt: async (name: string, _s: any, _i: string, input: string) => {
       calls.push('gpt:' + name)
-      if (name === 'cardnews_compose') return { cards: Array.from({ length: 6 }, (_, i) => ({ headline: `새제목${i + 1}`, body: `새본문${i + 1}` })) }
+      if (name === 'cardnews_compose') return { cards: Array.from({ length: 6 }, (_, i) => ({ headline: `새제목${i + 1}`, body: `새본문${i + 1}`, visualPlan: { subject: `새제목${i + 1} 장면의 핵심 사물 ${['우물','가야금','서생','등불','달빛','마을'][i]}`, composition: ['와이드','접사','부감','측면','역광','로우앵글'][i] + ' 구도', distinction: `${i}장과 다른 시점` } })) }
       const t = JSON.parse(input).다시쓸장 as any[]
       return { cards: [...t.map((c) => ({ id: c.id, headline: '고친제목', body: '고친본문' })), { id: 'c1', headline: '몰래바꿈', body: 'x' }] }
     },
