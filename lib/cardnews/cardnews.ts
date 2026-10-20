@@ -61,7 +61,7 @@ export async function composeCards(input: any, deps: CardnewsDeps) {
   if (material.length < 20) throw new CardnewsError('BAD_REQUEST', '소재를 20자 이상 입력하세요.')
   const count = Math.min(CARD_LIMITS.max, Math.max(CARD_LIMITS.min, Math.round(Number(input?.count) || 8)))
   needApproval('compose', input) // 승인 전에는 아래 공급자 호출에 도달하지 않는다
-  const j = await deps.gpt('cardnews_compose', CARDS_SCHEMA(count), `${RULES}\n${PLAN_RULES}\n제목(변경 금지): ${cover.title}\n표지 문구: ${cover.coverLine}\n약속하는 핵심 내용: ${cover.promise}\n정확히 ${count}장을 쓴다.`, material)
+  const j = await deps.gpt('cardnews_compose', CARDS_SCHEMA(count), `${RULES}\n${PLAN_RULES}\n소재에서 임시 추출한 참고 제목(첫 장 제목으로 복사하지 말 것): ${cover.title}\n표지 문구: ${cover.coverLine}\n약속하는 핵심 내용: ${cover.promise}\n정확히 ${count}장을 쓴다.`, material)
   let cards = normalizeCards(j?.cards, { min: count }).map(fitCard)
   // 이미지(유료) 전에 무료 규칙 검사. 문제가 있는 장의 계획만 한 번 고친다(전체 재설계 없음, 자동 반복 없음).
   let issues = planIssues(cards, cover), order = ['gpt:compose']
