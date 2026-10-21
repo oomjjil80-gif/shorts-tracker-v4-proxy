@@ -30,7 +30,7 @@ import { createLongformPlanExecutor, createLongformAssetExecutor, longformRender
 // every paid OpenAI call is metered (model, tokens, estimated USD) per job stage: see lib/generative/usageLedger.ts
 installUsageMeter()
 const workerId = process.env.WORKER_ID || `${hostname()}-${process.pid}`
-const pollMs = Number(process.env.WORKER_POLL_MS || 2000)
+// Back off during inactivity instead of querying Postgres every two seconds.\nconst pollMs = Math.max(1000, Number(process.env.WORKER_POLL_MS || 2000))\nconst idlePollMaxMs = Math.max(pollMs, Number(process.env.WORKER_IDLE_POLL_MAX_MS || 60000))
 // Model-assisted planning is a paid external call, so it is explicit opt-in even if a provider key exists.
 const openAi = process.env.WORKER_AI_PLANNER === 'on' && process.env.OPENAI_API_KEY
   ? { apiKey: process.env.OPENAI_API_KEY, model: process.env.OPENAI_PLAN_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini' }
