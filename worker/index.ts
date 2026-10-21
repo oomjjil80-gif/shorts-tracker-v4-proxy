@@ -30,7 +30,9 @@ import { createLongformPlanExecutor, createLongformAssetExecutor, longformRender
 // every paid OpenAI call is metered (model, tokens, estimated USD) per job stage: see lib/generative/usageLedger.ts
 installUsageMeter()
 const workerId = process.env.WORKER_ID || `${hostname()}-${process.pid}`
-// Back off during inactivity instead of querying Postgres every two seconds.\nconst pollMs = Math.max(1000, Number(process.env.WORKER_POLL_MS || 2000))\nconst idlePollMaxMs = Math.max(pollMs, Number(process.env.WORKER_IDLE_POLL_MAX_MS || 60000))
+// Back off during inactivity instead of querying Postgres every two seconds.
+const pollMs = Math.max(1000, Number(process.env.WORKER_POLL_MS || 2000))
+const idlePollMaxMs = Math.max(pollMs, Number(process.env.WORKER_IDLE_POLL_MAX_MS || 60000))
 // Model-assisted planning is a paid external call, so it is explicit opt-in even if a provider key exists.
 const openAi = process.env.WORKER_AI_PLANNER === 'on' && process.env.OPENAI_API_KEY
   ? { apiKey: process.env.OPENAI_API_KEY, model: process.env.OPENAI_PLAN_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini' }
@@ -120,10 +122,14 @@ async function main() {
           }
         }
         console.log(`[worker ${workerId}] job=${out.jobId} stage=${out.stage} -> ${out.outcome}${detail}`)
-      } else await sleep(pollMs)
+      } else {
+        await sleep(idlePollMs)
+        idlePollMs = Math.min(idlePollMaxMs, idlePollMs * 2)
+      }
     } catch (e: any) {
       console.error(`[worker ${workerId}] error`, e?.message || e)
-      await sleep(pollMs)
+      await sleep(idlePollMs)
+      idlePollMs = Math.min(idlePollMaxMs, idlePollMs * 2)
     }
   }
   await db.close?.()
