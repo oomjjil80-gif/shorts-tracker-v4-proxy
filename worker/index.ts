@@ -94,6 +94,7 @@ async function main() {
   console.log(`[worker ${workerId}] started`)
   // 급상승 탐색: hourly real view-count collection (needs YOUTUBE_API_KEY; the DB claim keeps it to one run per hour). Never blocks jobs.
   let trendCheckedAt = 0
+  let idlePollMs = pollMs
   while (!stopping) {
     if (process.env.YOUTUBE_API_KEY && process.env.TRENDING_COLLECT !== 'off' && Date.now() - trendCheckedAt > 60_000) {
       trendCheckedAt = Date.now()
@@ -111,6 +112,7 @@ async function main() {
       }
       const out = await runOnce({ store, blobs, workerId, executors, resolveSourceAsset, resolveSourceFile: createBlobSourceFileResolver(blobGet as any), leaseMs: 120_000, blocks })
       if (out.ran) {
+        idlePollMs = pollMs
         let detail = ''
         if (out.outcome === 'failed' || out.outcome === 'retry') {
           try {
