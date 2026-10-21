@@ -30,7 +30,9 @@ import { createLongformPlanExecutor, createLongformAssetExecutor, longformRender
 // every paid OpenAI call is metered (model, tokens, estimated USD) per job stage: see lib/generative/usageLedger.ts
 installUsageMeter()
 const workerId = process.env.WORKER_ID || `${hostname()}-${process.pid}`
-const pollMs = Number(process.env.WORKER_POLL_MS || 2000)
+// Back off during inactivity instead of querying Postgres every two seconds.
+const pollMs = Math.max(1000, Number(process.env.WORKER_POLL_MS || 2000))
+const idlePollMaxMs = Math.max(pollMs, Number(process.env.WORKER_IDLE_POLL_MAX_MS || 60000))
 // Model-assisted planning is a paid external call, so it is explicit opt-in even if a provider key exists.
 const openAi = process.env.WORKER_AI_PLANNER === 'on' && process.env.OPENAI_API_KEY
   ? { apiKey: process.env.OPENAI_API_KEY, model: process.env.OPENAI_PLAN_MODEL || process.env.OPENAI_MODEL || 'gpt-5-mini' }
@@ -92,6 +94,7 @@ async function main() {
   console.log(`[worker ${workerId}] started`)
   // 급상승 탐색: hourly real view-count collection (needs YOUTUBE_API_KEY; the DB claim keeps it to one run per hour). Never blocks jobs.
   let trendCheckedAt = 0
+  let idlePollMs = pollMs
   while (!stopping) {
     if (process.env.YOUTUBE_API_KEY && process.env.TRENDING_COLLECT !== 'off' && Date.now() - trendCheckedAt > 60_000) {
       trendCheckedAt = Date.now()
@@ -109,6 +112,7 @@ async function main() {
       }
       const out = await runOnce({ store, blobs, workerId, executors, resolveSourceAsset, resolveSourceFile: createBlobSourceFileResolver(blobGet as any), leaseMs: 120_000, blocks })
       if (out.ran) {
+        idlePollMs = pollMs
         let detail = ''
         if (out.outcome === 'failed' || out.outcome === 'retry') {
           try {
@@ -120,10 +124,14 @@ async function main() {
           }
         }
         console.log(`[worker ${workerId}] job=${out.jobId} stage=${out.stage} -> ${out.outcome}${detail}`)
-      } else await sleep(pollMs)
+      } else {
+        await sleep(idlePollMs)
+        idlePollMs = Math.min(idlePollMaxMs, idlePollMs * 2)
+      }
     } catch (e: any) {
       console.error(`[worker ${workerId}] error`, e?.message || e)
-      await sleep(pollMs)
+      await sleep(idlePollMs)
+      idlePollMs = Math.min(idlePollMaxMs, idlePollMs * 2)
     }
   }
   await db.close?.()
