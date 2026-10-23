@@ -274,19 +274,5 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 const port = Number(process.env.PORT || 3000)
 app.listen(port, '0.0.0.0', () => {
   console.log(`[continuity-api] listening port=${port} storage=${storageBackend()}`)
-  // One-time R2 smoke check; remove after verifying the deployment log.
-  if (storageBackend() === 'r2') {
-    void (async () => {
-      const storage = await import('../lib/objectStorage.js')
-      const key = 'diagnostics/r2-smoke-20261018.txt'
-      const expected = 'tracker-r2-smoke-20261018'
-      await storage.put(key, expected, { contentType: 'text/plain', allowOverwrite: true })
-      const result = await storage.get(key)
-      if (!result || result.statusCode !== 200 || !result.stream) throw new Error('R2 read failed')
-      const actual = await new Response(result.stream).text()
-      if (actual !== expected) throw new Error('R2 content mismatch')
-      console.log('[r2-smoke] PASS write/read/content-match')
-    })().catch((e) => console.error('[r2-smoke] FAIL', e?.message || e))
-  }
 
 })
