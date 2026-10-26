@@ -34,6 +34,9 @@ jobs:
           echo "Changed files:"
           printf '%s\n' "$CHANGED"
 
+          # 문서만 바뀐 PR(docs/*.md): 코드 영향이 없으므로 필수 typecheck만 하고 전체 테스트(시간 초과)는 돌리지 않는다.
+          DOCS_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(docs/[A-Za-z0-9._-]+\.md|\.github/workflows/verify\.yml)$' || true)"
+          DOCS_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^docs/[A-Za-z0-9._-]+\.md$' || true)"
           # PLAN cross-review changes run integration tests against the actual PLAN executor.
           PLAN_REVIEW_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/planCrossReview\.ts|worker/stages/longform\.ts|tools/plan-cross-review\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           PLAN_REVIEW_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/planCrossReview\.ts$' || true)"
@@ -71,7 +74,9 @@ jobs:
           OFFLINE_RESTORE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/jobs/sleepDraftImport\.ts$' || true)"
           SLEEP_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/sleepClassic\.ts|lib/generative/longform\.ts|worker/stages/longform\.ts|tools/sleep-classic\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           SLEEP_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/sleepClassic\.ts$' || true)"
-          if [ -z "$ASSET_BILLING_OTHER" ] && [ -n "$ASSET_BILLING_PRESENT" ]; then
+          if [ -z "$DOCS_OTHER" ] && [ -n "$DOCS_PRESENT" ]; then
+            echo "mode=docs-only" >> "$GITHUB_OUTPUT"
+          elif [ -z "$ASSET_BILLING_OTHER" ] && [ -n "$ASSET_BILLING_PRESENT" ]; then
             echo "mode=odyssey-asset-billing" >> "$GITHUB_OUTPUT"
           elif [ -z "$OFFLINE_RESTORE_OTHER" ] && [ -n "$OFFLINE_RESTORE_PRESENT" ]; then
             echo "mode=odyssey-offline-restore" >> "$GITHUB_OUTPUT"
