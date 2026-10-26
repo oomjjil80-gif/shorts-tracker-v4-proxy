@@ -12,14 +12,16 @@ const cover = { id: 'cv_1a2b3c4d', title: '월급날 통장이 비는 진짜 이
 const mk = (n: number): any[] => Array.from({ length: n }, (_, i) => ({ id: `c${i + 1}`, role: i === 0 ? 'hook' : i === n - 1 ? 'ending' : 'body', headline: `제목${i + 1}`, body: `본문${i + 1}` }))
 function rig() {
   const calls: string[] = []
-  const deps = {
-    gpt: async (name: string, _s: any, _i: string, input: string) => {
-      calls.push('gpt:' + name)
+  // 작성(대본·수정) = Claude(JSON 텍스트), 검수 = GPT(구조화 출력)
+  const ai = (name: string, input: string): any => {
+      if (name === 'cardnews_review') return { findings: [{ cardId: 'c3', code: 'WEAK_HOOK', severity: 'required', message: '전개가 약하다' }] }
       if (name === 'cardnews_compose') return { cards: Array.from({ length: 6 }, (_, i) => ({ headline: `새제목${i + 1}`, body: `새본문${i + 1}`, visualPlan: { subject: `새제목${i + 1} 장면의 핵심 사물 ${['우물','가야금','서생','등불','달빛','마을'][i]}`, composition: ['와이드','접사','부감','측면','역광','로우앵글'][i] + ' 구도', distinction: `${i}장과 다른 시점` } })) }
       const t = JSON.parse(input).다시쓸장 as any[]
       return { cards: [...t.map((c) => ({ id: c.id, headline: '고친제목', body: '고친본문' })), { id: 'c1', headline: '몰래바꿈', body: 'x' }] }
-    },
-    claude: async () => { calls.push('claude:review'); return { text: '{"findings":[{"cardId":"c3","code":"WEAK_HOOK","severity":"required","message":"전개가 약하다"}]}', model: 'claude-test' } }
+  }
+  const deps = {
+    gpt: async (name: string, _s: any, _i: string, input: string) => { calls.push('gpt:' + name); return ai(name, input) },
+    claude: async (_sys: string, input: string, name = '') => { calls.push('claude:' + name); return { text: '```json\n' + JSON.stringify(ai(name, input)) + '\n```', model: 'claude-test' } }
   }
   const blobs = createMemoryBlobStore(), h = createCardnewsHttp({ blobs, deps: () => deps as any })
   const raw = async (method: string, body: any, key: string | null = KEY) => {
@@ -49,24 +51,24 @@ test('A. 비용 승인 없이는 모든 AI 작업이 공급자 호출 0회 + 예
   assert.deepEqual(calls, [], 'no provider call before approval')
 })
 
-test('B. 자동 경로: GPT 구성 → Claude 독립 검수 → 문제 장(c3)만 GPT 수정, 다른 장은 그대로', async () => {
+test('B. 자동 경로: Claude 대본 → GPT 독립 검수 → 문제 장(c3)만 Claude 수정, 다른 장은 그대로', async () => {
   const { calls, call } = rig()
   const c = await call('POST', { taskType: 'cardnews_compose', cover, material: '월급날마다 통장이 비는 이유를 설명하는 충분히 긴 소재입니다.', count: 6, ...ok })
   assert.equal(c.status, 200); assert.equal(c.body.cards.length, 6); assert.deepEqual(c.body.cards.map((x: any) => x.role), ['hook', 'body', 'body', 'body', 'body', 'ending'])
   const r = await call('POST', { taskType: 'cardnews_review', cover, cards: c.body.cards, ...ok })
-  assert.equal(r.body.reviewerModel, 'claude-test'); assert.equal(r.body.issues[0].cardId, 'c3')
+  assert.equal(r.body.reviewerModel, 'gpt'); assert.equal(r.body.issues[0].cardId, 'c3')
   const f = await call('POST', { taskType: 'cardnews_fix', cover, cards: c.body.cards, issues: r.body.issues, ...ok })
   assert.deepEqual(f.body.changed, ['c3'])
   f.body.cards.forEach((x: any, i: number) => { if (x.id === 'c3') assert.equal(x.headline, '고친제목'); else assert.deepEqual(x, c.body.cards[i], `card ${x.id} untouched (model's stray c1 edit ignored)`) })
-  assert.deepEqual(calls, ['gpt:cardnews_compose', 'claude:review', 'gpt:cardnews_fix'])
-  assert.deepEqual(f.body.order, ['gpt:compose', 'claude:review', 'gpt:fix'])
+  assert.deepEqual(calls, ['claude:cardnews_compose', 'gpt:cardnews_review', 'claude:cardnews_fix'])
+  assert.deepEqual(f.body.order, ['claude:compose', 'gpt:review', 'claude:fix'])
 })
 
 test('C. 입력 검증과 실패: 표지 없음/지적 없음/모델이 요청 장을 빠뜨림/공급자 오류 → 안전하게 거절(복사·붙여넣기 폴백 가능)', async () => {
   const { call } = rig()
   assert.equal((await call('POST', { taskType: 'cardnews_compose', cover: { id: 'x' }, material: 'm'.repeat(30), ...ok })).status, 400)
   assert.equal((await call('POST', { taskType: 'cardnews_fix', cover, cards: mk(6), issues: [], ...ok })).status, 400)
-  const miss = createCardnewsHttp({ blobs: createMemoryBlobStore(), deps: () => ({ gpt: async () => ({ cards: [] }), claude: async () => { throw new Error('down') } }) as any })
+  const miss = createCardnewsHttp({ blobs: createMemoryBlobStore(), deps: () => ({ claude: async () => ({ text: '{"cards":[]}', model: 'm' }), gpt: async () => { throw new Error('down') } }) as any })
   const run = async (b: any): Promise<{ st: number; out: any }> => { if (b.costApproved === true && !b.approvalId) { const q = await run({ ...b, costApproved: false }); if (q.st === 402) return run({ ...b, approvalId: q.out.approval.approvalId }) } let st = 0, out: any; await miss({ method: 'POST', headers: { 'x-sync-key': KEY }, body: b } as any, { setHeader() {}, status(s: number) { st = s; return this }, json(x: any) { out = x; return this } } as any); return { st, out } }
   assert.equal((await run({ taskType: 'cardnews_fix', cover, cards: mk(6), issues: [{ cardId: 'c2', message: 'm' }], ...ok })).out.error.code, 'FIX_INCOMPLETE')
   const down = await run({ taskType: 'cardnews_review', cover, cards: mk(6), ...ok }); assert.equal(down.st, 503); assert.equal(down.out.error.code, 'PROVIDER_DOWN')
