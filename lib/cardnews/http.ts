@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Request, Response } from 'express'
 import { createVercelJobBlobStore, type JobBlobStore } from '../jobs/blobs.js'
-import { CardnewsError, putImage, getImage, composeCards, reviewCardsWithClaude, fixFlaggedWithGpt, getSaved, putSaved, depsFromEnv, cardnewsEstimate, type CardnewsDeps } from './cardnews.js'
+import { CardnewsError, putImage, getImage, composeCards, reviewCardsWithGpt, fixFlaggedWithClaude, getSaved, putSaved, depsFromEnv, cardnewsEstimate, type CardnewsDeps } from './cardnews.js'
 import { ApprovalError, requireApproval, recordSpend } from '../generative/paidApproval.js'
 
 // api/story.ts routes taskType cardnews_* here (not a separate Vercel function). Same X-Sync-Key workspace rule as the Job API.
@@ -30,7 +30,7 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
       const approval = await requireApproval(o.blobs, { ws, input, quote: { task, usd: est.usd, calls: est.calls, note: est.note } })
       const deps = (o.deps ?? depsFromEnv)()
       let r: any, budget: any
-      try { r = kind === 'compose' ? await composeCards(input, deps) : kind === 'review' ? await reviewCardsWithClaude(input, deps) : await fixFlaggedWithGpt(input, deps) }
+      try { r = kind === 'compose' ? await composeCards(input, deps) : kind === 'review' ? await reviewCardsWithGpt(input, deps) : await fixFlaggedWithClaude(input, deps) }
       finally { budget = await recordSpend(o.blobs, { ws, approval }) } // 실패해도 과금됐을 수 있어 기록은 남긴다($20은 경고만)
       return res.status(200).json({ ok: true, ...r, budget })
     } catch (e: any) {
