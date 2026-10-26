@@ -46,23 +46,23 @@ test('$20은 경고만: 넘어도 계속 기록·통과, 같은 승인은 두 �
 })
 
 test('카드뉴스 HTTP: 더블 클릭(같은 승인 2번·동시) → 공급자 호출 1회, 실패해도 승인 재사용 불가, 비용 기록·경고 응답', async () => {
-  let claude = 0, fail = false
-  const deps = { gpt: async () => ({ cards: [] }), claude: async () => { claude++; if (fail) throw new Error('down'); return { text: '{"findings":[]}', model: 'm' } } }
+  let paid = 0, fail = false
+  const deps = { claude: async () => ({ text: '{"cards":[]}', model: 'm' }), gpt: async () => { paid++; if (fail) throw new Error('down'); return { findings: [] } } }
   const h = createCardnewsHttp({ blobs: createMemoryBlobStore(), deps: () => deps as any })
   const call = async (body: any) => { let status = 0, out: any; await h({ method: 'POST', headers: { 'x-sync-key': KEY }, body } as any, { setHeader() {}, status(s: number) { status = s; return this }, json(b: any) { out = b; return this } } as any); return { status, body: out } }
   const cover = { id: 'cv_abcd', title: '제목 넷글자', coverLine: '표지', promise: '약속하는 핵심 내용' }
   const cards = Array.from({ length: 6 }, (_, i) => ({ id: `c${i + 1}`, headline: `제목${i}`, body: `본문 ${i}` }))
   const body = { taskType: 'cardnews_review', cover, material: '소재'.repeat(20), cards }
-  const q = await call(body); assert.equal(q.status, 402); assert.equal(claude, 0); const id = q.body.approval.approvalId
+  const q = await call(body); assert.equal(q.status, 402); assert.equal(paid, 0); const id = q.body.approval.approvalId
   assert.ok(id && q.body.estimate.usd > 0)
   const [a, b] = await Promise.all([call({ ...body, costApproved: true, approvedUsd: q.body.estimate.usd, approvalId: id }), call({ ...body, costApproved: true, approvedUsd: q.body.estimate.usd, approvalId: id })])
-  assert.deepEqual([a.status, b.status].sort(), [200, 409]); assert.equal(claude, 1, 'exactly one paid call')
+  assert.deepEqual([a.status, b.status].sort(), [200, 409]); assert.equal(paid, 1, 'exactly one paid call')
   const okRes = a.status === 200 ? a : b; assert.equal(okRes.body.budget.warning, false); assert.ok(okRes.body.budget.monthUsd > 0)
-  assert.equal((await call({ ...body, costApproved: true, approvedUsd: 1, approvalId: id })).body.error.code, 'APPROVAL_USED'); assert.equal(claude, 1)
+  assert.equal((await call({ ...body, costApproved: true, approvedUsd: 1, approvalId: id })).body.error.code, 'APPROVAL_USED'); assert.equal(paid, 1)
   // 공급자 실패: 승인은 소모됨(이미 과금됐을 수 있음) → 같은 승인으로 재시도 불가, 새 승인 필요
   fail = true; const q2 = await call(body), id2 = q2.body.approval.approvalId
   assert.equal((await call({ ...body, costApproved: true, approvedUsd: 1, approvalId: id2 })).status, 503)
-  assert.equal((await call({ ...body, costApproved: true, approvedUsd: 1, approvalId: id2 })).status, 409); assert.equal(claude, 2)
+  assert.equal((await call({ ...body, costApproved: true, approvedUsd: 1, approvalId: id2 })).status, 409); assert.equal(paid, 2)
   // 예전 방식(서버 승인 ID 없이 costApproved만)은 더 이상 호출하지 않음
-  assert.equal((await call({ ...body, costApproved: true, approvedUsd: 5 })).status, 402); assert.equal(claude, 2)
+  assert.equal((await call({ ...body, costApproved: true, approvedUsd: 5 })).status, 402); assert.equal(paid, 2)
 })

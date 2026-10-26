@@ -20,7 +20,7 @@ const deckFor = (t: (typeof TOPICS)[keyof typeof TOPICS]) => t.heads.map((h, i) 
 
 function rig(composeCards: (input: string) => any, fixPlans?: (input: any) => any) {
   const calls: string[] = []
-  const deps = { gpt: async (name: string, _s: any, _i: string, input: string) => { calls.push(name); return name === 'cardnews_compose' ? composeCards(input) : fixPlans!(JSON.parse(input)) }, claude: async () => ({ text: '{"findings":[]}', model: 'm' }) }
+  const deps = { claude: async (_sys: string, input: string, name = '') => { calls.push(name); return { text: JSON.stringify(name === 'cardnews_compose' ? composeCards(input) : fixPlans!(JSON.parse(input))), model: 'm' } }, gpt: async () => ({ findings: [] }) }
   const blobs = createMemoryBlobStore(), h = createCardnewsHttp({ blobs, deps: () => deps as any })
   const call = async (method: string, body: any, key: string | null = KEY) => {
     if (method !== 'POST' || body?.costApproved !== true || body?.approvalId) return raw(method, body, key)
@@ -61,7 +61,7 @@ test('C. 문제 장의 계획만 1회 수정: 나머지 장은 그대로, 수정
   const good = { subject: '밀도 저울 위의 두 컵 비교', composition: '저울 양쪽을 나란히 놓은 비교 구도', distinction: '무게 대신 부피 차이를 보여준다' }
   const { call, calls } = rig(() => ({ cards: deck }), (inp) => ({ cards: [...inp.지적.map((i: any) => ({ id: i.cardId, visualPlan: good })), { id: 'c1', visualPlan: { subject: '몰래 바꾼 장면', composition: '몰래 바꾼 구도', distinction: '몰래' } }] }))
   const r = await call('POST', compose(t))
-  assert.deepEqual(calls, ['cardnews_compose', 'cardnews_plan_fix']); assert.deepEqual(r.body.order, ['gpt:compose', 'gpt:plan_fix'])
+  assert.deepEqual(calls, ['cardnews_compose', 'cardnews_plan_fix']); assert.deepEqual(r.body.order, ['claude:compose', 'claude:plan_fix'])
   r.body.cards.forEach((c: any, i: number) => { if (i === 4) assert.deepEqual(c.visualPlan, good); else assert.deepEqual(c.visualPlan, deckFor(t)[i].visualPlan, `card ${i + 1} untouched (stray c1 edit ignored)`) })
   assert.deepEqual(r.body.planIssues, [])
   // 수정이 또 실패하면: 두 번째 수정 호출 없이 남은 문제만 보고
