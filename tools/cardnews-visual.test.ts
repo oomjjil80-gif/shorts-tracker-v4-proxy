@@ -95,7 +95,8 @@ test('F. 저장 상태: 장면 계획·그림체·이미지 버전 참조만 서
   const ws = 'a'.repeat(64), ref = (n: string) => `cardnews/${ws}/images/${n.repeat(64)}.png`
   const images = sanitizeImages({ c1: { selected: 'v2', versions: [{ id: 'v1', ref: ref('b'), style: 'bright-editorial', at: 't1' }, { id: 'v2', ref: ref('c'), style: 'miniature', at: 't2' }, { id: 'v3', ref: `cardnews/${'f'.repeat(64)}/images/${'d'.repeat(64)}.png`, style: 'x', at: 't3' }] }, c2: { versions: [{ id: 'v1', ref: 'https://evil/x.png' }] } }, ws)
   assert.deepEqual(Object.keys(images), ['c1']); assert.deepEqual(images.c1.versions.map((v) => v.id), ['v1', 'v2']); assert.equal(images.c1.selected, 'v2')
-  const st = sanitizeState({ material: 'm', count: 8, form: {}, cover, cards: deckFor(TOPICS.food).map((c, i) => ({ id: `c${i + 1}`, role: 'body', ...c })), style: 'miniature', images: { c1: { selected: 'v1', versions: [{ id: 'v1', ref: ref('b'), style: 's', at: 't' }] } } }, ws)
+  const st = sanitizeState({ material: 'm', count: 8, form: {}, cover, cards: deckFor(TOPICS.food).map((c, i) => ({ id: `c${i + 1}`, role: 'body', ...c })), style: 'miniature', scriptConfirmedAt: '2026-10-26T00:00:00Z', images: { c1: { selected: 'v1', versions: [{ id: 'v1', ref: ref('b'), style: 's', at: 't' }] } } }, ws)
+  assert.equal(st.scriptConfirmedAt, '2026-10-26T00:00:00Z', 'confirmed script survives a reconnect'); assert.equal(sanitizeState({ material: 'm', scriptConfirmedAt: 'x' }, ws).scriptConfirmedAt, null, 'no confirmation without an approved cover')
   assert.equal(st.style, 'miniature'); assert.ok(st.cards[0].visualPlan.subject); assert.equal(st.images.c1.versions[0].ref, ref('b'))
   assert.ok(JSON.stringify(st).length < 120_000 && !JSON.stringify(st).includes('base64'))
 })

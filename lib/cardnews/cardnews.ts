@@ -148,7 +148,7 @@ export function sanitizeState(s: any, ws = '') {
     material: String(s.material ?? '').slice(0, 6000), count: Math.min(CARD_LIMITS.max, Math.max(CARD_LIMITS.min, Math.round(Number(s.count) || 8))),
     form: { title: String(s.form?.title ?? '').slice(0, 120), coverLine: String(s.form?.coverLine ?? '').slice(0, 80), promise: String(s.form?.promise ?? '').slice(0, 400) },
     cover: s.cover ? normalizeCover(s.cover) : null, cards: Array.isArray(s.cards) ? s.cards.slice(0, CARD_LIMITS.max).map((c: any, i: number) => ({ id: clean(c?.id) || `c${i + 1}`, role: ['hook', 'body', 'ending'].includes(c?.role) ? c.role : 'body', headline: String(c?.headline ?? '').slice(0, 200), body: String(c?.body ?? '').slice(0, 800), ...(cleanPlan(c?.visualPlan) ? { visualPlan: cleanPlan(c?.visualPlan)! } : {}) })) : [],
-    review: s.review && typeof s.review === 'object' ? s.review : null, theme: String(s.theme ?? 'night').slice(0, 20), style: String(s.style ?? '').slice(0, 40), images: sanitizeImages(s.images, ws), pendingAiIds: Array.isArray(s.pendingAiIds) ? s.pendingAiIds.map((x: any) => String(x).slice(0, 20)).slice(0, CARD_LIMITS.max) : null
+    review: s.review && typeof s.review === 'object' ? s.review : null, theme: String(s.theme ?? 'night').slice(0, 20), style: String(s.style ?? '').slice(0, 40), images: sanitizeImages(s.images, ws), scriptConfirmedAt: typeof s.scriptConfirmedAt === 'string' && s.cover ? s.scriptConfirmedAt.slice(0, 40) : null, pendingAiIds: Array.isArray(s.pendingAiIds) ? s.pendingAiIds.map((x: any) => String(x).slice(0, 20)).slice(0, CARD_LIMITS.max) : null
   }
   if (Buffer.byteLength(JSON.stringify(out)) > MAX_STATE_BYTES) throw new CardnewsError('STATE_TOO_LARGE', '저장할 카드뉴스가 너무 큽니다.')
   return out
