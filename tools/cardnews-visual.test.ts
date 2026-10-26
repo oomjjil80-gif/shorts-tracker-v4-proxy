@@ -20,7 +20,7 @@ const deckFor = (t: (typeof TOPICS)[keyof typeof TOPICS]) => t.heads.map((h, i) 
 
 function rig(composeCards: (input: string) => any, fixPlans?: (input: any) => any) {
   const calls: string[] = []
-  const deps = { gpt: async (name: string, _s: any, _i: string, input: string) => { calls.push(name); return name === 'cardnews_compose' ? composeCards(input) : fixPlans!(JSON.parse(input)) }, claude: async () => ({ text: '{"findings":[]}', model: 'm' }) }
+  const deps = { claude: async (_sys: string, input: string, name = '') => { calls.push(name); return { text: JSON.stringify(name === 'cardnews_compose' ? composeCards(input) : fixPlans!(JSON.parse(input))), model: 'm' } }, gpt: async () => ({ findings: [] }) }
   const blobs = createMemoryBlobStore(), h = createCardnewsHttp({ blobs, deps: () => deps as any })
   const call = async (method: string, body: any, key: string | null = KEY) => {
     if (method !== 'POST' || body?.costApproved !== true || body?.approvalId) return raw(method, body, key)
@@ -61,7 +61,7 @@ test('C. 문제 장의 계획만 1회 수정: 나머지 장은 그대로, 수정
   const good = { subject: '밀도 저울 위의 두 컵 비교', composition: '저울 양쪽을 나란히 놓은 비교 구도', distinction: '무게 대신 부피 차이를 보여준다' }
   const { call, calls } = rig(() => ({ cards: deck }), (inp) => ({ cards: [...inp.지적.map((i: any) => ({ id: i.cardId, visualPlan: good })), { id: 'c1', visualPlan: { subject: '몰래 바꾼 장면', composition: '몰래 바꾼 구도', distinction: '몰래' } }] }))
   const r = await call('POST', compose(t))
-  assert.deepEqual(calls, ['cardnews_compose', 'cardnews_plan_fix']); assert.deepEqual(r.body.order, ['gpt:compose', 'gpt:plan_fix'])
+  assert.deepEqual(calls, ['cardnews_compose', 'cardnews_plan_fix']); assert.deepEqual(r.body.order, ['claude:compose', 'claude:plan_fix'])
   r.body.cards.forEach((c: any, i: number) => { if (i === 4) assert.deepEqual(c.visualPlan, good); else assert.deepEqual(c.visualPlan, deckFor(t)[i].visualPlan, `card ${i + 1} untouched (stray c1 edit ignored)`) })
   assert.deepEqual(r.body.planIssues, [])
   // 수정이 또 실패하면: 두 번째 수정 호출 없이 남은 문제만 보고
@@ -95,7 +95,8 @@ test('F. 저장 상태: 장면 계획·그림체·이미지 버전 참조만 서
   const ws = 'a'.repeat(64), ref = (n: string) => `cardnews/${ws}/images/${n.repeat(64)}.png`
   const images = sanitizeImages({ c1: { selected: 'v2', versions: [{ id: 'v1', ref: ref('b'), style: 'bright-editorial', at: 't1' }, { id: 'v2', ref: ref('c'), style: 'miniature', at: 't2' }, { id: 'v3', ref: `cardnews/${'f'.repeat(64)}/images/${'d'.repeat(64)}.png`, style: 'x', at: 't3' }] }, c2: { versions: [{ id: 'v1', ref: 'https://evil/x.png' }] } }, ws)
   assert.deepEqual(Object.keys(images), ['c1']); assert.deepEqual(images.c1.versions.map((v) => v.id), ['v1', 'v2']); assert.equal(images.c1.selected, 'v2')
-  const st = sanitizeState({ material: 'm', count: 8, form: {}, cover, cards: deckFor(TOPICS.food).map((c, i) => ({ id: `c${i + 1}`, role: 'body', ...c })), style: 'miniature', images: { c1: { selected: 'v1', versions: [{ id: 'v1', ref: ref('b'), style: 's', at: 't' }] } } }, ws)
+  const st = sanitizeState({ material: 'm', count: 8, form: {}, cover, cards: deckFor(TOPICS.food).map((c, i) => ({ id: `c${i + 1}`, role: 'body', ...c })), style: 'miniature', scriptConfirmedAt: '2026-10-26T00:00:00Z', images: { c1: { selected: 'v1', versions: [{ id: 'v1', ref: ref('b'), style: 's', at: 't' }] } } }, ws)
+  assert.equal(st.scriptConfirmedAt, '2026-10-26T00:00:00Z', 'confirmed script survives a reconnect'); assert.equal(sanitizeState({ material: 'm', scriptConfirmedAt: 'x' }, ws).scriptConfirmedAt, null, 'no confirmation without an approved cover')
   assert.equal(st.style, 'miniature'); assert.ok(st.cards[0].visualPlan.subject); assert.equal(st.images.c1.versions[0].ref, ref('b'))
   assert.ok(JSON.stringify(st).length < 120_000 && !JSON.stringify(st).includes('base64'))
 })
