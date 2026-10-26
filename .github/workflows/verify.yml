@@ -34,7 +34,7 @@ jobs:
           echo "Changed files:"
           printf '%s\n' "$CHANGED"
 
-          # AI budget changes: only the policy, reservation, SQL and their focused tests.
+          # AI budget changes: only the policy, reservation, SQL and their focused tests (scoped CI rerun).
           BUDGET_OTHER="$(printf '%s\\n' "$CHANGED" | grep -Ev '^(lib/generative/(monthlyBudgetPolicy|atomicBudgetReservation)\\.ts|db/999_ai_budget_reservations\\.sql|tools/(monthlyBudgetPolicy|atomicBudgetReservation)\\.test\\.ts|\\.github/workflows/verify\\.yml)
           PLAN_REVIEW_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/planCrossReview\.ts|worker/stages/longform\.ts|tools/plan-cross-review\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           PLAN_REVIEW_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/planCrossReview\.ts$' || true)"
