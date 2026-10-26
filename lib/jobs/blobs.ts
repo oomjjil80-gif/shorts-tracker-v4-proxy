@@ -22,6 +22,8 @@ export interface JobBlobStore {
   getFile?(path: string, filePath: string): Promise<boolean>
   // Short-lived URL a browser can play (private blobs only; never stored, never part of any hash).
   presign?(path: string, validForMs?: number): Promise<{ url: string; validUntil: number } | null>
+  // Atomic create-once that REPORTS whether this call created it (single-use approvals, duplicate-call guards).
+  claim?(path: string, value: unknown): Promise<boolean>
 }
 
 export const sha256 = (data: string | Buffer) => createHash('sha256').update(data).digest('hex')
@@ -54,7 +56,8 @@ export function createMemoryBlobStore(): JobBlobStore & { files: Map<string, str
       if (!files.has(path) || opts?.overwrite === true) files.set(path, body)
       return { path, sha256: sha256(files.get(path)!) }
     },
-    async getJson(path) { const v = files.get(path); return v === undefined ? null : JSON.parse(v) }
+    async getJson(path) { const v = files.get(path); return v === undefined ? null : JSON.parse(v) },
+    async claim(path, value) { if (files.has(path)) return false; files.set(path, JSON.stringify(value)); return true }
   }
 }
 
@@ -138,6 +141,12 @@ export function createVercelJobBlobStore(deps?: { put?: any; get?: any; head?: a
       const validUntil = Date.now() + validForMs
       const signed = await mod.presignUrl(token, { pathname: path, operation: 'get', validUntil, access: 'private' })
       return { url: signed.presignedUrl, validUntil }
+    },
+    async claim(path, value) {
+      const mod: any = await lazy()
+      if (typeof mod.putIfAbsent === 'function') return mod.putIfAbsent(path, JSON.stringify(value))
+      try { await mod.put(path, JSON.stringify(value), { access: 'private', addRandomSuffix: false, allowOverwrite: false, contentType: 'application/json' }); return true }
+      catch (e: any) { if (/already exists|exists/i.test(String(e?.message || e))) return false; throw e }
     }
   }
 }

@@ -34,6 +34,9 @@ jobs:
           echo "Changed files:"
           printf '%s\n' "$CHANGED"
 
+          # 유료 AI 1회용 승인·$20 경고(차단 아님)·비용 기록: 정책/예약/승인 모듈 + 카드뉴스 유료 경로 + 저장소 create-once.
+          BUDGET_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/(monthlyBudgetPolicy|atomicBudgetReservation|paidApproval)\.ts|db/999_ai_budget_reservations\.sql|lib/objectStorage\.ts|lib/jobs/blobs\.ts|lib/cardnews/[A-Za-z]+\.ts|tools/(monthlyBudgetPolicy|atomicBudgetReservation|paid-approval|cardnews|cardnews-visual)\.test\.ts|docs/[A-Za-z0-9-]+\.md|\.github/workflows/verify\.yml)$' || true)"
+          BUDGET_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/paidApproval\.ts$' || true)"
           # PLAN cross-review changes run integration tests against the actual PLAN executor.
           PLAN_REVIEW_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/planCrossReview\.ts|worker/stages/longform\.ts|tools/plan-cross-review\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           PLAN_REVIEW_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/planCrossReview\.ts$' || true)"
@@ -71,7 +74,9 @@ jobs:
           OFFLINE_RESTORE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/jobs/sleepDraftImport\.ts$' || true)"
           SLEEP_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/sleepClassic\.ts|lib/generative/longform\.ts|worker/stages/longform\.ts|tools/sleep-classic\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           SLEEP_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/sleepClassic\.ts$' || true)"
-          if [ -z "$ASSET_BILLING_OTHER" ] && [ -n "$ASSET_BILLING_PRESENT" ]; then
+          if [ -z "$BUDGET_OTHER" ] && [ -n "$BUDGET_PRESENT" ]; then
+            echo "mode=ai-budget" >> "$GITHUB_OUTPUT"
+          elif [ -z "$ASSET_BILLING_OTHER" ] && [ -n "$ASSET_BILLING_PRESENT" ]; then
             echo "mode=odyssey-asset-billing" >> "$GITHUB_OUTPUT"
           elif [ -z "$OFFLINE_RESTORE_OTHER" ] && [ -n "$OFFLINE_RESTORE_PRESENT" ]; then
             echo "mode=odyssey-offline-restore" >> "$GITHUB_OUTPUT"
@@ -137,6 +142,21 @@ jobs:
         run: |
           set -euo pipefail
           timeout 5m npx tsx --test tools/sleep-classic.test.ts tools/plan-cross-review.test.ts
+
+      - name: Run focused 유료 AI 승인·비용 verification (single-use approval, concurrent/duplicate calls, $20 warning only, cardnews paid path)
+        if: steps.scope.outputs.mode == 'ai-budget'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/paid-approval.test.ts \
+            tools/monthlyBudgetPolicy.test.ts \
+            tools/atomicBudgetReservation.test.ts \
+            tools/cardnews.test.ts \
+            tools/cardnews-visual.test.ts \
+            tools/r2-job-storage.test.ts \
+            tools/blob-dedupe.test.ts \
+            tools/function-count.test.ts
 
       - name: Run focused 카드뉴스 verification (cost approval, GPT/Claude flow, save/restore + router and Job API regression)
         if: steps.scope.outputs.mode == 'cardnews'

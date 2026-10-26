@@ -66,7 +66,7 @@ function credentials() {
 async function signedFetch(
   method: 'GET' | 'PUT' | 'HEAD',
   path: string,
-  opts: { body?: string | Buffer; contentType?: string; query?: Array<[string, string]>; file?: { path: string; size: number } } = {}
+  opts: { body?: string | Buffer; contentType?: string; query?: Array<[string, string]>; file?: { path: string; size: number }; ifNoneMatch?: boolean } = {}
 ) {
   const base = endpoint()
   const { accessKeyId, secretAccessKey } = credentials()
@@ -84,6 +84,7 @@ async function signedFetch(
   }
   if (opts.contentType) headers['content-type'] = opts.contentType
   if (opts.file) headers['content-length'] = String(opts.file.size)
+  if (opts.ifNoneMatch) headers['if-none-match'] = '*'
   const signedHeaderNames = Object.keys(headers).sort()
   const canonicalHeaders = signedHeaderNames.map((k) => `${k}:${headers[k].trim()}\n`).join('')
   const signedHeaders = signedHeaderNames.join(';')
@@ -219,6 +220,19 @@ async function r2Presign(path: string, validForMs = 60 * 60 * 1000) {
 export async function put(path: string, body: string | Buffer, opts: PutOpts = {}) {
   if (r2Configured()) return r2Put(path, body, opts)
   return (vercelBlob as any).put(path, body, opts)
+}
+
+// Atomic create-once: true = this call created the object, false = it already existed (another request won).
+// R2: conditional PUT (If-None-Match: *, 412 when present). Vercel Blob: allowOverwrite:false rejects an existing path.
+export async function putIfAbsent(path: string, body: string, contentType = 'application/json'): Promise<boolean> {
+  if (r2Configured()) {
+    const res = await signedFetch('PUT', path, { body, contentType, ifNoneMatch: true })
+    if (res.status === 412 || res.status === 409) return false
+    if (!res.ok) throw new Error(`R2 conditional PUT failed (${res.status}): ${await res.text()}`)
+    return true
+  }
+  try { await (vercelBlob as any).put(path, body, { access: 'private', addRandomSuffix: false, allowOverwrite: false, contentType }); return true }
+  catch (e: any) { if (/already exists|exists/i.test(String(e?.message || e))) return false; throw e }
 }
 
 // Large files (a 60-120+ minute MP4 / narration): streamed from disk to the store, never read whole into memory.

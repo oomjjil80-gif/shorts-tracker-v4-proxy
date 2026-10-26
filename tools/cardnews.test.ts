@@ -22,11 +22,17 @@ function rig() {
     claude: async () => { calls.push('claude:review'); return { text: '{"findings":[{"cardId":"c3","code":"WEAK_HOOK","severity":"required","message":"전개가 약하다"}]}', model: 'claude-test' } }
   }
   const blobs = createMemoryBlobStore(), h = createCardnewsHttp({ blobs, deps: () => deps as any })
-  const call = async (method: string, body: any, key: string | null = KEY) => {
+  const raw = async (method: string, body: any, key: string | null = KEY) => {
     let status = 0, out: any
     const res: any = { setHeader() {}, status(s: number) { status = s; return this }, json(b: any) { out = b; return this } }
     await h({ method, headers: key ? { 'x-sync-key': key } : {}, body: method === 'POST' ? body : undefined, query: method === 'GET' ? body : undefined } as any, res)
     return { status, body: out }
+  }
+  // 승인된 요청(costApproved:true)은 실제 화면처럼 2단계: 승인 없이 보내 서버 발급 approvalId를 받고, 그 ID로 다시 보낸다.
+  const call = async (method: string, body: any, key: string | null = KEY) => {
+    if (method !== 'POST' || body?.costApproved !== true || body?.approvalId) return raw(method, body, key)
+    const q = await raw(method, { ...body, costApproved: false }, key)
+    return q.status === 402 && q.body?.approval?.approvalId ? raw(method, { ...body, approvalId: q.body.approval.approvalId }, key) : q
   }
   return { calls, call, blobs }
 }
@@ -61,7 +67,7 @@ test('C. 입력 검증과 실패: 표지 없음/지적 없음/모델이 요청 �
   assert.equal((await call('POST', { taskType: 'cardnews_compose', cover: { id: 'x' }, material: 'm'.repeat(30), ...ok })).status, 400)
   assert.equal((await call('POST', { taskType: 'cardnews_fix', cover, cards: mk(6), issues: [], ...ok })).status, 400)
   const miss = createCardnewsHttp({ blobs: createMemoryBlobStore(), deps: () => ({ gpt: async () => ({ cards: [] }), claude: async () => { throw new Error('down') } }) as any })
-  const run = async (b: any) => { let st = 0, out: any; await miss({ method: 'POST', headers: { 'x-sync-key': KEY }, body: b } as any, { setHeader() {}, status(s: number) { st = s; return this }, json(x: any) { out = x; return this } } as any); return { st, out } }
+  const run = async (b: any): Promise<{ st: number; out: any }> => { if (b.costApproved === true && !b.approvalId) { const q = await run({ ...b, costApproved: false }); if (q.st === 402) return run({ ...b, approvalId: q.out.approval.approvalId }) } let st = 0, out: any; await miss({ method: 'POST', headers: { 'x-sync-key': KEY }, body: b } as any, { setHeader() {}, status(s: number) { st = s; return this }, json(x: any) { out = x; return this } } as any); return { st, out } }
   assert.equal((await run({ taskType: 'cardnews_fix', cover, cards: mk(6), issues: [{ cardId: 'c2', message: 'm' }], ...ok })).out.error.code, 'FIX_INCOMPLETE')
   const down = await run({ taskType: 'cardnews_review', cover, cards: mk(6), ...ok }); assert.equal(down.st, 503); assert.equal(down.out.error.code, 'PROVIDER_DOWN')
   assert.throws(() => parseReview('no json', mk(6)), /JSON/); assert.throws(() => parseReview('{"findings":[{"cardId":"c1","message":""}]}', mk(6)), /이유/)
