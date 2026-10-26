@@ -1,4 +1,4 @@
-// 카드뉴스 서버 기능(최소): 장별 이야기 AI 구성(GPT) → 독립 검수(Claude) → 문제 장만 수정(GPT) + 원고/승인 상태 저장·복구.
+// 카드뉴스 서버 기능(최소): 장별 대본 작성(Claude) → 독립 검수(GPT) → 문제 장만 수정(Claude) + 원고/승인 상태 저장·복구.
 // 기존 구성만 재사용한다: GPT = longformPlanner.respond(기존 Responses 호출), Claude = claude-story와 같은 Messages 호출,
 // 저장 = JobBlobStore(워크스페이스 = sha256(X-Sync-Key)). 유료 호출은 사용자가 예상 비용을 승인한 요청에서만 일어난다.
 import { createHash } from 'node:crypto'
@@ -13,7 +13,7 @@ export type Card = { id: string; role: 'hook' | 'body' | 'ending'; headline: str
 export type Issue = { cardId: string | null; code: string; severity: 'required' | 'warning'; message: string }
 export type CardnewsDeps = {
   gpt: (name: string, schema: any, instructions: string, input: string) => Promise<any>
-  claude: (system: string, input: string) => Promise<{ text: string; model: string }>
+  claude: (system: string, input: string, name?: string) => Promise<{ text: string; model: string }>
 }
 export class CardnewsError extends Error { constructor(public code: string, message: string, public extra: Record<string, unknown> = {}) { super(message) } }
 
@@ -56,29 +56,38 @@ const PLAN_FIX_SCHEMA = { type: 'object', additionalProperties: false, required:
 const PLAN_RULES = `각 장의 visualPlan: subject=이 장이 보여줄 핵심 피사체(구체적으로), composition=카메라 구도·시점, distinction=앞뒤 장과 시각적으로 무엇이 다른지. 덱 전체를 한 번에 보고 설계한다. 와이드→클로즈업→단면도 같은 순서를 기계적으로 반복하지 말고 이 장의 이야기에 가장 맞는 장면을 고른다. 같은 피사체·같은 구도를 두 장에서 쓰지 않는다. 마지막 장에서 공개할 정체나 반전은 앞 장의 장면 계획에 미리 드러내지 않는다. 이미지 안에는 글자를 넣지 않는다.`
 const FIX_SCHEMA = { type: 'object', additionalProperties: false, required: ['cards'], properties: { cards: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'headline', 'body'], properties: { id: { type: 'string' }, headline: { type: 'string' }, body: { type: 'string' } } } } } }
 
+// 대본 작성자 = Claude(JSON 텍스트로 받는다), 검수자 = GPT(구조화 출력). 작성자와 검수자가 서로 다른 모델이다.
+export function parseJsonObject(text: string): any {
+  const t = String(text || '').replace(/```(?:json)?/g, ''), a = t.indexOf('{'), b = t.lastIndexOf('}')
+  if (a < 0 || b <= a) throw new CardnewsError('PROVIDER_DOWN', 'Claude 응답에 JSON이 없습니다.')
+  try { return JSON.parse(t.slice(a, b + 1)) } catch { throw new CardnewsError('PROVIDER_DOWN', 'Claude 응답 JSON을 읽을 수 없습니다.') }
+}
+const write = async (deps: CardnewsDeps, name: string, schema: any, instructions: string, input: string) =>
+  parseJsonObject((await deps.claude(`${instructions}\n반드시 JSON 객체 하나만 출력한다(설명·코드블록 금지). 형식(JSON Schema): ${JSON.stringify(schema)}`, input, name)).text)
+
 export async function composeCards(input: any, deps: CardnewsDeps) {
   const cover = normalizeCover(input?.cover), material = clean(input?.material).slice(0, 6000)
   if (material.length < 20) throw new CardnewsError('BAD_REQUEST', '소재를 20자 이상 입력하세요.')
   const count = Math.min(CARD_LIMITS.max, Math.max(CARD_LIMITS.min, Math.round(Number(input?.count) || 8)))
   needApproval('compose', input) // 승인 전에는 아래 공급자 호출에 도달하지 않는다
-  const j = await deps.gpt('cardnews_compose', CARDS_SCHEMA(count), `${RULES}\n${PLAN_RULES}\n소재에서 임시 추출한 참고 제목(첫 장 제목으로 복사하지 말 것): ${cover.title}\n표지 문구: ${cover.coverLine}\n약속하는 핵심 내용: ${cover.promise}\n정확히 ${count}장을 쓴다.`, material)
+  const j = await write(deps, 'cardnews_compose', CARDS_SCHEMA(count), `${RULES}\n${PLAN_RULES}\n소재에서 임시 추출한 참고 제목(첫 장 제목으로 복사하지 말 것): ${cover.title}\n표지 문구: ${cover.coverLine}\n약속하는 핵심 내용: ${cover.promise}\n정확히 ${count}장을 쓴다.`, material)
   let cards = normalizeCards(j?.cards, { min: count }).map(fitCard)
   // 이미지(유료) 전에 무료 규칙 검사. 문제가 있는 장의 계획만 한 번 고친다(전체 재설계 없음, 자동 반복 없음).
-  let issues = planIssues(cards, cover), order = ['gpt:compose']
+  let issues = planIssues(cards, cover), order = ['claude:compose']
   const flagged = [...new Set(issues.map((i) => i.cardId))]
   if (flagged.length) {
-    const fixed = await deps.gpt('cardnews_plan_fix', PLAN_FIX_SCHEMA, `${PLAN_RULES}\n제목: ${cover.title}\n아래 지적된 장의 visualPlan만 다시 쓴다. 장 id를 그대로 돌려주고, 지적되지 않은 장은 쓰지 않는다.`,
+    const fixed = await write(deps, 'cardnews_plan_fix', PLAN_FIX_SCHEMA, `${PLAN_RULES}\n제목: ${cover.title}\n아래 지적된 장의 visualPlan만 다시 쓴다. 장 id를 그대로 돌려주고, 지적되지 않은 장은 쓰지 않는다.`,
       JSON.stringify({ 전체장면: cards.map((c) => ({ id: c.id, headline: c.headline, body: c.body, visualPlan: c.visualPlan ?? null })), 지적: issues.map((i) => ({ cardId: i.cardId, code: i.code, message: i.message })) }))
     const got = new Map<string, any>((Array.isArray(fixed?.cards) ? fixed.cards : []).map((c: any) => [clean(c?.id), c]))
     cards = cards.map((c) => (flagged.includes(c.id) && cleanPlan(got.get(c.id)?.visualPlan) ? { ...c, visualPlan: cleanPlan(got.get(c.id).visualPlan)! } : c))
-    issues = planIssues(cards, cover); order = [...order, 'gpt:plan_fix']
+    issues = planIssues(cards, cover); order = [...order, 'claude:plan_fix']
   }
   return { cards, planIssues: issues, order, estimate: cardnewsEstimate('compose') }
 }
 
 const REVIEW_SYSTEM = `너는 카드뉴스의 독립 검수자다. 작성자와 다른 시각으로 각 장을 읽고 실제 문제만 지적한다. 형식적 통과 판정 금지.
 검사: 훅이 약함, 제목·약속과 내용 불일치, 소재에 없는 사실(환각), 과장, 장 간 중복, 읽기 어려움. 문제가 없으면 빈 배열.
-반드시 JSON만: {"findings":[{"cardId":"c3","code":"WEAK_HOOK|TITLE_MISMATCH|UNSUPPORTED_CLAIM|EXAGGERATION|DUPLICATE|UNCLEAR","severity":"required|warning","message":"한 문장"}]}`
+형식: {"findings":[{"cardId":"c3","code":"WEAK_HOOK|TITLE_MISMATCH|UNSUPPORTED_CLAIM|EXAGGERATION|DUPLICATE|UNCLEAR","severity":"required|warning","message":"한 문장"}]}`
 export function parseReview(text: string, cards: Card[]): Issue[] {
   const m = /\{[\s\S]*\}/.exec(String(text || '')); if (!m) throw new CardnewsError('REVIEW_INVALID', '검수 결과에 JSON이 없습니다.')
   let j: any; try { j = JSON.parse(m[0]) } catch { throw new CardnewsError('REVIEW_INVALID', '검수 결과 JSON을 읽을 수 없습니다.') }
@@ -89,29 +98,32 @@ export function parseReview(text: string, cards: Card[]): Issue[] {
     return { cardId: ids.has(clean(f?.cardId)) ? clean(f.cardId) : null, code: clean(f?.code).slice(0, 40) || 'UNCLEAR', severity: f?.severity === 'required' ? 'required' : 'warning', message: clean(f.message).slice(0, 300) } as Issue
   })
 }
-export async function reviewCardsWithClaude(input: any, deps: CardnewsDeps) {
+const REVIEW_SCHEMA = { type: 'object', additionalProperties: false, required: ['findings'], properties: { findings: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['cardId', 'code', 'severity', 'message'], properties: { cardId: { type: 'string' }, code: { type: 'string' }, severity: { type: 'string', enum: ['required', 'warning'] }, message: { type: 'string' } } } } } }
+export async function reviewCardsWithGpt(input: any, deps: CardnewsDeps) {
   const cover = normalizeCover(input?.cover), cards = normalizeCards(input?.cards), material = clean(input?.material).slice(0, 6000)
   needApproval('review', input)
-  const r = await deps.claude(REVIEW_SYSTEM, JSON.stringify({ cover: { title: cover.title, coverLine: cover.coverLine, promise: cover.promise }, material, cards: cards.map((c) => ({ id: c.id, role: c.role, headline: c.headline, body: c.body })) }))
-  return { issues: parseReview(r.text, cards), reviewerModel: r.model, order: ['gpt:compose', 'claude:review'], estimate: cardnewsEstimate('review') }
+  const r = await deps.gpt('cardnews_review', REVIEW_SCHEMA, REVIEW_SYSTEM, JSON.stringify({ cover: { title: cover.title, coverLine: cover.coverLine, promise: cover.promise }, material, cards: cards.map((c) => ({ id: c.id, role: c.role, headline: c.headline, body: c.body })) }))
+  return { issues: parseReview(JSON.stringify(r ?? {}), cards), reviewerModel: 'gpt', order: ['claude:compose', 'gpt:review'], estimate: cardnewsEstimate('review') }
 }
+export const reviewCardsWithClaude = reviewCardsWithGpt // 예전 이름(호환)
 
 // 문제 장만 다시 쓴다. 지적받지 않은 장은 그대로(바이트 단위로 동일)이며, 지정하지 않은 장을 모델이 바꿔 와도 무시한다.
-export async function fixFlaggedWithGpt(input: any, deps: CardnewsDeps) {
+export async function fixFlaggedWithClaude(input: any, deps: CardnewsDeps) {
   const cover = normalizeCover(input?.cover), cards = normalizeCards(input?.cards), material = clean(input?.material).slice(0, 6000)
   const issues: Issue[] = Array.isArray(input?.issues) ? input.issues : []
   const ids = [...new Set(issues.map((i) => clean(i?.cardId)).filter((id) => cards.some((c) => c.id === id)))]
   if (!ids.length) throw new CardnewsError('BAD_REQUEST', '고칠 장이 지정되지 않았습니다.')
   needApproval('fix', input)
   const targets = cards.filter((c) => ids.includes(c.id))
-  const j = await deps.gpt('cardnews_fix', FIX_SCHEMA, `${RULES}\n제목(변경 금지): ${cover.title}\n약속하는 핵심 내용: ${cover.promise}\n아래 [다시 쓸 장]만 지적 사항을 반영해 다시 쓴다. 장 id를 그대로 돌려준다. 다른 장은 쓰지 않는다.`,
+  const j = await write(deps, 'cardnews_fix', FIX_SCHEMA, `${RULES}\n제목(변경 금지): ${cover.title}\n약속하는 핵심 내용: ${cover.promise}\n아래 [다시 쓸 장]만 지적 사항을 반영해 다시 쓴다. 장 id를 그대로 돌려준다. 다른 장은 쓰지 않는다.`,
     JSON.stringify({ material, 다시쓸장: targets, 지적: issues.filter((i) => ids.includes(clean(i.cardId))).map((i) => ({ cardId: i.cardId, message: i.message })) }))
   const got = new Map<string, any>((Array.isArray(j?.cards) ? j.cards : []).map((c: any) => [clean(c?.id), c]))
   const missing = ids.filter((id) => !clean(got.get(id)?.headline) && !clean(got.get(id)?.body))
   if (missing.length) throw new CardnewsError('FIX_INCOMPLETE', `요청한 장이 빠졌습니다: ${missing.join(', ')}`)
   const next = cards.map((c) => (ids.includes(c.id) ? fitCard({ ...c, headline: clean(got.get(c.id).headline), body: clean(got.get(c.id).body) }) : c))
-  return { cards: next, changed: ids, order: ['gpt:compose', 'claude:review', 'gpt:fix'], estimate: cardnewsEstimate('fix') }
+  return { cards: next, changed: ids, order: ['claude:compose', 'gpt:review', 'claude:fix'], estimate: cardnewsEstimate('fix') }
 }
+export const fixFlaggedWithGpt = fixFlaggedWithClaude // 예전 이름(호환)
 
 // ── 원고·승인 상태 저장/복구(워크스페이스별 1건, 낙관적 잠금). 이미지 데이터는 저장하지 않는다.
 export const MAX_STATE_BYTES = 120_000
@@ -136,7 +148,7 @@ export function sanitizeState(s: any, ws = '') {
     material: String(s.material ?? '').slice(0, 6000), count: Math.min(CARD_LIMITS.max, Math.max(CARD_LIMITS.min, Math.round(Number(s.count) || 8))),
     form: { title: String(s.form?.title ?? '').slice(0, 120), coverLine: String(s.form?.coverLine ?? '').slice(0, 80), promise: String(s.form?.promise ?? '').slice(0, 400) },
     cover: s.cover ? normalizeCover(s.cover) : null, cards: Array.isArray(s.cards) ? s.cards.slice(0, CARD_LIMITS.max).map((c: any, i: number) => ({ id: clean(c?.id) || `c${i + 1}`, role: ['hook', 'body', 'ending'].includes(c?.role) ? c.role : 'body', headline: String(c?.headline ?? '').slice(0, 200), body: String(c?.body ?? '').slice(0, 800), ...(cleanPlan(c?.visualPlan) ? { visualPlan: cleanPlan(c?.visualPlan)! } : {}) })) : [],
-    review: s.review && typeof s.review === 'object' ? s.review : null, theme: String(s.theme ?? 'night').slice(0, 20), style: String(s.style ?? '').slice(0, 40), images: sanitizeImages(s.images, ws), pendingAiIds: Array.isArray(s.pendingAiIds) ? s.pendingAiIds.map((x: any) => String(x).slice(0, 20)).slice(0, CARD_LIMITS.max) : null
+    review: s.review && typeof s.review === 'object' ? s.review : null, theme: String(s.theme ?? 'night').slice(0, 20), style: String(s.style ?? '').slice(0, 40), images: sanitizeImages(s.images, ws), scriptConfirmedAt: typeof s.scriptConfirmedAt === 'string' && s.cover ? s.scriptConfirmedAt.slice(0, 40) : null, pendingAiIds: Array.isArray(s.pendingAiIds) ? s.pendingAiIds.map((x: any) => String(x).slice(0, 20)).slice(0, CARD_LIMITS.max) : null
   }
   if (Buffer.byteLength(JSON.stringify(out)) > MAX_STATE_BYTES) throw new CardnewsError('STATE_TOO_LARGE', '저장할 카드뉴스가 너무 큽니다.')
   return out
@@ -155,8 +167,8 @@ export function claudeFromEnv(env: Record<string, string | undefined> = process.
   return async (system, input) => {
     const key = env.ANTHROPIC_API_KEY || ''; if (!key) throw new CardnewsError('PROVIDER_DOWN', 'ANTHROPIC_API_KEY is not configured')
     const model = env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5'
-    const res = await f('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify({ model, max_tokens: 1500, system, messages: [{ role: 'user', content: input }] }) })
-    const raw = await res.text().catch(() => ''); if (!res.ok) throw new CardnewsError('PROVIDER_DOWN', `Claude review HTTP ${res.status}${res.status === 429 ? ' (rate/usage limit)' : ''}`)
+    const res = await f('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify({ model, max_tokens: 4000, system, messages: [{ role: 'user', content: input }] }) })
+    const raw = await res.text().catch(() => ''); if (!res.ok) throw new CardnewsError('PROVIDER_DOWN', `Claude HTTP ${res.status}${res.status === 429 ? ' (rate/usage limit)' : ''}`)
     let data: any = {}; try { data = raw ? JSON.parse(raw) : {} } catch { throw new CardnewsError('REVIEW_INVALID', 'Claude returned invalid JSON') }
     return { text: (data?.content ?? []).filter((c: any) => c?.type === 'text').map((c: any) => c.text).join(''), model: String(data?.model || model) }
   }
