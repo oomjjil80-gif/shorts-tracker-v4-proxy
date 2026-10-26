@@ -22,7 +22,12 @@ function rig(composeCards: (input: string) => any, fixPlans?: (input: any) => an
   const calls: string[] = []
   const deps = { gpt: async (name: string, _s: any, _i: string, input: string) => { calls.push(name); return name === 'cardnews_compose' ? composeCards(input) : fixPlans!(JSON.parse(input)) }, claude: async () => ({ text: '{"findings":[]}', model: 'm' }) }
   const blobs = createMemoryBlobStore(), h = createCardnewsHttp({ blobs, deps: () => deps as any })
-  const call = async (method: string, body: any, key: string | null = KEY) => { let status = 0, out: any; await h({ method, headers: key ? { 'x-sync-key': key } : {}, body: method === 'POST' ? body : undefined, query: method === 'GET' ? body : undefined } as any, { setHeader() {}, status(s: number) { status = s; return this }, json(b: any) { out = b; return this } } as any); return { status, body: out } }
+  const call = async (method: string, body: any, key: string | null = KEY) => {
+    if (method !== 'POST' || body?.costApproved !== true || body?.approvalId) return raw(method, body, key)
+    const q = await raw(method, { ...body, costApproved: false }, key)
+    return q.status === 402 && q.body?.approval?.approvalId ? raw(method, { ...body, approvalId: q.body.approval.approvalId }, key) : q
+  }
+  const raw = async (method: string, body: any, key: string | null = KEY) => { let status = 0, out: any; await h({ method, headers: key ? { 'x-sync-key': key } : {}, body: method === 'POST' ? body : undefined, query: method === 'GET' ? body : undefined } as any, { setHeader() {}, status(s: number) { status = s; return this }, json(b: any) { out = b; return this } } as any); return { status, body: out } }
   return { calls, call, blobs }
 }
 const compose = (t: any, extra: any = {}) => ({ taskType: 'cardnews_compose', cover: t.cover, material: `${t.cover.title}에 대한 충분히 긴 소재 설명입니다. ${t.cover.promise}.`, count: 8, ...OK, ...extra })

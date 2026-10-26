@@ -46,7 +46,7 @@ test('mismatched quote or missing approval is rejected',async()=>{
     await assert.rejects(()=>f.reserve('a1','r1',2),/APPROVAL_REQUIRED/)
     await assert.rejects(()=>f.reserve('missing','r2',1),/APPROVAL_REQUIRED/)
     const rows=await f.db.query<any>('SELECT * FROM ai_budget_reservations')
-    assert.equal(rows.rowCount,0)
+    assert.equal(rows.rows.length,0)
   } finally {await f.db.close?.()}
 })
 test('concurrent attempts on one approval cannot both succeed',async()=>{
@@ -56,6 +56,6 @@ test('concurrent attempts on one approval cannot both succeed',async()=>{
     const results=await Promise.allSettled([f.reserve('a1','r1',1),f.reserve('a1','r2',1)])
     assert.equal(results.filter(x=>x.status==='fulfilled').length,1)
     const rows=await f.db.query<any>('SELECT * FROM ai_budget_reservations')
-    assert.equal(rows.rowCount,1)
+    assert.equal(rows.rows.length,1)
   } finally {await f.db.close?.()}
 })
