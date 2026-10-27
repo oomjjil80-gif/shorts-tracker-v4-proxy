@@ -149,7 +149,7 @@ export function sanitizeRefs(v: any, ws: string) {
   const storyboard: Record<string, any> = {}
   for (const [cardId, x] of Object.entries<any>(v?.storyboard && typeof v.storyboard === 'object' ? v.storyboard : {}).slice(0, CARD_LIMITS.max + 1)) if (ok(x)) storyboard[String(cardId).slice(0, 20)] = one(x)
   const list = (a: any, n: number) => (Array.isArray(a) ? a.filter(ok).slice(0, n).map(one) : [])
-  return { storyboard, character: list(v?.character, 2), style: list(v?.style, 1), fixedTraits: String(v?.fixedTraits ?? '').slice(0, 600), forbid: String(v?.forbid ?? '').slice(0, 600), revealCardId: String(v?.revealCardId ?? '').slice(0, 20), hideRule: String(v?.hideRule ?? '').slice(0, 600) }
+  return { panels: list(v?.panels, 12), storyboard, character: list(v?.character, 2), style: list(v?.style, 1), fixedTraits: String(v?.fixedTraits ?? '').slice(0, 600), forbid: String(v?.forbid ?? '').slice(0, 600), revealCardId: String(v?.revealCardId ?? '').slice(0, 20), hideRule: String(v?.hideRule ?? '').slice(0, 600) }
 }
 export function sanitizeState(s: any, ws = '') {
   if (!s || typeof s !== 'object') throw new CardnewsError('BAD_REQUEST', 'state가 필요합니다.')

@@ -51,10 +51,11 @@ test('참조 정보는 서버 저장본에 남고(재접속 복원), 다른 작�
   const ws = 'a'.repeat(64), ref = (c: string) => `cardnews/${ws}/images/${c.repeat(64)}.png`
   const cover = { id: 'cv_1a2b3c4d', title: '외눈박이 치즈 장인', coverLine: '치즈 장인', promise: '치즈를 갉아 먹은 범인을 찾는다' }
   const st = sanitizeState({ material: 'm', cover, cards: [], refs: {
+    panels: [{ ref: ref('7'), label: '1번 칸' }, { ref: 'cardnews/x.png' }],
     storyboard: { c1: { ref: ref('1'), label: '1칸' }, c2: { ref: 'https://evil.example/x.png' }, c3: { ref: `cardnews/${'b'.repeat(64)}/images/${'2'.repeat(64)}.png` } },
     character: [{ ref: ref('3'), label: '거인(승인본)' }, { ref: ref('4') }, { ref: ref('5') }], style: [{ ref: ref('6') }],
     fixedTraits: '이마 중앙의 큰 외눈, 갈색 가죽 앞치마', forbid: '이미지 속 글자 금지', revealCardId: 'c8', hideRule: 'c8 전에는 외눈을 보이지 않는다' } }, ws)
-  assert.deepEqual(Object.keys(st.refs.storyboard), ['c1']); assert.equal(st.refs.storyboard.c1.label, '1칸')
+  assert.deepEqual(Object.keys(st.refs.storyboard), ['c1']); assert.deepEqual(st.refs.panels.map((p: any) => p.label), ['1번 칸']); assert.equal(st.refs.storyboard.c1.label, '1칸')
   assert.equal(st.refs.character.length, 2); assert.equal(st.refs.style[0].ref, ref('6'))
   assert.equal(st.refs.revealCardId, 'c8'); assert.ok(st.refs.hideRule.includes('외눈')); assert.ok(st.refs.fixedTraits.includes('외눈'))
   const roundTrip = sanitizeState(JSON.parse(JSON.stringify(st)), ws); assert.deepEqual(roundTrip.refs, st.refs)
