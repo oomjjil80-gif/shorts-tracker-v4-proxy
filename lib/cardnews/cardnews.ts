@@ -136,7 +136,9 @@ export async function fixFlaggedWithClaude(input: any, deps: CardnewsDeps) {
   const got = new Map<string, any>((Array.isArray(j?.cards) ? j.cards : []).map((c: any) => [clean(c?.id), c]))
   const missing = ids.filter((id) => !clean(got.get(id)?.headline) && !clean(got.get(id)?.body))
   if (missing.length) throw new CardnewsError('FIX_INCOMPLETE', `요청한 장이 빠졌습니다: ${missing.join(', ')}`)
-  const next = cards.map((c) => (ids.includes(c.id) ? fitCard({ ...c, headline: clean(got.get(c.id).headline), body: clean(got.get(c.id).body) }) : c))\n  const remaining = narrativeIssues(next, material).filter((i) => ids.includes(String(i.cardId)))\n  if (remaining.length) throw new CardnewsError('FIX_INCOMPLETE', '수정 후에도 숨겨야 할 정보가 노출됩니다. 기존 대본은 유지됩니다.')
+  const next = cards.map((c) => (ids.includes(c.id) ? fitCard({ ...c, headline: clean(got.get(c.id).headline), body: clean(got.get(c.id).body) }) : c))
+  const remaining = narrativeIssues(next, material).filter((i) => ids.includes(String(i.cardId)))
+  if (remaining.length) throw new CardnewsError('FIX_INCOMPLETE', '수정 후에도 숨겨야 할 정보가 노출됩니다. 기존 대본은 유지됩니다.')
   return { cards: next, changed: ids, order: ['claude:compose', 'gpt:review', 'claude:fix'], estimate: cardnewsEstimate('fix') }
 }
 export const fixFlaggedWithGpt = fixFlaggedWithClaude // 예전 이름(호환)
