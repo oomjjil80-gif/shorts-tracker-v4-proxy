@@ -37,7 +37,7 @@ test('스토리보드·캐릭터·그림체 기준이 실제 이미지 블록으
 })
 
 test('스토리보드는 장당 1장, 전체 최대 4장 · 역할 없는 예전 요청은 기존 경로 그대로', async () => {
-  const many = orderRoleReferences([{ role: 'storyboard', data: 'a' }, { role: 'storyboard', data: 'b' }, { role: 'character', data: 'c' }, { role: 'character', data: 'd' }, { role: 'character', data: 'e' }, { role: 'style', data: 'f' }])!
+  const many = orderRoleReferences<any>([{ role: 'storyboard', data: 'a' }, { role: 'storyboard', data: 'b' }, { role: 'character', data: 'c' }, { role: 'character', data: 'd' }, { role: 'character', data: 'e' }, { role: 'style', data: 'f' }])!
   assert.deepEqual(many.map((x) => x.data), ['a', 'c', 'd', 'e'])
   assert.equal(orderRoleReferences([{ data: 'x' }]), null)
   const legacy = await callImage({ prompt: 'CUT 01', aspectRatio: '9:16', references: [{ data: b64('OLD') }] })
