@@ -50,19 +50,19 @@ const RULES = `카드뉴스(인스타그램 4:5) 편집 품질 계약. 정확히
 2~끝에서 각 장은 이전 장과 다른 질문에 답해야 한다. 같은 사실을 단어만 바꾸어 반복하거나 "물이 들어온다→물이 흐른다"처럼 정보량 없이 장 수를 채우지 않는다. 소재 정보가 부족하면 근거 없는 내용을 추가하지 말고 확인 가능한 구조·원인·효과·대비·역사적 맥락을 분리해 설명한다.
 각 장마다 독립적인 시각 증거 또는 장면 하나가 있어야 한다. 텍스트만 읽어야 이해되는 추상 문구 대신 실제 그릴 수 있는 물체·행동·단면·비교를 택한다.
 최종 출력 전에 덱 전체를 내부 검토해 약한 훅, 앞뒤 중복, 조기 정체 공개, 소재와 무관한 주장, 부자연스러운 제목이 있으면 같은 생성 호출 안에서 바로 수정한다. `
-// 소재의 명시적인 연출 지시를 별도 유료 호출 없이 추출해 작성·검수·수정에 공통 전달한다.
+// 소재의 명시적 연출 지시를 추가 유료 호출 없이 작성·검수·수정에 공통 전달한다.
 export function narrativeContract(material: string) {
-  const sentences = String(material).split(/(?<=[.!?。\\n])\\s*|\\n+/).map((s) => s.trim()).filter(Boolean)
-  const timing = /숨기|감추|공개|밝히|드러내|반전|마지막|끝에서|다음\\s*화|후속|스포|정체|전까지|중반|초반|후반|금지|보여주지|언급하지|말하지/
-  return sentences.filter((s) => timing.test(s)).slice(0, 30).join('\\n').slice(0, 3500)
+  const sentences = String(material).split(/(?<=[.!?。])\s*|\n+/).map((s) => s.trim()).filter(Boolean)
+  const timing = /숨기|감추|공개|밝히|드러내|반전|마지막|끝에서|다음\s*화|후속|스포|정체|전까지|중반|초반|후반|금지|보여주지|언급하지|말하지/
+  return sentences.filter((s) => timing.test(s)).slice(0, 30).join('\n').slice(0, 3500)
 }
 const NARRATIVE_RULES = `소재에서 명시된 공개 금지, 공개 시점, 반전, 다음 화로 넘길 정보는 일반 묘사보다 우선하는 필수 연출 계약이다. 표지/각 장의 제목·본문뿐 아니라 visualPlan의 피사체·구도·차별점에도 동일하게 적용한다. '마지막에 범인 공개'는 '다른 비밀까지 공개'하라는 뜻이 아니다. 해당 화에서 숨기기로 한 정체·신체 특징은 마지막 장에서도 드러내지 않는다. 모호한 조건은 추측해 조기 공개하지 않는다.`
-const eyeSecrecyRequested = (material: string) => /외눈|한\\s*눈|눈이\\s*하나|눈\\s*하나|눈\\s*한\\s*개/.test(material) && /숨기|감추|공개하지|드러내지|보여주지|비밀|다음\\s*화|후속/.test(material)
+const eyeSecrecyRequested = (material: string) => /외눈|한\s*눈|눈이\s*하나|눈\s*하나|눈\s*한\s*개/.test(material) && /숨기|감추|공개하지|드러내지|보여주지|비밀|다음\s*화|후속/.test(material)
 export function narrativeIssues(cards: Card[], material: string): Issue[] {
   if (!eyeSecrecyRequested(material)) return []
   return cards.flatMap((c) => {
     const all = [c.headline, c.body, c.visualPlan?.subject, c.visualPlan?.composition, c.visualPlan?.distinction].join(' ')
-    return /외눈|한\\s*쪽\\s*눈|눈\\s*하나|눈이\\s*하나|눈을\\s*크게\\s*뜨|눈\\s*한\\s*개|단안/.test(all)
+    return /외눈|한\s*쪽\s*눈|눈\s*하나|눈이\s*하나|눈을\s*크게\s*뜨|눈\s*한\s*개|단안/.test(all)
       ? [{ cardId: c.id, code: 'EARLY_REVEAL', severity: 'required' as const, message: '소재에서 숨기기로 한 외눈/눈 특징이 대본 또는 이미지 계획에 노출됐습니다. 해당 화에서는 감추세요.' }] : []
   })
 }
