@@ -128,14 +128,24 @@ export const fixFlaggedWithGpt = fixFlaggedWithClaude // 예전 이름(호환)
 // ── 원고·승인 상태 저장/복구(워크스페이스별 1건, 낙관적 잠금). 이미지 데이터는 저장하지 않는다.
 export const MAX_STATE_BYTES = 120_000
 export type Saved = { schema: typeof CARDNEWS_SCHEMA; rev: number; savedAt: string; state: any }
-const pathOf = (ws: string) => `cardnews/${ws}/state.json`
+// 작업(카드뉴스 한 편)별 저장. projectId가 없으면 예전 단일 저장본(state.json, 예: 판테온)을 그대로 쓴다(이전·삭제 없음).
+// 비어 있으면 예전 저장본. 값이 있는데 형식이 틀리면 거절한다(잘못된 ID로 예전 저장본을 덮어쓰지 않게).
+export const projectIdOf = (v: unknown): string | null => {
+  if (v === undefined || v === null || v === '') return null
+  if (typeof v === 'string' && /^p_[0-9a-z]{6,40}$/.test(v)) return v
+  throw new CardnewsError('BAD_REQUEST', '카드뉴스 작업 ID 형식이 올바르지 않습니다.')
+}
+const pathOf = (ws: string, pid: string | null = null) => (pid ? `cardnews/${ws}/projects/${pid}/state.json` : `cardnews/${ws}/state.json`)
+const indexOf = (ws: string) => `cardnews/${ws}/projects.json`
+export type ProjectItem = { id: string; title: string; savedAt: string; rev: number; legacy?: boolean }
+const titleOfState = (st: any) => clean(st?.cover?.title || st?.form?.title || st?.material).slice(0, 60) || '제목 없음'
 // 이미지는 서버에 저장된 원본의 참조(ref)와 버전 정보만 상태에 둔다(바이트는 상태/브라우저 저장소에 넣지 않는다).
 const IMAGE_REF = (ws: string) => new RegExp(`^cardnews/${ws}/images/[0-9a-f]{64}\\.(png|jpg|webp)$`)
 export function sanitizeImages(v: any, ws: string) {
   const out: Record<string, { selected: string; versions: Array<{ id: string; ref: string; style: string; at: string }> }> = {}
   if (!v || typeof v !== 'object') return out
   const re = IMAGE_REF(ws)
-  for (const [cardId, e] of Object.entries<any>(v).slice(0, CARD_LIMITS.max)) {
+  for (const [cardId, e] of Object.entries<any>(v).slice(0, CARD_LIMITS.max + 1)) { // + 표지(cover)
     const versions = (Array.isArray(e?.versions) ? e.versions : []).slice(0, 12).filter((x: any) => re.test(String(x?.ref ?? ''))).map((x: any) => ({ id: String(x.id ?? '').slice(0, 40), ref: String(x.ref), style: String(x.style ?? '').slice(0, 40), at: String(x.at ?? '').slice(0, 40) })).filter((x: any) => x.id)
     if (!versions.length) continue
     out[String(cardId).slice(0, 20)] = { selected: versions.some((x: any) => x.id === e?.selected) ? String(e.selected) : versions[versions.length - 1].id, versions }
@@ -162,14 +172,31 @@ export function sanitizeState(s: any, ws = '') {
   if (Buffer.byteLength(JSON.stringify(out)) > MAX_STATE_BYTES) throw new CardnewsError('STATE_TOO_LARGE', '저장할 카드뉴스가 너무 큽니다.')
   return out
 }
-export async function getSaved(blobs: JobBlobStore, ws: string): Promise<Saved | null> { return (await blobs.getJson<Saved>(pathOf(ws))) ?? null }
+export async function getSaved(blobs: JobBlobStore, ws: string, pid: string | null = null): Promise<Saved | null> { return (await blobs.getJson<Saved>(pathOf(ws, pid))) ?? null }
 export async function putSaved(blobs: JobBlobStore, ws: string, input: any): Promise<Saved> {
-  const state = sanitizeState(input?.state, ws), cur = await getSaved(blobs, ws), base = Number(input?.baseRev ?? 0)
+  const pid = projectIdOf(input?.projectId)
+  const state = sanitizeState(input?.state, ws), cur = await getSaved(blobs, ws, pid), base = Number(input?.baseRev ?? 0)
   if (cur && cur.rev !== base) throw new CardnewsError('REV_CONFLICT', '다른 기기에서 먼저 저장된 카드뉴스가 있습니다.', { server: cur })
   if (!cur && base !== 0) throw new CardnewsError('REV_CONFLICT', '저장된 카드뉴스가 없습니다.', { server: null })
+  // 새 작업의 첫 저장은 원자적으로 한 번만(연속 클릭·동시 저장으로 같은 작업이 두 번 시작되지 않게)
+  if (!cur && pid && blobs.claim && !(await blobs.claim(`cardnews/${ws}/projects/${pid}/created.json`, { at: new Date().toISOString() }))) throw new CardnewsError('REV_CONFLICT', '이 작업은 이미 만들어졌습니다.', { server: await getSaved(blobs, ws, pid) })
   const doc: Saved = { schema: CARDNEWS_SCHEMA, rev: (cur?.rev ?? 0) + 1, savedAt: new Date().toISOString(), state }
-  await blobs.putJson(pathOf(ws), doc, { overwrite: true })
+  await blobs.putJson(pathOf(ws, pid), doc, { overwrite: true })
+  if (pid) { // 작업 목록(제목·최근 수정 시각). 목록 갱신이 실패해도 저장본은 이미 안전하다.
+    try {
+      const idx = (await blobs.getJson<{ items: ProjectItem[] }>(indexOf(ws)))?.items ?? []
+      const item: ProjectItem = { id: pid, title: titleOfState(state), savedAt: doc.savedAt, rev: doc.rev }
+      await blobs.putJson(indexOf(ws), { items: [item, ...idx.filter((x) => x.id !== pid)].slice(0, 200) }, { overwrite: true })
+    } catch (e: any) { console.error('[cardnews] project index', e?.message || e) }
+  }
   return doc
+}
+// 저장된 작업 목록: 예전 단일 저장본(판테온 등)도 '이전 작업'으로 함께 보여 준다(읽기만, 옮기지 않음).
+export async function listProjects(blobs: JobBlobStore, ws: string): Promise<ProjectItem[]> {
+  const items = (await blobs.getJson<{ items: ProjectItem[] }>(indexOf(ws)))?.items ?? []
+  const legacy = await getSaved(blobs, ws, null)
+  return [...items, ...(legacy ? [{ id: '', title: titleOfState(legacy.state), savedAt: legacy.savedAt, rev: legacy.rev, legacy: true }] : [])]
+    .sort((a, b) => String(b.savedAt).localeCompare(String(a.savedAt)))
 }
 
 export function claudeFromEnv(env: Record<string, string | undefined> = process.env, f: typeof fetch = fetch): CardnewsDeps['claude'] {
