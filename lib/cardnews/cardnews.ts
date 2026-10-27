@@ -203,10 +203,14 @@ export function claudeFromEnv(env: Record<string, string | undefined> = process.
   return async (system, input) => {
     const key = env.ANTHROPIC_API_KEY || ''; if (!key) throw new CardnewsError('PROVIDER_DOWN', 'ANTHROPIC_API_KEY is not configured')
     const model = env.ANTHROPIC_STORY_MODEL || 'claude-sonnet-5'
-    const res = await f('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify({ model, max_tokens: 4000, system, messages: [{ role: 'user', content: input }] }) })
+    const res = await f('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify({ model, max_tokens: 8000, system, messages: [{ role: 'user', content: input }] }) })
     const raw = await res.text().catch(() => ''); if (!res.ok) throw new CardnewsError('PROVIDER_DOWN', `Claude HTTP ${res.status}${res.status === 429 ? ' (rate/usage limit)' : ''}`)
     let data: any = {}; try { data = raw ? JSON.parse(raw) : {} } catch { throw new CardnewsError('REVIEW_INVALID', 'Claude returned invalid JSON') }
-    return { text: (data?.content ?? []).filter((c: any) => c?.type === 'text').map((c: any) => c.text).join(''), model: String(data?.model || model) }
+    const text = (Array.isArray(data?.content) ? data.content : []).filter((c: any) => c?.type === 'text').map((c: any) => String(c.text || '')).join('')
+    const stopReason = String(data?.stop_reason || 'unknown')
+    if (!text.trim()) throw new CardnewsError('PROVIDER_DOWN', `Claude 응답 본문이 비었습니다 (stop_reason=${stopReason}). 대본은 유지됩니다.`)
+    if (stopReason === 'max_tokens') throw new CardnewsError('PROVIDER_DOWN', 'Claude 응답이 출력 한도에 도달했습니다. 대본은 유지됩니다.')
+    return { text, model: String(data?.model || model) }
   }
 }
 export function depsFromEnv(env: Record<string, string | undefined> = process.env): CardnewsDeps {
