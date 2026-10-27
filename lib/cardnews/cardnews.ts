@@ -90,7 +90,7 @@ export async function composeCards(input: any, deps: CardnewsDeps) {
   let cards = normalizeCards(j?.cards, { min: count }).map(fitCard)
   // 이미지(유료) 전에 무료 규칙 검사. 문제가 있는 장의 계획만 한 번 고친다(전체 재설계 없음, 자동 반복 없음).
   let issues = [...planIssues(cards, cover), ...narrativeIssues(cards, material)], order = ['claude:compose']
-  const flagged = [...new Set(issues.map((i) => i.cardId))]
+  const flagged = [...new Set(issues.filter((i) => i.code !== 'EARLY_REVEAL').map((i) => i.cardId))]
   if (flagged.length) {
     const fixed = await write(deps, 'cardnews_plan_fix', PLAN_FIX_SCHEMA, `${PLAN_RULES}\n제목: ${cover.title}\n아래 지적된 장의 visualPlan만 다시 쓴다. 장 id를 그대로 돌려주고, 지적되지 않은 장은 쓰지 않는다.`,
       JSON.stringify({ 전체장면: cards.map((c) => ({ id: c.id, headline: c.headline, body: c.body, visualPlan: c.visualPlan ?? null })), 지적: issues.map((i) => ({ cardId: i.cardId, code: i.code, message: i.message })) }))
