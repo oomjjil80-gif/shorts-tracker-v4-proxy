@@ -142,13 +142,22 @@ export function sanitizeImages(v: any, ws: string) {
   }
   return out
 }
+// 장별 스토리보드·캐릭터·그림체 기준 이미지(서버 저장본의 참조만)와 짧은 고정 규칙. 후속편에서도 그대로 다시 쓴다.
+export function sanitizeRefs(v: any, ws: string) {
+  const re = IMAGE_REF(ws), ok = (x: any) => re.test(String(x?.ref ?? ''))
+  const one = (x: any) => ({ ref: String(x.ref), label: String(x?.label ?? '').slice(0, 60), at: String(x?.at ?? '').slice(0, 40) })
+  const storyboard: Record<string, any> = {}
+  for (const [cardId, x] of Object.entries<any>(v?.storyboard && typeof v.storyboard === 'object' ? v.storyboard : {}).slice(0, CARD_LIMITS.max + 1)) if (ok(x)) storyboard[String(cardId).slice(0, 20)] = one(x)
+  const list = (a: any, n: number) => (Array.isArray(a) ? a.filter(ok).slice(0, n).map(one) : [])
+  return { panels: list(v?.panels, 12), storyboard, character: list(v?.character, 2), style: list(v?.style, 1), fixedTraits: String(v?.fixedTraits ?? '').slice(0, 600), forbid: String(v?.forbid ?? '').slice(0, 600), revealCardId: String(v?.revealCardId ?? '').slice(0, 20), hideRule: String(v?.hideRule ?? '').slice(0, 600) }
+}
 export function sanitizeState(s: any, ws = '') {
   if (!s || typeof s !== 'object') throw new CardnewsError('BAD_REQUEST', 'state가 필요합니다.')
   const out: any = {
     material: String(s.material ?? '').slice(0, 6000), count: Math.min(CARD_LIMITS.max, Math.max(CARD_LIMITS.min, Math.round(Number(s.count) || 8))),
     form: { title: String(s.form?.title ?? '').slice(0, 120), coverLine: String(s.form?.coverLine ?? '').slice(0, 80), promise: String(s.form?.promise ?? '').slice(0, 400) },
     cover: s.cover ? normalizeCover(s.cover) : null, cards: Array.isArray(s.cards) ? s.cards.slice(0, CARD_LIMITS.max).map((c: any, i: number) => ({ id: clean(c?.id) || `c${i + 1}`, role: ['hook', 'body', 'ending'].includes(c?.role) ? c.role : 'body', headline: String(c?.headline ?? '').slice(0, 200), body: String(c?.body ?? '').slice(0, 800), ...(cleanPlan(c?.visualPlan) ? { visualPlan: cleanPlan(c?.visualPlan)! } : {}) })) : [],
-    review: s.review && typeof s.review === 'object' ? s.review : null, theme: String(s.theme ?? 'night').slice(0, 20), style: String(s.style ?? '').slice(0, 40), images: sanitizeImages(s.images, ws), scriptConfirmedAt: typeof s.scriptConfirmedAt === 'string' && s.cover ? s.scriptConfirmedAt.slice(0, 40) : null, pendingAiIds: Array.isArray(s.pendingAiIds) ? s.pendingAiIds.map((x: any) => String(x).slice(0, 20)).slice(0, CARD_LIMITS.max) : null
+    review: s.review && typeof s.review === 'object' ? s.review : null, theme: String(s.theme ?? 'night').slice(0, 20), style: String(s.style ?? '').slice(0, 40), images: sanitizeImages(s.images, ws), refs: sanitizeRefs(s.refs, ws), scriptConfirmedAt: typeof s.scriptConfirmedAt === 'string' && s.cover ? s.scriptConfirmedAt.slice(0, 40) : null, pendingAiIds: Array.isArray(s.pendingAiIds) ? s.pendingAiIds.map((x: any) => String(x).slice(0, 20)).slice(0, CARD_LIMITS.max) : null
   }
   if (Buffer.byteLength(JSON.stringify(out)) > MAX_STATE_BYTES) throw new CardnewsError('STATE_TOO_LARGE', '저장할 카드뉴스가 너무 큽니다.')
   return out

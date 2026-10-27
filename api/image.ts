@@ -1,3 +1,4 @@
+import { orderRoleReferences, roleReferenceInstruction } from '../lib/cardnews/references.js'
 import type { Request, Response } from 'express'
 import { handleBenchmarkCloneDiagnostic } from '../lib/benchmarkCloneDiagnostic.js'
 import { imageStyleFor, withVisualStyle } from '../lib/generative/creativeProfile.js'
@@ -117,7 +118,10 @@ export default async function handler(req: Request, res: Response) {
   const ratios = new Set(['1:1','2:3','3:2','3:4','4:3','4:5','5:4','9:16','16:9','21:9','1:4','4:1','1:8','8:1'])
   const sizes = new Set(['0.5K','1K','2K','4K'])
 
-  const rawReferences = golden ? [] : Array.isArray(input.references) ? input.references.slice(0, yadam ? 3 : 4) : []
+  // 카드뉴스: 역할(storyboard/character/style)이 붙은 참조는 순서를 고정하고 이미지마다 역할을 글로 알려 준다
+  const cardnewsRoles = !golden && !yadam && String(input.profile || '').trim() === 'cardnews' && Array.isArray(input.references)
+    ? orderRoleReferences(input.references.filter((r: any) => String(r?.data || '').replace(/^data:[^;]+;base64,/, '').length > 0)) : null
+  const rawReferences = golden ? [] : cardnewsRoles ?? (Array.isArray(input.references) ? input.references.slice(0, yadam ? 3 : 4) : [])
   const referenceBlocks = rawReferences
     .map((ref: any) => ({
       type: 'image',
@@ -146,7 +150,9 @@ export default async function handler(req: Request, res: Response) {
       ].join('\n')
     : prompt
 
-  const referenceInstruction = yadam
+  const referenceInstruction = cardnewsRoles
+    ? roleReferenceInstruction(cardnewsRoles.map((r: any) => r.role))
+    : yadam
     ? 'The FIRST THREE images are the style reference (the one 야담 art style); any further images only fix the identity of this episode\'s characters.'
     : economyLongform
     ? 'Use provided reference images only as style/identity anchors when they do not conflict with the ECONOMY LONGFORM V0.1 server style lock. The server style lock always wins.'
