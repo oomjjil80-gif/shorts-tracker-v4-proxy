@@ -50,6 +50,22 @@ const RULES = `카드뉴스(인스타그램 4:5) 편집 품질 계약. 정확히
 2~끝에서 각 장은 이전 장과 다른 질문에 답해야 한다. 같은 사실을 단어만 바꾸어 반복하거나 "물이 들어온다→물이 흐른다"처럼 정보량 없이 장 수를 채우지 않는다. 소재 정보가 부족하면 근거 없는 내용을 추가하지 말고 확인 가능한 구조·원인·효과·대비·역사적 맥락을 분리해 설명한다.
 각 장마다 독립적인 시각 증거 또는 장면 하나가 있어야 한다. 텍스트만 읽어야 이해되는 추상 문구 대신 실제 그릴 수 있는 물체·행동·단면·비교를 택한다.
 최종 출력 전에 덱 전체를 내부 검토해 약한 훅, 앞뒤 중복, 조기 정체 공개, 소재와 무관한 주장, 부자연스러운 제목이 있으면 같은 생성 호출 안에서 바로 수정한다. `
+// 소재의 명시적인 연출 지시를 별도 유료 호출 없이 추출해 작성·검수·수정에 공통 전달한다.
+export function narrativeContract(material: string) {
+  const sentences = String(material).split(/(?<=[.!?。\\n])\\s*|\\n+/).map((s) => s.trim()).filter(Boolean)
+  const timing = /숨기|감추|공개|밝히|드러내|반전|마지막|끝에서|다음\\s*화|후속|스포|정체|전까지|중반|초반|후반|금지|보여주지|언급하지|말하지/
+  return sentences.filter((s) => timing.test(s)).slice(0, 30).join('\\n').slice(0, 3500)
+}
+const NARRATIVE_RULES = `소재에서 명시된 공개 금지, 공개 시점, 반전, 다음 화로 넘길 정보는 일반 묘사보다 우선하는 필수 연출 계약이다. 표지/각 장의 제목·본문뿐 아니라 visualPlan의 피사체·구도·차별점에도 동일하게 적용한다. '마지막에 범인 공개'는 '다른 비밀까지 공개'하라는 뜻이 아니다. 해당 화에서 숨기기로 한 정체·신체 특징은 마지막 장에서도 드러내지 않는다. 모호한 조건은 추측해 조기 공개하지 않는다.`
+const eyeSecrecyRequested = (material: string) => /외눈|한\\s*눈|눈이\\s*하나|눈\\s*하나|눈\\s*한\\s*개/.test(material) && /숨기|감추|공개하지|드러내지|보여주지|비밀|다음\\s*화|후속/.test(material)
+export function narrativeIssues(cards: Card[], material: string): Issue[] {
+  if (!eyeSecrecyRequested(material)) return []
+  return cards.flatMap((c) => {
+    const all = [c.headline, c.body, c.visualPlan?.subject, c.visualPlan?.composition, c.visualPlan?.distinction].join(' ')
+    return /외눈|한\\s*쪽\\s*눈|눈\\s*하나|눈이\\s*하나|눈을\\s*크게\\s*뜨|눈\\s*한\\s*개|단안/.test(all)
+      ? [{ cardId: c.id, code: 'EARLY_REVEAL', severity: 'required' as const, message: '소재에서 숨기기로 한 외눈/눈 특징이 대본 또는 이미지 계획에 노출됐습니다. 해당 화에서는 감추세요.' }] : []
+  })
+}
 const PLAN_PROPS = { type: 'object', additionalProperties: false, required: ['subject', 'composition', 'distinction'], properties: { subject: { type: 'string' }, composition: { type: 'string' }, distinction: { type: 'string' } } }
 const CARDS_SCHEMA = (n: number) => ({ type: 'object', additionalProperties: false, required: ['cards'], properties: { cards: { type: 'array', minItems: n, maxItems: n, items: { type: 'object', additionalProperties: false, required: ['headline', 'body', 'visualPlan'], properties: { headline: { type: 'string' }, body: { type: 'string' }, visualPlan: PLAN_PROPS } } } } })
 const PLAN_FIX_SCHEMA = { type: 'object', additionalProperties: false, required: ['cards'], properties: { cards: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'visualPlan'], properties: { id: { type: 'string' }, visualPlan: PLAN_PROPS } } } } }
@@ -70,23 +86,23 @@ export async function composeCards(input: any, deps: CardnewsDeps) {
   if (material.length < 20) throw new CardnewsError('BAD_REQUEST', '소재를 20자 이상 입력하세요.')
   const count = Math.min(CARD_LIMITS.max, Math.max(CARD_LIMITS.min, Math.round(Number(input?.count) || 8)))
   needApproval('compose', input) // 승인 전에는 아래 공급자 호출에 도달하지 않는다
-  const j = await write(deps, 'cardnews_compose', CARDS_SCHEMA(count), `${RULES}\n${PLAN_RULES}\n소재에서 임시 추출한 참고 제목(첫 장 제목으로 복사하지 말 것): ${cover.title}\n표지 문구: ${cover.coverLine}\n약속하는 핵심 내용: ${cover.promise}\n정확히 ${count}장을 쓴다.`, material)
+  const j = await write(deps, 'cardnews_compose', CARDS_SCHEMA(count), `${RULES}\n${NARRATIVE_RULES}\n필수 연출 지시:\n${narrativeContract(material)}\n${PLAN_RULES}\n소재에서 임시 추출한 참고 제목(첫 장 제목으로 복사하지 말 것): ${cover.title}\n표지 문구: ${cover.coverLine}\n약속하는 핵심 내용: ${cover.promise}\n정확히 ${count}장을 쓴다.`, material)
   let cards = normalizeCards(j?.cards, { min: count }).map(fitCard)
   // 이미지(유료) 전에 무료 규칙 검사. 문제가 있는 장의 계획만 한 번 고친다(전체 재설계 없음, 자동 반복 없음).
-  let issues = planIssues(cards, cover), order = ['claude:compose']
+  let issues = [...planIssues(cards, cover), ...narrativeIssues(cards, material)], order = ['claude:compose']
   const flagged = [...new Set(issues.map((i) => i.cardId))]
   if (flagged.length) {
     const fixed = await write(deps, 'cardnews_plan_fix', PLAN_FIX_SCHEMA, `${PLAN_RULES}\n제목: ${cover.title}\n아래 지적된 장의 visualPlan만 다시 쓴다. 장 id를 그대로 돌려주고, 지적되지 않은 장은 쓰지 않는다.`,
       JSON.stringify({ 전체장면: cards.map((c) => ({ id: c.id, headline: c.headline, body: c.body, visualPlan: c.visualPlan ?? null })), 지적: issues.map((i) => ({ cardId: i.cardId, code: i.code, message: i.message })) }))
     const got = new Map<string, any>((Array.isArray(fixed?.cards) ? fixed.cards : []).map((c: any) => [clean(c?.id), c]))
     cards = cards.map((c) => (flagged.includes(c.id) && cleanPlan(got.get(c.id)?.visualPlan) ? { ...c, visualPlan: cleanPlan(got.get(c.id).visualPlan)! } : c))
-    issues = planIssues(cards, cover); order = [...order, 'claude:plan_fix']
+    issues = [...planIssues(cards, cover), ...narrativeIssues(cards, material)]; order = [...order, 'claude:plan_fix']
   }
   return { cards, planIssues: issues, order, estimate: cardnewsEstimate('compose') }
 }
 
-const REVIEW_SYSTEM = `너는 카드뉴스의 독립 검수자다. 작성자와 다른 시각으로 각 장을 읽고 실제 문제만 지적한다. 형식적 통과 판정 금지.
-검사: 훅이 약함, 제목·약속과 내용 불일치, 소재에 없는 사실(환각), 과장, 장 간 중복, 읽기 어려움. 문제가 없으면 빈 배열.
+const REVIEW_SYSTEM = `${NARRATIVE_RULES}\n너는 카드뉴스의 독립 검수자다. 작성자와 다른 시각으로 각 장을 읽고 실제 문제만 지적한다. 형식적 통과 판정 금지.
+검사: 소재에 명시된 공개 금지 정보의 조기 노출, 공개 타이밍, 다음 화로 넘길 비밀, 이미지 계획에서의 누설, 훅이 약함, 제목·약속과 내용 불일치, 소재에 없는 사실(환각), 과장, 장 간 중복, 읽기 어려움. 문제가 없으면 빈 배열.
 형식: {"findings":[{"cardId":"c3","code":"WEAK_HOOK|TITLE_MISMATCH|UNSUPPORTED_CLAIM|EXAGGERATION|DUPLICATE|UNCLEAR","severity":"required|warning","message":"한 문장"}]}`
 export function parseReview(text: string, cards: Card[]): Issue[] {
   const m = /\{[\s\S]*\}/.exec(String(text || '')); if (!m) throw new CardnewsError('REVIEW_INVALID', '검수 결과에 JSON이 없습니다.')
@@ -102,8 +118,8 @@ const REVIEW_SCHEMA = { type: 'object', additionalProperties: false, required: [
 export async function reviewCardsWithGpt(input: any, deps: CardnewsDeps) {
   const cover = normalizeCover(input?.cover), cards = normalizeCards(input?.cards), material = clean(input?.material).slice(0, 6000)
   needApproval('review', input)
-  const r = await deps.gpt('cardnews_review', REVIEW_SCHEMA, REVIEW_SYSTEM, JSON.stringify({ cover: { title: cover.title, coverLine: cover.coverLine, promise: cover.promise }, material, cards: cards.map((c) => ({ id: c.id, role: c.role, headline: c.headline, body: c.body })) }))
-  return { issues: parseReview(JSON.stringify(r ?? {}), cards), reviewerModel: 'gpt', order: ['claude:compose', 'gpt:review'], estimate: cardnewsEstimate('review') }
+  const r = await deps.gpt('cardnews_review', REVIEW_SCHEMA, REVIEW_SYSTEM, JSON.stringify({ cover: { title: cover.title, coverLine: cover.coverLine, promise: cover.promise }, material, narrativeContract: narrativeContract(material), cards: cards.map((c) => ({ id: c.id, role: c.role, headline: c.headline, body: c.body, visualPlan: c.visualPlan })) }))
+  return { issues: [...narrativeIssues(cards, material), ...parseReview(JSON.stringify(r ?? {}), cards)], reviewerModel: 'gpt', order: ['claude:compose', 'gpt:review'], estimate: cardnewsEstimate('review') }
 }
 export const reviewCardsWithClaude = reviewCardsWithGpt // 예전 이름(호환)
 
@@ -115,12 +131,12 @@ export async function fixFlaggedWithClaude(input: any, deps: CardnewsDeps) {
   if (!ids.length) throw new CardnewsError('BAD_REQUEST', '고칠 장이 지정되지 않았습니다.')
   needApproval('fix', input)
   const targets = cards.filter((c) => ids.includes(c.id))
-  const j = await write(deps, 'cardnews_fix', FIX_SCHEMA, `${RULES}\n제목(변경 금지): ${cover.title}\n약속하는 핵심 내용: ${cover.promise}\n아래 [다시 쓸 장]만 지적 사항을 반영해 다시 쓴다. 장 id를 그대로 돌려준다. 다른 장은 쓰지 않는다.`,
+  const j = await write(deps, 'cardnews_fix', FIX_SCHEMA, `${RULES}\n${NARRATIVE_RULES}\n필수 연출 지시:\n${narrativeContract(material)}\n제목(변경 금지): ${cover.title}\n약속하는 핵심 내용: ${cover.promise}\n아래 [다시 쓸 장]만 지적 사항을 반영해 다시 쓴다. 장 id를 그대로 돌려준다. 다른 장은 쓰지 않는다.`,
     JSON.stringify({ material, 다시쓸장: targets, 지적: issues.filter((i) => ids.includes(clean(i.cardId))).map((i) => ({ cardId: i.cardId, message: i.message })) }))
   const got = new Map<string, any>((Array.isArray(j?.cards) ? j.cards : []).map((c: any) => [clean(c?.id), c]))
   const missing = ids.filter((id) => !clean(got.get(id)?.headline) && !clean(got.get(id)?.body))
   if (missing.length) throw new CardnewsError('FIX_INCOMPLETE', `요청한 장이 빠졌습니다: ${missing.join(', ')}`)
-  const next = cards.map((c) => (ids.includes(c.id) ? fitCard({ ...c, headline: clean(got.get(c.id).headline), body: clean(got.get(c.id).body) }) : c))
+  const next = cards.map((c) => (ids.includes(c.id) ? fitCard({ ...c, headline: clean(got.get(c.id).headline), body: clean(got.get(c.id).body) }) : c))\n  const remaining = narrativeIssues(next, material).filter((i) => ids.includes(String(i.cardId)))\n  if (remaining.length) throw new CardnewsError('FIX_INCOMPLETE', '수정 후에도 숨겨야 할 정보가 노출됩니다. 기존 대본은 유지됩니다.')
   return { cards: next, changed: ids, order: ['claude:compose', 'gpt:review', 'claude:fix'], estimate: cardnewsEstimate('fix') }
 }
 export const fixFlaggedWithGpt = fixFlaggedWithClaude // 예전 이름(호환)
