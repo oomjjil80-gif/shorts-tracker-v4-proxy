@@ -6,6 +6,63 @@ import { readFileSync } from 'node:fs'
 import { createMemoryBlobStore } from '../lib/jobs/blobs.js'
 import { createCardnewsHttp } from '../lib/cardnews/http.js'
 import { parseReview, cardnewsEstimate } from '../lib/cardnews/cardnews.js'
+import { createVercelJobBlobStore } from '../lib/jobs/blobs.js'
+import { MockAgent, getGlobalDispatcher, setGlobalDispatcher } from 'undici'
+
+test('R2 cardnews: issue approval without legacy probe; inaccessible legacy data is never treated as absent', async (t) => {
+  const env = { R2_ENDPOINT: 'https://acct.r2.cloudflarestorage.com', R2_BUCKET: 'tracker', R2_ACCESS_KEY_ID: 'test', R2_SECRET_ACCESS_KEY: 'test', BLOB_READ_WRITE_TOKEN: 'vercel_blob_rw_teststore_secret' }
+  const saved = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]))
+  Object.assign(process.env, env)
+  const objects = new Map<string, string>(), writes: string[] = []
+  const originalFetch = globalThis.fetch, dispatcher = getGlobalDispatcher()
+  const agent = new MockAgent(); agent.disableNetConnect()
+  let legacyCalls = 0, providers = 0
+  const forbidden = () => { legacyCalls++; return { statusCode: 403, data: JSON.stringify({ error: { code: 'forbidden', message: 'Forbidden' } }) } }
+  agent.get('https://vercel.com').intercept({ path: () => true, method: () => true }).reply(forbidden).persist()
+  agent.get(/blob\.vercel-storage\.com$/).intercept({ path: () => true, method: () => true }).reply(forbidden).persist()
+  setGlobalDispatcher(agent)
+  globalThis.fetch = (async (input: any, init: any = {}) => {
+    const url = new URL(String(input)); assert.equal(url.origin, env.R2_ENDPOINT)
+    const key = decodeURIComponent(url.pathname.slice('/tracker/'.length)), method = init.method || 'GET'
+    if (method === 'PUT') {
+      if (init.headers['if-none-match'] === '*' && objects.has(key)) return new Response('', { status: 412 })
+      writes.push(key); objects.set(key, String(init.body)); return new Response('', { status: 200 })
+    }
+    const value = objects.get(key)
+    return value === undefined ? new Response(null, { status: 404 }) : new Response(method === 'HEAD' ? null : value, { status: 200, headers: { 'content-length': String(Buffer.byteLength(value)) } })
+  }) as any
+  try {
+    const blobs = createVercelJobBlobStore()
+    await t.test('fresh approval is a conditional R2 create, with no legacy read and no provider call', async () => {
+      const h = createCardnewsHttp({ blobs, deps: () => { providers++; throw new Error('paid provider forbidden') } })
+      let status = 0, body: any
+      await h({ method: 'POST', headers: { 'x-sync-key': 'k'.repeat(32) }, body: { taskType: 'cardnews_compose', material: '월급날 통장이 비는 이유를 설명하는 소재입니다.' } } as any,
+        { setHeader() {}, status(s: number) { status = s; return this }, json(b: any) { body = b; return this } } as any)
+      assert.equal(status, 402); assert.equal(body.error.code, 'COST_APPROVAL_REQUIRED')
+      assert.equal(providers, 0); assert.equal(legacyCalls, 0)
+      assert.equal(writes.length, 1); assert.match(writes[0], /^paid-approvals\/.*\.issued\.json$/)
+      const approval: any = await blobs.getJson(writes[0]); assert.equal(approval.approvalId, body.approval.approvalId)
+      assert.equal(await blobs.claim!(writes[0], { overwritten: true }), false)
+      assert.deepEqual(await blobs.getJson(writes[0]), approval)
+    })
+    await t.test('legacy 403 stays an error for reads and existence checks, preventing shadow overwrite', async () => {
+      await assert.rejects(blobs.getJson('cardnews/legacy/state.json'))
+      const before = writes.length
+      await assert.rejects(blobs.putJson('cardnews/legacy/state.json', { rev: 0 }))
+      assert.equal(writes.length, before)
+    })
+    await t.test('existing R2 script and images remain readable without legacy access', async () => {
+      const value = { rev: 4, state: { cards: [{ headline: '기존 대본', imageRef: 'cardnews/images/old.png' }] } }
+      objects.set('cardnews/current/state.json', JSON.stringify(value))
+      const before = legacyCalls
+      assert.deepEqual(await blobs.getJson('cardnews/current/state.json'), value)
+      assert.equal(legacyCalls, before)
+    })
+  } finally {
+    globalThis.fetch = originalFetch; setGlobalDispatcher(dispatcher); await agent.close()
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value }
+  }
+})
 
 const KEY = 'k'.repeat(32), OTHER = 'z'.repeat(32)
 const cover = { id: 'cv_1a2b3c4d', title: '월급날 통장이 비는 진짜 이유', coverLine: '월급날 통장', promise: '자동이체 날짜가 통장을 비운다' }

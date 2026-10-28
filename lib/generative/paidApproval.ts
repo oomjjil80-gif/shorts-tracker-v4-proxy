@@ -23,7 +23,10 @@ export async function requireApproval(blobs: JobBlobStore, o: { ws: string; inpu
   const now = o.now ?? new Date(), hash = payloadHash(o.input), id = o.input?.approvalId
   const issue = async (code: ApprovalError['code'] = 'COST_APPROVAL_REQUIRED', message = '예상 비용을 확인하고 승인해야 AI를 호출합니다.') => {
     const a: Approval = { approvalId: randomUUID(), ws: o.ws, task: o.quote.task, payloadHash: hash, usd: o.quote.usd, issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + TTL_MS).toISOString() }
-    await blobs.putJson(path(o.ws, a.approvalId, 'issued'), a)
+    // A fresh UUID has no legacy object to read. Create atomically on the active store,
+    // without turning a legacy access error into a missing-file result.
+    if (!blobs.claim) throw new Error('approval store cannot claim atomically')
+    if (!(await blobs.claim(path(o.ws, a.approvalId, 'issued'), a))) throw new Error('approval ID already exists')
     throw new ApprovalError(code, message, { estimate: { ...o.quote, confirmed: false }, approval: { approvalId: a.approvalId, usd: a.usd, expiresAt: a.expiresAt } })
   }
   if (!okId(id)) return issue()
