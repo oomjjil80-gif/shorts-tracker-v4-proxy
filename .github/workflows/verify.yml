@@ -47,7 +47,7 @@ jobs:
           PROMISE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/story/titlePromise\.ts|api/claude-story\.ts|api/gpt-script-qc\.ts|api/claude-longform-revise\.ts|api/story\.ts|lib/jobs/http\.ts|tools/title-promise\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           PROMISE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/story/titlePromise\.ts$' || true)"
           # 카드뉴스 (new lib/cardnews + router lines in api/story.ts): focused tests incl. function-count and Job API regression.
-          CARDNEWS_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/cardnews/[A-Za-z]+\.ts|api/story\.ts|api/image\.ts|tools/(cardnews(-visual|-refs|-projects)?|paid-approval)\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
+          CARDNEWS_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/cardnews/[A-Za-z]+\.ts|api/story\.ts|api/image\.ts|tools/(cardnews(-visual|-refs|-projects|-image-review)?|paid-approval)\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           CARDNEWS_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/cardnews/(cardnews|http|visionReview)\.ts
           # 확정 대본 (history Reels): optional brief.fixedScript used verbatim by the Wisdom PLAN; focused tests incl. Wisdom regression.
           FIXED_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/contracts\.ts|lib/generative/wisdom\.ts|worker/stages/generative\.ts|tools/fixed-script\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
