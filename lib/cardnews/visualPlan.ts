@@ -1,13 +1,14 @@
 // 카드별 VISUAL PLAN(피사체·구도·차별점)의 무료 규칙 검사. 소재 종류에 상관없이 같은 규칙을 쓴다(특정 소재 하드코딩 없음).
 // 이미지(유료)를 만들기 전에 실행하고, 문제가 있는 장의 계획만 고친다. 의미적 판단(이야기에 가장 맞는 장면인가)은 AI 설계 단계가 맡는다.
-export type VisualPlan = { subject: string; composition: string; distinction: string }
+export type VisualPlan = { subject: string; composition: string; distinction: string; storyboard?: string; continuity?: string }
 export type PlanCard = { id: string; role?: string; headline: string; body: string; visualPlan?: VisualPlan | null }
 export type PlanIssue = { cardId: string; code: 'MISSING_PLAN' | 'DUPLICATE_SUBJECT' | 'DUPLICATE_COMPOSITION' | 'CONTENT_MISMATCH' | 'EARLY_REVEAL'; message: string }
 
 const clean = (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim()
 export function cleanPlan(v: any): VisualPlan | null {
   const subject = clean(v?.subject).slice(0, 240), composition = clean(v?.composition).slice(0, 240), distinction = clean(v?.distinction).slice(0, 240)
-  return subject.length >= 2 && composition.length >= 2 && distinction.length >= 2 ? { subject, composition, distinction } : null
+  const storyboard = clean(v?.storyboard).slice(0, 1400), continuity = clean(v?.continuity).slice(0, 700)
+  return subject.length >= 2 && composition.length >= 2 && distinction.length >= 2 ? { subject, composition, distinction, ...(storyboard ? { storyboard } : {}), ...(continuity ? { continuity } : {}) } : null
 }
 const words = (s: string) => new Set(clean(s).toLowerCase().split(/[^0-9a-z가-힣]+/).filter((w) => w.length >= 2))
 const bigrams = (s: string) => { const t = clean(s).toLowerCase().replace(/[^0-9a-z가-힣]/g, ''), out = new Set<string>(); for (let i = 0; i + 1 < t.length; i++) out.add(t.slice(i, i + 2)); return out }
