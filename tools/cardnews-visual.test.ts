@@ -100,3 +100,26 @@ test('F. 저장 상태: 장면 계획·그림체·이미지 버전 참조만 서
   assert.equal(st.style, 'miniature'); assert.ok(st.cards[0].visualPlan.subject); assert.equal(st.images.c1.versions[0].ref, ref('b'))
   assert.ok(JSON.stringify(st).length < 120_000 && !JSON.stringify(st).includes('base64'))
 })
+
+
+test('스토리보드: Claude 장면 설명 → 정규화 → 서버 저장/복구, 구형 카드 호환 (가짜 AI만 사용)', async () => {
+  const t = TOPICS.food
+  const storyboard = '조선 시대 장독대 앞에서 장인이 항아리 뚜껑을 여는 장면. 어깨 너머 시점, 아침 햇빛, 표정은 긴장.'
+  const continuity = '조선 시대 한옥 마당, 동일한 장인(남색 두루마기), 같은 갈색 장독대.'
+  const deck = deckFor(t).map((c) => ({ ...c, visualPlan: { ...c.visualPlan, storyboard, continuity } }))
+  const { call, calls } = rig(() => ({ cards: deck }))
+  const composed = await call('POST', compose(t))
+  assert.equal(composed.status, 200)
+  assert.deepEqual(calls, ['cardnews_compose'])
+  assert.equal(composed.body.cards[0].visualPlan.storyboard, storyboard)
+  assert.equal(composed.body.cards[0].visualPlan.continuity, continuity)
+  const state = { material: '충분히 긴 소재 설명을 저장합니다.', count: 8, cover: t.cover, cards: composed.body.cards }
+  const saved = await call('POST', { taskType: 'cardnews_save', state, baseRev: 0 })
+  assert.equal(saved.status, 200)
+  const loaded = await call('GET', { taskType: 'cardnews_get' })
+  assert.equal(loaded.status, 200)
+  assert.equal(loaded.body.saved.state.cards[0].visualPlan.storyboard, storyboard)
+  assert.equal(loaded.body.saved.state.cards[0].visualPlan.continuity, continuity)
+  const legacy = sanitizeState({ ...state, cards: deckFor(t) })
+  assert.ok(legacy.cards.every((c: any) => c.visualPlan?.subject && !c.visualPlan?.storyboard))
+})
