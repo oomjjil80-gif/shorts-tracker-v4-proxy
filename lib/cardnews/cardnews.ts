@@ -81,6 +81,26 @@ export function parseJsonObject(text: string): any {
 const write = async (deps: CardnewsDeps, name: string, schema: any, instructions: string, input: string) =>
   parseJsonObject((await deps.claude(`${instructions}\n반드시 JSON 객체 하나만 출력한다(설명·코드블록 금지). 형식(JSON Schema): ${JSON.stringify(schema)}`, input, name)).text)
 
+// Existing approved scripts: generate image-only plans, never rewrite the user's words or images.
+export async function storyboardForExistingCards(input: any, deps: CardnewsDeps) {
+  const cover = normalizeCover(input?.cover), material = clean(input?.material).slice(0, 6000)
+  const cards = normalizeCards(input?.cards)
+  if (material.length < 20) throw new CardnewsError('BAD_REQUEST', '소재를 20자 이상 입력하세요.')
+  needApproval('compose', input)
+  const schema = { type: 'object', additionalProperties: false, required: ['cards'], properties: { cards: { type: 'array', minItems: cards.length, maxItems: cards.length, items: { type: 'object', additionalProperties: false, required: ['id', 'visualPlan'], properties: { id: { type: 'string' }, visualPlan: PLAN_PROPS } } } } }
+  const output = await write(deps, 'cardnews_storyboard', schema,
+    `확정된 카드뉴스의 제목·본문은 절대로 변경하지 않는다. 장면 계획만 생성한다. ${PLAN_RULES}\n${NARRATIVE_RULES}\n표지: ${cover.title}\n소재의 공개 금지 연출: ${narrativeContract(material)}\n입력의 각 id에 대해 동일한 id와 visualPlan만 출력한다. 추가 설명 금지.`,
+    JSON.stringify({ material, cards: cards.map(c => ({ id: c.id, headline: c.headline, body: c.body, existingPlan: c.visualPlan || null })) }))
+  const incoming = Array.isArray(output?.cards) ? output.cards : []
+  if (incoming.length !== cards.length || new Set(incoming.map((x: any) => clean(x?.id))).size !== cards.length) throw new CardnewsError('FIX_INCOMPLETE', '장면 설계가 일부 누락됐습니다. 기존 대본은 변경되지 않았습니다.')
+  const plans = new Map<string, any>(incoming.map((x: any) => [clean(x?.id), cleanPlan(x?.visualPlan)]))
+  if (cards.some(c => !plans.get(c.id)?.storyboard || !plans.get(c.id)?.continuity)) throw new CardnewsError('FIX_INCOMPLETE', '상세 장면 또는 연속성 정보가 누락됐습니다.')
+  const next = cards.map(c => ({ ...c, visualPlan: plans.get(c.id) }))
+  const issues = [...planIssues(next, cover), ...narrativeIssues(next, material)]
+  if (issues.length) throw new CardnewsError('FIX_INCOMPLETE', '장면 설계 검수에서 문제가 발견됐습니다. 기존 대본은 변경되지 않았습니다.', { issues })
+  return { cards: next, planIssues: [], estimate: cardnewsEstimate('compose') }
+}
+
 export async function composeCards(input: any, deps: CardnewsDeps) {
   const cover = normalizeCover(input?.cover), material = clean(input?.material).slice(0, 6000)
   if (material.length < 20) throw new CardnewsError('BAD_REQUEST', '소재를 20자 이상 입력하세요.')
