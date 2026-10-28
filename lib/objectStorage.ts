@@ -250,7 +250,6 @@ export async function get(path: string, opts: GetOpts = {}) {
     return await (vercelBlob as any).get(path, opts)
   } catch (error: any) {
     if (isNotFoundError(error)) return null
-    if (r2Configured() && /403 Forbidden|BlobAccessDenied/.test(String(error?.message || error))) return null
     throw error
   }
 }
@@ -264,7 +263,6 @@ export async function head(path: string) {
     return await (vercelBlob as any).head(path)
   } catch (error: any) {
     if (isNotFoundError(error)) return null
-    if (r2Configured() && /403 Forbidden|BlobAccessDenied/.test(String(error?.message || error))) return null
     throw error
   }
 }
