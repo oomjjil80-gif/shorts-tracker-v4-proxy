@@ -153,6 +153,7 @@ jobs:
             tools/monthlyBudgetPolicy.test.ts \
             tools/atomicBudgetReservation.test.ts \
             tools/cardnews.test.ts \
+            tools/cardnews-image-review.test.ts \
             tools/cardnews-visual.test.ts \
             tools/r2-job-storage.test.ts \
             tools/blob-dedupe.test.ts \
