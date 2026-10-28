@@ -123,3 +123,14 @@ test('스토리보드: Claude 장면 설명 → 정규화 → 서버 저장/복�
   const legacy = sanitizeState({ ...state, cards: deckFor(t) })
   assert.ok(legacy.cards.every((c: any) => c.visualPlan?.subject && !c.visualPlan?.storyboard))
 })
+
+
+test('확정 대본: 상세 스토리보드만 생성, 본문/제목 유지, 유료 호출 승인 게이트', async () => {
+  const t = TOPICS.food, deck = deckFor(t)
+  const { call, calls } = rig(() => ({ cards: deck }), () => ({ cards: [] }))
+  const payload = { taskType: 'cardnews_storyboard', cover: t.cover, material: '조선시대 한옥 마당에서 장독대의 비밀을 알아보는 긴 이야기입니다.', cards: deck.map((c, i) => ({ id: `c${i + 1}`, role: i === 0 ? 'hook' : i === 7 ? 'ending' : 'body', ...c })), ...OK }
+  const no = await call('POST', { ...payload, costApproved: false })
+  assert.equal(no.status, 402); assert.deepEqual(calls, [])
+  const result = await call('POST', payload)
+  assert.notEqual(result.status, 200, 'mock without storyboard should be rejected, not overwrite approved script')
+})
