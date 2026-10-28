@@ -20,7 +20,7 @@ const deckFor = (t: (typeof TOPICS)[keyof typeof TOPICS]) => t.heads.map((h, i) 
 
 function rig(composeCards: (input: string) => any, fixPlans?: (input: any) => any) {
   const calls: string[] = []
-  const deps = { claude: async (_sys: string, input: string, name = '') => { calls.push(name); return { text: JSON.stringify(name === 'cardnews_compose' ? composeCards(input) : fixPlans!(JSON.parse(input))), model: 'm' } }, gpt: async () => ({ findings: [] }) }
+  const deps = { claude: async (_sys: string, input: string, name = '') => { calls.push(name); return { text: JSON.stringify(name === 'cardnews_compose' || name === 'cardnews_storyboard' ? composeCards(input) : fixPlans!(JSON.parse(input))), model: 'm' } }, gpt: async () => ({ findings: [] }) }
   const blobs = createMemoryBlobStore(), h = createCardnewsHttp({ blobs, deps: () => deps as any })
   const call = async (method: string, body: any, key: string | null = KEY) => {
     if (method !== 'POST' || body?.costApproved !== true || body?.approvalId) return raw(method, body, key)
@@ -125,12 +125,18 @@ test('스토리보드: Claude 장면 설명 → 정규화 → 서버 저장/복�
 })
 
 
-test('확정 대본: 상세 스토리보드만 생성, 본문/제목 유지, 유료 호출 승인 게이트', async () => {
+test('확정 대본: 스토리보드만 생성, 제목/본문 유지, 승인 전 AI 호출 0회', async () => {
   const t = TOPICS.food, deck = deckFor(t)
-  const { call, calls } = rig(() => ({ cards: deck }), () => ({ cards: [] }))
-  const payload = { taskType: 'cardnews_storyboard', cover: t.cover, material: '조선시대 한옥 마당에서 장독대의 비밀을 알아보는 긴 이야기입니다.', cards: deck.map((c, i) => ({ id: `c${i + 1}`, role: i === 0 ? 'hook' : i === 7 ? 'ending' : 'body', ...c })), ...OK }
+  const cards = deck.map((c, i) => ({ id: `c${i + 1}`, role: i === 0 ? 'hook' : i === 7 ? 'ending' : 'body', ...c }))
+  const storyboard = '조선시대 장독대, 남색 두루마기 장인, 어깨너머 시점, 햇빛'
+  const continuity = '조선시대 한옥 마당, 남색 두루마기 장인과 갈색 장독대'
+  const { call, calls } = rig(() => ({ cards: cards.map(c => ({ id: c.id, visualPlan: { ...c.visualPlan, storyboard, continuity } })) }))
+  const payload = { taskType: 'cardnews_storyboard', cover: t.cover, material: '조선시대 한옥 마당에서 장독대의 비밀을 알아보는 긴 이야기입니다.', cards, ...OK }
   const no = await call('POST', { ...payload, costApproved: false })
   assert.equal(no.status, 402); assert.deepEqual(calls, [])
   const result = await call('POST', payload)
-  assert.notEqual(result.status, 200, 'mock without storyboard should be rejected, not overwrite approved script')
+  assert.equal(result.status, 200, JSON.stringify(result.body))
+  assert.deepEqual(calls, ['cardnews_storyboard'])
+  assert.deepEqual(result.body.cards.map((c: any) => [c.headline, c.body]), cards.map(c => [c.headline, c.body]))
+  assert.ok(result.body.cards.every((c: any) => c.visualPlan.storyboard === storyboard && c.visualPlan.continuity === continuity))
 })
