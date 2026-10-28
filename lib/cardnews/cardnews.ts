@@ -61,7 +61,7 @@ const eyeSecrecyRequested = (material: string) => /외눈|한\s*눈|눈이\s*하
 export function narrativeIssues(cards: Card[], material: string): Issue[] {
   if (!eyeSecrecyRequested(material)) return []
   return cards.flatMap((c) => {
-    const all = [c.headline, c.body, c.visualPlan?.subject, c.visualPlan?.composition, c.visualPlan?.distinction].join(' ')
+    const all = [c.headline, c.body, c.visualPlan?.subject, c.visualPlan?.composition, c.visualPlan?.distinction, c.visualPlan?.storyboard, c.visualPlan?.continuity].join(' ')
     return /외눈|한\s*쪽\s*눈|눈\s*하나|눈이\s*하나|눈을\s*크게\s*뜨|눈\s*한\s*개|단안/.test(all)
       ? [{ cardId: c.id, code: 'EARLY_REVEAL', severity: 'required' as const, message: '소재에서 숨기기로 한 외눈/눈 특징이 대본 또는 이미지 계획에 노출됐습니다. 해당 화에서는 감추세요.' }] : []
   })
