@@ -5,9 +5,11 @@ on:
       - 'lib/seriesProduction.ts'
       - 'lib/productionPlan.ts'
       - 'lib/productionRecipeBridge.ts'
+      - 'lib/trackerJobPlan.ts'
       - 'tools/seriesProduction.test.ts'
       - 'tools/productionPlan.test.ts'
       - 'tools/productionRecipeBridge.test.ts'
+      - 'tools/trackerJobPlan.test.ts'
       - '.github/workflows/series-plan-focused.yml'
 jobs:
   focused:
@@ -21,4 +23,4 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npx tsx --test tools/seriesProduction.test.ts tools/productionPlan.test.ts tools/productionRecipeBridge.test.ts
+      - run: npx tsx --test tools/seriesProduction.test.ts tools/productionPlan.test.ts tools/productionRecipeBridge.test.ts tools/trackerJobPlan.test.ts
