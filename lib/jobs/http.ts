@@ -21,6 +21,8 @@ import { createBlockStore, toProgress, type BlockStore } from './blockStore.js'
 import { BLOCK_IDS, BLOCKS, type BlockId } from './recipe.js'
 import { nextBlockDecision } from './blockScheduler.js'
 import { recipeFor, recipeSnapshot } from './recipes.js'
+import { prepareTrackerJobPlan } from '../trackerJobPlan.js'
+import type { ProductionPlan } from '../productionPlan.js'
 import { JobError, type Job, type StageRun } from './types.js'
 import { validateReferenceProfile, stableHash } from '../reference/contracts.js'
 import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
@@ -530,6 +532,19 @@ export function createJobsHttp(deps: JobsDeps) {
       if (taskType === 'job_create') {
         const profile = String(body.profile || '')
         need(isProfileId(profile), `unknown profile: ${profile}`)
+        // Opt-in only: reject incompatible creative plans BEFORE any Job/blob writes or paid work.
+        // A successful preflight does not change the legacy worker's scene generation behavior.
+        if (body.input?.productionPlan !== undefined) {
+          need(body.input?.recipe, 'productionPlan requires an enforced recipe')
+          need(body.input.productionPlan && typeof body.input.productionPlan === 'object' && !Array.isArray(body.input.productionPlan), 'productionPlan must be an object')
+          try {
+            prepareTrackerJobPlan(body.input.productionPlan as ProductionPlan, profile as import('./profiles.js').ProfileId, String(body.input.recipe))
+          } catch (e: any) {
+            throw new JobError('BAD_REQUEST', String(e?.message || e))
+          }
+          // Not yet persisted or consumed by workers: never silently accept an ignored plan.
+          throw new JobError('BAD_REQUEST', 'productionPlan execution is not enabled; preflight passed but Job persistence and worker scene mapping are not implemented')
+        }
         const longform = getProfile(profile).input === 'longform_brief'
         const generative = getProfile(profile).input !== 'source_asset'
         // Optional signed title/thumbnail approval. Never trust an unsigned client-side object.
