@@ -40,7 +40,14 @@ export async function saveSceneArtifact(blobs: JobBlobStore, artifact: SceneArti
       throw new Error('scene artifact already exists with different output');
     return prior;
   }
-  await blobs.putJson(path, artifact);
+  if (!blobs.claim) throw new Error('atomic scene artifact claim is required');
+  const claimed = await blobs.claim(path, artifact);
+  if (!claimed) {
+    const existing = await findSceneArtifact(blobs, artifact);
+    if (!existing || existing.outputRef !== artifact.outputRef || existing.outputHash !== artifact.outputHash)
+      throw new Error('scene artifact already exists with different output');
+    return existing;
+  }
   const saved = await findSceneArtifact(blobs, artifact);
   if (!saved || saved.outputRef !== artifact.outputRef || saved.outputHash !== artifact.outputHash)
     throw new Error('scene artifact write conflict');
