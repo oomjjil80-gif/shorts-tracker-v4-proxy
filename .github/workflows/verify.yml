@@ -74,7 +74,11 @@ jobs:
           OFFLINE_RESTORE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/jobs/sleepDraftImport\.ts$' || true)"
           SLEEP_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/sleepClassic\.ts|lib/generative/longform\.ts|worker/stages/longform\.ts|tools/sleep-classic\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           SLEEP_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/sleepClassic\.ts$' || true)"
-          SERIES_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/(seriesProduction|productionPlan)\.ts|tools/(seriesProduction|productionPlan)\.test\.ts|\.github/workflows/verify\.yml)
+          SERIES_OTHER="$(printf '%s\\n' "$CHANGED" | grep -Ev '^(lib/(seriesProduction|productionPlan)\\.ts|tools/(seriesProduction|productionPlan)\\.test\\.ts|\\.github/workflows/verify\\.yml)$' || true)"
+          SERIES_PRESENT="$(printf '%s\\n' "$CHANGED" | grep -E '^lib/(seriesProduction|productionPlan)\\.ts$' || true)"
+          if [ -z "$SERIES_OTHER" ] && [ -n "$SERIES_PRESENT" ]; then
+            echo "mode=series-plan" >> "$GITHUB_OUTPUT"
+          elif [ -z "$BUDGET_OTHER" ] && [ -n "$BUDGET_PRESENT" ]; then
             echo "mode=ai-budget" >> "$GITHUB_OUTPUT"
           elif [ -z "$ASSET_BILLING_OTHER" ] && [ -n "$ASSET_BILLING_PRESENT" ]; then
             echo "mode=odyssey-asset-billing" >> "$GITHUB_OUTPUT"
