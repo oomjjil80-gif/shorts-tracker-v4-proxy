@@ -1,0 +1,29 @@
+name: series-plan-focused
+on:
+  pull_request:
+    paths:
+      - 'lib/seriesProduction.ts'
+      - 'lib/productionPlan.ts'
+      - 'lib/productionRecipeBridge.ts'
+      - 'lib/trackerJobPlan.ts'
+      - 'lib/sceneArtifactStore.ts'
+      - 'tools/seriesProduction.test.ts'
+      - 'tools/productionPlan.test.ts'
+      - 'tools/productionRecipeBridge.test.ts'
+      - 'tools/trackerJobPlan.test.ts'
+      - 'tools/productionJobGuard.test.ts'
+      - 'tools/sceneArtifactStore.test.ts'
+      - '.github/workflows/series-plan-focused.yml'
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npx tsx --test tools/seriesProduction.test.ts tools/productionPlan.test.ts tools/productionRecipeBridge.test.ts tools/trackerJobPlan.test.ts tools/productionJobGuard.test.ts tools/sceneArtifactStore.test.ts
