@@ -74,7 +74,488 @@ jobs:
           OFFLINE_RESTORE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/jobs/sleepDraftImport\.ts$' || true)"
           SLEEP_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/sleepClassic\.ts|lib/generative/longform\.ts|worker/stages/longform\.ts|tools/sleep-classic\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           SLEEP_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/sleepClassic\.ts$' || true)"
-          if [ -z "$BUDGET_OTHER" ] && [ -n "$BUDGET_PRESENT" ]; then
+          SERIES_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/(seriesProduction|productionPlan)\.ts|tools/(seriesProduction|productionPlan)\.test\.ts|\.github/workflows/verify\.yml)
+            echo "mode=ai-budget" >> "$GITHUB_OUTPUT"
+          elif [ -z "$ASSET_BILLING_OTHER" ] && [ -n "$ASSET_BILLING_PRESENT" ]; then
+            echo "mode=odyssey-asset-billing" >> "$GITHUB_OUTPUT"
+          elif [ -z "$OFFLINE_RESTORE_OTHER" ] && [ -n "$OFFLINE_RESTORE_PRESENT" ]; then
+            echo "mode=odyssey-offline-restore" >> "$GITHUB_OUTPUT"
+          elif [ -z "$SLEEP_OTHER" ] && [ -n "$SLEEP_PRESENT" ]; then
+            echo "mode=sleep-classic" >> "$GITHUB_OUTPUT"
+          elif [ -z "$BLOCK_ENGINE_OTHER" ] && [ -n "$BLOCK_ENGINE_PRESENT" ]; then
+            echo "mode=block-engine" >> "$GITHUB_OUTPUT"
+          elif [ -z "$YASA_SHORTS_OTHER" ] && [ -n "$YASA_SHORTS_PRESENT" ]; then
+            echo "mode=yasa-shorts" >> "$GITHUB_OUTPUT"
+          elif [ -z "$FIXED_OTHER" ] && [ -n "$FIXED_PRESENT" ]; then
+            echo "mode=fixed-script" >> "$GITHUB_OUTPUT"
+          elif [ -z "$CARDNEWS_OTHER" ] && [ -n "$CARDNEWS_PRESENT" ]; then
+            echo "mode=cardnews" >> "$GITHUB_OUTPUT"
+          elif [ -z "$TRENDING_OTHER" ] && [ -n "$TRENDING_PRESENT" ]; then
+            echo "mode=trending" >> "$GITHUB_OUTPUT"
+          elif [ -z "$PROMISE_OTHER" ] && [ -n "$PROMISE_PRESENT" ]; then
+            echo "mode=title-promise" >> "$GITHUB_OUTPUT"
+          elif [ -z "$PLAN_REVIEW_OTHER" ] && [ -n "$PLAN_REVIEW_PRESENT" ]; then
+            echo "mode=plan-cross-review" >> "$GITHUB_OUTPUT"
+          elif [ -z "$LONGFORM_RENDER_OTHER" ]; then
+            echo "mode=longform-render" >> "$GITHUB_OUTPUT"
+          elif [ -z "$YADAM_STYLE_OTHER" ]; then
+            echo "mode=yadam-style" >> "$GITHUB_OUTPUT"
+          elif [ -z "$GEMINI_IMAGE_OTHER" ]; then
+            echo "mode=gemini-image" >> "$GITHUB_OUTPUT"
+          elif [ -z "$WORKFLOW_ONLY" ]; then
+            echo "mode=workflow-only" >> "$GITHUB_OUTPUT"
+          elif [ -z "$NON_TEST" ] && [ -n "$TESTS" ]; then
+            echo "mode=test-only" >> "$GITHUB_OUTPUT"
+            {
+              echo 'tests<<EOF'
+              printf '%s\n' "$TESTS"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify series production planning (offline, focused)
+        if: steps.scope.outputs.mode == 'series-plan'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 2m npx tsx --test tools/seriesProduction.test.ts tools/productionPlan.test.ts
+
+      - name: Verify Odyssey billing recovery + Job API/store
+        if: steps.scope.outputs.mode == 'odyssey-asset-billing'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 6m npx tsx --test \
+            tools/sleep-asset-billing-recovery.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
+
+      - name: Verify offline Odyssey import, Job store and authenticated API
+        if: steps.scope.outputs.mode == 'odyssey-offline-restore'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/sleep-draft-import.test.ts \
+            tools/sleep-draft-recovery.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
+
+      - name: Run focused bedtime classic regression
+        if: steps.scope.outputs.mode == 'sleep-classic'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 5m npx tsx --test tools/sleep-classic.test.ts tools/plan-cross-review.test.ts
+
+      - name: Run focused 유료 AI 승인·비용 verification (single-use approval, concurrent/duplicate calls, $20 warning only, cardnews paid path)
+        if: steps.scope.outputs.mode == 'ai-budget'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/paid-approval.test.ts \
+            tools/monthlyBudgetPolicy.test.ts \
+            tools/atomicBudgetReservation.test.ts \
+            tools/cardnews.test.ts \
+            tools/cardnews-image-review.test.ts \
+            tools/cardnews-visual.test.ts \
+            tools/r2-job-storage.test.ts \
+            tools/blob-dedupe.test.ts \
+            tools/function-count.test.ts
+
+      - name: Run focused 카드뉴스 verification (cost approval, GPT/Claude flow, save/restore + router and Job API regression)
+        if: steps.scope.outputs.mode == 'cardnews'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/cardnews.test.ts \
+            tools/cardnews-visual.test.ts \
+            tools/cardnews-refs.test.ts \
+            tools/cardnews-projects.test.ts \
+            tools/golden-style.test.ts \
+            tools/creative-all-content.test.ts \
+            tools/paid-approval.test.ts \
+            tools/function-count.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
+
+      - name: Run focused 블록 엔진 verification (recipes, approvals, reuse, worker gate + Job API / worker / pipeline regressions)
+        if: steps.scope.outputs.mode == 'block-engine'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 12m npx tsx --test \
+            tools/block-engine.test.ts \
+            tools/recipe-contract.test.ts \
+            tools/worker.test.ts \
+            tools/p1-pipeline.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts \
+            tools/pipeline-features.test.ts \
+            tools/profile-modules.test.ts \
+            tools/function-count.test.ts
+
+      - name: Run focused 야담 쇼츠 verification (yasa_shorts profile + Wisdom Shorts / 야담 롱폼 regressions)
+        if: steps.scope.outputs.mode == 'yasa-shorts'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 12m npx tsx --test \
+            tools/yasa-shorts.test.ts \
+            tools/fixed-script.test.ts \
+            tools/pipeline-features.test.ts \
+            tools/profile-modules.test.ts \
+            tools/creative-profile.test.ts \
+            tools/creative-all-content.test.ts \
+            tools/p2-planner.test.ts \
+            tools/wisdom-output.test.ts \
+            tools/wisdom-longform.test.ts \
+            tools/yasa-longform-job.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts \
+            tools/function-count.test.ts
+
+      - name: Run focused 확정 대본 verification (fixed script PLAN + Wisdom regression)
+        if: steps.scope.outputs.mode == 'fixed-script'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 10m npx tsx --test \
+            tools/fixed-script.test.ts \
+            tools/p2-planner.test.ts \
+            tools/creative-profile.test.ts \
+            tools/wisdom-output.test.ts \
+            tools/jobs-api.test.ts \
+            tools/function-count.test.ts
+
+      - name: Run focused 급상승 탐색 verification (collector, ranking, API route, Source Collector + Job API regression)
+        if: steps.scope.outputs.mode == 'trending'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/trending.test.ts \
+            tools/function-count.test.ts \
+            tools/source-collector.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
+
+      - name: Run focused 제목·썸네일 약속 6단계 verification (promise gate, QC, partial revise, final check + handler regressions)
+        if: steps.scope.outputs.mode == 'title-promise'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/title-promise.test.ts \
+            tools/yasa-story-dna.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts \
+            tools/function-count.test.ts
+
+      - name: Run focused Longform PLAN cross-review verification
+        if: steps.scope.outputs.mode == 'plan-cross-review'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 5m npx tsx --test tools/plan-cross-review.test.ts
+
+      - name: Run focused Longform render verification
+        if: steps.scope.outputs.mode == 'longform-render'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 6m npx tsx --test \
+            tools/longform-chunked-render.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts \
+            tools/r2-job-storage.test.ts
+
+      - name: Run focused 숨은야담 verification (그림체, cold open, captions, remaster)
+        if: steps.scope.outputs.mode == 'yadam-style'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 10m npx tsx --test \
+            tools/creative-profile.test.ts \
+            tools/creative-all-content.test.ts \
+            tools/longform-voice.test.ts \
+            tools/yasa-longform-job.test.ts tools/style-match.test.ts tools/yadam-style.test.ts tools/title-thumbnail.test.ts tools/oneoff-style-examples.test.ts tools/cost-ledger.test.ts \
+            tools/wisdom-longform.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
+
+      - name: Run focused Gemini image verification (every picture path)
+        if: steps.scope.outputs.mode == 'gemini-image'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 15m npx tsx --test \
+            tools/gemini-image.test.ts tools/golden-style.test.ts tools/p2-providers.test.ts tools/p2-generative.test.ts tools/pipeline-features.test.ts \
+            tools/cost-ledger.test.ts tools/style-match.test.ts tools/yadam-style.test.ts tools/oneoff-style-examples.test.ts \
+            tools/wisdom-output.test.ts tools/wisdom-thumbnail.test.ts tools/wisdom-derived-shorts.test.ts \
+            tools/creative-profile.test.ts tools/creative-all-content.test.ts tools/title-thumbnail.test.ts \
+            tools/wisdom-longform.test.ts tools/yasa-longform-job.test.ts tools/jobs-api.test.ts tools/jobs-store.test.ts
+
+      - name: Run focused tests for test-only changes
+        if: steps.scope.outputs.mode == 'test-only'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TESTS="${{ steps.scope.outputs.tests }}"
+          printf '%s\n' "$TESTS"
+          timeout 4m npx tsx --test $TESTS
+
+      - name: Reuse previous result for workflow-only changes
+        if: steps.scope.outputs.mode == 'workflow-only'
+        run: echo "Workflow-only change; no code or test behavior changed."
+
+      - name: Run full tests with hang protection
+        if: steps.scope.outputs.mode == 'full'
+        run: timeout 15m npm test
+ || true)"
+          SERIES_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/(seriesProduction|productionPlan)\.ts
+            echo "mode=ai-budget" >> "$GITHUB_OUTPUT"
+          elif [ -z "$ASSET_BILLING_OTHER" ] && [ -n "$ASSET_BILLING_PRESENT" ]; then
+            echo "mode=odyssey-asset-billing" >> "$GITHUB_OUTPUT"
+          elif [ -z "$OFFLINE_RESTORE_OTHER" ] && [ -n "$OFFLINE_RESTORE_PRESENT" ]; then
+            echo "mode=odyssey-offline-restore" >> "$GITHUB_OUTPUT"
+          elif [ -z "$SLEEP_OTHER" ] && [ -n "$SLEEP_PRESENT" ]; then
+            echo "mode=sleep-classic" >> "$GITHUB_OUTPUT"
+          elif [ -z "$BLOCK_ENGINE_OTHER" ] && [ -n "$BLOCK_ENGINE_PRESENT" ]; then
+            echo "mode=block-engine" >> "$GITHUB_OUTPUT"
+          elif [ -z "$YASA_SHORTS_OTHER" ] && [ -n "$YASA_SHORTS_PRESENT" ]; then
+            echo "mode=yasa-shorts" >> "$GITHUB_OUTPUT"
+          elif [ -z "$FIXED_OTHER" ] && [ -n "$FIXED_PRESENT" ]; then
+            echo "mode=fixed-script" >> "$GITHUB_OUTPUT"
+          elif [ -z "$CARDNEWS_OTHER" ] && [ -n "$CARDNEWS_PRESENT" ]; then
+            echo "mode=cardnews" >> "$GITHUB_OUTPUT"
+          elif [ -z "$TRENDING_OTHER" ] && [ -n "$TRENDING_PRESENT" ]; then
+            echo "mode=trending" >> "$GITHUB_OUTPUT"
+          elif [ -z "$PROMISE_OTHER" ] && [ -n "$PROMISE_PRESENT" ]; then
+            echo "mode=title-promise" >> "$GITHUB_OUTPUT"
+          elif [ -z "$PLAN_REVIEW_OTHER" ] && [ -n "$PLAN_REVIEW_PRESENT" ]; then
+            echo "mode=plan-cross-review" >> "$GITHUB_OUTPUT"
+          elif [ -z "$LONGFORM_RENDER_OTHER" ]; then
+            echo "mode=longform-render" >> "$GITHUB_OUTPUT"
+          elif [ -z "$YADAM_STYLE_OTHER" ]; then
+            echo "mode=yadam-style" >> "$GITHUB_OUTPUT"
+          elif [ -z "$GEMINI_IMAGE_OTHER" ]; then
+            echo "mode=gemini-image" >> "$GITHUB_OUTPUT"
+          elif [ -z "$WORKFLOW_ONLY" ]; then
+            echo "mode=workflow-only" >> "$GITHUB_OUTPUT"
+          elif [ -z "$NON_TEST" ] && [ -n "$TESTS" ]; then
+            echo "mode=test-only" >> "$GITHUB_OUTPUT"
+            {
+              echo 'tests<<EOF'
+              printf '%s\n' "$TESTS"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify Odyssey billing recovery + Job API/store
+        if: steps.scope.outputs.mode == 'odyssey-asset-billing'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 6m npx tsx --test \
+            tools/sleep-asset-billing-recovery.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
+
+      - name: Verify offline Odyssey import, Job store and authenticated API
+        if: steps.scope.outputs.mode == 'odyssey-offline-restore'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/sleep-draft-import.test.ts \
+            tools/sleep-draft-recovery.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
+
+      - name: Run focused bedtime classic regression
+        if: steps.scope.outputs.mode == 'sleep-classic'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 5m npx tsx --test tools/sleep-classic.test.ts tools/plan-cross-review.test.ts
+
+      - name: Run focused 유료 AI 승인·비용 verification (single-use approval, concurrent/duplicate calls, $20 warning only, cardnews paid path)
+        if: steps.scope.outputs.mode == 'ai-budget'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/paid-approval.test.ts \
+            tools/monthlyBudgetPolicy.test.ts \
+            tools/atomicBudgetReservation.test.ts \
+            tools/cardnews.test.ts \
+            tools/cardnews-image-review.test.ts \
+            tools/cardnews-visual.test.ts \
+            tools/r2-job-storage.test.ts \
+            tools/blob-dedupe.test.ts \
+            tools/function-count.test.ts
+
+      - name: Run focused 카드뉴스 verification (cost approval, GPT/Claude flow, save/restore + router and Job API regression)
+        if: steps.scope.outputs.mode == 'cardnews'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/cardnews.test.ts \
+            tools/cardnews-visual.test.ts \
+            tools/cardnews-refs.test.ts \
+            tools/cardnews-projects.test.ts \
+            tools/golden-style.test.ts \
+            tools/creative-all-content.test.ts \
+            tools/paid-approval.test.ts \
+            tools/function-count.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
+
+      - name: Run focused 블록 엔진 verification (recipes, approvals, reuse, worker gate + Job API / worker / pipeline regressions)
+        if: steps.scope.outputs.mode == 'block-engine'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 12m npx tsx --test \
+            tools/block-engine.test.ts \
+            tools/recipe-contract.test.ts \
+            tools/worker.test.ts \
+            tools/p1-pipeline.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts \
+            tools/pipeline-features.test.ts \
+            tools/profile-modules.test.ts \
+            tools/function-count.test.ts
+
+      - name: Run focused 야담 쇼츠 verification (yasa_shorts profile + Wisdom Shorts / 야담 롱폼 regressions)
+        if: steps.scope.outputs.mode == 'yasa-shorts'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 12m npx tsx --test \
+            tools/yasa-shorts.test.ts \
+            tools/fixed-script.test.ts \
+            tools/pipeline-features.test.ts \
+            tools/profile-modules.test.ts \
+            tools/creative-profile.test.ts \
+            tools/creative-all-content.test.ts \
+            tools/p2-planner.test.ts \
+            tools/wisdom-output.test.ts \
+            tools/wisdom-longform.test.ts \
+            tools/yasa-longform-job.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts \
+            tools/function-count.test.ts
+
+      - name: Run focused 확정 대본 verification (fixed script PLAN + Wisdom regression)
+        if: steps.scope.outputs.mode == 'fixed-script'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 10m npx tsx --test \
+            tools/fixed-script.test.ts \
+            tools/p2-planner.test.ts \
+            tools/creative-profile.test.ts \
+            tools/wisdom-output.test.ts \
+            tools/jobs-api.test.ts \
+            tools/function-count.test.ts
+
+      - name: Run focused 급상승 탐색 verification (collector, ranking, API route, Source Collector + Job API regression)
+        if: steps.scope.outputs.mode == 'trending'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/trending.test.ts \
+            tools/function-count.test.ts \
+            tools/source-collector.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
+
+      - name: Run focused 제목·썸네일 약속 6단계 verification (promise gate, QC, partial revise, final check + handler regressions)
+        if: steps.scope.outputs.mode == 'title-promise'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 8m npx tsx --test \
+            tools/title-promise.test.ts \
+            tools/yasa-story-dna.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts \
+            tools/function-count.test.ts
+
+      - name: Run focused Longform PLAN cross-review verification
+        if: steps.scope.outputs.mode == 'plan-cross-review'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 5m npx tsx --test tools/plan-cross-review.test.ts
+
+      - name: Run focused Longform render verification
+        if: steps.scope.outputs.mode == 'longform-render'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 6m npx tsx --test \
+            tools/longform-chunked-render.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts \
+            tools/r2-job-storage.test.ts
+
+      - name: Run focused 숨은야담 verification (그림체, cold open, captions, remaster)
+        if: steps.scope.outputs.mode == 'yadam-style'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 10m npx tsx --test \
+            tools/creative-profile.test.ts \
+            tools/creative-all-content.test.ts \
+            tools/longform-voice.test.ts \
+            tools/yasa-longform-job.test.ts tools/style-match.test.ts tools/yadam-style.test.ts tools/title-thumbnail.test.ts tools/oneoff-style-examples.test.ts tools/cost-ledger.test.ts \
+            tools/wisdom-longform.test.ts \
+            tools/jobs-api.test.ts \
+            tools/jobs-store.test.ts
+
+      - name: Run focused Gemini image verification (every picture path)
+        if: steps.scope.outputs.mode == 'gemini-image'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 15m npx tsx --test \
+            tools/gemini-image.test.ts tools/golden-style.test.ts tools/p2-providers.test.ts tools/p2-generative.test.ts tools/pipeline-features.test.ts \
+            tools/cost-ledger.test.ts tools/style-match.test.ts tools/yadam-style.test.ts tools/oneoff-style-examples.test.ts \
+            tools/wisdom-output.test.ts tools/wisdom-thumbnail.test.ts tools/wisdom-derived-shorts.test.ts \
+            tools/creative-profile.test.ts tools/creative-all-content.test.ts tools/title-thumbnail.test.ts \
+            tools/wisdom-longform.test.ts tools/yasa-longform-job.test.ts tools/jobs-api.test.ts tools/jobs-store.test.ts
+
+      - name: Run focused tests for test-only changes
+        if: steps.scope.outputs.mode == 'test-only'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TESTS="${{ steps.scope.outputs.tests }}"
+          printf '%s\n' "$TESTS"
+          timeout 4m npx tsx --test $TESTS
+
+      - name: Reuse previous result for workflow-only changes
+        if: steps.scope.outputs.mode == 'workflow-only'
+        run: echo "Workflow-only change; no code or test behavior changed."
+
+      - name: Run full tests with hang protection
+        if: steps.scope.outputs.mode == 'full'
+        run: timeout 15m npm test
+ || true)"
+          if [ -z "$SERIES_OTHER" ] && [ -n "$SERIES_PRESENT" ]; then
+            echo "mode=series-plan" >> "$GITHUB_OUTPUT"
+          elif [ -z "$BUDGET_OTHER" ] && [ -n "$BUDGET_PRESENT" ]; then
             echo "mode=ai-budget" >> "$GITHUB_OUTPUT"
           elif [ -z "$ASSET_BILLING_OTHER" ] && [ -n "$ASSET_BILLING_PRESENT" ]; then
             echo "mode=odyssey-asset-billing" >> "$GITHUB_OUTPUT"
