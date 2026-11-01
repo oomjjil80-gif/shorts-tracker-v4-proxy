@@ -13,3 +13,16 @@ test('scene results reuse only identical workspace and scene input', async () =>
   assert.equal(await findSceneArtifact(blobs,{...a,inputHash:sceneInputHash({text:'changed'})}),null);
   await assert.rejects(saveSceneArtifact(blobs,{...a,outputRef:'images/two.png'}),/different output/);
 });
+
+test('concurrent writes keep exactly one immutable scene result', async () => {
+  const blobs = createMemoryBlobStore();
+  const base = {workspaceId:'w',planId:'p',sceneId:'s',inputHash:sceneInputHash({prompt:'same'})};
+  const [first,second] = await Promise.allSettled([
+    saveSceneArtifact(blobs,{...base,outputRef:'image/a',outputHash:'a'}),
+    saveSceneArtifact(blobs,{...base,outputRef:'image/b',outputHash:'b'})
+  ]);
+  assert.equal([first,second].filter(x=>x.status==='fulfilled').length,1);
+  assert.equal([first,second].filter(x=>x.status==='rejected').length,1);
+  const stored = await findSceneArtifact(blobs,base);
+  assert.ok(stored?.outputRef==='image/a' || stored?.outputRef==='image/b');
+});
