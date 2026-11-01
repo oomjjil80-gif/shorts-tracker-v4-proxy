@@ -26,3 +26,11 @@ test('concurrent writes keep exactly one immutable scene result', async () => {
   const stored = await findSceneArtifact(blobs,base);
   assert.ok(stored?.outputRef==='image/a' || stored?.outputRef==='image/b');
 });
+
+test('scene storage fails closed when atomic claim is unavailable', async () => {
+  const memory = createMemoryBlobStore();
+  const unsafe = { getJson: memory.getJson.bind(memory) } as Parameters<typeof saveSceneArtifact>[0];
+  const artifact = {workspaceId:'w',planId:'p',sceneId:'s',inputHash:sceneInputHash({text:'safe'}),outputRef:'images/safe',outputHash:'hash'};
+  await assert.rejects(saveSceneArtifact(unsafe,artifact),/atomic scene artifact claim is required/);
+  assert.equal(await findSceneArtifact(memory,artifact),null);
+});
