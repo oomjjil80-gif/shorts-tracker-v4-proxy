@@ -78,7 +78,11 @@ export async function runOnce(deps: RunDeps): Promise<RunOutcome> {
         job, attempt, blobs, resolveSourceAsset: deps.resolveSourceAsset, signal: abort.signal,
         resolveSourceFile: deps.resolveSourceFile ?? (async () => { throw new StageError('NO_SOURCE_FILE_RESOLVER', 'worker has no source file resolver') }),
         previous: (stage) => store.getLatestSucceeded(job.id, stage),
-        executeScene: (input, generate) => executeApprovedScene(blobs, { ...input, workspaceId: job.workspaceId }, generate),
+        executeScene: (input, generate) => {
+          if (!deps.blocks || gate.kind !== 'RUN' || !input.approved) throw new StageError('SCENE_APPROVAL_REQUIRED', 'scene execution requires an approved Tracker block');
+          if (abort.signal.aborted) throw new StageError('SCENE_ABORTED', 'scene execution aborted');
+          return executeApprovedScene(blobs, { ...input, workspaceId: job.workspaceId }, generate);
+        },
         costSoFar: async () => (await store.listStageRuns(job.id)).reduce((a, r: any) => { const x = summaryUsd(r.usage?.schema === 'usage/1' ? r.usage : r.usage?.ledger); return { confirmed: a.confirmed + x.confirmed, unconfirmed: a.unconfirmed + x.unconfirmed } }, { confirmed: 0, unconfirmed: 0 })
       }))
     const spend = () => { const u = summarize(metered.ledger.calls); if (u.paidCalls) console.log(`[cost] job=${job.id} stage=${job.stage} attempt=${attempt} paidCalls=${u.paidCalls} est=${u.estUsd === null ? 'n/a' : '$' + u.estUsd}${u.unconfirmedUsd ? ` unconfirmed=~$${u.unconfirmedUsd}` : ''}${u.unpricedModels.length ? ` unpriced=${u.unpricedModels.join(',')}` : ''}`); return u }
