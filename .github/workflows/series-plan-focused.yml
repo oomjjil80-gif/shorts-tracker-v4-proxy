@@ -8,6 +8,8 @@ on:
       - 'lib/trackerJobPlan.ts'
       - 'lib/sceneArtifactStore.ts'
       - 'lib/sceneWorkerAdapter.ts'
+      - 'worker/runJob.ts'
+      - 'worker/types.ts'
       - 'tools/seriesProduction.test.ts'
       - 'tools/productionPlan.test.ts'
       - 'tools/productionRecipeBridge.test.ts'
@@ -15,6 +17,7 @@ on:
       - 'tools/productionJobGuard.test.ts'
       - 'tools/sceneArtifactStore.test.ts'
       - 'tools/sceneWorkerAdapter.test.ts'
+      - 'tools/sceneWorkerWiring.test.ts'
       - '.github/workflows/series-plan-focused.yml'
 jobs:
   focused:
@@ -28,4 +31,4 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npx tsx --test tools/seriesProduction.test.ts tools/productionPlan.test.ts tools/productionRecipeBridge.test.ts tools/trackerJobPlan.test.ts tools/productionJobGuard.test.ts tools/sceneArtifactStore.test.ts tools/sceneWorkerAdapter.test.ts
+      - run: npx tsx --test tools/seriesProduction.test.ts tools/productionPlan.test.ts tools/productionRecipeBridge.test.ts tools/trackerJobPlan.test.ts tools/productionJobGuard.test.ts tools/sceneArtifactStore.test.ts tools/sceneWorkerAdapter.test.ts tools/sceneWorkerWiring.test.ts
