@@ -18,6 +18,8 @@ export type StageContext = {
   // USD of every EARLIER run of this job (all stages and attempts, from their usage ledgers): confirmed (known prices) and
   // unconfirmed (calls without a confirmed price, at their reserve) — a budget check counts both
   costSoFar?: () => Promise<{ confirmed: number; unconfirmed: number }>
+  /** Optional scene execution within a gated, budget-checked stage. */
+  executeScene?: (input: { planId: string; sceneId: string; sceneInput: unknown; approved: boolean }, generate: (sceneInput: unknown) => Promise<{ outputRef: string; outputHash: string }>) => Promise<unknown>
 }
 
 export type StageResult = {
