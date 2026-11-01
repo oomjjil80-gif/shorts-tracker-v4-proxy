@@ -17,10 +17,12 @@ export function sceneInputHash(input: unknown): string {
   return sha256(canonicalize(input));
 }
 export function sceneArtifactPath(input: Pick<SceneArtifact, 'workspaceId'|'planId'|'sceneId'|'inputHash'>): string {
-  for (const value of Object.values(input)) {
+  const { workspaceId, planId, sceneId, inputHash } = input;
+  const identity = { workspaceId, planId, sceneId, inputHash };
+  for (const value of Object.values(identity)) {
     if (typeof value !== 'string' || !value.trim()) throw new Error('scene artifact identity required');
   }
-  return 'scene-artifacts/' + sha256(canonicalize(input)) + '.json';
+  return 'scene-artifacts/' + sha256(canonicalize(identity)) + '.json';
 }
 export async function findSceneArtifact(blobs: JobBlobStore, identity: Pick<SceneArtifact, 'workspaceId'|'planId'|'sceneId'|'inputHash'>): Promise<SceneArtifact | null> {
   const artifact = await blobs.getJson<SceneArtifact>(sceneArtifactPath(identity));
