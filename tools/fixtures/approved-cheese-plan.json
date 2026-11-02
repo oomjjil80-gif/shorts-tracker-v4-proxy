@@ -1,0 +1,698 @@
+{
+ "id": "ep-cheese-001-r3-2",
+ "title": "매일 밤 치즈가 사라진 진짜 이유",
+ "format": "video",
+ "constraints": {
+  "maxScenes": 12,
+  "maxCostUsd": 10
+ },
+ "steps": [
+  {
+   "id": "script",
+   "kind": "script",
+   "dependsOn": [],
+   "config": {
+    "script": {
+     "schema": "senior-longform-script/1",
+     "title": "매일 밤 치즈가 사라진 진짜 이유",
+     "hook": "치즈에 구멍을 낸 범인은 쥐가 아니었습니다.",
+     "figure": {
+      "name": "거인",
+      "imagePrompt": "거인: male, about 40, face one large eye in the middle of the forehead, broad nose, kind but tired, hair shaggy dark brown, huge and heavy build, wears brown leather apron over a rough linen shirt, colors brown, cream, dark green"
+     },
+     "thumbnail": {
+      "lines": [
+       {
+        "text": "치즈도둑",
+        "color": "yellow"
+       },
+       {
+        "text": "정체는",
+        "color": "red"
+       }
+      ]
+     },
+     "metadata": {
+      "description": "산골 마을에서 매일 같은 하루를 사는 치즈 장인에게 이상한 일이 생깁니다. 손님들의 항의와 계속 늘어나는 구멍 때문에 그는 밤새 범인을 기다리기로 합니다. 마지막 장면에서 누가 치즈를 몰래 먹고 있었는지, 그리고 장인 자신이 어떤 존재였는지가 드러납니다. 시리즈 그들도 평범한 하루를 살았다의 첫 번째 이야기입니다.",
+      "tags": [
+       "외눈박이",
+       "치즈 장인",
+       "폴리페모스",
+       "그리스 신화",
+       "동화",
+       "반전 이야기",
+       "오디세이아",
+       "거인"
+      ],
+      "hashtags": [
+       "#외눈박이",
+       "#치즈장인",
+       "#그리스신화"
+      ],
+      "pinnedComment": "치즈를 훔친 작은 인간은 누구였을까요? 다음 이야기에서 거인은 어떻게 할지 댓글로 예상해 주세요?"
+     },
+     "characters": [
+      {
+       "id": "giant",
+       "name": "거인",
+       "role": "치즈 장인",
+       "gender": "male",
+       "age": "40",
+       "face": "one large eye in the middle of the forehead, broad nose, kind but tired",
+       "hair": "shaggy dark brown",
+       "build": "huge and heavy",
+       "outfit": "brown leather apron over a rough linen shirt",
+       "colors": "brown, cream, dark green"
+      },
+      {
+       "id": "tiny",
+       "name": "작은 인간",
+       "role": "치즈 도둑",
+       "gender": "male",
+       "age": "25",
+       "face": "sharp, curious",
+       "hair": "short black",
+       "build": "very small, thumb-sized next to the giant",
+       "outfit": "patched grey tunic and a tiny knife",
+       "colors": "grey, red"
+      }
+     ],
+     "sections": [
+      {
+       "id": "scene-01",
+       "scenes": [
+        {
+         "id": "scene-01",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant"
+         ],
+         "action": "새벽의 치즈 공방",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "새벽의 치즈 공방 — 안개 낀 산골 마을, 거대한 사내가 새벽부터 치즈를 빚습니다. 그의 하루는 늘 똑같았습니다.",
+         "rules": {
+          "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         }
+        }
+       ],
+       "sentences": [
+        {
+         "say": "안개 낀 산골 마을, 거대한 사내가 새벽부터 치즈를 빚습니다.",
+         "show": [
+          "안개 낀 산골 마을,",
+          "거대한 사내가 새벽부터",
+          "치즈를 빚습니다."
+         ],
+         "accent": "빚습니다.",
+         "color": "red",
+         "scene": "scene-01"
+        },
+        {
+         "say": "그의 하루는 늘 똑같았습니다.",
+         "show": [
+          "그의 하루는 늘",
+          "똑같았습니다."
+         ],
+         "accent": "똑같았습니다.",
+         "color": "purple",
+         "scene": "scene-01"
+        }
+       ]
+      },
+      {
+       "id": "scene-02",
+       "scenes": [
+        {
+         "id": "scene-02",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant"
+         ],
+         "action": "시장 가는 길",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "시장 가는 길 — 그는 등에 커다란 치즈 바퀴를 지고 시장으로 향합니다. 마을 사람들은 그의 뒷모습만 기억합니다.",
+         "rules": {
+          "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         }
+        }
+       ],
+       "sentences": [
+        {
+         "say": "그는 등에 커다란 치즈 바퀴를 지고 시장으로 향합니다.",
+         "show": [
+          "그는 등에 커다란 치즈",
+          "바퀴를 지고 시장으로",
+          "향합니다."
+         ],
+         "accent": "향합니다.",
+         "color": "green",
+         "scene": "scene-02"
+        },
+        {
+         "say": "마을 사람들은 그의 뒷모습만 기억합니다.",
+         "show": [
+          "마을 사람들은 그의",
+          "뒷모습만 기억합니다."
+         ],
+         "accent": "기억합니다.",
+         "color": "yellow",
+         "scene": "scene-02"
+        }
+       ]
+      },
+      {
+       "id": "scene-03",
+       "scenes": [
+        {
+         "id": "scene-03",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant"
+         ],
+         "action": "고객의 항의",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "고객의 항의 — 그런데 시장에서 손님이 치즈를 내밀며 항의합니다. 치즈 뒷면이 파여 있다는 것이었습니다.",
+         "rules": {
+          "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         }
+        }
+       ],
+       "sentences": [
+        {
+         "say": "그런데 시장에서 손님이 치즈를 내밀며 항의합니다.",
+         "show": [
+          "그런데 시장에서 손님이",
+          "치즈를 내밀며 항의합니다."
+         ],
+         "accent": "항의합니다.",
+         "color": "red",
+         "scene": "scene-03"
+        },
+        {
+         "say": "치즈 뒷면이 파여 있다는 것이었습니다.",
+         "show": [
+          "치즈 뒷면이 파여 있다는",
+          "것이었습니다."
+         ],
+         "accent": "것이었습니다.",
+         "color": "purple",
+         "scene": "scene-03"
+        }
+       ]
+      },
+      {
+       "id": "scene-04",
+       "scenes": [
+        {
+         "id": "scene-04",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant"
+         ],
+         "action": "작업장의 흔적",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "작업장의 흔적 — 공방으로 돌아온 그는 다른 치즈들도 살펴봅니다. 여기저기 작은 구멍이 나 있었습니다.",
+         "rules": {
+          "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         }
+        }
+       ],
+       "sentences": [
+        {
+         "say": "공방으로 돌아온 그는 다른 치즈들도 살펴봅니다.",
+         "show": [
+          "공방으로 돌아온 그는 다른",
+          "치즈들도 살펴봅니다."
+         ],
+         "accent": "살펴봅니다.",
+         "color": "green",
+         "scene": "scene-04"
+        },
+        {
+         "say": "여기저기 작은 구멍이 나 있었습니다.",
+         "show": [
+          "여기저기 작은 구멍이 나",
+          "있었습니다."
+         ],
+         "accent": "있었습니다.",
+         "color": "yellow",
+         "scene": "scene-04"
+        }
+       ]
+      },
+      {
+       "id": "scene-05",
+       "scenes": [
+        {
+         "id": "scene-05",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant"
+         ],
+         "action": "쥐를 의심하다",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "쥐를 의심하다 — 그는 쥐가 범인이라고 생각합니다. 그래서 쥐덫을 놓고 바닥을 꼼꼼히 막습니다.",
+         "rules": {
+          "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         }
+        }
+       ],
+       "sentences": [
+        {
+         "say": "그는 쥐가 범인이라고 생각합니다.",
+         "show": [
+          "그는 쥐가 범인이라고",
+          "생각합니다."
+         ],
+         "accent": "생각합니다.",
+         "color": "red",
+         "scene": "scene-05"
+        },
+        {
+         "say": "그래서 쥐덫을 놓고 바닥을 꼼꼼히 막습니다.",
+         "show": [
+          "그래서 쥐덫을 놓고 바닥을",
+          "꼼꼼히 막습니다."
+         ],
+         "accent": "막습니다.",
+         "color": "purple",
+         "scene": "scene-05"
+        }
+       ]
+      },
+      {
+       "id": "scene-06",
+       "scenes": [
+        {
+         "id": "scene-06",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant"
+         ],
+         "action": "다음 날 아침",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "다음 날 아침 — 하지만 다음 날 아침에도 구멍은 또 늘어나 있었습니다. 쥐덫은 그대로 비어 있었습니다.",
+         "rules": {
+          "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         }
+        }
+       ],
+       "sentences": [
+        {
+         "say": "하지만 다음 날 아침에도 구멍은 또 늘어나 있었습니다.",
+         "show": [
+          "하지만 다음 날 아침에도",
+          "구멍은 또 늘어나",
+          "있었습니다."
+         ],
+         "accent": "있었습니다.",
+         "color": "green",
+         "scene": "scene-06"
+        },
+        {
+         "say": "쥐덫은 그대로 비어 있었습니다.",
+         "show": [
+          "쥐덫은 그대로 비어",
+          "있었습니다."
+         ],
+         "accent": "있었습니다.",
+         "color": "yellow",
+         "scene": "scene-06"
+        }
+       ]
+      },
+      {
+       "id": "scene-07",
+       "scenes": [
+        {
+         "id": "scene-07",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant"
+         ],
+         "action": "밤의 잠복",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "밤의 잠복 — 그날 밤 그는 등불을 끄고 치즈 선반 뒤에 숨어 기다립니다. 공방은 숨소리만 들릴 만큼 조용했습니다.",
+         "rules": {
+          "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         }
+        }
+       ],
+       "sentences": [
+        {
+         "say": "그날 밤 그는 등불을 끄고 치즈 선반 뒤에 숨어 기다립니다.",
+         "show": [
+          "그날 밤 그는 등불을 끄고",
+          "치즈 선반 뒤에 숨어",
+          "기다립니다."
+         ],
+         "accent": "기다립니다.",
+         "color": "red",
+         "scene": "scene-07"
+        },
+        {
+         "say": "공방은 숨소리만 들릴 만큼 조용했습니다.",
+         "show": [
+          "공방은 숨소리만 들릴 만큼",
+          "조용했습니다."
+         ],
+         "accent": "조용했습니다.",
+         "color": "purple",
+         "scene": "scene-07"
+        }
+       ]
+      },
+      {
+       "id": "scene-08",
+       "scenes": [
+        {
+         "id": "scene-08",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant"
+         ],
+         "action": "정체 공개",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "정체 공개 — 달빛이 스며든 순간 그의 얼굴이 드러납니다. 이마 한가운데 커다란 눈 하나, 그는 외눈박이 거인이었습니다.",
+         "rules": {
+          "monochrome": true,
+          "reveal": "달빛 아래 이마 한가운데의 커다란 외눈을 처음으로 정면에서 보여 준다."
+         }
+        }
+       ],
+       "sentences": [
+        {
+         "say": "달빛이 스며든 순간 그의 얼굴이 드러납니다.",
+         "show": [
+          "달빛이 스며든 순간 그의",
+          "얼굴이 드러납니다."
+         ],
+         "accent": "드러납니다.",
+         "color": "green",
+         "scene": "scene-08"
+        },
+        {
+         "say": "이마 한가운데 커다란 눈 하나, 그는 외눈박이 거인이었습니다.",
+         "show": [
+          "이마 한가운데 커다란 눈",
+          "하나, 그는 외눈박이",
+          "거인이었습니다."
+         ],
+         "accent": "거인이었습니다.",
+         "color": "yellow",
+         "scene": "scene-08"
+        }
+       ]
+      },
+      {
+       "id": "scene-09",
+       "scenes": [
+        {
+         "id": "scene-09",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant"
+         ],
+         "action": "작은 발소리",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "작은 발소리 — 그때 선반 아래에서 아주 작은 발소리가 들립니다. 무언가가 치즈 쪽으로 다가오고 있었습니다."
+        }
+       ],
+       "sentences": [
+        {
+         "say": "그때 선반 아래에서 아주 작은 발소리가 들립니다.",
+         "show": [
+          "그때 선반 아래에서 아주",
+          "작은 발소리가 들립니다."
+         ],
+         "accent": "들립니다.",
+         "color": "red",
+         "scene": "scene-09"
+        },
+        {
+         "say": "무언가가 치즈 쪽으로 다가오고 있었습니다.",
+         "show": [
+          "무언가가 치즈 쪽으로",
+          "다가오고 있었습니다."
+         ],
+         "accent": "있었습니다.",
+         "color": "purple",
+         "scene": "scene-09"
+        }
+       ]
+      },
+      {
+       "id": "scene-10",
+       "scenes": [
+        {
+         "id": "scene-10",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant"
+         ],
+         "action": "작은 그림자",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "작은 그림자 — 등불 그림자 사이로 작은 그림자가 치즈 위로 올라갑니다. 쥐보다 훨씬 똑바로 서 있었습니다."
+        }
+       ],
+       "sentences": [
+        {
+         "say": "등불 그림자 사이로 작은 그림자가 치즈 위로 올라갑니다.",
+         "show": [
+          "등불 그림자 사이로 작은",
+          "그림자가 치즈 위로",
+          "올라갑니다."
+         ],
+         "accent": "올라갑니다.",
+         "color": "green",
+         "scene": "scene-10"
+        },
+        {
+         "say": "쥐보다 훨씬 똑바로 서 있었습니다.",
+         "show": [
+          "쥐보다 훨씬 똑바로 서",
+          "있었습니다."
+         ],
+         "accent": "있었습니다.",
+         "color": "yellow",
+         "scene": "scene-10"
+        }
+       ]
+      },
+      {
+       "id": "scene-11",
+       "scenes": [
+        {
+         "id": "scene-11",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant"
+         ],
+         "action": "칼을 든 손",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "칼을 든 손 — 그림자는 작은 칼을 꺼내 치즈 뒷면을 조금씩 잘라 냅니다. 아주 익숙한 솜씨였습니다."
+        }
+       ],
+       "sentences": [
+        {
+         "say": "그림자는 작은 칼을 꺼내 치즈 뒷면을 조금씩 잘라 냅니다.",
+         "show": [
+          "그림자는 작은 칼을 꺼내",
+          "치즈 뒷면을 조금씩 잘라",
+          "냅니다."
+         ],
+         "accent": "그림자는",
+         "color": "red",
+         "scene": "scene-11"
+        },
+        {
+         "say": "아주 익숙한 솜씨였습니다.",
+         "show": [
+          "아주 익숙한 ",
+          "솜씨였습니다."
+         ],
+         "accent": "솜씨였습니다.",
+         "color": "purple",
+         "scene": "scene-11"
+        }
+       ]
+      },
+      {
+       "id": "scene-12",
+       "scenes": [
+        {
+         "id": "scene-12",
+         "place": "산골 마을의 오래된 치즈 공방",
+         "time": "새벽에서 밤까지",
+         "characters": [
+          "giant",
+          "tiny"
+         ],
+         "action": "범인을 발견하다",
+         "mood": "고요하고 따뜻하지만 점점 긴장되는",
+         "visual": "범인을 발견하다 — 거인은 숨을 죽이고 들여다봅니다. 치즈를 훔치던 것은 쥐가 아니라 작은 인간이었습니다."
+        }
+       ],
+       "sentences": [
+        {
+         "say": "거인은 숨을 죽이고 들여다봅니다.",
+         "show": [
+          "거인은 숨을 죽이고",
+          "들여다봅니다."
+         ],
+         "accent": "들여다봅니다.",
+         "color": "green",
+         "scene": "scene-12"
+        },
+        {
+         "say": "치즈를 훔치던 것은 쥐가 아니라 작은 인간이었습니다.",
+         "show": [
+          "치즈를 훔치던 것은 쥐가",
+          "아니라 작은",
+          "인간이었습니다."
+         ],
+         "accent": "인간이었습니다.",
+         "color": "yellow",
+         "scene": "scene-12"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "image-scene-01",
+   "kind": "image",
+   "sceneId": "scene-01",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "image-scene-02",
+   "kind": "image",
+   "sceneId": "scene-02",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "image-scene-03",
+   "kind": "image",
+   "sceneId": "scene-03",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "image-scene-04",
+   "kind": "image",
+   "sceneId": "scene-04",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "image-scene-05",
+   "kind": "image",
+   "sceneId": "scene-05",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "image-scene-06",
+   "kind": "image",
+   "sceneId": "scene-06",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "image-scene-07",
+   "kind": "image",
+   "sceneId": "scene-07",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "image-scene-08",
+   "kind": "image",
+   "sceneId": "scene-08",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "image-scene-09",
+   "kind": "image",
+   "sceneId": "scene-09",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "image-scene-10",
+   "kind": "image",
+   "sceneId": "scene-10",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "image-scene-11",
+   "kind": "image",
+   "sceneId": "scene-11",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "image-scene-12",
+   "kind": "image",
+   "sceneId": "scene-12",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "voice",
+   "kind": "voice",
+   "dependsOn": [
+    "script"
+   ]
+  },
+  {
+   "id": "render",
+   "kind": "render",
+   "dependsOn": [
+    "image-scene-01",
+    "image-scene-02",
+    "image-scene-03",
+    "image-scene-04",
+    "image-scene-05",
+    "image-scene-06",
+    "image-scene-07",
+    "image-scene-08",
+    "image-scene-09",
+    "image-scene-10",
+    "image-scene-11",
+    "image-scene-12",
+    "voice"
+   ]
+  }
+ ]
+}

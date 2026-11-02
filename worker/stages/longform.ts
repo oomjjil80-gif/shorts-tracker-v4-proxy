@@ -16,7 +16,7 @@ import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
 import { crossReviewFromEnv, runCrossReview, PLAN_CROSS_REVIEW_VERSION, type CrossReviewDeps, type CrossReviewRecord } from '../../lib/generative/planCrossReview.js'
 import { createSleepClassicPlanner, isSleepClassic, reviewSleepClassicStory, repairSleepClassicChapter, runSleepClassicReviewLoop, SLEEP_MAX_AUTOMATIC_REPAIR_PASSES, SLEEP_CHAPTERS } from '../../lib/generative/sleepClassic.js'
-import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorCostEstimate, budgetGuard, ttsUsdOf, SENIOR_COST, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
+import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorCostEstimate, budgetGuard, ttsUsdOf, SENIOR_COST, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, sceneRuleLines, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeGolden, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, goldenSpec, isGoldenStyle, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
 import { VISUAL_STYLE_PROFILES } from '../../lib/generative/visualStyle.js'
@@ -483,7 +483,8 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       const sceneStyle = scenes && !useYadam ? (selectedStyle === 'miniature'
         ? { ...VISUAL_STYLE_PROFILES['senior-warm-watercolor'], promptPrefix: miniaturePrompt, negativePrompt: 'watercolor, ink wash, flat illustration, full-size real buildings, text, watermark', compositionHints: 'miniature scale clearly visible, macro lens depth of field' }
         : chosenProfile || (brief?.creative && creativeStyle(brief.creative)) || VISUAL_STYLE_PROFILES['senior-warm-watercolor']) : null
-      const scenePrompts = sceneList.map((sc) => (useYadam ? yasaScenePrompt(script as unknown as SeniorScript, sc) : seniorScenePrompt(script as unknown as SeniorScript, sc, sceneStyle!)))
+      // an approved storyboard's scene rules (흑백·정체 보호·공개) are appended, so they reach Gemini and the scene cache identity
+      const scenePrompts = sceneList.map((sc) => [useYadam ? yasaScenePrompt(script as unknown as SeniorScript, sc) : seniorScenePrompt(script as unknown as SeniorScript, sc, sceneStyle!), ...sceneRuleLines(sc.rules)].join('\n'))
       const prompt = scenes ? scenePrompts[0] : longformImagePrompt(script, creativeStyleOverride(brief?.creative)) + (overrideStyle ? `\n${overrideStyle}` : ''), chunks = ttsChunks(script)
       // BUDGET (Senior): every paid call of this stage — the thumbnail, the first-scene lock, a thumbnail redraw, the
       // representative, each scene, each narration chunk, the copy / style checks — reserves its price BEFORE it is sent;
@@ -718,6 +719,7 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver;
         const files: string[] = []
         for (const [i, x] of pics.entries()) { const b = await blobs.getBytes(x.ref); if (!b) throw new StageError('ASSET_BYTES_MISSING', `scene picture ${x.sceneId} is missing`); const f = join(work, `scene${i}.jpg`); await writeFile(f, b); files.push(f) }
         const spans = sceneRuns(script as unknown as SeniorScript, timeline)
+        const monoScenes = new Set(seniorScenes(script as unknown as SeniorScript).filter((sc) => sc.rules?.monochrome).map((sc) => sc.id))
         const runs = spans.map((r, i) => ({ image: pics.findIndex((x) => x.sceneId === r.sceneId), start: r.start, seconds: (i === spans.length - 1 ? seconds : spans[i + 1].start) - r.start, cold: !!r.cold }))
         if (runs.some((r) => r.image < 0)) throw new StageError('LONGFORM_CONTRACT', 'a scene has no picture')
         const frames = runFrames(runs.map((r) => r.start), seconds)
@@ -727,8 +729,8 @@ export const createLongformRenderExecutor = (deps: { features?: FeatureResolver;
           // the segment's own subtitle cards (a card never crosses a segment: segments start where a sentence starts)
           const tl = timeline.filter((t) => t.start >= from - 1e-6 && t.start < to - 1e-6).map((t) => ({ ...t, start: Number(Math.max(0, t.start - shift).toFixed(3)), end: Number((t.end - shift).toFixed(3)) }))
           const segAss = subtitles(tl).ass
-          const segRuns = runs.slice(g.from, g.to).map((r, j) => ({ image: r.image, frames: frames[g.from + j], index: g.from + j, ...(r.cold ? { cold: true } : {}) }))
-          const key = sha256(JSON.stringify({ v: SEGMENT_ENCODER, canvas: SENIOR.canvas, fps: LONGFORM.fps, runs: segRuns.map((r) => ({ picture: pics[r.image].sha256 ?? pics[r.image].ref, frames: r.frames, index: r.index, cold: !!r.cold })), ass: sha256(segAss) }))
+          const segRuns = runs.slice(g.from, g.to).map((r, j) => ({ image: r.image, frames: frames[g.from + j], index: g.from + j, ...(r.cold ? { cold: true } : {}), ...(monoScenes.has(pics[r.image].sceneId) ? { mono: true } : {}) }))
+          const key = sha256(JSON.stringify({ v: SEGMENT_ENCODER, canvas: SENIOR.canvas, fps: LONGFORM.fps, runs: segRuns.map((r) => ({ picture: pics[r.image].sha256 ?? pics[r.image].ref, frames: r.frames, index: r.index, cold: !!r.cold, ...(r.mono ? { mono: true } : {}) })), ass: sha256(segAss) }))
           return { k, segAss, segRuns, key, cards: tl.length }
         })
         // checkpoint: render-segments/<job>/<plan>/segment-NNN.mp4 — a retry re-renders only the segments not stored yet

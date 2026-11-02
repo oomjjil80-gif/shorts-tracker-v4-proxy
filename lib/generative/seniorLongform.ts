@@ -23,7 +23,29 @@ export const SENIOR = {
 } as const
 
 export type CharacterBible = { id: string; name: string; role: string; gender: string; age: string; face: string; hair: string; build: string; outfit: string; colors: string }
-export type SeniorScene = { id: string; place: string; time: string; characters: string[]; action: string; mood: string; visual: string; shot?: string }
+// rules: an approved storyboard's own constraints for this picture (optional; scripts without it are unchanged).
+//   monochrome = a black-and-white picture (also enforced at RENDER), hideIdentity = what must stay hidden before the reveal,
+//   reveal = what this scene finally shows. They go into the picture prompt, so they are part of its cache identity.
+export type SceneRules = { monochrome?: boolean; hideIdentity?: string; reveal?: string }
+export type SeniorScene = { id: string; place: string; time: string; characters: string[]; action: string; mood: string; visual: string; shot?: string; rules?: SceneRules }
+export function sceneRuleErrors(r: any): string[] {
+  if (r === undefined) return []
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return ['rules']
+  const e: string[] = []
+  for (const k of Object.keys(r)) if (!['monochrome', 'hideIdentity', 'reveal'].includes(k)) e.push(`rules.${k}.unknown`)
+  if (r.monochrome !== undefined && typeof r.monochrome !== 'boolean') e.push('rules.monochrome')
+  for (const k of ['hideIdentity', 'reveal']) if (r[k] !== undefined && (typeof r[k] !== 'string' || !r[k].trim() || r[k].length > 400)) e.push(`rules.${k}`)
+  if (r.hideIdentity && r.reveal) e.push('rules.hide_and_reveal')
+  return e
+}
+export function sceneRuleLines(r: SceneRules | undefined): string[] {
+  if (!r) return []
+  return [
+    r.monochrome ? 'COLOR: black-and-white (monochrome, grayscale) image only, no colour anywhere.' : '',
+    r.hideIdentity ? `IDENTITY HIDDEN (before the reveal): ${r.hideIdentity.trim()} Use only a back view, a side view with the eyes covered, or a partial face.` : '',
+    r.reveal ? `REVEAL SCENE: ${r.reveal.trim()}` : '',
+  ].filter(Boolean)
+}
 export type SeniorSentence = LongformSentence & { scene: string }
 // sections = acts; each act has its scenes and its sentences (every sentence names the scene it is told over)
 export type SeniorScript = Omit<LongformScript, 'schema' | 'sections'> & {
@@ -158,6 +180,7 @@ export function seniorActErrors(act: any, characterIds: Set<string>): string[] {
   for (const [i, s] of scenes.entries()) {
     for (const k of ['id', 'place', 'time', 'action', 'visual']) if (!String((s as any)?.[k] || '').trim()) e.push(`scenes[${i}].${k}`)
     for (const c of Array.isArray(s?.characters) ? s.characters : []) if (!characterIds.has(c)) e.push(`scenes[${i}].characters.unknown:${c}`)
+    e.push(...sceneRuleErrors((s as any)?.rules).map((x) => `scenes[${i}].${x}`))
   }
   const sents: any[] = Array.isArray(act?.sentences) ? act.sentences : []
   let at = 0
@@ -210,7 +233,7 @@ export const COLD_MOTIONS = ['zoom', 'pan-left', 'pan-right'] as const
 export const coldMotion = (i: number): SceneMotion => COLD_MOTIONS[i % COLD_MOTIONS.length]
 // one picture held for `seconds`: scaled larger than the frame (10%; `strong` 24%), then a crop move (or a zoom of 6%;
 // `strong` 16%) over the scene
-export function sceneFilter(input: number, seconds: number, motion: SceneMotion, label: string, strong = false): string {
+export function sceneFilter(input: number, seconds: number, motion: SceneMotion, label: string, strong = false, mono = false): string {
   const k = strong ? 1.24 : 1.1, z = strong ? 0.16 : 0.06
   const { w, h } = SENIOR.canvas, W = Math.round(w * k / 2) * 2, H = Math.round(h * k / 2) * 2, d = Math.max(0.1, seconds).toFixed(3)
   const base = `[${input}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1`
@@ -219,7 +242,7 @@ export function sceneFilter(input: number, seconds: number, motion: SceneMotion,
     : motion === 'pan-right' ? `,crop=${w}:${h}:x='(${W}-${w})*t/${d}':y='(${H}-${h})/2'`
       : motion === 'pan-left' ? `,crop=${w}:${h}:x='(${W}-${w})*(1-t/${d})':y='(${H}-${h})/2'`
         : `,crop=${w}:${h}`
-  return `${base}${move}${strong ? ',setsar=1' : ''},fps=${LONGFORM.fps},format=yuv420p[${label}]`
+  return `${base}${move}${strong ? ',setsar=1' : ''}${mono ? ',hue=s=0' : ''},fps=${LONGFORM.fps},format=yuv420p[${label}]`
 }
 // one encode: every scene picture (looped for its time) -> motion -> concat -> bottom shade -> subtitle cards + narration
 export function seniorVideoArgv(o: { images: string[]; runs: Array<{ image: number; seconds: number; cold?: boolean }>; audio: string; ass: string; fontsDir: string; out: string; seconds: number; threads: number }): string[] {
@@ -260,12 +283,13 @@ export function runFrames(starts: number[], total: number, fps: number = LONGFOR
 }
 // one segment: its own pictures only, the same motion each run had in the single-graph render (by its index in the
 // whole video), bottom shade + its own subtitle cards, video only, exactly `frames` frames
-export function sceneSegmentArgv(o: { images: string[]; runs: Array<{ image: number; frames: number; index: number; cold?: boolean }>; ass: string; fontsDir: string; out: string; threads: number }): string[] {
+export function sceneSegmentArgv(o: { images: string[]; runs: Array<{ image: number; frames: number; index: number; cold?: boolean; mono?: boolean }>; ass: string; fontsDir: string; out: string; threads: number }): string[] {
   const e = (p: string) => p.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
   const { w, h } = SENIOR.canvas, fps = LONGFORM.fps
   const sec = (f: number) => (f / fps).toFixed(3)
   const inputs = o.runs.flatMap((r) => ['-loop', '1', '-framerate', String(fps), '-t', sec(r.frames), '-i', o.images[r.image]])
-  const parts = o.runs.map((r, i) => (r.cold ? sceneFilter(i, r.frames / fps, coldMotion(r.index), `s${i}`, true) : sceneFilter(i, r.frames / fps, sceneMotion(r.index), `s${i}`)))
+  // a monochrome scene (approved storyboard rule) is made black-and-white here too, whatever colours the picture came with
+  const parts = o.runs.map((r, i) => (r.cold ? sceneFilter(i, r.frames / fps, coldMotion(r.index), `s${i}`, true, !!r.mono) : sceneFilter(i, r.frames / fps, sceneMotion(r.index), `s${i}`, false, !!r.mono)))
   const shade = `color=c=black:s=${w}x${h},format=rgba,geq=r=0:g=0:b=0:a='clip(210*(Y-${h}*0.62)/(${h}*0.38),0,210)'[sh]`
   const graph = [...parts, shade, `${o.runs.map((_, i) => `[s${i}]`).join('')}concat=n=${o.runs.length}:v=1:a=0,format=rgba[cat]`, `[cat][sh]overlay=0:0,ass=filename='${e(o.ass)}':fontsdir='${e(o.fontsDir)}',format=yuv420p[v]`].join(';')
   const frames = o.runs.reduce((a, r) => a + r.frames, 0)

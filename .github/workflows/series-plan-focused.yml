@@ -13,6 +13,10 @@ on:
       - 'worker/stages/longform.ts'
       - 'lib/jobs/http.ts'
       - 'lib/generative/longform.ts'
+      - 'lib/generative/seniorLongform.ts'
+      - 'tools/approved-storyboard-e2e.test.ts'
+      - 'tools/fixtures/approved-cheese-plan.json'
+      - 'tools/fixtures/approved-cheese-plan-r2.json'
       - 'tools/series-job-e2e.test.ts'
       - 'tools/seriesProduction.test.ts'
       - 'tools/productionPlan.test.ts'
@@ -26,7 +30,7 @@ on:
 jobs:
   focused:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,4 +41,4 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
       - run: npm ci
       - run: npm run typecheck
-      - run: npx tsx --test tools/seriesProduction.test.ts tools/productionPlan.test.ts tools/productionRecipeBridge.test.ts tools/trackerJobPlan.test.ts tools/productionJobGuard.test.ts tools/sceneArtifactStore.test.ts tools/sceneWorkerAdapter.test.ts tools/sceneWorkerWiring.test.ts tools/series-job-e2e.test.ts
+      - run: npx tsx --test tools/seriesProduction.test.ts tools/productionPlan.test.ts tools/productionRecipeBridge.test.ts tools/trackerJobPlan.test.ts tools/productionJobGuard.test.ts tools/sceneArtifactStore.test.ts tools/sceneWorkerAdapter.test.ts tools/sceneWorkerWiring.test.ts tools/series-job-e2e.test.ts tools/approved-storyboard-e2e.test.ts
