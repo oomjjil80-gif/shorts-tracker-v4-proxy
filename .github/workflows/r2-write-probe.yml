@@ -1,0 +1,23 @@
+name: R2 write probe (free)
+# 무료 1회 확인: Railway(R2)에서 새 경로 쓰기가 옛 Vercel Blob 확인 때문에 막히는지. 유료 호출 0, 기존 데이터 변경 0(새 작업 공간·1x1 PNG).
+on:
+  push:
+    branches: [ops/p1e-production-smoke]
+    paths: ['.github/workflows/r2-write-probe.yml']
+permissions: { contents: read }
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          set -uo pipefail
+          R=https://tracker-api-continuity-production.up.railway.app
+          KEY="r2-probe-$(date +%s)-0123456789abcdef0123"
+          PNG='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+          echo '--- cardnews_image_put (new content-addressed path) ---'
+          curl -sS -m 60 -X POST -H 'Content-Type: application/json' -H "X-Sync-Key: $KEY" --data "{\"taskType\":\"cardnews_image_put\",\"dataBase64\":\"$PNG\"}" -w '\nHTTP %{http_code}\n' "$R/api/story"
+          echo '--- cardnews_get (new workspace, nothing saved) ---'
+          curl -sS -m 60 -H "X-Sync-Key: $KEY" -w '\nHTTP %{http_code}\n' "$R/api/story?taskType=cardnews_get"
+          echo '--- job_get (nonexistent job) ---'
+          curl -sS -m 60 -H "X-Sync-Key: $KEY" -w '\nHTTP %{http_code}\n' "$R/api/story?taskType=job_get&jobId=job_00000000-0000-4000-8000-000000000000"
