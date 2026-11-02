@@ -21,6 +21,9 @@ import { meteredFetch } from '../lib/generative/usageLedger.js'
 const PLAN = JSON.parse(await readFile(new URL('./fixtures/approved-cheese-plan.json', import.meta.url), 'utf8'))
 const PLAN_R2 = JSON.parse(await readFile(new URL('./fixtures/approved-cheese-plan-r2.json', import.meta.url), 'utf8'))
 const scenesOf = (p: any) => p.steps[0].config.script.sections.map((x: any) => x.scenes[0])
+// the storyboard panels the browser uploaded (same bytes as the frontend fixture: 1×1 PNG + panel number)
+const PNG1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
+const panelBytes = (n: number) => Buffer.concat([PNG1, Buffer.from(`storyboard-panel-${String(n).padStart(2, '0')}`)])
 
 function diskBlobs(dir: string): JobBlobStore {
   const file = (p: string) => join(dir, sha256(p))
@@ -46,11 +49,14 @@ test('확정 12장 → 승인 → 12장면 그림·음성 → 5번만 수정 →
   const pics = new Map<string, Buffer>(); for (const c of [...COLORS, R2_COLOR]) pics.set(c, await readFile(jpeg(c)))
   const labels = scenesOf(PLAN).map((s: any) => s.action)
   let blobs = diskBlobs(dir), store = createJobStore(db), blocks = createBlockStore(db)
+  // the panels are already in the workspace image store (cardnews_image_put, content-addressed): exact fixture refs
+  for (const [i, sc] of scenesOf(PLAN).entries()) { assert.equal(sha256(panelBytes(i + 1)), sc.panel.sha256, `fixture panel ${i + 1}`); await blobs.putBytes(sc.panel.ref, panelBytes(i + 1), 'image/png') }
+  const refs: string[][] = []
   const calls: { image: string[]; tts: number } = { image: [], tts: 0 }, original = globalThis.fetch
   globalThis.fetch = meteredFetch((async (url: any, init: any) => {
     const body = JSON.parse(init.body)
     if (String(url).startsWith('https://generativelanguage.googleapis.com/')) {
-      const prompt = body.input[0].text; calls.image.push(prompt)
+      const prompt = body.input[0].text; calls.image.push(prompt); refs.push(body.input.slice(1).map((x: any) => Buffer.from(x.data, 'base64').toString('latin1')))
       const i = labels.findIndex((l: string) => prompt.includes(`Action: ${l}.`)), color = prompt.includes('Action: 쥐덫을 놓는 거인.') ? R2_COLOR : COLORS[i]
       assert.ok(color, `unknown scene prompt: ${prompt.slice(0, 120)}`)
       return Response.json({ output_image: { data: pics.get(color)!.toString('base64'), mime_type: 'image/jpeg' }, usage: {} })
@@ -65,6 +71,9 @@ test('확정 12장 → 승인 → 12장면 그림·음성 → 5번만 수정 →
   const approve = async (id: string) => { const v = await call({ taskType: 'job_blocks', id }, 'GET'); const row = v.json.blocks.find((x: any) => x.block === 'SCRIPT_APPROVAL'); const a = await call({ taskType: 'job_block_approve', jobId: id, block: 'SCRIPT_APPROVAL', artifactHash: row.artifactHash }); assert.equal(a.status, 200, JSON.stringify(a.json)) }
   try {
     // 1) 확정 12장 그대로 저장
+    // 다른 작업 공간의 칸 이미지를 가리키는 계획은 Job 생성 전에 거절
+    const foreign = structuredClone(PLAN); foreign.steps[0].config.script.sections[0].scenes[0].panel.ref = foreign.steps[0].config.script.sections[0].scenes[0].panel.ref.replace(/cardnews\/[0-9a-f]{64}/, `cardnews/${'0'.repeat(64)}`)
+    const bad = await create(foreign, 'approved-cheese-foreign'); assert.equal(bad.status, 400); assert.match(JSON.stringify(bad.json), /not in this workspace/)
     const a = await create(PLAN, 'approved-cheese-r1'); assert.equal(a.status, 201, JSON.stringify(a.json)); const id = a.json.job.id
     const saved: any = await blobs.getJson((await store.getJob(id))!.planRef!); assert.deepEqual(saved.productionPlan, PLAN)
     assert.equal((await create(PLAN, 'approved-cheese-r1')).json.job.id, id, 'same approved plan → same Job')
@@ -76,6 +85,9 @@ test('확정 12장 → 승인 → 12장면 그림·음성 → 5번만 수정 →
     // 3) 12장면 순서·내용·규칙이 Gemini 입력까지
     assert.equal(calls.image.length, 12, 'one Gemini picture per storyboard scene (12, not 48)')
     calls.image.forEach((p, i) => assert.ok(p.includes(`Action: ${labels[i]}.`), `scene ${i + 1} in order`))
+    // 각 장면 = 그 장면의 승인 스토리보드 칸을 실제 이미지 입력으로(프롬프트에는 주소 없음)
+    refs.forEach((r, i) => assert.deepEqual(r, [panelBytes(i + 1).toString('latin1')], `scene ${i + 1} draws from panel ${i + 1}`))
+    assert.ok(calls.image.every((p) => p.includes('APPROVED STORYBOARD PANEL') && !p.includes('cardnews/')))
     assert.match(calls.image[2], /고객의 항의/); assert.match(calls.image[2], /항의합니다/)
     assert.match(calls.image[7], /COLOR: black-and-white/); assert.match(calls.image[7], /REVEAL SCENE: .*외눈/); assert.ok(!/IDENTITY HIDDEN/.test(calls.image[7]))
     for (const i of [0, 1, 2, 3, 4, 5, 6]) assert.match(calls.image[i], /IDENTITY HIDDEN \(before the reveal\): 거인의 얼굴 정면과 외눈을 보여 주지 않는다/)
@@ -90,7 +102,7 @@ test('확정 12장 → 승인 → 12장면 그림·음성 → 5번만 수정 →
     const b = await create(PLAN_R2, 'approved-cheese-r2'); assert.equal(b.status, 201, JSON.stringify(b.json)); const id2 = b.json.job.id; assert.notEqual(id2, id)
     assert.equal((await runOnce(deps()) as any).outcome, 'completed'); assert.equal((await runOnce(deps()) as any).outcome, 'waiting'); await approve(id2)
     const [p1, p2] = await Promise.all([runOnce(deps()), runOnce({ ...deps(), workerId: 'other' })]); assert.equal([p1, p2].filter((x) => x.ran).length, 1, 'concurrent workers run the stage once')
-    assert.equal(calls.image.length, 13, '12 + 1'); assert.match(calls.image[12], /쥐덫을 놓는 거인/); assert.equal(calls.tts, tts, 'narration unchanged → no new TTS')
+    assert.equal(calls.image.length, 13, '12 + 1'); assert.match(calls.image[12], /쥐덫을 놓는 거인/); assert.deepEqual(refs[12], [panelBytes(5).toString('latin1')], 'the redrawn scene still draws from its panel'); assert.equal(calls.tts, tts, 'narration unchanged → no new TTS')
     const second: any = await store.getLatestSucceeded(id2, 'ASSET'), assets2: any = await blobs.getJson(second.outputRef)
     assets1.images.forEach((x: any, i: number) => { if (i === 4) assert.notEqual(assets2.images[i].ref, x.ref); else assert.equal(assets2.images[i].ref, x.ref, `scene ${i + 1} kept`) })
     assert.equal(second.usage.paidCalls, 1)
@@ -121,8 +133,12 @@ test('확정 12장 → 승인 → 12장면 그림·음성 → 5번만 수정 →
   } finally { globalThis.fetch = original; await db.close!() }
 })
 
-test('장면 규칙 검증: 알 수 없는 키·잘못된 값·정체 보호와 공개를 한 장면에 함께 쓰는 것은 Job 생성 전에 거절', async () => {
-  const { sceneRuleErrors, sceneRuleLines, sceneSegmentArgv } = await import('../lib/generative/seniorLongform.js')
+test('장면 규칙·스토리보드 칸 참조 검증: 알 수 없는 키·잘못된 값·주소/해시 불일치는 Job 생성 전에 거절', async () => {
+  const { sceneRuleErrors, sceneRuleLines, sceneSegmentArgv, scenePanelErrors } = await import('../lib/generative/seniorLongform.js')
+  const sha = 'a'.repeat(64), ws = 'b'.repeat(64)
+  assert.deepEqual(scenePanelErrors({ ref: `cardnews/${ws}/images/${sha}.png`, sha256: sha }), [])
+  assert.deepEqual(scenePanelErrors({ ref: `https://x/${sha}.png`, sha256: sha }), ['panel.ref'])
+  assert.deepEqual(scenePanelErrors({ ref: `cardnews/${ws}/images/${sha}.png`, sha256: 'c'.repeat(64) }), ['panel.sha256'], 'the hash must be the stored file\'s own hash')
   assert.deepEqual(sceneRuleErrors(undefined), [])
   assert.deepEqual(sceneRuleErrors({ monochrome: true, reveal: '외눈을 보여 준다' }), [])
   assert.deepEqual(sceneRuleErrors({ color: 'sepia' }), ['rules.color.unknown'])

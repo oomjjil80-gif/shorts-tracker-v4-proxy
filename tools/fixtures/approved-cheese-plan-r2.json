@@ -93,6 +93,10 @@
          "visual": "새벽의 치즈 공방 — 안개 낀 산골 마을, 거대한 사내가 새벽부터 치즈를 빚습니다. 그의 하루는 늘 똑같았습니다.",
          "rules": {
           "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         },
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/ddf78ae3a28e1f9cb7516764a0d4b0f97eb4d3b33610b68ec15219a1f436ea8b.png",
+          "sha256": "ddf78ae3a28e1f9cb7516764a0d4b0f97eb4d3b33610b68ec15219a1f436ea8b"
          }
         }
        ],
@@ -135,6 +139,10 @@
          "visual": "시장 가는 길 — 그는 등에 커다란 치즈 바퀴를 지고 시장으로 향합니다. 마을 사람들은 그의 뒷모습만 기억합니다.",
          "rules": {
           "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         },
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/4996a1be37adb5221d023938ef418be242dbad5cecfbd341300ea2e5e506f283.png",
+          "sha256": "4996a1be37adb5221d023938ef418be242dbad5cecfbd341300ea2e5e506f283"
          }
         }
        ],
@@ -177,6 +185,10 @@
          "visual": "고객의 항의 — 그런데 시장에서 손님이 치즈를 내밀며 항의합니다. 치즈 뒷면이 파여 있다는 것이었습니다.",
          "rules": {
           "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         },
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/a0197a392ec666b3b71e08bcd64fa719b938e8042c16587ce97d334a3bff7e19.png",
+          "sha256": "a0197a392ec666b3b71e08bcd64fa719b938e8042c16587ce97d334a3bff7e19"
          }
         }
        ],
@@ -218,6 +230,10 @@
          "visual": "작업장의 흔적 — 공방으로 돌아온 그는 다른 치즈들도 살펴봅니다. 여기저기 작은 구멍이 나 있었습니다.",
          "rules": {
           "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         },
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/0f3708fc3affce4ef09b8a57c1934d43800d654a914fbd50d744b48e19b662df.png",
+          "sha256": "0f3708fc3affce4ef09b8a57c1934d43800d654a914fbd50d744b48e19b662df"
          }
         }
        ],
@@ -259,6 +275,10 @@
          "visual": "쥐덫을 놓는 거인 — 그는 쥐가 범인이라고 생각합니다. 그래서 쥐덫을 놓고 바닥을 꼼꼼히 막습니다.",
          "rules": {
           "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         },
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/bfa34f3dda17c5a404f0fd9c36c19794b662c98f3bd7e84fbe317b4f8201bb8f.png",
+          "sha256": "bfa34f3dda17c5a404f0fd9c36c19794b662c98f3bd7e84fbe317b4f8201bb8f"
          }
         }
        ],
@@ -300,6 +320,10 @@
          "visual": "다음 날 아침 — 하지만 다음 날 아침에도 구멍은 또 늘어나 있었습니다. 쥐덫은 그대로 비어 있었습니다.",
          "rules": {
           "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         },
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/ea585d2de9a57f03dc189682c7a73825a043e56132a9bee62f74c6780b96b311.png",
+          "sha256": "ea585d2de9a57f03dc189682c7a73825a043e56132a9bee62f74c6780b96b311"
          }
         }
        ],
@@ -342,6 +366,10 @@
          "visual": "밤의 잠복 — 그날 밤 그는 등불을 끄고 치즈 선반 뒤에 숨어 기다립니다. 공방은 숨소리만 들릴 만큼 조용했습니다.",
          "rules": {
           "hideIdentity": "거인의 얼굴 정면과 외눈을 보여 주지 않는다."
+         },
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/8ff7fe003e26a9274c7da8922b5b1e0d19c06465b9b8d0986abbe047b5fd0782.png",
+          "sha256": "8ff7fe003e26a9274c7da8922b5b1e0d19c06465b9b8d0986abbe047b5fd0782"
          }
         }
        ],
@@ -385,6 +413,10 @@
          "rules": {
           "monochrome": true,
           "reveal": "달빛 아래 이마 한가운데의 커다란 외눈을 처음으로 정면에서 보여 준다."
+         },
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/7505c330f03b5d53de88fef03268038dcc602a3aa7d4a6b4c3c1900588f2ddce.png",
+          "sha256": "7505c330f03b5d53de88fef03268038dcc602a3aa7d4a6b4c3c1900588f2ddce"
          }
         }
        ],
@@ -424,7 +456,11 @@
          ],
          "action": "작은 발소리",
          "mood": "고요하고 따뜻하지만 점점 긴장되는",
-         "visual": "작은 발소리 — 그때 선반 아래에서 아주 작은 발소리가 들립니다. 무언가가 치즈 쪽으로 다가오고 있었습니다."
+         "visual": "작은 발소리 — 그때 선반 아래에서 아주 작은 발소리가 들립니다. 무언가가 치즈 쪽으로 다가오고 있었습니다.",
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/67d9542c56c67a4b35b26d24e215bf7355e7113c76e5895b11945a666942a8ad.png",
+          "sha256": "67d9542c56c67a4b35b26d24e215bf7355e7113c76e5895b11945a666942a8ad"
+         }
         }
        ],
        "sentences": [
@@ -462,7 +498,11 @@
          ],
          "action": "작은 그림자",
          "mood": "고요하고 따뜻하지만 점점 긴장되는",
-         "visual": "작은 그림자 — 등불 그림자 사이로 작은 그림자가 치즈 위로 올라갑니다. 쥐보다 훨씬 똑바로 서 있었습니다."
+         "visual": "작은 그림자 — 등불 그림자 사이로 작은 그림자가 치즈 위로 올라갑니다. 쥐보다 훨씬 똑바로 서 있었습니다.",
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/e8e256e73ded61181ec058c028d49e337e87540510f6b98a3f12c340dc44add4.png",
+          "sha256": "e8e256e73ded61181ec058c028d49e337e87540510f6b98a3f12c340dc44add4"
+         }
         }
        ],
        "sentences": [
@@ -501,7 +541,11 @@
          ],
          "action": "칼을 든 손",
          "mood": "고요하고 따뜻하지만 점점 긴장되는",
-         "visual": "칼을 든 손 — 그림자는 작은 칼을 꺼내 치즈 뒷면을 조금씩 잘라 냅니다. 아주 익숙한 솜씨였습니다."
+         "visual": "칼을 든 손 — 그림자는 작은 칼을 꺼내 치즈 뒷면을 조금씩 잘라 냅니다. 아주 익숙한 솜씨였습니다.",
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/1400de2183d3a3c3268ba56edf9ba65a787ddb2fadf86fb86fde8bf7713d5437.png",
+          "sha256": "1400de2183d3a3c3268ba56edf9ba65a787ddb2fadf86fb86fde8bf7713d5437"
+         }
         }
        ],
        "sentences": [
@@ -541,7 +585,11 @@
          ],
          "action": "범인을 발견하다",
          "mood": "고요하고 따뜻하지만 점점 긴장되는",
-         "visual": "범인을 발견하다 — 거인은 숨을 죽이고 들여다봅니다. 치즈를 훔치던 것은 쥐가 아니라 작은 인간이었습니다."
+         "visual": "범인을 발견하다 — 거인은 숨을 죽이고 들여다봅니다. 치즈를 훔치던 것은 쥐가 아니라 작은 인간이었습니다.",
+         "panel": {
+          "ref": "cardnews/5e318f8cf9cbe249a30812b8ca132d691ded7a91991413558db5758575f5e01f/images/73e96fa654b6a3688578c7c9ab670e1e81c1b9caba98b8ca22bf28bea6984d32.png",
+          "sha256": "73e96fa654b6a3688578c7c9ab670e1e81c1b9caba98b8ca22bf28bea6984d32"
+         }
         }
        ],
        "sentences": [

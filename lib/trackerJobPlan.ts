@@ -44,7 +44,9 @@ export function executableTrackerPlan(plan: ProductionPlan, brief: import('./gen
   // These modes generate additional reference pictures before the scene loop. Keep them
   // on the legacy path until they have the same durable provider-call protection.
   if ((brief as any).thumbnailFirst || creativeGolden(brief.creative)) throw new Error('productionPlan requires a non-reference visual style');
-  if (brief.remaster || brief.sleepClassic) throw new Error('productionPlan cannot be combined with remaster or sleep preset');
+  if (brief.remaster || brief.sleepClassic) throw new Error('productionPlan cannot be combined with remaster or sleep preset')
+  // storyboard panel references: Senior scene pictures only (the 야담 contract has its own fixed reference frames)
+  if (scenes.some((s: any) => s.panel) && brief.profile !== 'senior_longform') throw new Error('storyboard panel references require senior_longform');
   return { plan: JSON.parse(JSON.stringify(plan)) as ProductionPlan, script, images };
 }
 import { validateLongformScript } from './generative/longform.js';

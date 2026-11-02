@@ -27,7 +27,19 @@ export type CharacterBible = { id: string; name: string; role: string; gender: s
 //   monochrome = a black-and-white picture (also enforced at RENDER), hideIdentity = what must stay hidden before the reveal,
 //   reveal = what this scene finally shows. They go into the picture prompt, so they are part of its cache identity.
 export type SceneRules = { monochrome?: boolean; hideIdentity?: string; reveal?: string }
-export type SeniorScene = { id: string; place: string; time: string; characters: string[]; action: string; mood: string; visual: string; shot?: string; rules?: SceneRules }
+// panel: the approved storyboard panel of this scene (a content-addressed image already in the workspace's image store);
+// Gemini draws the scene FROM it (a real reference image, not text), and its hash is part of the scene's cache identity.
+export type ScenePanel = { ref: string; sha256: string }
+export const PANEL_REF = /^cardnews\/([0-9a-f]{64})\/images\/([0-9a-f]{64})\.(png|jpg|webp)$/
+export const PANEL_LINE = 'The attached image is the APPROVED STORYBOARD PANEL of this scene: keep its situation, composition, camera position, poses and who is where. Redraw it as the finished picture in the style above; do not copy sketch lines, panel borders, numbers, speech balloons or handwriting, and add no person or event that is not in it.'
+export function scenePanelErrors(p: any): string[] {
+  if (p === undefined) return []
+  const m = PANEL_REF.exec(String(p?.ref || ''))
+  if (!m) return ['panel.ref']
+  if (p.sha256 !== m[2]) return ['panel.sha256']
+  return Object.keys(p).some((k) => !['ref', 'sha256'].includes(k)) ? ['panel.unknown'] : []
+}
+export type SeniorScene = { id: string; place: string; time: string; characters: string[]; action: string; mood: string; visual: string; shot?: string; rules?: SceneRules; panel?: ScenePanel }
 export function sceneRuleErrors(r: any): string[] {
   if (r === undefined) return []
   if (!r || typeof r !== 'object' || Array.isArray(r)) return ['rules']
@@ -181,6 +193,7 @@ export function seniorActErrors(act: any, characterIds: Set<string>): string[] {
     for (const k of ['id', 'place', 'time', 'action', 'visual']) if (!String((s as any)?.[k] || '').trim()) e.push(`scenes[${i}].${k}`)
     for (const c of Array.isArray(s?.characters) ? s.characters : []) if (!characterIds.has(c)) e.push(`scenes[${i}].characters.unknown:${c}`)
     e.push(...sceneRuleErrors((s as any)?.rules).map((x) => `scenes[${i}].${x}`))
+    e.push(...scenePanelErrors((s as any)?.panel).map((x) => `scenes[${i}].${x}`))
   }
   const sents: any[] = Array.isArray(act?.sentences) ? act.sentences : []
   let at = 0

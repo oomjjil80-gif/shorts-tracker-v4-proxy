@@ -16,7 +16,7 @@ import { validateYasaStoryDna } from '../../lib/story/yasaStoryDna.js'
 import { openAiDeriveShorts, selectDerivedShorts, deriveErrors, DERIVE_MODEL } from '../../lib/generative/derivedShorts.js'
 import { crossReviewFromEnv, runCrossReview, PLAN_CROSS_REVIEW_VERSION, type CrossReviewDeps, type CrossReviewRecord } from '../../lib/generative/planCrossReview.js'
 import { createSleepClassicPlanner, isSleepClassic, reviewSleepClassicStory, repairSleepClassicChapter, runSleepClassicReviewLoop, SLEEP_MAX_AUTOMATIC_REPAIR_PASSES, SLEEP_CHAPTERS } from '../../lib/generative/sleepClassic.js'
-import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorCostEstimate, budgetGuard, ttsUsdOf, SENIOR_COST, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, sceneRuleLines, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
+import { mergeSameScenes, seniorOutlineErrors, seniorActErrors, seniorPacingErrors, seniorRepeatErrors, seniorPacing, runPacing, seniorCostEstimate, budgetGuard, ttsUsdOf, SENIOR_COST, seniorScenePlan, seniorScenes, seniorScenePrompt, sceneRuns, planSegments, runFrames, sceneSegmentArgv, segmentConcatArgv, sceneRuleLines, PANEL_LINE, RENDER_SEGMENT, SEGMENT_ENCODER, SENIOR, type SeniorScript } from '../../lib/generative/seniorLongform.js'
 import { briefVoice, creativeGolden, creativeStyle, creativeStyleOverride, type CreativeContent } from '../../lib/generative/creativeProfile.js'
 import { goldenCacheTag, goldenImage, goldenLockFor, goldenLockTag, goldenSpec, isGoldenStyle, type GoldenIdentity } from '../../lib/generative/goldenStyle.js'
 import { VISUAL_STYLE_PROFILES } from '../../lib/generative/visualStyle.js'
@@ -538,7 +538,16 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       // the style, and the approved reference picture) is part of every image key
       const ik = sha256((styleLock ? 'longform-image-ref-v1|' : 'longform-image-v1|') + prompt + lockTag + gTag + idTag)
       // the first scene of a Golden job IS the character lock (no identity image); every other picture carries the lock's hash
-      const sceneKeys = scenePrompts.map((x, i) => (firstIsScene && i === 0 ? firstKey : sha256(scenePrefix + x + lockTag + gTag + idTag)))
+      // an approved storyboard panel makes the scene a reference drawing: its hash joins the key (scenes without one: unchanged keys)
+      const panelOf = (i: number) => (scenes && !styleLock && !useYadam && !golden ? (sceneList[i] as any).panel as { ref: string; sha256: string } | undefined : undefined)
+      const sceneKeys = scenePrompts.map((x, i) => (firstIsScene && i === 0 ? firstKey : sha256(scenePrefix + x + lockTag + gTag + idTag + (panelOf(i) ? `|panel:${panelOf(i)!.sha256}` : ''))))
+      const drawScene = async (i: number) => {
+        const panel = panelOf(i)
+        if (!panel) return draw(scenePrompts[i])
+        const bytes = await blobs.getBytes(panel.ref)
+        if (!bytes || sha256(bytes) !== panel.sha256) throw new StageError('ASSET_BYTES_MISSING', `storyboard panel of ${sceneList[i].id} is missing or changed`)
+        return imageRef(`${scenePrompts[i]}\n\n${PANEL_LINE}`, bytes, imageKey)
+      }
       const sceneMeta = await Promise.all(sceneKeys.map((k) => meta('image', k)))
       let im: any = scenes ? null : await withBytes(await meta('image', ik)), generated = lockDrawn, reused = 0
       const ttsKeys = chunks.map((c) => sha256(ttsCacheIdentity(voice, c.text)))
@@ -581,7 +590,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
         let x: any = madeNow.get(sceneKeys[i]) ?? (sceneMeta[i] ? await withBytes(sceneMeta[i]) : null)
         if (x) reused++; else {
           if (guard && !guard.take(SENIOR_COST.imageUsd)) return budgetWait(left(i))
-          try { x = production ? await plannedAsset(sc.id, sceneKeys[i], 'image', () => draw(scenePrompts[i])) : await draw(scenePrompts[i]) } finally { guard?.done(SENIOR_COST.imageUsd) }
+          try { x = production ? await plannedAsset(sc.id, sceneKeys[i], 'image', () => drawScene(i)) : await drawScene(i) } finally { guard?.done(SENIOR_COST.imageUsd) }
           generated++
         }
         if (production) x = await plannedAsset(sc.id, sceneKeys[i], 'image', async () => x)

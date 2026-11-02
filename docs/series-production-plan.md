@@ -25,5 +25,8 @@ plan: one storyboard panel = one script scene (12 → 12; the legacy 12→48 chi
 `scene-NN`, narration verbatim, and no per-scene prompt (the scene prompt is built here from the scene and the Character
 Bible). Optional `scene.rules` carry the storyboard's own constraints: `monochrome` (prompt line + `hue=s=0` at RENDER),
 `hideIdentity` (scenes before the reveal) and `reveal`. They are validated with the script and are part of the picture
-prompt, so changing a rule changes only that scene's cache identity. `tools/approved-storyboard-e2e.test.ts` runs the
+prompt, so changing a rule changes only that scene's cache identity. Optional `scene.panel` (`{ ref, sha256 }`, senior only) is the approved
+storyboard panel the browser stored with the existing content-addressed image upload; job_create accepts only panels of the
+caller's own workspace, the Worker checks the bytes' hash and draws the scene FROM that image (a real Gemini image input),
+and the panel hash joins the scene cache key (scenes without a panel keep their keys). `tools/approved-storyboard-e2e.test.ts` runs the
 Adapter's fixture through the real Job API, Worker, mocked Gemini/TTS and real ffmpeg (revised Job, 1920×1080, package).
