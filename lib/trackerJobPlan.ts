@@ -4,9 +4,10 @@
 import { bridgeProductionPlan } from './productionRecipeBridge.js';
 import { recipeFor, bindingErrors } from './jobs/recipes.js';
 import { PROFILES, type ProfileId } from './jobs/profiles.js';
-import type { ProductionPlan } from './productionPlan.js';
+import { validateProductionPlan, type ProductionPlan } from './productionPlan.js';
 
 export function prepareTrackerJobPlan(plan: ProductionPlan, profileId: ProfileId, recipeId: string) {
+  validateProductionPlan(plan);
   const profile = PROFILES[profileId];
   if (!profile) throw new Error('unknown Tracker profile');
   const binding = recipeFor(recipeId);
