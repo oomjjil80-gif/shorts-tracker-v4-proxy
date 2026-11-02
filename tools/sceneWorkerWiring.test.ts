@@ -6,7 +6,7 @@ test('scene executor is wired inside existing gated and budget-checked Worker st
  const types=readFileSync('worker/types.ts','utf8');
  const gate=worker.indexOf("if (deps.blocks) {");
  const budget=worker.indexOf("job.spentUsd + exec.estimateUsd(job)");
- const hook=worker.indexOf("executeScene: (input, generate)");
+ const hook=worker.indexOf("executeScene: (input, generate, recover)");
  const paid=worker.indexOf("const metered = withUsageLedger");
  assert.ok(gate>=0 && gate<budget && budget<paid && paid<hook);
  assert.match(worker,/!deps\.blocks \|\| gate\.kind !== 'RUN' \|\| !input\.approved/);

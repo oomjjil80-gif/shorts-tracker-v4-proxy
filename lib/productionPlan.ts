@@ -6,14 +6,14 @@ export type StepExecutor = (step: ProductionStep, prior: ReadonlyMap<string, unk
 export type ExecutionResult = { outputs: Map<string, unknown>; completed: string[] };
 const kinds = new Set<ProductionStepKind>(['research','outline','script','review','image','voice','render','package']);
 export function validateProductionPlan(plan: ProductionPlan): ProductionStep[] {
-  if (!plan.id?.trim() || !plan.title?.trim()) throw new Error('plan identity required');
+  if (!plan || typeof plan.id !== 'string' || typeof plan.title !== 'string' || !plan.id.trim() || !plan.title.trim()) throw new Error('plan identity required');
   if (!['video','carousel'].includes(plan.format)) throw new Error('invalid format');
-  if (!plan.steps.length) throw new Error('empty plan');
+  if (!Array.isArray(plan.steps) || !plan.steps.length || plan.steps.length > 500) throw new Error('empty plan');
   if (plan.constraints?.maxScenes !== undefined && (!Number.isInteger(plan.constraints.maxScenes) || plan.constraints.maxScenes < 1)) throw new Error('invalid maxScenes');
   if (plan.constraints?.maxCostUsd !== undefined && (!Number.isFinite(plan.constraints.maxCostUsd) || plan.constraints.maxCostUsd < 0)) throw new Error('invalid maxCostUsd');
   const byId = new Map<string, ProductionStep>();
   for (const step of plan.steps) {
-    if (!step.id?.trim() || !kinds.has(step.kind) || byId.has(step.id)) throw new Error('invalid or duplicate step');
+    if (!step || typeof step.id !== 'string' || !step.id.trim() || !kinds.has(step.kind) || byId.has(step.id) || !Array.isArray(step.dependsOn) || step.dependsOn.some(x => typeof x !== 'string') || (step.sceneId !== undefined && (typeof step.sceneId !== 'string' || !step.sceneId.trim()))) throw new Error('invalid or duplicate step');
     byId.set(step.id, step);
   }
   const scenes = new Set(plan.steps.filter(s => s.sceneId).map(s => s.sceneId));

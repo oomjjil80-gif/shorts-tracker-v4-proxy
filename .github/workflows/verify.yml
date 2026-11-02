@@ -74,7 +74,12 @@ jobs:
           OFFLINE_RESTORE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/jobs/sleepDraftImport\.ts$' || true)"
           SLEEP_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/sleepClassic\.ts|lib/generative/longform\.ts|worker/stages/longform\.ts|tools/sleep-classic\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           SLEEP_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/generative/sleepClassic\.ts$' || true)"
-          if [ -z "$BUDGET_OTHER" ] && [ -n "$BUDGET_PRESENT" ]; then
+          # Series integration uses the real Job API, approval gate, Longform ASSET and durable mock storage.
+          SERIES_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/(seriesProduction|productionPlan|productionRecipeBridge|trackerJobPlan|sceneArtifactStore|sceneWorkerAdapter)\.ts|lib/jobs/http\.ts|lib/generative/longform\.ts|worker/(runJob|types|stages/longform)\.ts|tools/(seriesProduction|productionPlan|productionRecipeBridge|trackerJobPlan|productionJobGuard|sceneArtifactStore|sceneWorkerAdapter|sceneWorkerWiring|series-job-e2e)\.test\.ts|docs/series-production-plan\.md|\.github/workflows/(verify|series-plan-focused)\.yml)$' || true)"
+          SERIES_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/trackerJobPlan\.ts$' || true)"
+          if [ -z "$SERIES_OTHER" ] && [ -n "$SERIES_PRESENT" ]; then
+            echo "mode=series-plan" >> "$GITHUB_OUTPUT"
+          elif [ -z "$BUDGET_OTHER" ] && [ -n "$BUDGET_PRESENT" ]; then
             echo "mode=ai-budget" >> "$GITHUB_OUTPUT"
           elif [ -z "$ASSET_BILLING_OTHER" ] && [ -n "$ASSET_BILLING_PRESENT" ]; then
             echo "mode=odyssey-asset-billing" >> "$GITHUB_OUTPUT"
@@ -114,6 +119,14 @@ jobs:
           else
             echo "mode=full" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify series integration and existing Longform contracts
+        if: steps.scope.outputs.mode == 'series-plan'
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 5m npx tsx --test tools/seriesProduction.test.ts tools/productionPlan.test.ts tools/productionRecipeBridge.test.ts tools/trackerJobPlan.test.ts tools/productionJobGuard.test.ts tools/sceneArtifactStore.test.ts tools/sceneWorkerAdapter.test.ts tools/sceneWorkerWiring.test.ts tools/series-job-e2e.test.ts tools/block-engine.test.ts tools/longform-cache-dedupe.test.ts
+          timeout 5m npx tsx --test --test-name-pattern='wisdom_longform is|Longform contract:|T8 \+ T13|T9:|SENIOR 17-21|SENIOR BUDGET' tools/wisdom-longform.test.ts
 
       - name: Verify Odyssey billing recovery + Job API/store
         if: steps.scope.outputs.mode == 'odyssey-asset-billing'

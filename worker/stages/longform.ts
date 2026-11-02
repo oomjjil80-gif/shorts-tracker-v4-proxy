@@ -46,6 +46,8 @@ import { cacheEntryIsCanonical } from '../../lib/generative/cache.js'
 import { guardedTts, clipToWav, assembleNarration, NARRATION_LOUDNORM, narrationConcatTimeoutMs, type TtsFn } from '../../lib/generative/narration.js'
 
 
+import { executableTrackerPlan } from '../../lib/trackerJobPlan.js'
+
 const isLongform = (job: any) => isLongformProfile(job?.profile)
 const featuresOf = (deps: { features?: FeatureResolver }, job: any) => (deps.features ?? profileFeatures)(job)
 
@@ -129,6 +131,13 @@ export function createLongformPlanExecutor(deps: { apiKey?: string; planner?: Lo
       if (!isLongform(job)) throw new StageError('PROFILE_UNSUPPORTED', 'longform PLAN only handles longform profiles')
       const brief = (job.planRef ? await blobs.getJson(job.planRef) : null) as LongformBrief | null
       if (!brief || brief.schema !== 'generative-brief/1' || brief.profile !== job.profile) throw new StageError('BRIEF_INVALID', `invalid ${job.profile} brief`)
+      if (brief.productionPlan) {
+        let prepared: ReturnType<typeof executableTrackerPlan>
+        try { prepared = executableTrackerPlan(brief.productionPlan, brief, (brief as any).recipe) }
+        catch (e: any) { throw new StageError('PRODUCTION_PLAN_INVALID', e.message, false) }
+        const stored = await putAddressed(blobs, 'generative-scripts', prepared.script)
+        return { outputRef: stored.path, outputHash: stored.sha256, costUsd: 0, result: { profile: job.profile, scriptRef: stored.path, productionPlanId: prepared.plan.id, scenes: prepared.images.length } }
+      }
       const mode = longformMode(job.profile), scenes = mode.images === 'scenes', yasa = job.profile === 'yasa_longform', senior = job.profile === 'senior_longform', sleep = isSleepClassic(brief)
       // Senior: six acts; 숨은야담: the DNA's eight acts (one section per act); Wisdom: sections sized by the running time
       const size = sleep ? { sections: SLEEP_CHAPTERS.length, charsPerSection: 0 } : yasa ? { sections: YASA_ACTS.length, charsPerSection: 0 } : scenes ? (() => { const p = seniorScenePlan(brief.targetSeconds); return { sections: p.acts, charsPerSection: p.charsPerAct } })() : sectionPlan(brief.targetSeconds)
@@ -404,7 +413,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
     // a BUDGET stop thrown before any paid call (paid() below) ends the run as the BUDGET wait it carries
     run: (ctx: StageContext) => assetRun(ctx).catch((e: any) => { if (e?.budgetStop) return e.budgetStop; throw e })
   }
-  async function assetRun({ job, blobs, previous, signal, costSoFar }: StageContext): Promise<any> {
+  async function assetRun({ job, blobs, previous, signal, costSoFar, executeScene }: StageContext): Promise<any> {
     {
       if (!isLongform(job)) throw new StageError('PROFILE_UNSUPPORTED', 'longform ASSET only handles longform profiles')
       needFeatures(featuresOf(deps, job), ['IMAGE', 'TTS'], 'Longform ASSET')
@@ -413,6 +422,34 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       const script = (scriptRef ? await blobs.getJson(scriptRef) : null) as LongformScript | null
       if (!script || script.schema !== mode.script) throw new StageError('SCRIPT_MISSING', 'ASSET requires the longform PLAN script')
       const brief = (job.planRef ? await blobs.getJson(job.planRef) : null) as LongformBrief | null
+      const production = brief?.productionPlan ? executableTrackerPlan(brief.productionPlan, brief, (brief as any).recipe) : null
+      if (production && (!executeScene || sha256(JSON.stringify(production.script)) !== sha256(JSON.stringify(script)))) throw new StageError('PRODUCTION_PLAN_INVALID', 'stored script or gated scene executor does not match productionPlan', false)
+      // Reuse the Longform cache and providers, with an atomic provider claim for planned scenes.
+      const plannedFlights = new Map<string, Promise<any>>()
+      const plannedAsset = (sceneId: string, key: string, kind: 'image' | 'tts', make: () => Promise<any>) => {
+        const flightKey = sceneId + '|' + kind + '|' + key
+        if (!plannedFlights.has(flightKey)) plannedFlights.set(flightKey, run())
+        return plannedFlights.get(flightKey)!
+        async function run() {
+        const cachePath = `generative-cache/${kind}/${key}.json`
+        const recover = async () => {
+          const m: any = await blobs.getJson(cachePath)
+          const bytes = m?.ref ? await blobs.getBytes(m.ref) : null
+          return bytes && sha256(bytes) === m.sha256 ? { outputRef: m.ref, outputHash: m.sha256 } : null
+        }
+        const result = await executeScene!({ planId: production!.plan.id, sceneId, sceneInput: { kind, key }, approved: true }, async () => {
+          const value = await make(), hash = sha256(value.bytes)
+          const ref = `generative-assets/${kind === 'image' ? 'images' : 'audio'}/${hash}.${kind === 'image' ? 'jpg' : 'mp3'}`
+          await blobs.putBytes(ref, value.bytes, value.contentType)
+          await blobs.putJson(cachePath, { ref, sha256: hash, contentType: value.contentType, provider: value.provider, model: value.model })
+          return { outputRef: ref, outputHash: hash }
+        }, recover)
+        if (result.kind === 'WAIT_APPROVAL') throw new StageError('SCENE_APPROVAL_REQUIRED', 'scene not approved', false)
+        const bytes = await blobs.getBytes(result.artifact.outputRef)
+        if (!bytes || sha256(bytes) !== result.artifact.outputHash) throw new StageError('SCENE_OUTPUT_MISSING', 'stored scene output is missing or corrupt', false)
+        return { ref: result.artifact.outputRef, sha256: result.artifact.outputHash, bytes, contentType: kind === 'image' ? 'image/jpeg' : 'audio/mpeg' }
+        }
+      }
       // the voice and picture style resolved at job_create (never re-guessed here); older briefs keep their voice
       const voice = briefVoice(brief, job.profile as CreativeContent)
       const meta = async (kind: string, key: string) => { try { const m: any = await blobs.getJson(`generative-cache/${kind}/${key}.json`); return m?.ref ? m : null } catch { return null } }
@@ -453,10 +490,11 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       // one that would take the job over its budget is never sent: the job waits (BUDGET) with what it needs, everything
       // made so far stored (cache), and job_resume goes on paying only for what is missing.
       const before = (await costSoFar?.()) ?? { confirmed: 0, unconfirmed: 0 }
-      const guard = senior && Number.isFinite(job.budgetUsd) ? budgetGuard({ budgetUsd: job.budgetUsd, spentBefore: before.confirmed + before.unconfirmed, unconfirmedBefore: before.unconfirmed }) : null
+      const budgetUsd = Math.min(job.budgetUsd, production?.plan.constraints?.maxCostUsd ?? job.budgetUsd)
+      const guard = (senior || !!production) && Number.isFinite(job.budgetUsd) ? budgetGuard({ budgetUsd, spentBefore: before.confirmed + before.unconfirmed, unconfirmedBefore: before.unconfirmed }) : null
       let leftNow = () => ({ images: new Set(scenePrompts).size || 1, chars: chunks.reduce((a, c) => a + [...c.text].length, 0) })
       let madeOf = (_l: { images: number; chars: number }) => ({ pictures: 0, narration: 0 })
-      const budgetWait = (l: { images: number; chars: number }) => ({ result: { budget: { ...seniorCostEstimate({ pictures: l.images, narrationChars: l.chars, spentUsd: guard!.spent(), unconfirmedUsd: guard!.unconfirmed(), budgetUsd: job.budgetUsd }), stopped: 'before the next paid call', made: madeOf(l) } }, wait: 'BUDGET' as const })
+      const budgetWait = (l: { images: number; chars: number }) => ({ result: { budget: { ...seniorCostEstimate({ pictures: l.images, narrationChars: l.chars, spentUsd: guard!.spent(), unconfirmedUsd: guard!.unconfirmed(), budgetUsd }), stopped: 'before the next paid call', made: madeOf(l) } }, wait: 'BUDGET' as const })
       const paid = async <T>(cost: number, call: () => Promise<T>): Promise<T> => {
         if (!guard) return call()
         if (!guard.take(cost)) throw Object.assign(new Error('BUDGET: the next paid call would cross the job budget'), { budgetStop: budgetWait(leftNow()) })
@@ -514,7 +552,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       const ttsMissing = new Set(chunks.map((_, i) => i).filter((i) => !ttsMeta[i]))
       const left = (fromScene: number) => ({ images: new Set(sceneKeys.filter((k, i) => i >= fromScene && !sceneMeta[i] && !madeNow.has(k))).size, chars: [...ttsMissing].reduce((a, i) => a + [...chunks[i].text].length, 0) })
       leftNow = () => left(0); madeOf = (l) => ({ pictures: new Set(sceneKeys).size - l.images, narration: chunks.length - ttsMissing.size })
-      if (guard && !seniorCostEstimate({ pictures: left(0).images, narrationChars: left(0).chars, spentUsd: guard.spent(), budgetUsd: job.budgetUsd }).fits) return budgetWait(left(0))
+      if (guard && !seniorCostEstimate({ pictures: left(0).images, narrationChars: left(0).chars, spentUsd: guard.spent(), budgetUsd }).fits) return budgetWait(left(0))
       // 썸네일만 다시 생성 (asked from the phone while the job waited): ONE new thumbnail picture with the character lock,
       // checked against the kept representative; the approved picture stays the lock (every key above is unchanged)
       if (styleLock && approval?.thumbnailRequest) {
@@ -542,9 +580,10 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
         let x: any = madeNow.get(sceneKeys[i]) ?? (sceneMeta[i] ? await withBytes(sceneMeta[i]) : null)
         if (x) reused++; else {
           if (guard && !guard.take(SENIOR_COST.imageUsd)) return budgetWait(left(i))
-          try { x = await draw(scenePrompts[i]) } finally { guard?.done(SENIOR_COST.imageUsd) }
+          try { x = production ? await plannedAsset(sc.id, sceneKeys[i], 'image', () => draw(scenePrompts[i])) : await draw(scenePrompts[i]) } finally { guard?.done(SENIOR_COST.imageUsd) }
           generated++
         }
+        if (production) x = await plannedAsset(sc.id, sceneKeys[i], 'image', async () => x)
         madeNow.set(sceneKeys[i], x)
         const h = sha256(x.bytes), ref = `generative-assets/images/${h}.jpg`
         if (!cacheEntryIsCanonical(x, ref, h)) {
@@ -588,7 +627,7 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
             if (au) reused++; else {
               const cost = ttsUsdOf([...c.text].length)
               if (guard && !guard.take(cost)) { budgetHit = true; return }
-              try { au = await guardedTts(tts as TtsFn, c.text, apiKey, voice) } finally { guard?.done(cost) }
+              try { au = production ? await plannedAsset('voice:' + key, key, 'tts', () => guardedTts(tts as TtsFn, c.text, apiKey, voice)) : await guardedTts(tts as TtsFn, c.text, apiKey, voice) } finally { guard?.done(cost) }
               generated++; ttsMissing.delete(i)
             }
             const ah = sha256(au.bytes), ref = `generative-assets/audio/${ah}.mp3`
