@@ -8,6 +8,9 @@ import { GOLDEN_IDENTITY_VERSION, goldenImageRequest, goldenSpec, identityOf } f
 import type { VisualStyleProfile } from '../lib/generative/visualStyle.js'
 import { handleBenchmarkRef01Diagnostic } from '../lib/benchmarkRef01Diagnostic.js'
 
+// 서버 내부 호출 표시(JSON 본문으로는 만들 수 없음): 카드뉴스 라우터가 1회용 승인·Ledger를 거친 뒤에만 붙인다.
+export const INTERNAL_IMAGE_CALL = Symbol.for('tracker.internalImageCall')
+
 function setCors(req: Request, res: Response) {
   const origin = String(req.headers.origin || '')
   const allowed =
@@ -93,6 +96,9 @@ export default async function handler(req: Request, res: Response) {
   }
 
   if (req.method !== 'POST') return res.status(405).json({ error: { message: 'Method not allowed' } })
+  // 카드뉴스 이미지는 /api/story 카드뉴스 작업(서버 1회용 승인 + Ledger)으로만 만든다. 직접 호출은 Gemini 전에 거부한다.
+  if (String(req.body?.input?.profile || '').trim() === 'cardnews' && (req as any)[INTERNAL_IMAGE_CALL] !== true)
+    return res.status(403).json({ error: { code: 'CARDNEWS_APPROVAL_REQUIRED', message: '카드뉴스 이미지는 서버 비용 승인 경로로만 생성할 수 있습니다.' } })
 
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) return res.status(503).json({ error: { message: 'GEMINI_API_KEY is not configured' } })
