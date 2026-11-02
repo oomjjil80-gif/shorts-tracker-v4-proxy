@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createMemoryBlobStore } from '../lib/jobs/blobs.js'
 import { createCardnewsHttp } from '../lib/cardnews/http.js'
+import { createHash } from 'node:crypto'
+import imageHandler from '../api/image.js'
+import { monthInKst } from '../lib/generative/monthlyBudgetPolicy.js'
 
 // Real API adapters, real PNG/ZIP bytes, durable store adapter recreation; provider network is entirely mocked.
 test('nine panels: approved Gemini → store → restart → replace only panel 2 → ordered ZIP; no unapproved calls', async () => {
@@ -73,3 +76,41 @@ test('nine panels: approved Gemini → store → restart → replace only panel 
     assert.equal(calls,10)
   } finally { globalThis.fetch=oldFetch; if(oldKey===undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY=oldKey }
 })
+
+// 감사 P1-E: 8장 덱이 아닌 카드뉴스 이미지도 서버 1회용 승인 + Ledger. /api/image 직접 호출(profile cardnews)은 Gemini 전에 거부(가짜 fetch, 유료 0)
+
+const PNG = '89504e470d0a1a0a0000000d4948445200000001000000010806000000'
+const KEY = 'k'.repeat(32), WS = createHash('sha256').update(KEY).digest('hex')
+const imageInput = { prompt: '4장 덱 2장 장면', aspectRatio: '4:5', imageSize: '1K', cutIndex: 1, references: [], profile: 'cardnews' }
+async function withFakeGemini<T>(fn: (calls: () => number) => Promise<T>) {
+  const prevKey = process.env.GEMINI_API_KEY, prevFetch = globalThis.fetch; let n = 0
+  process.env.GEMINI_API_KEY = 'test-key'
+  globalThis.fetch = (async () => { n++; return new Response(JSON.stringify({ id: 'r', output_image: { data: Buffer.from(PNG, 'hex').toString('base64'), mime_type: 'image/png' } }), { status: 200 }) }) as any
+  try { return await fn(() => n) } finally { globalThis.fetch = prevFetch; if (prevKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = prevKey }
+}
+const run = async (h: any, req: any) => { let status = 0, json: any; await h({ query: {}, headers: {}, ...req }, { setHeader() {}, end() { return this }, status(s: number) { status = s; return this }, json(b: any) { json = b; return this } }); return { status, json } }
+
+test('/api/image 직접 호출(profile cardnews)은 승인 없이 Gemini에 가지 않는다(403)', () => withFakeGemini(async (calls) => {
+  const r = await run(imageHandler, { method: 'POST', body: { contractVersion: '1.5', taskType: 'cut_image', input: imageInput } })
+  assert.equal(r.status, 403); assert.equal(r.json.error.code, 'CARDNEWS_APPROVAL_REQUIRED'); assert.equal(calls(), 0)
+  // JSON 본문으로 내부 호출 표시를 흉내 내도 통과하지 못한다(Symbol은 JSON에 없음)
+  const spoof = await run(imageHandler, { method: 'POST', body: { input: imageInput, internal: true, 'Symbol(tracker.internalImageCall)': true } })
+  assert.equal(spoof.status, 403); assert.equal(calls(), 0)
+}))
+
+test('cardnews_image_direct: 402 견적 → 승인 1회 → Gemini 1회 → Ledger 기록, 재사용·동시 요청·내용 변경은 차단', () => withFakeGemini(async (calls) => {
+  const blobs = createMemoryBlobStore(), h = createCardnewsHttp({ blobs })
+  const post = (body: any) => run(h, { method: 'POST', headers: { 'x-sync-key': KEY }, body: { taskType: 'cardnews_image_direct', ...body } })
+  assert.equal((await run(h, { method: 'POST', headers: {}, body: { taskType: 'cardnews_image_direct', imageInput } })).status, 401)
+  const q = await post({ imageInput }); assert.equal(q.status, 402); assert.equal(q.json.estimate.usd, 0.067); assert.equal(calls(), 0)
+  const ok = { imageInput, costApproved: true, approvedUsd: 0.067, approvalId: q.json.approval.approvalId }
+  const changed = await post({ ...ok, imageInput: { ...imageInput, prompt: '다른 장면' } }); assert.equal(changed.status, 402); assert.equal(calls(), 0)
+  const [a, b] = await Promise.all([post(ok), post(ok)])
+  assert.deepEqual([a.status, b.status].sort(), [200, 409]); assert.equal(calls(), 1)
+  assert.ok((a.status === 200 ? a : b).json.image.base64)
+  assert.equal((await post(ok)).status, 409); assert.equal(calls(), 1)
+  const ledger: any = await blobs.getJson(`ai-spend/${WS}/${monthInKst(new Date())}.json`)
+  assert.equal(ledger.calls, 1); assert.equal(ledger.usd, 0.067)
+  // 4:5·cardnews가 아닌 입력은 견적도 내지 않는다
+  assert.equal((await post({ imageInput: { ...imageInput, aspectRatio: '9:16' } })).status, 400); assert.equal(calls(), 1)
+}))

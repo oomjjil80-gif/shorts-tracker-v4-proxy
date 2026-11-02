@@ -2,7 +2,7 @@
 // Run: node --import tsx --test tools/cardnews-refs.test.ts
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import imageHandler from '../api/image.js'
+import imageHandler, { INTERNAL_IMAGE_CALL } from '../api/image.js'
 import { sanitizeState } from '../lib/cardnews/cardnews.js'
 import { orderRoleReferences, roleReferenceInstruction } from '../lib/cardnews/references.js'
 
@@ -13,7 +13,7 @@ async function callImage(input: any) {
   process.env.GEMINI_API_KEY = 'test-key'
   globalThis.fetch = (async (_u: string, init: any) => { sent.push(JSON.parse(init.body)); return new Response(JSON.stringify({ id: 'r1', output_image: { data: PNG.toString('base64'), mime_type: 'image/png' } }), { status: 200 }) }) as any
   let status = 0, json: any
-  try { await imageHandler({ method: 'POST', query: {}, headers: {}, body: { contractVersion: '1.5', taskType: 'cut_image', input } } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } } as any) }
+  try { await imageHandler({ method: 'POST', query: {}, headers: {}, body: { contractVersion: '1.5', taskType: 'cut_image', input }, [INTERNAL_IMAGE_CALL]: true } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } } as any) }
   finally { globalThis.fetch = prevFetch; if (prevKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = prevKey }
   return { status, json, sent: sent[0] }
 }
