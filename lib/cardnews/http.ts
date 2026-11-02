@@ -66,3 +66,5 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
     }
   }
 }
+let blobs: JobBlobStore | null = null
+export const defaultCardnewsHttp = (req: Request, res: Response) => createCardnewsHttp({ blobs: (blobs ??= createVercelJobBlobStore()) })(req, res)
