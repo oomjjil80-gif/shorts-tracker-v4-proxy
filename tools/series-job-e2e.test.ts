@@ -77,11 +77,14 @@ test('productionPlan API → approved Worker → 3 scenes → scene 2 edit → p
  const fixtureImage=join(dir,'fixture.jpg')
  execFileSync('ffmpeg',['-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=blue:s=640x360:d=1','-frames:v','1','-y',fixtureImage])
  const validJpeg=await readFile(fixtureImage)
+ const changedFixture=join(dir,'changed-fixture.jpg')
+ execFileSync('ffmpeg',['-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=red:s=640x360:d=1','-frames:v','1','-y',changedFixture])
+ const changedJpeg=await readFile(changedFixture)
  let blobs=diskBlobs(dir),store=createJobStore(db),blocks=createBlockStore(db)
  const calls:{image:string[],tts:number}={image:[],tts:0}, original=globalThis.fetch
  globalThis.fetch=meteredFetch((async (url:any,init:any)=>{
   const body=JSON.parse(init.body)
-  if(String(url).startsWith('https://generativelanguage.googleapis.com/')) { const prompt=body.input[0].text;calls.image.push(prompt);return Response.json({output_image:{data:validJpeg.toString('base64'),mime_type:'image/jpeg'},usage:{}}) }
+  if(String(url).startsWith('https://generativelanguage.googleapis.com/')) { const prompt=body.input[0].text;calls.image.push(prompt);return Response.json({output_image:{data:(prompt.includes('changed fountain')?changedJpeg:validJpeg).toString('base64'),mime_type:'image/jpeg'},usage:{}}) }
   assert.equal(String(url),'https://api.openai.com/v1/audio/speech','unexpected paid endpoint')
   calls.tts++;return new Response(new Uint8Array(wav()),{headers:{'content-type':'audio/mpeg'}})
  }) as any,()=>{})
