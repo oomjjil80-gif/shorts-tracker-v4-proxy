@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createTestDb } from './testDb.js'
@@ -9,7 +10,7 @@ import { createBlockStore } from '../lib/jobs/blockStore.js'
 import { createBlockGate } from '../lib/jobs/blockRuntime.js'
 import { createJobsHttp } from '../lib/jobs/http.js'
 import { sha256, type JobBlobStore } from '../lib/jobs/blobs.js'
-import { createLongformPlanExecutor, createLongformAssetExecutor } from '../worker/stages/longform.js'
+import { createLongformPlanExecutor, createLongformAssetExecutor, createLongformRenderExecutor } from '../worker/stages/longform.js'
 import { runOnce } from '../worker/runJob.js'
 import { meteredFetch } from '../lib/generative/usageLedger.js'
 import { executeApprovedScene } from '../lib/sceneWorkerAdapter.js'
@@ -73,16 +74,19 @@ function plan(changed=false) {
 
 test('productionPlan API → approved Worker → 3 scenes → scene 2 edit → persisted restart: exactly four Gemini calls', async () => {
  const db=await createTestDb(), dir=await mkdtemp(join(tmpdir(),'series-e2e-'))
+ const fixtureImage=join(dir,'fixture.jpg')
+ execFileSync('ffmpeg',['-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=blue:s=640x360:d=1','-frames:v','1','-y',fixtureImage])
+ const validJpeg=await readFile(fixtureImage)
  let blobs=diskBlobs(dir),store=createJobStore(db),blocks=createBlockStore(db)
  const calls:{image:string[],tts:number}={image:[],tts:0}, original=globalThis.fetch
  globalThis.fetch=meteredFetch((async (url:any,init:any)=>{
   const body=JSON.parse(init.body)
-  if(String(url).startsWith('https://generativelanguage.googleapis.com/')) { const prompt=body.input[0].text;calls.image.push(prompt);return Response.json({output_image:{data:Buffer.from('mock image '+prompt).toString('base64'),mime_type:'image/jpeg'},usage:{}}) }
+  if(String(url).startsWith('https://generativelanguage.googleapis.com/')) { const prompt=body.input[0].text;calls.image.push(prompt);return Response.json({output_image:{data:validJpeg.toString('base64'),mime_type:'image/jpeg'},usage:{}}) }
   assert.equal(String(url),'https://api.openai.com/v1/audio/speech','unexpected paid endpoint')
   calls.tts++;return new Response(new Uint8Array(wav()),{headers:{'content-type':'audio/mpeg'}})
  }) as any,()=>{})
  const call=async(b:any,method='POST')=>{let status=0,json:any;await createJobsHttp({getStore:async()=>store,getBlocks:async()=>blocks,blobs})({method,headers:{'x-sync-key':'k'.repeat(32)},body:method==='POST'?b:undefined,query:method==='GET'?b:{}} as any,{setHeader(){},status(n:number){status=n;return this},json(v:any){json=v;return this},end(){return this}} as any);return {status,json}}
- const deps=()=>({store,blobs,workerId:'series-test',resolveSourceAsset:async()=>({} as any),blocks:createBlockGate(blocks,async(id,stage)=>store.getLatestSucceeded(id,stage)),executors:[createLongformPlanExecutor({apiKey:'mock'}),createLongformAssetExecutor({apiKey:'mock',imageKey:'mock'})]})
+ const deps=()=>({store,blobs,workerId:'series-test',resolveSourceAsset:async()=>({} as any),blocks:createBlockGate(blocks,async(id,stage)=>store.getLatestSucceeded(id,stage)),executors:[createLongformPlanExecutor({apiKey:'mock'}),createLongformAssetExecutor({apiKey:'mock',imageKey:'mock'}),createLongformRenderExecutor()]})
  const create=async(p:any,key:string,budgetUsd=5)=>call({taskType:'job_create',profile:'senior_longform',idempotencyKey:key,budgetUsd,input:{kind:'text',text:'세네카의 관계와 부탁에 대한 이야기',targetSeconds:60,sample:true,recipe:'longform_script_approval',productionPlan:p}})
  const approve=async(id:string)=>{const v=await call({taskType:'job_blocks',id},'GET');const row=v.json.blocks.find((x:any)=>x.block==='SCRIPT_APPROVAL');const a=await call({taskType:'job_block_approve',jobId:id,block:'SCRIPT_APPROVAL',artifactHash:row.artifactHash});assert.equal(a.status,200,JSON.stringify(a.json))}
  try {
@@ -95,6 +99,19 @@ test('productionPlan API → approved Worker → 3 scenes → scene 2 edit → p
   assert.equal((await runOnce(deps()) as any).outcome,'waiting');assert.equal(calls.image.length,0);assert.equal(calls.tts,0)
   await approve(id)
   const parallel=await Promise.all([runOnce(deps()),runOnce({...deps(),workerId:'other'})]);assert.equal(parallel.filter(x=>x.ran).length,1);assert.equal((parallel.find(x=>x.ran) as any).outcome,'completed',JSON.stringify(parallel))
+  // The previously missing final output check: real ffmpeg, valid fixture JPEG,
+  // persisted MP4 bytes, ffprobe decode; no paid provider or Production access.
+  const rendered=await runOnce(deps())
+  assert.equal(rendered.outcome,'completed',JSON.stringify(rendered))
+  const renderRun:any=await store.getLatestSucceeded(id,'RENDER')
+  assert.ok(renderRun,'RENDER must succeed before calling the series complete')
+  const mp4=await blobs.getBytes(renderRun.outputRef)
+  assert.ok(mp4 && mp4.length>1000,'rendered MP4 must be persisted')
+  const mp4File=join(dir,'rendered.mp4');await writeFile(mp4File,mp4)
+  const probe=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','format=duration:stream=codec_type','-of','json',mp4File],{encoding:'utf8'}))
+  assert.ok(Number(probe.format.duration)>0,'MP4 must have duration')
+  assert.ok(probe.streams.some((x:any)=>x.codec_type==='video'),'MP4 must have video')
+  assert.ok(probe.streams.some((x:any)=>x.codec_type==='audio'),'MP4 must have narration audio')
   const first:any=await store.getLatestSucceeded(id,'ASSET');assert.ok(first,JSON.stringify(await store.listStageRuns(id)))
   const assets1:any=await blobs.getJson(first.outputRef);assert.equal(assets1.images.length,3);assert.equal(calls.image.length,3)
   assert.equal(first.usage.paidCalls,3+calls.tts);const tts=calls.tts
