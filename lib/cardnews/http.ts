@@ -40,26 +40,6 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
           const version=item?.versions?.find((v:any)=>v.id===item.selected)
           const ref=String(version?.ref ?? '')
           if (!ref.startsWith('cardnews/'+ws+'/images/') || !/^[0-9a-f]{64}\.(png|jpg|webp)$/.test(ref.slice(('cardnews/'+ws+'/images/').length))) throw new CardnewsError('BAD_REQUEST', '저장된 '+(i+1)+'번 이미지가 없습니다.')
-      // 유료: 서버가 발급한 1회용 승인이 있어야 하고, 공급자 호출 전에 '사용됨'이 원자적으로 기록된다(중복 호출·이중 결제 차단).
-      const kind = (task === 'cardnews_compose' || task === 'cardnews_storyboard') ? 'compose' : task === 'cardnews_review' ? 'review' : 'fix', est = task === 'cardnews_image_review' ? { usd: 0.01, calls: 1, note: '이미지 1장 AI 시각 검수 예상 비용(확정 단가 아님)' } : cardnewsEstimate(kind)
-      const approval = await requireApproval(o.blobs, { ws, input, quote: { task, usd: est.usd, calls: est.calls, note: est.note } })
-      const deps = (o.deps ?? depsFromEnv)()
-      let r: any, budget: any
-      try { r = task === 'cardnews_image_review' ? await reviewCardImage(input) : task === 'cardnews_storyboard' ? await storyboardForExistingCards(input, deps) : kind === 'compose' ? await composeCards(input, deps) : kind === 'review' ? await reviewCardsWithGpt(input, deps) : await fixFlaggedWithClaude(input, deps) }
-      finally { budget = await recordSpend(o.blobs, { ws, approval }) } // 실패해도 과금됐을 수 있어 기록은 남긴다($20은 경고만)
-      return res.status(200).json({ ok: true, ...r, budget })
-    } catch (e: any) {
-      if (e instanceof ApprovalError) return res.status(STATUS[e.code] ?? 402).json({ ok: false, error: { code: e.code, message: e.message }, ...e.extra })
-      if (e instanceof CardnewsError) return res.status(STATUS[e.code] ?? 400).json({ ok: false, error: { code: e.code, message: e.message }, ...e.extra })
-      console.error('[cardnews]', e?.message || e)
-      // provider/billing failures: the browser keeps the copy-and-paste path
-      return res.status(503).json({ ok: false, error: { code: 'PROVIDER_DOWN', message: String(e?.message || 'AI 호출에 실패했습니다. 복사·붙여넣기로 계속할 수 있습니다.').slice(0, 300) } })
-    }
-  }
-}
-let blobs: JobBlobStore | null = null
-export const defaultCardnewsHttp = (req: Request, res: Response) => createCardnewsHttp({ blobs: (blobs ??= createVercelJobBlobStore()) })(req, res)
-).test(ref)) throw new CardnewsError('BAD_REQUEST', '저장된 '+(i+1)+'번 이미지가 없습니다.')
           const bytes=await o.blobs.getBytes(ref)
           if (!bytes) throw new CardnewsError('NOT_FOUND', (i+1)+'번 이미지 원본이 없습니다.')
           entries.push({name:'panel-'+String(i+1).padStart(2,'0')+'.'+ref.split('.').pop(),bytes})
@@ -86,5 +66,3 @@ export const defaultCardnewsHttp = (req: Request, res: Response) => createCardne
     }
   }
 }
-let blobs: JobBlobStore | null = null
-export const defaultCardnewsHttp = (req: Request, res: Response) => createCardnewsHttp({ blobs: (blobs ??= createVercelJobBlobStore()) })(req, res)
