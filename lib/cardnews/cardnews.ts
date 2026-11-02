@@ -1,6 +1,7 @@
 // 카드뉴스 서버 기능(최소): 장별 대본 작성(Claude) → 독립 검수(GPT) → 문제 장만 수정(Claude) + 원고/승인 상태 저장·복구.
 // 기존 구성만 재사용한다: GPT = longformPlanner.respond(기존 Responses 호출), Claude = claude-story와 같은 Messages 호출,
 // 저장 = JobBlobStore(워크스페이스 = sha256(X-Sync-Key)). 유료 호출은 사용자가 예상 비용을 승인한 요청에서만 일어난다.
+import { planForCardnewsState } from './productionPlan.js'
 import { createHash } from 'node:crypto'
 import { respond } from '../generative/longformPlanner.js'
 import type { JobBlobStore } from '../jobs/blobs.js'
@@ -207,6 +208,7 @@ export function sanitizeState(s: any, ws = '') {
     cover: s.cover ? normalizeCover(s.cover) : null, cards: Array.isArray(s.cards) ? s.cards.slice(0, CARD_LIMITS.max).map((c: any, i: number) => ({ id: clean(c?.id) || `c${i + 1}`, role: ['hook', 'body', 'ending'].includes(c?.role) ? c.role : 'body', headline: String(c?.headline ?? '').slice(0, 200), body: String(c?.body ?? '').slice(0, 800), ...(cleanPlan(c?.visualPlan) ? { visualPlan: cleanPlan(c?.visualPlan)! } : {}) })) : [],
     review: s.review && typeof s.review === 'object' ? s.review : null, theme: String(s.theme ?? 'night').slice(0, 20), style: String(s.style ?? '').slice(0, 40), images: sanitizeImages(s.images, ws), refs: sanitizeRefs(s.refs, ws), scriptConfirmedAt: typeof s.scriptConfirmedAt === 'string' && s.cover ? s.scriptConfirmedAt.slice(0, 40) : null, pendingAiIds: Array.isArray(s.pendingAiIds) ? s.pendingAiIds.map((x: any) => String(x).slice(0, 20)).slice(0, CARD_LIMITS.max) : null
   }
+  try { out.productionPlan = planForCardnewsState(out) } catch (e: any) { throw new CardnewsError('BAD_REQUEST', e.message) }
   if (Buffer.byteLength(JSON.stringify(out)) > MAX_STATE_BYTES) throw new CardnewsError('STATE_TOO_LARGE', '저장할 카드뉴스가 너무 큽니다.')
   return out
 }
