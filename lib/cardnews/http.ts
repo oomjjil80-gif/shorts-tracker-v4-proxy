@@ -39,7 +39,7 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
           const item=state?.images?.[ids[i]]
           const version=item?.versions?.find((v:any)=>v.id===item.selected)
           const ref=String(version?.ref ?? '')
-          if (!new RegExp('^cardnews/'+ws+'/images/[0-9a-f]{64}\\\\.(png|jpg|webp)
+          if (!ref.startsWith('cardnews/'+ws+'/images/') || !/^[0-9a-f]{64}\.(png|jpg|webp)$/.test(ref.slice(('cardnews/'+ws+'/images/').length))) throw new CardnewsError('BAD_REQUEST', '저장된 '+(i+1)+'번 이미지가 없습니다.')
       // 유료: 서버가 발급한 1회용 승인이 있어야 하고, 공급자 호출 전에 '사용됨'이 원자적으로 기록된다(중복 호출·이중 결제 차단).
       const kind = (task === 'cardnews_compose' || task === 'cardnews_storyboard') ? 'compose' : task === 'cardnews_review' ? 'review' : 'fix', est = task === 'cardnews_image_review' ? { usd: 0.01, calls: 1, note: '이미지 1장 AI 시각 검수 예상 비용(확정 단가 아님)' } : cardnewsEstimate(kind)
       const approval = await requireApproval(o.blobs, { ws, input, quote: { task, usd: est.usd, calls: est.calls, note: est.note } })
