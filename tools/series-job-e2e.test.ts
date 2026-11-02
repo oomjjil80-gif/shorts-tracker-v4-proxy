@@ -89,7 +89,7 @@ test('productionPlan API → approved Worker → 3 scenes → scene 2 edit → p
   calls.tts++;return new Response(new Uint8Array(wav()),{headers:{'content-type':'audio/mpeg'}})
  }) as any,()=>{})
  const call=async(b:any,method='POST')=>{let status=0,json:any;await createJobsHttp({getStore:async()=>store,getBlocks:async()=>blocks,blobs})({method,headers:{'x-sync-key':'k'.repeat(32)},body:method==='POST'?b:undefined,query:method==='GET'?b:{}} as any,{setHeader(){},status(n:number){status=n;return this},json(v:any){json=v;return this},end(){return this}} as any);return {status,json}}
- const deps=()=>({store,blobs,workerId:'series-test',resolveSourceAsset:async()=>({} as any),blocks:createBlockGate(blocks,async(id,stage)=>store.getLatestSucceeded(id,stage)),executors:[createLongformPlanExecutor({apiKey:'mock'}),createLongformAssetExecutor({apiKey:'mock',imageKey:'mock'}),createLongformRenderExecutor()]})
+ const deps=()=>({store,blobs,workerId:'series-test',resolveSourceAsset:async()=>({} as any),blocks:createBlockGate(blocks,async(id,stage)=>store.getLatestSucceeded(id,stage)),executors:[createLongformPlanExecutor({apiKey:'mock'}),createLongformAssetExecutor({apiKey:'mock',imageKey:'mock'})]})
  const create=async(p:any,key:string,budgetUsd=5)=>call({taskType:'job_create',profile:'senior_longform',idempotencyKey:key,budgetUsd,input:{kind:'text',text:'세네카의 관계와 부탁에 대한 이야기',targetSeconds:60,sample:true,recipe:'longform_script_approval',productionPlan:p}})
  const approve=async(id:string)=>{const v=await call({taskType:'job_blocks',id},'GET');const row=v.json.blocks.find((x:any)=>x.block==='SCRIPT_APPROVAL');const a=await call({taskType:'job_block_approve',jobId:id,block:'SCRIPT_APPROVAL',artifactHash:row.artifactHash});assert.equal(a.status,200,JSON.stringify(a.json))}
  try {
@@ -102,19 +102,6 @@ test('productionPlan API → approved Worker → 3 scenes → scene 2 edit → p
   assert.equal((await runOnce(deps()) as any).outcome,'waiting');assert.equal(calls.image.length,0);assert.equal(calls.tts,0)
   await approve(id)
   const parallel=await Promise.all([runOnce(deps()),runOnce({...deps(),workerId:'other'})]);assert.equal(parallel.filter(x=>x.ran).length,1);assert.equal((parallel.find(x=>x.ran) as any).outcome,'completed',JSON.stringify(parallel))
-  // The previously missing final output check: real ffmpeg, valid fixture JPEG,
-  // persisted MP4 bytes, ffprobe decode; no paid provider or Production access.
-  const rendered=await runOnce(deps())
-  assert.equal(rendered.ran && rendered.outcome,'completed',JSON.stringify(rendered))
-  const renderRun:any=await store.getLatestSucceeded(id,'RENDER')
-  assert.ok(renderRun,'RENDER must succeed before calling the series complete')
-  const mp4=await blobs.getBytes(renderRun.outputRef)
-  assert.ok(mp4 && mp4.length>1000,'rendered MP4 must be persisted')
-  const mp4File=join(dir,'rendered.mp4');await writeFile(mp4File,mp4)
-  const probe=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','format=duration:stream=codec_type','-of','json',mp4File],{encoding:'utf8'}))
-  assert.ok(Number(probe.format.duration)>0,'MP4 must have duration')
-  assert.ok(probe.streams.some((x:any)=>x.codec_type==='video'),'MP4 must have video')
-  assert.ok(probe.streams.some((x:any)=>x.codec_type==='audio'),'MP4 must have narration audio')
   const first:any=await store.getLatestSucceeded(id,'ASSET');assert.ok(first,JSON.stringify(await store.listStageRuns(id)))
   const assets1:any=await blobs.getJson(first.outputRef);assert.equal(assets1.images.length,3);assert.equal(calls.image.length,3)
   assert.equal(first.usage.paidCalls,3+calls.tts);const tts=calls.tts
@@ -132,6 +119,20 @@ test('productionPlan API → approved Worker → 3 scenes → scene 2 edit → p
   // Budget and plan content are enforced before any new provider call.
   const lowPlan=plan(true);lowPlan.id='other-episode';const low=await create(lowPlan,'series-low-budget',0);assert.equal(low.status,201)
   assert.equal((await runOnce(deps()) as any).outcome,'budget_wait');assert.equal(calls.image.length,4)
+  // The previously missing final output check: real ffmpeg, valid fixture JPEG,
+  // persisted MP4 bytes, ffprobe decode; no paid provider or Production access.
+  const rendered=await runOnce({...deps(),executors:[createLongformRenderExecutor()]})
+  assert.equal(rendered.ran && rendered.outcome,'completed',JSON.stringify(rendered))
+  const renderRun:any=await store.getLatestSucceeded(id,'RENDER')
+  assert.ok(renderRun,'RENDER must succeed before calling the series complete')
+  const mp4=await blobs.getBytes(renderRun.outputRef)
+  assert.ok(mp4 && mp4.length>1000,'rendered MP4 must be persisted')
+  const mp4File=join(dir,'rendered.mp4');await writeFile(mp4File,mp4)
+  const probe=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','format=duration:stream=codec_type','-of','json',mp4File],{encoding:'utf8'}))
+  assert.ok(Number(probe.format.duration)>0,'MP4 must have duration')
+  assert.ok(probe.streams.some((x:any)=>x.codec_type==='video'),'MP4 must have video')
+  assert.ok(probe.streams.some((x:any)=>x.codec_type==='audio'),'MP4 must have narration audio')
+
  } finally {globalThis.fetch=original;await db.close!()}
 })
 
