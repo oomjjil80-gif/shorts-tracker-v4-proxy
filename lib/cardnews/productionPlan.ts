@@ -1,5 +1,5 @@
 /** Pure nine-panel Instagram plan: no providers, storage writes or billing. */
-import { validateProductionPlan, type ProductionPlan } from './productionPlan.js'
+import { validateProductionPlan, type ProductionPlan } from '../productionPlan.js'
 
 export type NinePanel = Readonly<{ id: string; headline: string; body: string; imageRef?: string }>
 export function createCardnewsProductionPlan(input: { id: string; title: string; panels: readonly NinePanel[] }): ProductionPlan {
