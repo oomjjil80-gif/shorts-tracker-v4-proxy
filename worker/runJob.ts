@@ -79,7 +79,7 @@ export async function runOnce(deps: RunDeps): Promise<RunOutcome> {
         resolveSourceFile: deps.resolveSourceFile ?? (async () => { throw new StageError('NO_SOURCE_FILE_RESOLVER', 'worker has no source file resolver') }),
         previous: (stage) => store.getLatestSucceeded(job.id, stage),
         executeScene: (input, generate) => {
-          if (!deps.blocks || gate.kind !== 'RUN' || !input.approved) throw new StageError('SCENE_APPROVAL_REQUIRED', 'scene execution requires an approved Tracker block');
+          if (job.stage !== 'ASSET' || !deps.blocks || gate.kind !== 'RUN' || !input.approved) throw new StageError('SCENE_APPROVAL_REQUIRED', 'scene execution requires an approved ASSET block');
           if (abort.signal.aborted) throw new StageError('SCENE_ABORTED', 'scene execution aborted');
           return executeApprovedScene(blobs, { ...input, workspaceId: job.workspaceId }, generate);
         },
