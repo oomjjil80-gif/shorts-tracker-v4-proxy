@@ -21,3 +21,15 @@ export function createCardnewsProductionPlan(input: { id: string; title: string;
   validateProductionPlan(plan)
   return plan
 }
+
+/** Derived from the existing saved deck; never rewrites approved text or treats storyboard crops as finals. */
+export function planForCardnewsState(state: any, id = 'cardnews'): ProductionPlan | null {
+  if (!state?.cover || state?.cards?.length !== 8 || !state.scriptConfirmedAt || state.review?.ok !== true) return null
+  const panels = [{ id: 'cover', headline: state.cover.title, body: state.cover.coverLine || '' }, ...state.cards]
+  const plan = createCardnewsProductionPlan({ id, title: state.cover.title, panels })
+  for (const step of plan.steps.filter(s => s.kind === 'image')) {
+    const card = panels.find(c => c.id === step.sceneId)
+    step.config = { ...step.config, visualPlan: card.visualPlan || null, storyboardRef: state.refs?.storyboard?.[step.sceneId!]?.ref || null }
+  }
+  return plan
+}
