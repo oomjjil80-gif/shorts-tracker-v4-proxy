@@ -21,6 +21,8 @@ import { createBlockStore, toProgress, type BlockStore } from './blockStore.js'
 import { BLOCK_IDS, BLOCKS, type BlockId } from './recipe.js'
 import { nextBlockDecision } from './blockScheduler.js'
 import { recipeFor, recipeSnapshot } from './recipes.js'
+import { prepareTrackerJobPlan, executableTrackerPlan } from '../trackerJobPlan.js'
+import type { ProductionPlan } from '../productionPlan.js'
 import { JobError, type Job, type StageRun } from './types.js'
 import { validateReferenceProfile, stableHash } from '../reference/contracts.js'
 import { analyzeRegisteredReference } from '../reference/serverPipeline.js'
@@ -530,6 +532,18 @@ export function createJobsHttp(deps: JobsDeps) {
       if (taskType === 'job_create') {
         const profile = String(body.profile || '')
         need(isProfileId(profile), `unknown profile: ${profile}`)
+        // Opt-in only: reject incompatible creative plans BEFORE any Job/blob writes or paid work.
+        // Plans are persisted in the immutable brief and consumed by Longform PLAN/ASSET.
+        if (body.input?.productionPlan !== undefined) {
+          need(body.input?.recipe, 'productionPlan requires an enforced recipe')
+          need(body.input.productionPlan && typeof body.input.productionPlan === 'object' && !Array.isArray(body.input.productionPlan), 'productionPlan must be an object')
+          try {
+            prepareTrackerJobPlan(body.input.productionPlan as ProductionPlan, profile as import('./profiles.js').ProfileId, String(body.input.recipe))
+          } catch (e: any) {
+            throw new JobError('BAD_REQUEST', String(e?.message || e))
+          }
+          need(deps.getBlocks, 'recipes are not available on this server')
+        }
         const longform = getProfile(profile).input === 'longform_brief'
         const generative = getProfile(profile).input !== 'source_asset'
         // Optional signed title/thumbnail approval. Never trust an unsigned client-side object.
@@ -570,6 +584,14 @@ export function createJobsHttp(deps: JobsDeps) {
             try { brief = longformRemasterBrief(src.planRef ? await deps.blobs.getJson(src.planRef) : null, { sourceJobId: src.id, sourceScriptRef: scriptRef, changes: body.input.changes }) } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
           } else
           try { brief = longform ? normalizeLongformBrief(body.input, profile as any) : normalizeGenerativeBrief(body.input, profile === 'yasa_shorts' ? 'yasa_shorts' : 'wisdom') } catch (e:any) { throw new JobError('BAD_REQUEST', String(e?.message||e)) }
+          if (body.input?.productionPlan !== undefined) {
+            try {
+              const prepared = executableTrackerPlan(body.input.productionPlan, brief as any, String(body.input.recipe))
+              ;(brief as any).productionPlan = prepared.plan
+              const cap = prepared.plan.constraints?.maxCostUsd
+              need(cap === undefined || Number(body.budgetUsd ?? DEFAULT_BUDGET_USD) <= cap, 'Job budget exceeds productionPlan maxCostUsd')
+            } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
+          }
           if (derivedFrom) (brief as any).derivedFrom = derivedFrom
           // a Recipe is part of what the job IS: the same brief with and without approvals are two different jobs (never handed to each other)
           if (body.input?.recipe !== undefined) (brief as any).recipe = String(body.input.recipe)

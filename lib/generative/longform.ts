@@ -61,7 +61,7 @@ export type LongformRemaster = {
   sourceScriptRef: string
   changes: LongformRemasterChanges
 }
-export type LongformBrief = { schema: 'generative-brief/1'; sleepClassic?: 'odyssey-cyclops-v1'; profile: LongformProfileId; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; creative?: CreativeProfile; yasaStoryDNA?: any; deriveShorts?: false; remaster?: LongformRemaster; voice?: { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
+export type LongformBrief = { productionPlan?: import('../productionPlan.js').ProductionPlan; schema: 'generative-brief/1'; sleepClassic?: 'odyssey-cyclops-v1'; profile: LongformProfileId; kind: 'topic' | 'text'; text: string; language: 'ko'; aspectRatio: '16:9'; targetSeconds: number; sample?: true; creative?: CreativeProfile; yasaStoryDNA?: any; deriveShorts?: false; remaster?: LongformRemaster; voice?: { choice: LongformVoiceChoice; key: LongformVoiceKey; profileId: string } }
 // one narration sentence and the card shown while it is spoken
 export type LongformSentence = { say: string; show: string[]; accent: string; color: AccentColor }
 export type LongformScript = {
