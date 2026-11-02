@@ -102,7 +102,7 @@ test('productionPlan API → approved Worker → 3 scenes → scene 2 edit → p
   // The previously missing final output check: real ffmpeg, valid fixture JPEG,
   // persisted MP4 bytes, ffprobe decode; no paid provider or Production access.
   const rendered=await runOnce(deps())
-  assert.equal(rendered.outcome,'completed',JSON.stringify(rendered))
+  assert.equal(rendered.ran && rendered.outcome,'completed',JSON.stringify(rendered))
   const renderRun:any=await store.getLatestSucceeded(id,'RENDER')
   assert.ok(renderRun,'RENDER must succeed before calling the series complete')
   const mp4=await blobs.getBytes(renderRun.outputRef)
