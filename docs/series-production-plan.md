@@ -17,3 +17,16 @@ Scene artifacts are scoped by workspace, plan ID, scene ID and input hash. An at
 ## Free verification
 
 `tools/series-job-e2e.test.ts` uses the real Job HTTP handler, SQL store, recipe gate, worker loop and Longform PLAN/ASSET; only external HTTP responses and object storage are mocked. Object data survives reconstruction of the file-backed storage and Worker adapters. It verifies 3 images, an edit of scene 2, exactly 1 new image, unchanged scene 1/3 refs, TTS reuse, persisted output read-back, approval, budget, concurrent execution and interrupted-call recovery. No Production request or paid API call is required. Mock usage ledger dollars are estimates for fixtures, not real charges.
+
+## Approved storyboard (12 scenes) → this contract
+
+The browser Adapter (`js_v420a12/approvedProduction.js`, frontend repository) turns a locked SIMPLE storyboard into this
+plan: one storyboard panel = one script scene (12 → 12; the legacy 12→48 child cuts are not used), stable scene ids
+`scene-NN`, narration verbatim, and no per-scene prompt (the scene prompt is built here from the scene and the Character
+Bible). Optional `scene.rules` carry the storyboard's own constraints: `monochrome` (prompt line + `hue=s=0` at RENDER),
+`hideIdentity` (scenes before the reveal) and `reveal`. They are validated with the script and are part of the picture
+prompt, so changing a rule changes only that scene's cache identity. Optional `scene.panel` (`{ ref, sha256 }`, senior only) is the approved
+storyboard panel the browser stored with the existing content-addressed image upload; job_create accepts only panels of the
+caller's own workspace, the Worker checks the bytes' hash and draws the scene FROM that image (a real Gemini image input),
+and the panel hash joins the scene cache key (scenes without a panel keep their keys). `tools/approved-storyboard-e2e.test.ts` runs the
+Adapter's fixture through the real Job API, Worker, mocked Gemini/TTS and real ffmpeg (revised Job, 1920×1080, package).

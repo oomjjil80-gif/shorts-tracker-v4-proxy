@@ -587,6 +587,9 @@ export function createJobsHttp(deps: JobsDeps) {
           if (body.input?.productionPlan !== undefined) {
             try {
               const prepared = executableTrackerPlan(body.input.productionPlan, brief as any, String(body.input.recipe))
+              // a storyboard panel must be an image this workspace stored itself (never another workspace's object)
+              const panels = prepared.script.sections.flatMap((s: any) => s.scenes).map((s: any) => s.panel).filter(Boolean)
+              need(panels.every((p: any) => String(p.ref).startsWith(`cardnews/${workspaceId}/images/`)), 'storyboard panel is not in this workspace')
               ;(brief as any).productionPlan = prepared.plan
               const cap = prepared.plan.constraints?.maxCostUsd
               need(cap === undefined || Number(body.budgetUsd ?? DEFAULT_BUDGET_USD) <= cap, 'Job budget exceeds productionPlan maxCostUsd')
