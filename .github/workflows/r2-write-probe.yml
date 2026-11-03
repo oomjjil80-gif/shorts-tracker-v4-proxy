@@ -1,23 +1,47 @@
 name: R2 write probe (free)
-# 무료 1회 확인: Railway(R2)에서 새 경로 쓰기가 옛 Vercel Blob 확인 때문에 막히는지. 유료 호출 0, 기존 데이터 변경 0(새 작업 공간·1x1 PNG).
+# 무료 확인: #253 배포 후 Railway(R2)에서 '없는 경로' 읽기가 정상(없음)인지. 유료 호출 0, 기존 데이터 변경 0(새 작업 공간).
 on:
   push:
     branches: [ops/p1e-production-smoke]
     paths: ['.github/workflows/r2-write-probe.yml']
-permissions: { contents: read }
+permissions: { contents: read, deployments: read, statuses: read }
 jobs:
   probe:
     runs-on: ubuntu-latest
+    env:
+      SHA: 5e93b8ecfcb986eb97e1ffad7c3d3995219cb731
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - shell: bash
+      - name: Wait for Railway deployments of the merge commit
+        shell: bash
+        run: |
+          set -uo pipefail
+          for i in $(seq 1 30); do
+            S=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/${{ github.repository }}/commits/$SHA/status" || echo '{}')
+            echo "$S" | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{const a=JSON.parse(s||'{}');console.log('combined:',a.state);for(const x of a.statuses||[])console.log(' -',x.context,x.state,x.target_url||'')})"
+            N=$(echo "$S" | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{const a=JSON.parse(s||'{}').statuses||[];const r=a.filter(x=>/railway|extraordinary/i.test(x.context));console.log(r.length>=2&&r.every(x=>x.state==='success')?'ok':(r.some(x=>['failure','error'].includes(x.state))?'fail':'wait'))})")
+            [ "$N" = ok ] && break; [ "$N" = fail ] && { echo 'Railway deploy failed'; exit 1; }
+            sleep 30
+          done
+          [ "$N" = ok ] || { echo 'Railway deploy not finished'; exit 1; }
+          sleep 30
+      - name: R2 read checks (new workspace)
+        shell: bash
         run: |
           set -uo pipefail
           R=https://tracker-api-continuity-production.up.railway.app
           KEY="r2-probe-$(date +%s)-0123456789abcdef0123"
-          PNG='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
-          echo '--- cardnews_image_put (new content-addressed path) ---'
-          curl -sS -m 60 -X POST -H 'Content-Type: application/json' -H "X-Sync-Key: $KEY" --data "{\"taskType\":\"cardnews_image_put\",\"dataBase64\":\"$PNG\"}" -w '\nHTTP %{http_code}\n' "$R/api/story"
-          echo '--- cardnews_get (new workspace, nothing saved) ---'
-          curl -sS -m 60 -H "X-Sync-Key: $KEY" -w '\nHTTP %{http_code}\n' "$R/api/story?taskType=cardnews_get"
-          echo '--- job_get (nonexistent job) ---'
-          curl -sS -m 60 -H "X-Sync-Key: $KEY" -w '\nHTTP %{http_code}\n' "$R/api/story?taskType=job_get&jobId=job_00000000-0000-4000-8000-000000000000"
+          IMG='{"prompt":"probe","aspectRatio":"4:5","imageSize":"1K","cutIndex":0,"references":[],"profile":"cardnews"}'
+          fail=0
+          check() { local name=$1 want=$2 method=$3 url=$4 body=${5:-}; local code
+            code=$(curl -sS -m 60 -o r.json -w '%{http_code}' -X "$method" -H 'Content-Type: application/json' -H "X-Sync-Key: $KEY" ${body:+--data "$body"} "$url")
+            if [ "$code" = "$want" ]; then echo "PASS $name ($code) $(head -c 200 r.json)"; else echo "FAIL $name: want $want got $code $(head -c 300 r.json)"; fail=1; fi; }
+          check 'cardnews_get (nothing saved) -> 200' 200 GET "$R/api/story?taskType=cardnews_get"
+          check 'cardnews_list -> 200' 200 GET "$R/api/story?taskType=cardnews_list"
+          check 'cardnews_image_put -> 200' 200 POST "$R/api/story" '{"taskType":"cardnews_image_put","dataBase64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}'
+          REF=$(node -e "console.log(require('./r.json').ref||'')")
+          check 'cardnews_image_get (just stored) -> 200' 200 GET "$R/api/story?taskType=cardnews_image_get&ref=$REF"
+          check 'generate without saved state -> 409 (before approval/provider)' 409 POST "$R/api/story" "{\"taskType\":\"cardnews_image_generate\",\"cardId\":\"c1\",\"baseRev\":1,\"imageInput\":$IMG}"
+          check 'forged approval -> 402 (no provider call)' 402 POST "$R/api/story" "{\"taskType\":\"cardnews_image_direct\",\"imageInput\":$IMG,\"costApproved\":true,\"approvedUsd\":5,\"approvalId\":\"00000000-0000-4000-8000-000000000000\"}"
+          check 'job_list -> 200' 200 GET "$R/api/story?taskType=job_list"
+          exit $fail
