@@ -250,8 +250,14 @@ export async function get(path: string, opts: GetOpts = {}) {
     return await (vercelBlob as any).get(path, opts)
   } catch (error: any) {
     if (isNotFoundError(error)) return null
+    // R2를 쓰는 서버에서 옛 저장소 읽기가 막혀도(정지·403) 목록 조회(head)는 동작한다:
+    // 옛 저장소에도 정말 없는 경로만 '없음'으로 돌려준다. 있는데 못 읽는 데이터는 그대로 오류(없는 것으로 취급하지 않음).
+    if (r2Configured() && await legacyMissing(path)) return null
     throw error
   }
+}
+async function legacyMissing(path: string) {
+  try { return !(await (vercelBlob as any).head(path)) } catch (e: any) { return isNotFoundError(e) }
 }
 
 export async function head(path: string) {
