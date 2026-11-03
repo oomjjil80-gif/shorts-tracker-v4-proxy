@@ -49,12 +49,18 @@ function installStorage() {
     return new Response(new Uint8Array(o.bytes ?? Buffer.alloc(0)), { status: 200, headers: { 'content-length': String(o.size), 'content-type': 'application/octet-stream' } })
   }) as any
   const agent = new MockAgent(); agent.disableNetConnect()
+  // legacy: 옛 Vercel Blob 상태. 'missing'(기본, 404) · 'suspended-missing'(읽기 403, 목록 조회 404) · 'suspended-present'(읽기 403, 목록 조회에는 있음)
+  const state = { legacy: 'missing' as 'missing' | 'suspended-missing' | 'suspended-present' }
   const reply = (opts: any) => { vercel.push({ method: opts.method, path: opts.path }); return { statusCode: 404, data: JSON.stringify({ error: { code: 'not_found', message: 'The requested blob does not exist' } }) } }
-  agent.get('https://vercel.com').intercept({ path: () => true, method: () => true }).reply(reply).persist()
-  agent.get(/blob\.vercel-storage\.com$/).intercept({ path: () => true, method: () => true }).reply(reply).persist()
+  const headReply = (opts: any) => state.legacy === 'suspended-present'
+    ? (vercel.push({ method: opts.method, path: opts.path }), { statusCode: 200, data: JSON.stringify({ url: 'https://teststore.private.blob.vercel-storage.com/x', downloadUrl: 'https://teststore.private.blob.vercel-storage.com/x?download=1', pathname: 'x', size: 3, uploadedAt: new Date().toISOString(), contentType: 'application/json', contentDisposition: 'inline', cacheControl: 'max-age=0', etag: '"e"' }) })
+    : reply(opts)
+  const blobReply = (opts: any) => state.legacy === 'missing' ? reply(opts) : (vercel.push({ method: opts.method, path: opts.path }), { statusCode: 403, data: 'Forbidden' })
+  agent.get('https://vercel.com').intercept({ path: () => true, method: () => true }).reply(headReply).persist()
+  agent.get(/blob\.vercel-storage\.com$/).intercept({ path: () => true, method: () => true }).reply(blobReply).persist()
   const prev = getGlobalDispatcher(); setGlobalDispatcher(agent)
   return {
-    objects, r2, vercel, maxChunk: () => maxChunk,
+    objects, r2, vercel, state, maxChunk: () => maxChunk,
     vercelWrites: () => vercel.filter((v) => !['GET', 'HEAD'].includes(String(v.method).toUpperCase())),
     restore() { globalThis.fetch = realFetch; setGlobalDispatcher(prev); for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
   }
@@ -149,5 +155,20 @@ test('voice preview on R2: MISS stores voice-preview/<sha>.mp3 privately on R2 a
     const b = await call()
     assert.equal(b.cache, 'HIT'); assert.equal(tts, 1)
     assert.deepEqual(s.vercelWrites(), [])
+  } finally { s.restore() }
+})
+
+test('옛 Vercel Blob이 정지(읽기 403)돼도: R2에 없고 옛 저장소에도 없는 경로는 없음(null), 옛 저장소에 있는데 못 읽는 경로는 오류 유지, R2 데이터는 그대로', async () => {
+  const s = installStorage()
+  try {
+    const blobs = createVercelJobBlobStore()
+    await blobs.putJson('jobs/ws/a.json', { v: 1 })
+    s.state.legacy = 'suspended-missing'
+    assert.deepEqual(await blobs.getJson('jobs/ws/a.json'), { v: 1 }, 'R2에 있는 데이터는 R2에서 읽음')
+    assert.equal(await blobs.getJson('jobs/ws/new.json'), null, '어디에도 없는 경로 = 없음(제작 진행 가능)')
+    assert.equal(await blobs.getBytes('jobs/ws/new.bin'), null)
+    s.state.legacy = 'suspended-present'
+    await assert.rejects(blobs.getJson('jobs/ws/legacy-only.json'), '옛 저장소에만 있는 데이터는 없는 것으로 취급하지 않음')
+    assert.deepEqual(s.vercelWrites(), [], '옛 저장소에 쓰기 0')
   } finally { s.restore() }
 })
