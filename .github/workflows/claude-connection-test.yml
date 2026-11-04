@@ -1,0 +1,37 @@
+name: Claude Code (owner-approved test)
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  claude:
+    # First connection test only. Never run for external commenters or pull-request comments.
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'issue_comment' &&
+       !github.event.issue.pull_request &&
+       github.event.comment.author_association == 'OWNER' &&
+       contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run Claude (read-only connection test)
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: '--max-turns 3 --allowedTools Read,Glob,Grep'
+          prompt: >-
+            This is a read-only GitHub connection test. Inspect the repository
+            structure, identify the main entry points in at most five sentences,
+            and post a concise summary. Do not edit files, run shell commands,
+            create branches, commit, open PRs, or invoke paid content providers.
