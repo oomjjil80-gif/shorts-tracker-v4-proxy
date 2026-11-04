@@ -1,8 +1,8 @@
 name: Claude Code (owner issue handoff)
 
 on:
-  issue_comment:
-    types: [created]
+  issues:
+    types: [opened]
 
 permissions:
   id-token: write
@@ -20,10 +20,9 @@ jobs:
     # No PR comments, bots, collaborators or unmarked issues.
     if: >-
       github.event.issue.pull_request == null &&
-      github.event.comment.author_association == 'OWNER' &&
+      github.event.issue.user.login == github.repository_owner &&
       startsWith(github.event.issue.title, '[CLAUDE-TASK]') &&
-      contains(github.event.comment.body, '@claude') &&
-      contains(github.event.comment.body, '/run-approved')
+      contains(github.event.issue.body, '[GPT-APPROVED-EXECUTION]')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -37,7 +36,7 @@ jobs:
           claude_args: '--max-turns 12'
           prompt: >-
             The repository owner has approved the task in the triggering GitHub issue.
-            Read that issue and its owner comment. Make only the smallest changes
+            Read the issue body and follow its scoped instructions. Make only the smallest changes
             necessary for the approved task, run focused free tests, and open a
             pull request for independent GPT review. Do not merge, deploy, invoke
             paid content-generation services, access secrets, or modify unrelated
