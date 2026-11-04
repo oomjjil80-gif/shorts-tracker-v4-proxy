@@ -1,0 +1,44 @@
+name: Claude Code (owner issue handoff)
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  id-token: write
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: claude-owner-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  claude:
+    # Explicit owner approval on a regular issue only.
+    # No PR comments, bots, collaborators or unmarked issues.
+    if: >-
+      github.event.issue.pull_request == null &&
+      github.event.issue.user.login == github.repository_owner &&
+      startsWith(github.event.issue.title, '[CLAUDE-TASK]') &&
+      contains(github.event.issue.body, '[GPT-APPROVED-EXECUTION]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run Claude on owner-approved issue
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: '--max-turns 12'
+          prompt: >-
+            The repository owner has approved the task in the triggering GitHub issue.
+            Read the issue body and follow its scoped instructions. Make only the smallest changes
+            necessary for the approved task, run focused free tests, and open a
+            pull request for independent GPT review. Do not merge, deploy, invoke
+            paid content-generation services, access secrets, or modify unrelated
+            production behavior. If the task is ambiguous or cannot be completed
+            within the turn budget, comment with the blocker and stop.
