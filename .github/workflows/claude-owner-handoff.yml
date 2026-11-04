@@ -33,10 +33,12 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: '--model sonnet --max-turns 8'
-          prompt: >-
+          claude_args: '--model sonnet --max-turns 8 --permission-mode acceptEdits'
+          prompt: |-
             The repository owner has approved the task in the triggering GitHub issue.
-            Read the issue body and follow its scoped instructions. Make only the smallest changes
+            Approved issue #${{ github.event.issue.number }} instructions:
+            ${{ github.event.issue.body }}
+            Follow these scoped instructions. Make only the smallest changes
             necessary for the approved task, run focused free tests, and open a
             pull request for independent GPT review. Do not merge, deploy, invoke
             paid content-generation services, access secrets, or modify unrelated
