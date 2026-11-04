@@ -245,9 +245,9 @@ export function longformImagePrompt(s: LongformScript, style?: VisualStyleProfil
 // Preserve ordinary narration, including quoted dialogue and punctuation.
 export function ttsSpokenText(text: string): string {
   return String(text || '')
-    .replace(/^\\s*(?:장인|나레이터|내레이터|해설|화자|거인|폴리페모스|오디세우스)\\s*[:：]\\s*/u, '')
+    .replace(/^\s*(?:장인|나레이터|내레이터|해설|화자|거인|폴리페모스|오디세우스)\s*[:：]\s*/u, '')
     .replace(/\[(?:지문|효과음|장면|연출|음악|BGM)\s*[:：][^\]]*\]/giu, ' ')
-    .replace(/\\s+/g, ' ').trim()
+    .replace(/\s+/g, ' ').trim()
 }
 export function ttsChunks(s: LongformScript): Array<{ text: string; sentences: number[] }> {
   return sentencesOf(s).map((x, k) => ({ text: ttsSpokenText(x.say), sentences: [k] }))
