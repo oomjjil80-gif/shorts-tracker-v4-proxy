@@ -167,7 +167,7 @@ export function mergeSameScenes(act: { scenes: SeniorScene[]; sentences: SeniorS
 }
 
 export function characterLine(c: CharacterBible): string {
-  return `${c.name} (${c.role}): ${c.gender}, about ${c.age}, face ${c.face}, hair ${c.hair}, ${c.build} build, wears ${c.outfit}, colors ${c.colors}`
+  return `${c.name} (${c.role}): ${c.gender}, about ${c.age}, face ${c.face}, hair ${c.hair}, ${c.build} build, wears ${c.outfit}, colors ${c.colors}. Keep this character's species, facial anatomy, number of eyes, clothing and proportions exactly as described; small size never implies a mouse, rat or other animal unless explicitly specified.`
 }
 export function characterBibleErrors(cs: any): string[] {
   const list = Array.isArray(cs) ? cs : []
