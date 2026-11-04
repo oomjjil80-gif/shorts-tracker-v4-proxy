@@ -539,6 +539,10 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
       const ik = sha256((styleLock ? 'longform-image-ref-v1|' : 'longform-image-v1|') + prompt + lockTag + gTag + idTag)
       // the first scene of a Golden job IS the character lock (no identity image); every other picture carries the lock's hash
       // an approved storyboard panel makes the scene a reference drawing: its hash joins the key (scenes without one: unchanged keys)
+      // Never silently discard an approved storyboard when another visual reference mode is active.
+      if (scenes && sceneList.some((scene: any) => scene.panel) && (styleLock || useYadam || golden)) {
+        throw new StageError('PRODUCTION_PLAN_INVALID', 'approved storyboard panels conflict with the selected visual reference mode', false)
+      }
       const panelOf = (i: number) => (scenes && !styleLock && !useYadam && !golden ? (sceneList[i] as any).panel as { ref: string; sha256: string } | undefined : undefined)
       const sceneKeys = scenePrompts.map((x, i) => (firstIsScene && i === 0 ? firstKey : sha256(scenePrefix + x + lockTag + gTag + idTag + (panelOf(i) ? `|panel:${panelOf(i)!.sha256}` : ''))))
       const drawScene = async (i: number) => {
