@@ -33,7 +33,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: '--max-turns 12'
+          claude_args: '--model sonnet --max-turns 8'
           prompt: >-
             The repository owner has approved the task in the triggering GitHub issue.
             Read the issue body and follow its scoped instructions. Make only the smallest changes
