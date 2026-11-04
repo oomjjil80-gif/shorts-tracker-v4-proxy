@@ -84,8 +84,19 @@ jobs:
           # Any production/test file outside this allowlist keeps the existing scope selection.
           HANDOFF_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^\.github/workflows/(claude-owner-handoff|verify)\.yml$' || true)"
           HANDOFF_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^\.github/workflows/claude-owner-handoff\.yml$' || true)"
-          # TTS sanitizer-only change: run focused audio + Longform tests, not the 15-minute full suite.
-          TTS_OTHER="$(printf '%s\\n' "$CHANGED" | grep -Ev '^(lib/generative/longform\\.ts|tools/tts-spoken-text\\.test\\.ts|\\.github/workflows/(verify|series-plan-focused)\\.yml)
+          # TTS sanitizer-only changes: use bounded focused tests.
+          TTS_PRESENT=""
+          TTS_OTHER=""
+          while IFS= read -r changed_file; do
+            case "$changed_file" in
+              lib/generative/longform.ts|tools/tts-spoken-text.test.ts) TTS_PRESENT=yes ;;
+              .github/workflows/verify.yml|.github/workflows/series-plan-focused.yml) ;;
+              *) TTS_OTHER=yes ;;
+            esac
+          done <<< "$CHANGED"
+          if [ -n "$TTS_PRESENT" ] && [ -z "$TTS_OTHER" ]; then
+            echo "mode=tts-spoken-text" >> "$GITHUB_OUTPUT"
+          elif [ -z "$HANDOFF_OTHER" ] && [ -n "$HANDOFF_PRESENT" ]; then
             echo "mode=approved-storyboard" >> "$GITHUB_OUTPUT"
           elif [ -z "$SERIES_OTHER" ] && [ -n "$SERIES_PRESENT" ]; then
             echo "mode=series-plan" >> "$GITHUB_OUTPUT"
