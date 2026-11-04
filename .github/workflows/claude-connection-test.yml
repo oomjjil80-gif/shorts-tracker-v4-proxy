@@ -30,9 +30,8 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_args: '--max-turns 3 --allowedTools Read,Glob,Grep'
+          claude_args: '--max-turns 6 --allowedTools Read,Glob,Grep'
           prompt: >-
-            This is a read-only GitHub connection test. Inspect the repository
-            structure, identify the main entry points in at most five sentences,
-            and post a concise summary. Do not edit files, run shell commands,
-            create branches, commit, open PRs, or invoke paid content providers.
+            This is a read-only connection smoke test. Reply with exactly:
+            CLAUDE_GITHUB_CONNECTION_OK
+            Do not inspect files, use tools, edit code, create PRs, or invoke other providers.
