@@ -81,6 +81,22 @@ export function narrationChunks(text: string, max = 1200): string[] {
   return out
 }
 
+
+/** Conservative, free offline correction only. Large deviations need human review, not destructive time-stretching. */
+export function narrationSpeedCorrection(parts: Array<{ chars: number; seconds: number }>, index: number): number | null {
+  const eligible = parts.filter((p) => Number.isFinite(p.chars) && Number.isFinite(p.seconds) && p.chars >= 12 && p.seconds > 0)
+  if (eligible.length < 5) return null
+  const rates = eligible.map((p) => p.chars / p.seconds).sort((a, b) => a - b)
+  const mid = Math.floor(rates.length / 2)
+  const median = rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2
+  const part = parts[index]
+  if (!part || part.chars < 12 || !(part.seconds > 0)) return null
+  const factor = median / (part.chars / part.seconds)
+  // The detector flags >2.2x slowdown; this is too extreme to repair automatically without audible artifacts.
+  // Only bounded moderate corrections may be applied in a separate, explicitly reviewed workflow.
+  return factor > 1 && factor <= 1.35 ? factor : null
+}
+
 /** Diagnostic only: flag unusually slow clips relative to the same narration.
  * Does not change audio, retry providers, or incur additional TTS calls.
  * Short clips are excluded because punctuation/pauses dominate their duration.
