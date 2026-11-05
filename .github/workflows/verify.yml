@@ -365,9 +365,9 @@ jobs:
           printf '%s\n' "$TESTS"
           timeout 4m npx tsx --test $TESTS
 
-      - name: Reuse previous result for workflow-only changes
+      - name: Smoke-test workflow-only changes (free)
         if: steps.scope.outputs.mode == 'workflow-only'
-        run: echo "Workflow-only change; no code or test behavior changed."
+        run: timeout 4m npx tsx --test tools/profile-module-order.test.ts tools/pipeline-features.test.ts tools/profile-modules.test.ts
 
       - name: Run full tests with hang protection
         if: steps.scope.outputs.mode == 'full'
