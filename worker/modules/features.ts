@@ -10,7 +10,7 @@ export const FEATURE_IDS: readonly FeatureId[] = ['PLAN', 'ANALYZE', 'IMAGE', 'T
 // What must be selected EARLIER in the list (an inner array = any one of them).
 const AFTER: Record<FeatureId, readonly (FeatureId | readonly FeatureId[])[]> = {
   PLAN: [], ANALYZE: [], IMAGE: ['PLAN'], TTS: ['PLAN'], CAPTION: ['PLAN'], SOUND: ['TTS'], RENDER: ['PLAN'],
-  LONGFORM_RENDER: ['IMAGE', 'TTS', 'CAPTION'], QC: [['RENDER', 'LONGFORM_RENDER']], THUMBNAIL: ['PLAN'], PACKAGE: [['RENDER', 'LONGFORM_RENDER']]
+  LONGFORM_RENDER: ['IMAGE', 'TTS', 'CAPTION'], QC: [['RENDER', 'LONGFORM_RENDER']], THUMBNAIL: ['PLAN'], PACKAGE: [['RENDER', 'LONGFORM_RENDER'], 'QC']
 }
 
 export function featureListErrors(p: Pick<ProfileSpec, 'id' | 'features'>): string[] {
