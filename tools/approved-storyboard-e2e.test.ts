@@ -94,6 +94,14 @@ test('확정 12장 → 승인 → 12장면 그림·음성 → 5번만 수정 →
     for (const i of [8, 9, 10, 11]) assert.ok(!/IDENTITY HIDDEN|REVEAL SCENE|black-and-white/.test(calls.image[i]))
     const first: any = await store.getLatestSucceeded(id, 'ASSET'), assets1: any = await blobs.getJson(first.outputRef)
     assert.deepEqual(assets1.images.map((x: any) => x.sceneId), scenesOf(PLAN).map((s: any) => s.id))
+    assert.deepEqual(assets1.sceneTrace.map((x: any) => x.sceneId), scenesOf(PLAN).map((x: any) => x.id), 'trace preserves 12 approved scene IDs')
+    assets1.sceneTrace.forEach((x: any, i: number) => {
+      assert.equal(x.panelSha256, scenesOf(PLAN)[i].panel.sha256, 'approved panel hash survives into manifest')
+      assert.match(x.promptSha256, /^[0-9a-f]{64}$/, 'prompt hash recorded')
+      assert.equal(x.imageSha256, assets1.images[i].sha256, 'image hash matches output')
+    })
+    assert.ok(assets1.ttsTrace.length > 0 && assets1.ttsTrace.every((x: any) => /^[0-9a-f]{64}$/.test(x.textSha256) && /^[0-9a-f]{64}$/.test(x.audioSha256)), 'spoken-text and audio hashes recorded')
+
     const tts = calls.tts; assert.ok(tts > 0)
     // 4) Worker·저장소 재생성 후 재개: 같은 장면 추가 호출 0
     blobs = diskBlobs(dir); store = createJobStore(db); blocks = createBlockStore(db)
