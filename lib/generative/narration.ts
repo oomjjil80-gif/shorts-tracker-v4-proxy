@@ -80,3 +80,17 @@ export function narrationChunks(text: string, max = 1200): string[] {
   if (cur) out.push(cur)
   return out
 }
+
+/** Diagnostic only: flag unusually slow clips relative to the same narration.
+ * Does not change audio, retry providers, or incur additional TTS calls.
+ * Short clips are excluded because punctuation/pauses dominate their duration.
+ */
+export function slowNarrationClipIndices(parts: Array<{ chars: number; seconds: number }>): number[] {
+  const eligible = parts.map((p, index) => ({ ...p, index }))
+    .filter((p) => Number.isFinite(p.chars) && Number.isFinite(p.seconds) && p.chars >= 12 && p.seconds > 0)
+  if (eligible.length < 5) return []
+  const rates = eligible.map((p) => p.chars / p.seconds).sort((a, b) => a - b)
+  const mid = Math.floor(rates.length / 2)
+  const median = rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2
+  return eligible.filter((p) => p.chars / p.seconds < median / 2.2).map((p) => p.index)
+}
