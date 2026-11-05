@@ -93,7 +93,9 @@ jobs:
               *) TTS_OTHER=yes ;;
             esac
           done <<< "$CHANGED"
-          CADENCE_OTHER="$(printf '%s\\n' "$CHANGED" | grep -Ev '^(lib/generative/narration\\.ts|worker/stages/longform\\.ts|tools/tts-cadence\\.test\\.ts|\\.github/workflows/verify\\.yml)
+          CADENCE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/narration[.]ts|worker/stages/longform[.]ts|tools/tts-cadence[.]test[.]ts|[.]github/workflows/verify[.]yml)$' || true)"
+          CADENCE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^tools/tts-cadence[.]test[.]ts$' || true)"
+          if [ -n "$TTS_PRESENT" ] && [ -z "$TTS_OTHER" ]; then
             echo "mode=tts-spoken-text" >> "$GITHUB_OUTPUT"
           elif [ -z "$CADENCE_OTHER" ] && [ -n "$CADENCE_PRESENT" ]; then
             echo "mode=tts-cadence" >> "$GITHUB_OUTPUT"
