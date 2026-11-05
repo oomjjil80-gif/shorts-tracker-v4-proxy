@@ -93,8 +93,12 @@ jobs:
               *) TTS_OTHER=yes ;;
             esac
           done <<< "$CHANGED"
+          CADENCE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/generative/narration[.]ts|worker/stages/longform[.]ts|tools/tts-cadence[.]test[.]ts|[.]github/workflows/verify[.]yml)$' || true)"
+          CADENCE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^tools/tts-cadence[.]test[.]ts$' || true)"
           if [ -n "$TTS_PRESENT" ] && [ -z "$TTS_OTHER" ]; then
             echo "mode=tts-spoken-text" >> "$GITHUB_OUTPUT"
+          elif [ -z "$CADENCE_OTHER" ] && [ -n "$CADENCE_PRESENT" ]; then
+            echo "mode=tts-cadence" >> "$GITHUB_OUTPUT"
           elif [ -z "$HANDOFF_OTHER" ] && [ -n "$HANDOFF_PRESENT" ]; then
             echo "mode=approved-storyboard" >> "$GITHUB_OUTPUT"
           elif [ -z "$SERIES_OTHER" ] && [ -n "$SERIES_PRESENT" ]; then
@@ -139,6 +143,10 @@ jobs:
           else
             echo "mode=full" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify TTS cadence diagnostic offline
+        if: steps.scope.outputs.mode == 'tts-cadence'
+        run: timeout 5m npx tsx --test tools/tts-cadence.test.ts tools/tts-spoken-text.test.ts tools/longform-cache-dedupe.test.ts
 
       - name: Verify TTS sanitizer and Longform regression
         if: steps.scope.outputs.mode == 'tts-spoken-text'
