@@ -365,8 +365,7 @@ jobs:
           printf '%s\n' "$TESTS"
           timeout 4m npx tsx --test $TESTS
 
-      - name: Smoke-test workflow-only changes (free)
-        if: steps.scope.outputs.mode == 'workflow-only'
+      - name: Mandatory shared-profile smoke tests (free)
         run: timeout 4m npx tsx --test tools/profile-module-order.test.ts tools/pipeline-features.test.ts tools/profile-modules.test.ts
 
       - name: Run full tests with hang protection
