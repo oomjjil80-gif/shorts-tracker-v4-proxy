@@ -43,7 +43,7 @@ import { StageError, type StageContext, type StageExecutor } from '../types.js'
 import { DEFAULT_MAX_ATTEMPTS } from '../../lib/jobs/store.js'
 import { profileFeatures, needFeatures, type FeatureResolver } from '../modules/features.js'
 import { cacheEntryIsCanonical } from '../../lib/generative/cache.js'
-import { guardedTts, clipToWav, assembleNarration, slowNarrationClipIndices, NARRATION_LOUDNORM, narrationConcatTimeoutMs, type TtsFn } from '../../lib/generative/narration.js'
+import { guardedTts, clipToWav, assembleNarration, slowNarrationClipIndices, narrationCorrectionFactor, speedUpNarrationClip, NARRATION_LOUDNORM, narrationConcatTimeoutMs, type TtsFn } from '../../lib/generative/narration.js'
 
 
 import { executableTrackerPlan } from '../../lib/trackerJobPlan.js'
@@ -664,7 +664,18 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
         // ONE continuous narration track through the shared narration engine (one loudness pass, probed again)
         const narration = join(work, 'narration.m4a')
         const slowClipIndices = slowNarrationClipIndices(parts)
-        if (slowClipIndices.length) console.warn('[TTS_CADENCE_WARNING]', JSON.stringify({ jobId: job.id, clipIndices: slowClipIndices, totalClips: parts.length }))
+        if (slowClipIndices.length) {
+          for (const i of slowClipIndices) {
+            const factor = narrationCorrectionFactor(parts, i)
+            if (factor === null) throw new StageError('TTS_CADENCE_REVIEW_REQUIRED', `Clip ${i} needs manual review; unsafe or indeterminate speed correction`, false)
+            const corrected = join(work, `c${i}-corrected.wav`)
+            const seconds = await speedUpNarrationClip(wavs[i], corrected, factor, signal)
+            wavs[i] = corrected
+            parts[i] = { ...parts[i], seconds, correctedFromSeconds: parts[i].seconds, speedFactor: factor }
+          }
+          const remaining = slowNarrationClipIndices(parts)
+          if (remaining.length) throw new StageError('TTS_CADENCE_REVIEW_REQUIRED', `Corrected narration still has anomalous clips: ${remaining.join(', ')}`, false)
+        }
         const totalSeconds = Number(parts.reduce((s, x) => s + x.seconds, 0).toFixed(3))
         let narrationSeconds: number
         try { narrationSeconds = await assembleNarration({ wavs, dir: work, out: narration, totalSeconds, signal }) }
