@@ -664,7 +664,10 @@ export function createLongformAssetExecutor(deps: { apiKey?: string; imageKey?: 
         // ONE continuous narration track through the shared narration engine (one loudness pass, probed again)
         const narration = join(work, 'narration.m4a')
         const slowClipIndices = slowNarrationClipIndices(parts)
-        if (slowClipIndices.length) console.warn('[TTS_CADENCE_WARNING]', JSON.stringify({ jobId: job.id, clipIndices: slowClipIndices, totalClips: parts.length }))
+        if (slowClipIndices.length) {
+          console.warn('[TTS_CADENCE_WARNING]', JSON.stringify({ jobId: job.id, clipIndices: slowClipIndices, totalClips: parts.length }))
+          throw new StageError('TTS_CADENCE_REVIEW_REQUIRED', `Abnormally slow narration clips at indices: ${slowClipIndices.join(', ')}; review cached clips before rendering`, false)
+        }
         const totalSeconds = Number(parts.reduce((s, x) => s + x.seconds, 0).toFixed(3))
         let narrationSeconds: number
         try { narrationSeconds = await assembleNarration({ wavs, dir: work, out: narration, totalSeconds, signal }) }
