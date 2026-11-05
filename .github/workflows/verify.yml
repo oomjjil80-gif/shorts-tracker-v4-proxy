@@ -129,14 +129,14 @@ jobs:
             echo "mode=title-promise" >> "$GITHUB_OUTPUT"
           elif [ -z "$PLAN_REVIEW_OTHER" ] && [ -n "$PLAN_REVIEW_PRESENT" ]; then
             echo "mode=plan-cross-review" >> "$GITHUB_OUTPUT"
+          elif [ -z "$WORKFLOW_ONLY" ]; then
+            echo "mode=workflow-only" >> "$GITHUB_OUTPUT"
           elif [ -z "$LONGFORM_RENDER_OTHER" ]; then
             echo "mode=longform-render" >> "$GITHUB_OUTPUT"
           elif [ -z "$YADAM_STYLE_OTHER" ]; then
             echo "mode=yadam-style" >> "$GITHUB_OUTPUT"
           elif [ -z "$GEMINI_IMAGE_OTHER" ]; then
             echo "mode=gemini-image" >> "$GITHUB_OUTPUT"
-          elif [ -z "$WORKFLOW_ONLY" ]; then
-            echo "mode=workflow-only" >> "$GITHUB_OUTPUT"
           elif [ -z "$NON_TEST" ] && [ -n "$TESTS" ]; then
             echo "mode=test-only" >> "$GITHUB_OUTPUT"
             {
