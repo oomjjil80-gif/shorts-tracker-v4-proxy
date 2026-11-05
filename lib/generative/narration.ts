@@ -55,6 +55,28 @@ export async function clipToWav(bytes: Buffer, dir: string, name: string, signal
   return { wav, seconds: Number(Number((await probe(wav)).duration || 0).toFixed(3)) }
 }
 
+/** Offline correction of one anomalously slow WAV; cached original TTS remains untouched. */
+export async function speedUpNarrationClip(wav: string, out: string, factor: number, signal?: AbortSignal): Promise<number> {
+  if (!Number.isFinite(factor) || factor < 1 || factor > 2.5) throw new Error('TTS_CADENCE_REVIEW_REQUIRED: unsafe speed factor')
+  await runOk(['-y', '-i', wav, '-af', `atempo=${factor.toFixed(4)}`, '-ar', '24000', '-ac', '1', '-c:a', 'pcm_s16le', out], { signal })
+  const seconds = Number(Number((await probe(out)).duration || 0).toFixed(3))
+  if (!(seconds > 0)) throw new Error('TTS_CADENCE_REVIEW_REQUIRED: invalid corrected clip')
+  return seconds
+}
+
+/** Relative speech-rate correction; return null if insufficient samples or correction is unsafe. */
+export function narrationCorrectionFactor(parts: Array<{ chars: number; seconds: number }>, index: number): number | null {
+  const valid = parts.filter(p => Number.isFinite(p.chars) && Number.isFinite(p.seconds) && p.chars >= 12 && p.seconds > 0)
+  if (valid.length < 5) return null
+  const rates = valid.map(p => p.chars / p.seconds).sort((a,b) => a-b)
+  const mid = Math.floor(rates.length/2)
+  const median = rates.length % 2 ? rates[mid] : (rates[mid-1]+rates[mid])/2
+  const p = parts[index]
+  if (!p || !(p.seconds > 0) || p.chars < 12) return null
+  const factor = median / (p.chars/p.seconds)
+  return factor >= 2.2 && factor <= 2.5 ? factor : null
+}
+
 // ONE continuous narration track: the clips back to back (no gap, no overlap), loudness levelled ONCE on the whole track
 // (about -17 LUFS, true peak <= -1.5 dBTP; never per sentence). loudnorm keeps every sample in place, so the clip timing
 // is unchanged; it only rounds the end up to its 100 ms frame. The encoded track is probed again: that is its length.
