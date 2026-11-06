@@ -50,7 +50,7 @@ test('MASTER 16:9: reference bytes, quote, one-time approval, no TTS or render',
     assert.equal(calls, 1)
     // Profile cannot bypass approval through the public image endpoint.
     let directStatus = 0
-    await imageHandler({ method: 'POST', body: { input: body.imageInput } } as any,
+    await imageHandler({ method: 'POST', headers: {}, body: { input: body.imageInput } } as any,
       { setHeader() {}, status(s: number) { directStatus = s; return this }, json() { return this } } as any)
     assert.equal(directStatus, 403)
     assert.equal(calls, 1)
