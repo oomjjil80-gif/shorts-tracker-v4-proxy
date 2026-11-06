@@ -69,7 +69,9 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
         if (!im || im.aspectRatio !== '16:9' || im.profile !== 'master-longform' ||
             !/^scene-(0[1-9]|1[0-2])$/.test(String(input.sceneId || '')) ||
             typeof im.prompt !== 'string' || im.prompt.trim().length < 20 || im.prompt.length > 12000 ||
-            !Array.isArray(im.references) || im.references.length < 1 || im.references.length > 4) {
+            !Array.isArray(im.references) || im.references.length < 1 || im.references.length > 4 ||
+            im.references.some((r: any) => typeof r?.data !== 'string' || r.data.length < 100 || r.data.length > 12_000_000 ||
+              !/^[A-Za-z0-9+/]+={0,2}$/.test(r.data) || !['image/png', 'image/jpeg', 'image/webp'].includes(String(r.mimeType || r.mime_type || '')))) {
           throw new CardnewsError('BAD_REQUEST', 'MASTER 16:9 장면 ID·프롬프트·참고 이미지가 필요합니다.')
         }
         const approval = await requireApproval(o.blobs, { ws, input, quote: { task, usd: 0.067, calls: 1, note: 'Gemini MASTER 이미지 1장 예상 비용(확정 단가 아님)' } })
