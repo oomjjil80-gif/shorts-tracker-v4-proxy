@@ -9,7 +9,7 @@ import { CardnewsError, putImage, getImage, composeCards, storyboardForExistingC
 import { ApprovalError, requireApproval, recordSpend } from '../generative/paidApproval.js'
 
 // api/story.ts routes taskType cardnews_* here (not a separate Vercel function). Same X-Sync-Key workspace rule as the Job API.
-export const CARDNEWS_TASKS = ['cardnews_get', 'cardnews_list', 'cardnews_save', 'cardnews_compose', 'cardnews_storyboard', 'cardnews_review', 'cardnews_fix', 'cardnews_image_put', 'cardnews_image_get', 'cardnews_image_review', 'cardnews_zip_get', 'cardnews_image_generate', 'cardnews_image_direct'] as const
+export const CARDNEWS_TASKS = ['cardnews_get', 'cardnews_list', 'cardnews_save', 'cardnews_compose', 'cardnews_storyboard', 'cardnews_review', 'cardnews_fix', 'cardnews_image_put', 'cardnews_image_get', 'cardnews_image_review', 'cardnews_zip_get', 'cardnews_image_generate', 'cardnews_image_direct', 'cardnews_master_image_generate'] as const
 export const isCardnewsTask = (t: unknown) => typeof t === 'string' && (CARDNEWS_TASKS as readonly string[]).includes(t)
 const STATUS: Record<string, number> = { BAD_REQUEST: 400, UNAUTHORIZED: 401, COST_APPROVAL_REQUIRED: 402, REV_CONFLICT: 409, APPROVAL_USED: 409, APPROVAL_MISMATCH: 402, APPROVAL_EXPIRED: 402, NOT_FOUND: 404, STORE_FAILED: 502, STATE_TOO_LARGE: 413, PROVIDER_DOWN: 503, REVIEW_INVALID: 502, FIX_INCOMPLETE: 502, METHOD_NOT_ALLOWED: 405 }
 
@@ -61,6 +61,24 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
         const plan = planForCardnewsState(state)
         const step = plan?.steps.find(s => s.kind === 'image' && s.sceneId === input.cardId)
         if (!step || !state.scriptConfirmedAt || state.review?.ok !== true) throw new CardnewsError('BAD_REQUEST', '확정된 9장 제작 계획이 필요합니다.')
+      }
+      // MASTER 16:9 image-only: one approved scene, no TTS/render/job creation.
+      // The caller must provide an explicit locked scene identifier and a reference-backed prompt.
+      if (task === 'cardnews_master_image_generate') {
+        const im = input.imageInput
+        if (!im || im.aspectRatio !== '16:9' || im.profile !== 'master-longform' ||
+            !/^scene-(0[1-9]|1[0-2])$/.test(String(input.sceneId || '')) ||
+            typeof im.prompt !== 'string' || im.prompt.trim().length < 20 || im.prompt.length > 12000 ||
+            !Array.isArray(im.references) || im.references.length < 1 || im.references.length > 4) {
+          throw new CardnewsError('BAD_REQUEST', 'MASTER 16:9 장면 ID·프롬프트·참고 이미지가 필요합니다.')
+        }
+        const approval = await requireApproval(o.blobs, { ws, input, quote: { task, usd: 0.067, calls: 1, note: 'Gemini MASTER 이미지 1장 예상 비용(확정 단가 아님)' } })
+        let status = 500, output: any, budget: any
+        try {
+          await imageHandler({ ...req, body: { input: im }, [INTERNAL_IMAGE_CALL]: true } as any,
+            { setHeader() {}, status(code: number) { status = code; return this }, json(value: any) { output = value; return this } } as any)
+        } finally { budget = await recordSpend(o.blobs, { ws, approval }) }
+        return res.status(status).json({ ...output, budget })
       }
       // 이미지 1장(유료): 8장 덱은 위의 확정 계획 확인 후, 그 외 덱(cardnews_image_direct)은 바로 — 둘 다 1회용 승인 → Gemini → Ledger
       if (task === 'cardnews_image_generate' || task === 'cardnews_image_direct') {
