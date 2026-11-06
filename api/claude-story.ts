@@ -88,6 +88,34 @@ const LONGFORM_DRAFT_SCHEMA = {
   additionalProperties: false
 } as const
 
+// MASTER storyboard mode adds explicit scene identity without changing legacy longform.
+const SCENE_LONGFORM_DRAFT_SCHEMA = {
+  ...LONGFORM_DRAFT_SCHEMA,
+  properties: {
+    ...LONGFORM_DRAFT_SCHEMA.properties,
+    chapters: {
+      ...LONGFORM_DRAFT_SCHEMA.properties.chapters,
+      items: {
+        ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items,
+        properties: {
+          ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties,
+          segments: {
+            ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments,
+            items: {
+              ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments.items,
+              properties: {
+                ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments.items.properties,
+                sceneIndex: { type: 'integer' }
+              },
+              required: [...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments.items.required, 'sceneIndex']
+            }
+          }
+        }
+      }
+    }
+  }
+} as const
+
 function buildSystemPrompt() {
   return [
     '당신은 유튜브 콘텐츠 제작 시스템의 전문 롱폼 Story Writer다.',
@@ -432,11 +460,11 @@ export default async function handler(req: Request, res: Response) {
           : buildSystemPrompt(),
         messages: [{
           role:'user',
-          content: buildChapterPrompt(input, chapterNo, totalChapters, chapterMinutes, previousChapter) + promiseSuffix + (isYasa(input)
+          content: buildChapterPrompt(input, chapterNo, totalChapters, chapterMinutes, previousChapter) + (Array.isArray(input?.sceneStoryboard) && input.sceneStoryboard.length ? `\n\n[MASTER 장면 계약] 모든 segments에 sceneIndex를 반드시 포함하라. 유효 범위는 1~${input.sceneStoryboard.length}. 번호는 아래 MASTER와 동일해야 한다.\n${JSON.stringify(input.sceneStoryboard)}\n` : '') + promiseSuffix + (isYasa(input)
             ? `\n\n${yasaScriptBrief(input.yasaStoryDNA, 'longform')}\n\n[이번 챕터 위치] 전체 ${totalChapters}개 중 ${chapterNo}번 — 전체 진행률 약 ${Math.round(((chapterNo - 1) / totalChapters) * 100)}~${Math.round((chapterNo / totalChapters) * 100)}% 구간의 구조를 따른다.`
             : '')
         }],
-        output_config: { format: { type:'json_schema', schema:LONGFORM_DRAFT_SCHEMA } }
+        output_config: { format: { type:'json_schema', schema: input?.sceneStoryboard?.length ? SCENE_LONGFORM_DRAFT_SCHEMA : LONGFORM_DRAFT_SCHEMA } }
       }
 
       const call = await callClaudeStory(apiKey, payload)
