@@ -36,34 +36,6 @@ function extractJson(text: string) {
   throw new Error('No parseable JSON object found')
 }
 
-// MASTER storyboard mode adds explicit scene identity without changing legacy longform.
-const SCENE_LONGFORM_DRAFT_SCHEMA = {
-  ...LONGFORM_DRAFT_SCHEMA,
-  properties: {
-    ...LONGFORM_DRAFT_SCHEMA.properties,
-    chapters: {
-      ...LONGFORM_DRAFT_SCHEMA.properties.chapters,
-      items: {
-        ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items,
-        properties: {
-          ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties,
-          segments: {
-            ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments,
-            items: {
-              ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments.items,
-              properties: {
-                ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments.items.properties,
-                sceneIndex: { type: 'integer' }
-              },
-              required: [...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments.items.required, 'sceneIndex']
-            }
-          }
-        }
-      }
-    }
-  }
-} as const
-
 const LONGFORM_DRAFT_SCHEMA = {
   type: 'object',
   properties: {
@@ -114,6 +86,34 @@ const LONGFORM_DRAFT_SCHEMA = {
   },
   required: ['title','hook','targetMinutes','chapters','ending','shortsSpinOff','warnings'],
   additionalProperties: false
+} as const
+
+// MASTER storyboard mode adds explicit scene identity without changing legacy longform.
+const SCENE_LONGFORM_DRAFT_SCHEMA = {
+  ...LONGFORM_DRAFT_SCHEMA,
+  properties: {
+    ...LONGFORM_DRAFT_SCHEMA.properties,
+    chapters: {
+      ...LONGFORM_DRAFT_SCHEMA.properties.chapters,
+      items: {
+        ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items,
+        properties: {
+          ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties,
+          segments: {
+            ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments,
+            items: {
+              ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments.items,
+              properties: {
+                ...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments.items.properties,
+                sceneIndex: { type: 'integer' }
+              },
+              required: [...LONGFORM_DRAFT_SCHEMA.properties.chapters.items.properties.segments.items.required, 'sceneIndex']
+            }
+          }
+        }
+      }
+    }
+  }
 } as const
 
 function buildSystemPrompt() {
