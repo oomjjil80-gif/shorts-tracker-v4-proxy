@@ -97,7 +97,7 @@ export default async function handler(req: Request, res: Response) {
 
   if (req.method !== 'POST') return res.status(405).json({ error: { message: 'Method not allowed' } })
   // 카드뉴스 이미지는 /api/story 카드뉴스 작업(서버 1회용 승인 + Ledger)으로만 만든다. 직접 호출은 Gemini 전에 거부한다.
-  if (String(req.body?.input?.profile || '').trim() === 'cardnews' && (req as any)[INTERNAL_IMAGE_CALL] !== true)
+  if (['cardnews', 'master-longform'].includes(String(req.body?.input?.profile || '').trim()) && (req as any)[INTERNAL_IMAGE_CALL] !== true)
     return res.status(403).json({ error: { code: 'CARDNEWS_APPROVAL_REQUIRED', message: '카드뉴스 이미지는 서버 비용 승인 경로로만 생성할 수 있습니다.' } })
 
   const apiKey = process.env.GEMINI_API_KEY
