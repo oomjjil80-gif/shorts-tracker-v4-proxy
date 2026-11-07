@@ -4,6 +4,7 @@ import { createMemoryBlobStore } from '../lib/jobs/blobs.js'
 import { createCardnewsHttp } from '../lib/cardnews/http.js'
 import imageHandler from '../api/image.js'
 
+// Regression for mobile origin crash: non-enumerable headers must survive internal dispatch.
 // No network calls or paid usage: provider is replaced by an in-memory fetch mock.
 test('MASTER 16:9: reference bytes, quote, one-time approval, no TTS or render', async () => {
   const handler = createCardnewsHttp({ blobs: createMemoryBlobStore() })
