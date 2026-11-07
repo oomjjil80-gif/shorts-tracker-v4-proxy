@@ -10,7 +10,9 @@ test('MASTER 16:9: reference bytes, quote, one-time approval, no TTS or render',
   const key = 'master-image-test-workspace-key-12345'
   const call = async (body: any) => {
     let status = 0, data: any
-    await handler({ method: 'POST', headers: { 'x-sync-key': key }, body } as any,
+    // Express/Node can expose headers through a prototype getter, not an own enumerable field.
+    const req = Object.assign(Object.create({ get headers() { return { 'x-sync-key': key, origin: 'https://shorts-production-tracker.vercel.app' } } }), { method: 'POST', body })
+    await handler(req as any,
       { setHeader() {}, status(s: number) { status = s; return this }, json(v: any) { data = v; return this } } as any)
     return { status, data }
   }
