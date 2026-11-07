@@ -77,7 +77,7 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
         const approval = await requireApproval(o.blobs, { ws, input, quote: { task, usd: 0.067, calls: 1, note: 'Gemini MASTER 이미지 1장 예상 비용(확정 단가 아님)' } })
         let status = 500, output: any, budget: any
         try {
-          await imageHandler({ ...req, body: { input: im }, [INTERNAL_IMAGE_CALL]: true } as any,
+          await imageHandler({ ...req, headers: req.headers, method: req.method, body: { input: im }, [INTERNAL_IMAGE_CALL]: true } as any,
             { setHeader() {}, status(code: number) { status = code; return this }, json(value: any) { output = value; return this } } as any)
         } finally { budget = await recordSpend(o.blobs, { ws, approval }) }
         return res.status(status).json({ ...output, budget })
