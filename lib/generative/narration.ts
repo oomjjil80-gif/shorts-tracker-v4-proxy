@@ -33,9 +33,9 @@ export async function guardedTts(tts: TtsFn, text: string, apiKey: string, voice
 }
 
 // one clip from the cache, or ONE guarded paid call stored in the cache
-export async function cachedTts(o: { blobs: JobBlobStore; voice: VoiceProfile; text: string; tts: TtsFn; apiKey: string }): Promise<{ bytes: Buffer; ref: string; sha256: string; cache: 'HIT' | 'MISS' }> {
+export async function cachedTts(o: { blobs: JobBlobStore; voice: VoiceProfile; text: string; tts: TtsFn; apiKey: string; forceRegenerate?: boolean }): Promise<{ bytes: Buffer; ref: string; sha256: string; cache: 'HIT' | 'MISS' }> {
   const key = sha256(ttsCacheIdentity(o.voice, o.text))
-  try {
+  if (!o.forceRegenerate) try {
     const m: any = await o.blobs.getJson(`generative-cache/tts/${key}.json`)
     const bytes = m?.ref ? await o.blobs.getBytes(m.ref) : null
     if (bytes && cacheEntryIsCanonical({ ...m, bytes }, m.ref, sha256(bytes))) return { bytes, ref: m.ref, sha256: sha256(bytes), cache: 'HIT' }
