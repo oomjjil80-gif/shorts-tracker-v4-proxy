@@ -35,6 +35,7 @@ export function createTrackerTts(deps: { blobs: JobBlobStore; tts: TtsFn; apiKey
   const key = () => deps.apiKey?.() ?? process.env.OPENAI_API_KEY ?? ''
   async function clips(input: any) {
     const { voice } = trackerVoice(input)
+    if (input?.forceRegenerate !== undefined && typeof input.forceRegenerate !== 'boolean') throw new TrackerTtsError('BAD_REQUEST', 'forceRegenerate must be boolean')
     const list = Array.isArray(input?.clips) ? input.clips : []
     if (!list.length || list.length > MAX_CLIPS) throw new TrackerTtsError('BAD_REQUEST', `clips must be 1..${MAX_CLIPS}`)
     const units = list.map((c: any, i: number) => {
@@ -51,7 +52,7 @@ export function createTrackerTts(deps: { blobs: JobBlobStore; tts: TtsFn; apiKey
       const worker = async () => {
         for (let i = next++; i < jobs.length; i = next++) {
           const j = jobs[i]
-          const c = await cachedTts({ blobs: deps.blobs, voice, text: j.text, tts: deps.tts, apiKey: key() })
+          const c = await cachedTts({ blobs: deps.blobs, voice, text: j.text, tts: deps.tts, apiKey: key(), forceRegenerate: input.forceRegenerate === true })
           if (c.cache === 'HIT') hits++; else calls++
           const { seconds } = await clipToWav(c.bytes, work, `c${i}`)
           if (!(seconds > 0)) throw new TrackerTtsError('TTS_FAILED', `clip ${j.ui + 1} has no audio`)
