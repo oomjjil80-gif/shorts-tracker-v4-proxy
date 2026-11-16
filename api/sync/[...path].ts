@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { put, get } from '../../lib/objectStorage.js'
+import { put, get, storageBackend } from '../../lib/objectStorage.js'
 import { createHash, randomUUID } from 'node:crypto'
 
 function setCors(req: Request, res: Response) {
@@ -82,8 +82,18 @@ export default async function handler(req: Request, res: Response) {
     const queryIndex = requestUrl.searchParams.get('index') || (req.query as any)?.index
 
     if (req.method === 'GET' && op === 'manifest') {
-      const manifest = await readJson(manifestPath(key))
-      return res.status(200).json({ ok: true, manifest: manifest || null })
+      try {
+        const manifest = await readJson(manifestPath(key))
+        return res.status(200).json({ ok: true, manifest: manifest || null })
+      } catch (error: unknown) {
+        if (storageBackend() !== 'r2' || !(error instanceof Error) || !/^Vercel Blob: .*\b403 Forbidden\b/i.test(error.message)) throw error
+        return res.status(503).json({
+          error: {
+            code: 'LEGACY_SYNC_STORAGE_UNAVAILABLE',
+            message: '이 동기화 코드의 R2 백업을 찾지 못했고 이전 클라우드에도 접근할 수 없습니다. 2화를 클라우드에 저장한 기기의 동기화 코드와 같은지 확인해 주세요.'
+          }
+        })
+      }
     }
 
     if (req.method === 'POST' && op === 'start') {
