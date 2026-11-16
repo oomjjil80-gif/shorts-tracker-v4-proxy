@@ -22,6 +22,18 @@ export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
   if (req.method !== 'GET') return res.status(405).json({ ok: false, error: 'Method not allowed' })
+  if (process.env.VERCEL === '1') {
+    res.setHeader('Cache-Control', 'no-store')
+    try {
+      const upstream = await fetch('https://tracker-api-continuity-production.up.railway.app/api/sync-health', {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5000)
+      })
+      return res.status(upstream.status).json(await upstream.json())
+    } catch {
+      return res.status(502).json({ ok: false, error: 'Cloud sync health check unavailable' })
+    }
+  }
   const backend = storageBackend()
   const configured = backend === 'r2'
     ? Boolean(process.env.R2_ENDPOINT && process.env.R2_BUCKET && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY)
