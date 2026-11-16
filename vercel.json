@@ -7,5 +7,15 @@
     "api/image.ts": {
       "includeFiles": "assets/style-reference/{yadam/sent,golden}/**"
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/api/sync-health",
+      "destination": "https://tracker-api-continuity-production.up.railway.app/api/sync-health"
+    },
+    {
+      "source": "/api/sync/:path*",
+      "destination": "https://tracker-api-continuity-production.up.railway.app/api/sync/:path*"
+    }
+  ]
 }
