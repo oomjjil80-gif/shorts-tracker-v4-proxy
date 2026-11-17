@@ -62,17 +62,18 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
         const step = plan?.steps.find(s => s.kind === 'image' && s.sceneId === input.cardId)
         if (!step || !state.scriptConfirmedAt || state.review?.ok !== true) throw new CardnewsError('BAD_REQUEST', '확정된 9장 제작 계획이 필요합니다.')
       }
-      // MASTER 16:9 image-only: one approved scene, no TTS/render/job creation.
-      // The caller must provide an explicit locked scene identifier and a reference-backed prompt.
+      // MASTER image-only (롱폼 16:9 · 쇼츠 9:16): one approved scene, no TTS/render/job creation.
+      // The caller provides an explicit scene identifier and the approved prompt; storyboard references are optional (0~4).
       if (task === 'cardnews_master_image_generate') {
         const im = input.imageInput
-        if (!im || im.aspectRatio !== '16:9' || im.profile !== 'master-longform' ||
-            !/^scene-(0[1-9]|1[0-2])$/.test(String(input.sceneId || '')) ||
+        const formatOk = (im?.aspectRatio === '16:9' && im?.profile === 'master-longform') || (im?.aspectRatio === '9:16' && im?.profile === 'master-shorts')
+        if (!im || !formatOk ||
+            !/^scene-(0[1-9]|[1-9][0-9])$/.test(String(input.sceneId || '')) ||
             typeof im.prompt !== 'string' || im.prompt.trim().length < 20 || im.prompt.length > 12000 ||
-            !Array.isArray(im.references) || im.references.length < 1 || im.references.length > 4 ||
+            !Array.isArray(im.references) || im.references.length > 4 ||
             im.references.some((r: any) => typeof r?.data !== 'string' || r.data.length < 100 || r.data.length > 12_000_000 ||
               !/^[A-Za-z0-9+/]+={0,2}$/.test(r.data) || !['image/png', 'image/jpeg', 'image/webp'].includes(String(r.mimeType || r.mime_type || '')))) {
-          throw new CardnewsError('BAD_REQUEST', 'MASTER 16:9 장면 ID·프롬프트·참고 이미지가 필요합니다.')
+          throw new CardnewsError('BAD_REQUEST', 'MASTER 장면 ID·규격(16:9/9:16)·프롬프트가 필요합니다.')
         }
         const approval = await requireApproval(o.blobs, { ws, input, quote: { task, usd: 0.067, calls: 1, note: 'Gemini MASTER 이미지 1장 예상 비용(확정 단가 아님)' } })
         let status = 500, output: any, budget: any
