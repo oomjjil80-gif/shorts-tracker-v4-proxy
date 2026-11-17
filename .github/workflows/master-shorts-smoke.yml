@@ -1,0 +1,46 @@
+name: MASTER 9:16 production smoke (free)
+# 무료: 배포 상태 확인 + 9:16 MASTER 요청이 서버 검증을 통과해 견적(402)까지 가는지. 승인 ID를 쓰지 않으므로 Gemini 호출 0, 새 작업 공간만 사용.
+on:
+  push:
+    branches: [ops/p1e-production-smoke]
+    paths: ['.github/workflows/master-shorts-smoke.yml']
+permissions: { contents: read, statuses: read }
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      SHA: 0952903b1e8b62c2812eedf5b42f696a4d689760
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for deployments of the merge commit
+        shell: bash
+        run: |
+          set -uo pipefail
+          for i in $(seq 1 30); do
+            S=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/${{ github.repository }}/commits/$SHA/status" || echo '{}')
+            echo "$S" | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{const a=JSON.parse(s||'{}');console.log('combined:',a.state);for(const x of a.statuses||[])console.log(' -',x.context,x.state,x.target_url||'')})"
+            N=$(echo "$S" | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{const a=JSON.parse(s||'{}').statuses||[];console.log(a.length>=2&&a.every(x=>x.state==='success')?'ok':(a.some(x=>['failure','error'].includes(x.state))?'fail':'wait'))})")
+            [ "$N" = ok ] && break; [ "$N" = fail ] && { echo 'deploy failed'; exit 1; }
+            sleep 30
+          done
+          [ "$N" = ok ] || { echo 'deploy not finished'; exit 1; }
+          sleep 30
+      - name: 9:16 MASTER path (no provider call)
+        shell: bash
+        run: |
+          set -uo pipefail
+          R=https://tracker-api-continuity-production.up.railway.app
+          V=https://shorts-tracker-v4-proxy.vercel.app
+          KEY="master-smoke-$(date +%s)-0123456789abcdef0123"
+          REF=$(printf 'storyboard panel bytes for one shorts scene %.0s' {1..4} | base64 -w0)
+          fail=0
+          check() { local name=$1 want=$2 url=$3 body=$4 key=${5:-}; local code
+            code=$(curl -sS -m 60 -o r.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' ${key:+-H "X-Sync-Key: $key"} --data "$body" "$url")
+            if [ "$code" = "$want" ]; then echo "PASS $name ($code) $(head -c 200 r.json)"; else echo "FAIL $name: want $want got $code $(head -c 300 r.json)"; fail=1; fi; }
+          IM="{\"profile\":\"master-shorts\",\"aspectRatio\":\"9:16\",\"prompt\":\"Approved scene 02 prompt for a vertical shorts MASTER image\",\"references\":[{\"data\":\"$REF\",\"mimeType\":\"image/png\"}]}"
+          check '9:16 master-shorts with panel -> 402 quote' 402 "$R/api/story" "{\"taskType\":\"cardnews_master_image_generate\",\"sceneId\":\"scene-02\",\"imageInput\":$IM}" "$KEY"
+          node -e "const r=require('./r.json'); if(r.error?.code!=='COST_APPROVAL_REQUIRED'||r.estimate?.usd!==0.067) process.exit(1)" && echo '   estimate 0.067' || { echo 'FAIL quote shape'; fail=1; }
+          check '9:16 no reference -> 402 quote' 402 "$R/api/story" "{\"taskType\":\"cardnews_master_image_generate\",\"sceneId\":\"scene-03\",\"imageInput\":{\"profile\":\"master-shorts\",\"aspectRatio\":\"9:16\",\"prompt\":\"Approved scene 03 prompt without any storyboard reference\",\"references\":[]}}" "$KEY"
+          check '9:16 with longform profile -> 400' 400 "$R/api/story" "{\"taskType\":\"cardnews_master_image_generate\",\"sceneId\":\"scene-02\",\"imageInput\":{\"profile\":\"master-longform\",\"aspectRatio\":\"9:16\",\"prompt\":\"Approved scene 02 prompt for a vertical shorts MASTER image\",\"references\":[]}}" "$KEY"
+          check 'direct /api/image master-shorts -> 403' 403 "$V/api/image" '{"input":{"prompt":"","profile":"master-shorts","aspectRatio":"9:16"}}'
+          exit $fail
