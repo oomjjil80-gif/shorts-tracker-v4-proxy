@@ -48,7 +48,7 @@ jobs:
           TRENDING_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/trending/trending\.ts$' || true)"
           # 제작 6단계 (제목·썸네일 약속): opt-in connectors in claude-story / gpt-script-qc / job tasks; focused tests incl. the handlers' existing regressions.
           PROMISE_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/story/titlePromise\.ts|api/claude-story\.ts|api/gpt-script-qc\.ts|api/claude-longform-revise\.ts|api/story\.ts|lib/jobs/http\.ts|tools/title-promise\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
-          PROMISE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/story/titlePromise\.ts$' || true)"
+          PROMISE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^(lib/story/titlePromise\.ts|tools/title-promise\.test\.ts)$' || true)"
           # 카드뉴스 (new lib/cardnews + router lines in api/story.ts): focused tests incl. function-count and Job API regression.
           CARDNEWS_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(lib/cardnews/[A-Za-z]+\.ts|api/story\.ts|api/image\.ts|tools/(cardnews(-visual|-refs|-projects|-image-review|-production-plan|-zip-nine|-nine-e2e)?|master-image-approval|paid-approval)\.test\.ts|\.github/workflows/verify\.yml)$' || true)"
           CARDNEWS_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^lib/cardnews/(cardnews|http|visionReview)\.ts$' || true)"
@@ -372,3 +372,4 @@ jobs:
       - name: Run full tests with hang protection
         if: steps.scope.outputs.mode == 'full'
         run: timeout 15m npm test
+

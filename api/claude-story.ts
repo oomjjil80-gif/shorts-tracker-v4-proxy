@@ -116,7 +116,12 @@ const SCENE_LONGFORM_DRAFT_SCHEMA = {
   }
 } as const
 
-function buildSystemPrompt() {
+function buildSystemPrompt(input: any = {}) {
+  if (input.contentFormat === 'shorts') return [
+    '당신은 한국어 쇼츠 대본 작가다. 기획안의 인물·사건·반전·결말·연출 조건을 우선한다.',
+    '60~90초의 자연스러운 내레이션을 작성하고 MASTER 12장면에 순서대로 연결한다.',
+    '제공된 장면 번호를 유지하고 불필요한 반복이나 길이 늘리기를 피한다. 지정 JSON Schema만 반환한다.'
+  ].join('\n')
   return [
     '당신은 유튜브 콘텐츠 제작 시스템의 전문 롱폼 Story Writer다.',
     '이번 작업의 목표는 그럴듯한 초안을 채우는 것이 아니라 실제 영상 제작에 바로 넘길 수 있는 완성도 높은 원고를 만드는 것이다.',
@@ -183,6 +188,12 @@ function buildSystemPrompt() {
 }
 
 function buildUserPrompt(input: any) {
+  if (input.contentFormat === 'shorts') return [
+    `목표 길이 ${Math.max(60, Math.min(90, Number(input.targetSeconds) || 90))}초.`,
+    'chapters는 1개, segments는 정확히 12개. sceneIndex 1~12를 각각 한 번씩 순서대로 넣는다.',
+    'hook은 빈 문자열, ending.text도 빈 문자열로 두고 모든 내레이션을 해당 장면 segment.text에 넣는다.',
+    '아래 기획안과 제목·장면 참고를 준수한다.', JSON.stringify(input)
+  ].join('\n')
   const targetMinutes = Math.max(5, Math.min(30, Number(input?.targetMinutes || 15)))
   const chapterCount = Math.max(3, Math.min(10, Number(input?.chapterCount || 6)))
 
@@ -437,10 +448,14 @@ export default async function handler(req: Request, res: Response) {
     }
 
     // 숨은야담 keeps the length the user chose (10..120 min, ~3 min per chapter); other families keep 5..30 / 3..10
+    const shorts = input.contentFormat === 'shorts'
+    if (shorts && (!Array.isArray(input.sceneStoryboard) || input.sceneStoryboard.length !== 12)) {
+      return res.status(422).json({ ok: false, error: 'Shorts requires 12 MASTER scenes' })
+    }
     const targetMinutes = isYasa(input) ? yasaLongformMinutes(input?.targetMinutes) : Math.max(5, Math.min(30, Number(input?.targetMinutes || 15)))
     const chapterCount = isYasa(input) ? yasaChapterCount(targetMinutes, input?.chapterCount) : Math.max(3, Math.min(10, Number(input?.chapterCount || 6)))
 
-    if (String(req.body?.mode || '') === 'chapter') {
+    if (!shorts && String(req.body?.mode || '') === 'chapter') {
       // 숨은야담: a chapter is only written from a valid STORY DNA PLAN, which then overrides the explainer rules
       if (isYasa(input)) {
         const v = validateYasaStoryDna(input?.yasaStoryDNA, 'longform')
@@ -515,7 +530,7 @@ export default async function handler(req: Request, res: Response) {
       })
     }
 
-    const useSplitGeneration = targetMinutes >= 18 || chapterCount >= 7
+    const useSplitGeneration = !shorts && (targetMinutes >= 18 || chapterCount >= 7)
 
     if (useSplitGeneration) {
       const chapterMinutes = targetMinutes / chapterCount
@@ -591,12 +606,29 @@ export default async function handler(req: Request, res: Response) {
       })
     }
 
+    const sceneChapter = SCENE_LONGFORM_DRAFT_SCHEMA.properties.chapters.items
+    const schema = shorts ? {
+      ...SCENE_LONGFORM_DRAFT_SCHEMA,
+      properties: {
+        ...SCENE_LONGFORM_DRAFT_SCHEMA.properties,
+        hook: { type: 'string', enum: [''] },
+        targetMinutes: { type: 'integer', enum: [1] },
+        chapters: { type: 'array', minItems: 1, maxItems: 1, items: {
+          ...sceneChapter, properties: { ...sceneChapter.properties, segments: {
+            ...sceneChapter.properties.segments, minItems: 12, maxItems: 12
+          } }
+        } },
+        ending: { ...LONGFORM_DRAFT_SCHEMA.properties.ending, properties: {
+          ...LONGFORM_DRAFT_SCHEMA.properties.ending.properties, text: { type: 'string', enum: [''] }
+        } }
+      }
+    } : LONGFORM_DRAFT_SCHEMA
     const payload = {
       model,
-      max_tokens: 16000,
-      system: buildSystemPrompt(),
+      max_tokens: shorts ? 6000 : 16000,
+      system: buildSystemPrompt(input),
       messages: [{ role:'user', content:buildUserPrompt(input) + promiseSuffix }],
-      output_config:{ format:{ type:'json_schema', schema:LONGFORM_DRAFT_SCHEMA } }
+      output_config:{ format:{ type:'json_schema', schema } }
     }
     const { response, raw, data } = await callClaudeStory(apiKey, payload)
     if (!response.ok) {
@@ -608,6 +640,12 @@ export default async function handler(req: Request, res: Response) {
     if (data?.stop_reason === 'max_tokens') return res.status(502).json({ ok:false, error:'Claude output was truncated before completion' })
     let draft:any
     try { draft = extractJson(text) } catch { return res.status(502).json({ ok:false, error:'Claude returned invalid JSON', rawText:text }) }
+    if (shorts) {
+      const segments = draft?.chapters?.flatMap((chapter: any) => chapter.segments || []) || []
+      if (segments.length !== 12 || segments.some((segment: any, index: number) => segment.sceneIndex !== index + 1 || !String(segment.text || '').trim()) || draft.hook || draft?.ending?.text) {
+        return res.status(502).json({ ok: false, error: 'Shorts scene mapping is incomplete or out of order' })
+      }
+    }
     return res.status(200).json({ ok:true, provider:'Anthropic', model:data?.model || model, draft, usage:data?.usage || null, generationMode:'single' })
   } catch (error: any) {
     console.error('Claude story handler failed', error)
@@ -617,3 +655,4 @@ export default async function handler(req: Request, res: Response) {
     })
   }
 }
+
