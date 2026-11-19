@@ -216,7 +216,7 @@ export default async function handler(req: Request, res: Response) {
     const out = await runPartialRevision(input, async (prompt) => {
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST', headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({ model, max_tokens: 4000, system: '한국어 롱폼 대본의 지정된 구간만 수정한다. 지정된 JSON 구조만 반환한다.', messages: [{ role: 'user', content: prompt }], output_config: { format: { type: 'json_schema', schema: PARTIAL_SCHEMA } } })
+        body: JSON.stringify({ model, max_tokens: 4000, system: input?.handoff?.contentFormat === 'shorts' ? '한국어 60~90초 쇼츠 대본의 지정된 구간만 수정한다. 기획안과 sceneIndex를 유지하고 지정 JSON만 반환한다.' : '한국어 롱폼 대본의 지정된 구간만 수정한다. 지정된 JSON 구조만 반환한다.', messages: [{ role: 'user', content: prompt }], output_config: { format: { type: 'json_schema', schema: PARTIAL_SCHEMA } } })
       })
       const raw = await response.text(); let data: any = {}; try { data = raw ? JSON.parse(raw) : {} } catch {}
       if (!response.ok) throw Object.assign(new Error(data?.error?.message || raw || 'Anthropic partial revision failed'), { status: response.status })
@@ -299,3 +299,4 @@ export default async function handler(req: Request, res: Response) {
     return res.status(500).json({ ok: false, error: error?.message || String(error) })
   }
 }
+
