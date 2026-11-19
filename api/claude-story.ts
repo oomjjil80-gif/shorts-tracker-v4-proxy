@@ -613,9 +613,9 @@ export default async function handler(req: Request, res: Response) {
         ...SCENE_LONGFORM_DRAFT_SCHEMA.properties,
         hook: { type: 'string', enum: [''] },
         targetMinutes: { type: 'integer', enum: [1] },
-        chapters: { type: 'array', minItems: 1, maxItems: 1, items: {
+        chapters: { type: 'array', minItems: 1, items: {
           ...sceneChapter, properties: { ...sceneChapter.properties, segments: {
-            ...sceneChapter.properties.segments, minItems: 12, maxItems: 12
+            ...sceneChapter.properties.segments
           } }
         } },
         ending: { ...LONGFORM_DRAFT_SCHEMA.properties.ending, properties: {
@@ -642,7 +642,7 @@ export default async function handler(req: Request, res: Response) {
     try { draft = extractJson(text) } catch { return res.status(502).json({ ok:false, error:'Claude returned invalid JSON', rawText:text }) }
     if (shorts) {
       const segments = draft?.chapters?.flatMap((chapter: any) => chapter.segments || []) || []
-      if (segments.length !== 12 || segments.some((segment: any, index: number) => segment.sceneIndex !== index + 1 || !String(segment.text || '').trim()) || draft.hook || draft?.ending?.text) {
+      if (draft?.chapters?.length !== 1 || segments.length !== 12 || segments.some((segment: any, index: number) => segment.sceneIndex !== index + 1 || !String(segment.text || '').trim()) || draft.hook || draft?.ending?.text) {
         return res.status(502).json({ ok: false, error: 'Shorts scene mapping is incomplete or out of order' })
       }
     }
