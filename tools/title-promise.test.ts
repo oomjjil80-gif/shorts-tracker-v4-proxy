@@ -205,3 +205,47 @@ test('9 Claude is the default fixer: partial request sends ONLY the failing piec
   const legacy = await call(reviseHandler, { input: { draft: d, qc, handoff: {} } }, () => d)
   assert.equal(legacy.status, 200); assert.equal(legacy.json.revisionCount, 1); assert.equal(legacy.json.scope, undefined, 'no partial flag -> old whole-draft behaviour')
 })
+
+
+const SHORT_BRIEF = '아이돌을 꿈꾸는 세이렌. 반전은 마지막 장면. 밝은 동화풍.'
+const SHORT_INPUT = () => ({ contentFormat: 'shorts', title: '세이렌', summary: SHORT_BRIEF, targetSeconds: 80, sceneStoryboard: Array.from({ length: 12 }, (_, i) => ({ sceneIndex: i + 1, label: `scene ${i + 1}` })) })
+const SHORT_DRAFT = () => ({ title: '세이렌', hook: '', targetMinutes: 1, chapters: [{ chapterNo: 1, title: '세이렌', purpose: '쇼츠', segments: Array.from({ length: 12 }, (_, i) => ({ ...seg(`장면 ${i + 1}`), sceneIndex: i + 1 })) }], ending: { speaker: '내레이션', text: '' }, shortsSpinOff: [], warnings: [] })
+
+test('Shorts Claude uses one existing request, 12 scene schema and the saved brief', async () => {
+  const r = await call(claudeStoryHandler, { input: SHORT_INPUT() }, () => SHORT_DRAFT())
+  assert.equal(r.status, 200, JSON.stringify(r.json)); assert.equal(r.calls.length, 1)
+  const sent = r.calls[0].body
+  assert(sent.system.includes('쇼츠')); assert(!sent.system.includes('전문 롱폼'))
+  assert(sent.messages[0].content.includes(SHORT_BRIEF)); assert(sent.messages[0].content.includes('80초'))
+  assert.equal(sent.output_config.format.schema.properties.chapters.maxItems, 1)
+  assert.equal(sent.output_config.format.schema.properties.chapters.items.properties.segments.minItems, 12)
+  assert.deepEqual(r.json.draft.chapters[0].segments.map((s: any) => s.sceneIndex), Array.from({ length: 12 }, (_, i) => i + 1))
+})
+
+test('Shorts malformed input is blocked before billing and invalid model scene order is rejected', async () => {
+  const bad = { ...SHORT_INPUT(), sceneStoryboard: [] }
+  const missing = await call(claudeStoryHandler, { input: bad })
+  assert.equal(missing.status, 422); assert.equal(missing.calls.length, 0)
+  const draft = SHORT_DRAFT(); draft.chapters[0].segments[1].sceneIndex = 1
+  const r = await call(claudeStoryHandler, { input: SHORT_INPUT() }, () => draft)
+  assert.equal(r.status, 502); assert.equal(r.calls.length, 1)
+})
+
+test('Shorts independent GPT review carries brief and asks for existing partial-revision location format', async () => {
+  const r = await call(qcHandler, { input: { handoff: SHORT_INPUT(), draft: SHORT_DRAFT() } }, () => QC_PASS)
+  assert.equal(r.status, 200, JSON.stringify(r.json)); assert.equal(r.calls.length, 1)
+  assert(r.calls[0].body.instructions.includes('60~90초 쇼츠'))
+  assert(r.calls[0].body.instructions.includes('chapter 1 / segment n'))
+  assert(r.calls[0].body.input.includes(SHORT_BRIEF))
+})
+
+test('Shorts partial revision without title promise changes only the requested scene and preserves all scene identities', async () => {
+  const draft = SHORT_DRAFT(), before = structuredClone(draft)
+  const qc = { ...QC_PASS, status: 'revision_required', issues: [iss('logic', 'chapter 1 / segment 4')] }
+  const r = await call(reviseHandler, { input: { partial: true, draft, qc, handoff: SHORT_INPUT() } }, () => ({ items: [{ target: 'c1s4', text: '수정된 네 번째 장면', visualHint: 'scene 4', factStatus: 'interpretation' }] }))
+  assert.equal(r.status, 200, JSON.stringify(r.json)); assert.equal(r.json.scope, 'partial'); assert.equal(r.calls.length, 1)
+  assert.equal(r.json.draft.chapters[0].segments[3].text, '수정된 네 번째 장면')
+  assert.deepEqual(r.json.draft.chapters[0].segments.map((s: any) => s.sceneIndex), before.chapters[0].segments.map(s => s.sceneIndex))
+  for (let i = 0; i < 12; i++) if (i !== 3) assert.deepEqual(r.json.draft.chapters[0].segments[i], before.chapters[0].segments[i])
+  assert.deepEqual(draft, before)
+})
