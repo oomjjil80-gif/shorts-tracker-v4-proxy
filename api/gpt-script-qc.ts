@@ -203,7 +203,13 @@ const QC_SCHEMA = {
   }
 } as const
 
-function systemPrompt() {
+function systemPrompt(shorts = false) {
+  if (shorts) return [
+    '한국어 60~90초 쇼츠 대본을 독립 검수한다. 기획안·제목·12장면의 사건·인과·반전 공개 시점·결말을 검수한다.',
+    '롱폼 길이·챕터 수·20분 유지율을 요구하지 않는다. 지정된 QC JSON Schema만 반환한다.',
+    '필수 수정 이슈는 chapter 1 / segment n 형식으로(장면 번호 n은 1부터 12까지) 정확한 위치를 지정한다.',
+    '좋은 부분은 보존하고 문제 구간의 국소 수정만 요청한다. 기획안을 임의로 바꾸지 않는다.'
+  ].join('\n')
   return [
     '당신은 Content Production Tracker의 독립적인 최종 대본 QC 편집자다.',
     '작성자는 Claude이고, 당신은 작성자가 아니다. 좋은 문장을 이유 없이 다시 쓰지 말고 검수한다.',
@@ -684,7 +690,7 @@ export default async function handler(req: Request, res: Response) {
           model,
           store: false,
           reasoning: { effort: 'medium' },
-          instructions: systemPrompt(),
+          instructions: systemPrompt(input?.handoff?.contentFormat === 'shorts'),
           input: userPrompt(input, contaminationSignals, structureSignals),
           max_output_tokens: 7500,
           text: {
@@ -770,3 +776,4 @@ export default async function handler(req: Request, res: Response) {
     return res.status(500).json({ ok: false, error: error?.message || String(error) })
   }
 }
+
