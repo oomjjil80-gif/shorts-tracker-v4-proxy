@@ -158,7 +158,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (req.method === 'POST' && op === 'start') {
-      const current = await readJson(manifestPath(key))
+      const current = await readJson(scopedManifestPath(key, scopeId))
       const slot = current?.activeSlot === 'a' ? 'b' : 'a'
       return res.status(200).json({ ok: true, slot, chunkBytes: 2 * 1024 * 1024, previousRevision: current?.revision || null })
     }
@@ -197,6 +197,7 @@ export default async function handler(req: Request, res: Response) {
       const byteLength = Number(body?.byteLength)
       if (!Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > 10000) throw new Error('잘못된 청크 개수입니다.')
       if (!Number.isFinite(byteLength) || byteLength < 1) throw new Error('잘못된 백업 크기입니다.')
+      if (scopeId && chunkCount * 2 * 1024 * 1024 < byteLength) throw new Error('청크 개수와 백업 크기가 일치하지 않습니다.')
       const current = await readJson(manifestPath(key))
       const previousRevision = body?.previousRevision ?? null
       if ((current?.revision || null) !== previousRevision) {
