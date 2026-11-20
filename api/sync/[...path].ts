@@ -16,7 +16,7 @@ function setCors(req: Request, res: Response) {
     res.setHeader('Vary', 'Origin')
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Sync-Key')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Sync-Key, X-Episode-Revision')
 }
 
 function getSyncKey(req: Request) {
@@ -31,6 +31,13 @@ function workspaceId(key: string) {
 function syncBase(key: string) { return `tracker-sync/${workspaceId(key)}` }
 function manifestPath(key: string) { return `${syncBase(key)}/manifest.json` }
 function chunkPath(key: string, slot: string, index: number) { return `${syncBase(key)}/${slot}/chunk-${index}.bin` }
+function episodeId(v: unknown) {
+  const id = String(v || '')
+  if (!/^ep_[a-z0-9]{8,40}$/i.test(id)) throw new Error('잘못된 에피소드 ID입니다.')
+  return id
+}
+function episodePath(key: string, id: string) { return `${syncBase(key)}/episodes/${id}.spbak` }
+function episodeManifestPath(key: string, id: string) { return `${syncBase(key)}/episodes/${id}.json` }
 function validSlot(v: unknown) {
   const slot = String(v || '')
   if (slot !== 'a' && slot !== 'b') throw new Error('잘못된 동기화 슬롯입니다.')
@@ -80,6 +87,52 @@ export default async function handler(req: Request, res: Response) {
     const op = String(requestUrl.searchParams.get('op') || (req.query as any)?.op || parts[0] || '')
     const querySlot = requestUrl.searchParams.get('slot') || (req.query as any)?.slot
     const queryIndex = requestUrl.searchParams.get('index') || (req.query as any)?.index
+
+    // Episode-scoped backup: independent of the full workspace manifest.
+    // A single episode upload can never replace the other 26 projects.
+    if (parts[0] === 'episode' && parts.length === 2) {
+      const id = episodeId(parts[1])
+      const manifestFile = episodeManifestPath(key, id)
+      if (req.method === 'GET') {
+        const manifest = await readJson(manifestFile)
+        if (!manifest) return res.status(404).json({ error: { message: '에피소드 백업이 없습니다.' } })
+        const stored = await readPrivate(episodePath(key, id))
+        if (!stored) return res.status(404).json({ error: { message: '에피소드 파일이 없습니다.' } })
+        const buffer = Buffer.from(await new Response(stored.stream).arrayBuffer())
+        res.setHeader('Content-Type', 'application/octet-stream')
+        res.setHeader('X-Episode-Revision', manifest.revision)
+        res.setHeader('Access-Control-Expose-Headers', 'X-Episode-Revision')
+        return res.status(200).send(buffer)
+      }
+      if (req.method === 'POST') {
+        const previousRevision = String(req.headers['x-episode-revision'] || '')
+        const current = await readJson(manifestFile)
+        if ((current?.revision || '') !== previousRevision) {
+          return res.status(409).json({ error: { message: '에피소드가 다른 기기에서 수정되었습니다. 먼저 최신본을 확인해주세요.' } })
+        }
+        const incoming = await readBody(req)
+        const buffer = Buffer.isBuffer(incoming) ? incoming : Buffer.from(incoming || [])
+        if (buffer.length < 8 || buffer.subarray(0, 4).toString('utf8') !== 'SPB1') {
+          return res.status(400).json({ error: { message: 'SPB1 백업 파일이 필요합니다.' } })
+        }
+        const headerLength = buffer.readUInt32LE(4)
+        if (headerLength < 2 || headerLength > 10 * 1024 * 1024 || 8 + headerLength > buffer.length) {
+          return res.status(400).json({ error: { message: 'SPB1 헤더가 올바르지 않습니다.' } })
+        }
+        const backupHeader = JSON.parse(buffer.subarray(8, 8 + headerLength).toString('utf8'))
+        if (backupHeader.episodeCount !== 1 || backupHeader.episodes?.length !== 1 || backupHeader.episodes[0]?.id !== id) {
+          return res.status(400).json({ error: { message: '요청한 에피소드 하나만 포함해야 합니다.' } })
+        }
+        await put(episodePath(key, id), buffer, {
+          access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/octet-stream'
+        })
+        const manifest = { revision: randomUUID(), updatedAt: new Date().toISOString(), episodeId: id, byteLength: buffer.length }
+        await put(manifestFile, JSON.stringify(manifest), {
+          access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/json'
+        })
+        return res.status(200).json({ ok: true, manifest })
+      }
+    }
 
     if (req.method === 'GET' && op === 'manifest') {
       try {

@@ -97,7 +97,11 @@ jobs:
           CADENCE_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^tools/tts-cadence[.]test[.]ts$' || true)"
           MODULE_ORDER_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(worker/modules/features[.]ts|tools/profile-module-order[.]test[.]ts|[.]github/workflows/verify[.]yml)$' || true)"
           MODULE_ORDER_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^worker/modules/features[.]ts$' || true)"
-          if [ -z "$MODULE_ORDER_OTHER" ] && [ -n "$MODULE_ORDER_PRESENT" ]; then
+          EPISODE_SYNC_OTHER="$(printf '%s\n' "$CHANGED" | grep -Ev '^(api/sync/\[\.\.\.path\]\.ts|tools/episode-sync-contract\.test\.mjs|\.github/workflows/verify\.yml)$' || true)"
+          EPISODE_SYNC_PRESENT="$(printf '%s\n' "$CHANGED" | grep -E '^api/sync/\[\.\.\.path\]\.ts$' || true)"
+          if [ -z "$EPISODE_SYNC_OTHER" ] && [ -n "$EPISODE_SYNC_PRESENT" ]; then
+            echo "mode=episode-sync" >> "$GITHUB_OUTPUT"
+          elif [ -z "$MODULE_ORDER_OTHER" ] && [ -n "$MODULE_ORDER_PRESENT" ]; then
             echo "mode=module-order" >> "$GITHUB_OUTPUT"
           elif [ -n "$TTS_PRESENT" ] && [ -z "$TTS_OTHER" ]; then
             echo "mode=tts-spoken-text" >> "$GITHUB_OUTPUT"
@@ -368,6 +372,10 @@ jobs:
 
       - name: Mandatory shared-profile smoke tests (free)
         run: timeout 4m npx tsx --test tools/profile-module-order.test.ts tools/pipeline-features.test.ts tools/profile-modules.test.ts
+
+      - name: Verify isolated episode sync contract (no paid APIs)
+        if: steps.scope.outputs.mode == 'episode-sync'
+        run: timeout 2m node --test tools/episode-sync-contract.test.mjs
 
       - name: Run full tests with hang protection
         if: steps.scope.outputs.mode == 'full'
