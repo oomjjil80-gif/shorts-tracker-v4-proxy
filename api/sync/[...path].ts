@@ -38,6 +38,12 @@ function episodeId(v: unknown) {
 }
 function episodePath(key: string, id: string) { return `${syncBase(key)}/episodes/${id}.spbak` }
 function episodeManifestPath(key: string, id: string) { return `${syncBase(key)}/episodes/${id}.json` }
+function scopedManifestPath(key: string, id: string | null) {
+  return id ? episodeManifestPath(key, id) : manifestPath(key)
+}
+function scopedChunkPath(key: string, id: string | null, slot: string, index: number) {
+  return id ? `${syncBase(key)}/episodes/${id}/${slot}/chunk-${index}.bin` : chunkPath(key, slot, index)
+}
 function validSlot(v: unknown) {
   const slot = String(v || '')
   if (slot !== 'a' && slot !== 'b') throw new Error('잘못된 동기화 슬롯입니다.')
@@ -85,6 +91,8 @@ export default async function handler(req: Request, res: Response) {
       : String(rawPath || fallbackPath || '').split('/').filter(Boolean)
     const key = getSyncKey(req)
     const op = String(requestUrl.searchParams.get('op') || (req.query as any)?.op || parts[0] || '')
+    const scopeIdRaw = requestUrl.searchParams.get('episodeId') || (req.query as any)?.episodeId
+    const scopeId = scopeIdRaw ? episodeId(scopeIdRaw) : null
     const querySlot = requestUrl.searchParams.get('slot') || (req.query as any)?.slot
     const queryIndex = requestUrl.searchParams.get('index') || (req.query as any)?.index
 
@@ -136,7 +144,7 @@ export default async function handler(req: Request, res: Response) {
 
     if (req.method === 'GET' && op === 'manifest') {
       try {
-        const manifest = await readJson(manifestPath(key))
+        const manifest = await readJson(scopedManifestPath(key, scopeId))
         return res.status(200).json({ ok: true, manifest: manifest || null })
       } catch (error: unknown) {
         if (storageBackend() !== 'r2' || !(error instanceof Error) || !/^Vercel Blob: .*\b403 Forbidden\b/i.test(error.message)) throw error
@@ -167,13 +175,13 @@ export default async function handler(req: Request, res: Response) {
         else if (incoming && typeof incoming === 'object' && incoming.type === 'Buffer' && Array.isArray(incoming.data)) body = Buffer.from(incoming.data)
         else body = Buffer.from([])
         if (!body.length) throw new Error('업로드 청크가 비어 있습니다.')
-        const blob: any = await put(chunkPath(key, slot, index), body, {
+        const blob: any = await put(scopedChunkPath(key, scopeId, slot, index), body, {
           access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/octet-stream'
         })
         return res.status(200).json({ ok: true, slot, index, size: body.length, etag: blob.etag || null })
       }
       if (req.method === 'GET') {
-        const result: any = await readPrivate(chunkPath(key, slot, index))
+        const result: any = await readPrivate(scopedChunkPath(key, scopeId, slot, index))
         if (!result) return res.status(404).json({ error: { message: '클라우드 청크를 찾을 수 없습니다.' } })
         const buffer = Buffer.from(await new Response(result.stream).arrayBuffer())
         res.setHeader('Content-Type', 'application/octet-stream')
@@ -195,10 +203,11 @@ export default async function handler(req: Request, res: Response) {
         return res.status(409).json({ error: { message: '다른 기기에서 클라우드 작업이 먼저 변경되었습니다. 연결 확인 후 다시 업로드해주세요.' } })
       }
       const manifest = {
+        ...(scopeId ? { episodeId: scopeId } : {}),
         format: 'SPB1-CLOUD', version: 1, activeSlot: slot, chunkCount, byteLength,
         revision: randomUUID(), updatedAt: new Date().toISOString()
       }
-      await put(manifestPath(key), JSON.stringify(manifest), {
+      await put(scopedManifestPath(key, scopeId), JSON.stringify(manifest), {
         access: 'private', allowOverwrite: true, addRandomSuffix: false,
         contentType: 'application/json', cacheControlMaxAge: 60
       })
