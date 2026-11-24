@@ -168,10 +168,51 @@ function extractText(data: any) {
   return ''
 }
 
+// ---- Vercel -> Railway forwarding for the paid-call approval chain -------------------------------------------------------
+// Single-use approvals, approval-bound flights (TTS / MASTER image) and the result recovery all live in the shared object store.
+// Only the Railway API process is connected to R2 (same address as the /api/sync rewrite and /api/sync-health); the Vercel function
+// falls back to the suspended Blob store and fails with 500. So when this handler runs on Vercel, requests of that chain are
+// forwarded UNCHANGED (same method, query/body, X-Sync-Key) to the existing Railway /api/story and the answer is relayed verbatim.
+// Never executed locally on Vercel; never retried (an unclear outcome must not be repeated); a loop guard header stops re-forwarding.
+export const RAILWAY_API_BASE = 'https://tracker-api-continuity-production.up.railway.app'
+export const FORWARDED_HEADER = 'x-tracker-forwarded'
+const FORWARD_TIMEOUT_MS = 170_000 // just under the function's maxDuration (180 s)
+const RAILWAY_TASKS = new Set(['tts_clips', 'tts_assemble', 'tts_audio'])
+export const isRailwayTask = (taskType: unknown): boolean => typeof taskType === 'string' && (RAILWAY_TASKS.has(taskType) || taskType.startsWith('cardnews_'))
+export function shouldForwardToRailway(req: Request, taskType: unknown): boolean {
+  return process.env.VERCEL === '1' && isRailwayTask(taskType) && !req.headers[FORWARDED_HEADER]
+}
+export async function forwardToRailway(req: Request, res: Response, o: { timeoutMs?: number } = {}) {
+  res.setHeader('Cache-Control', 'private, no-store')
+  const key = String(req.headers['x-sync-key'] || '')
+  const headers: Record<string, string> = { Accept: String(req.headers.accept || 'application/json'), [FORWARDED_HEADER]: 'vercel', ...(key ? { 'X-Sync-Key': key } : {}) }
+  const origin = String(req.headers.origin || '')
+  if (origin) headers.Origin = origin
+  let url = `${RAILWAY_API_BASE}/api/story`, body: string | undefined
+  if (req.method === 'GET') {
+    const q = new URLSearchParams()
+    for (const [k, v] of Object.entries((req.query || {}) as Record<string, unknown>)) for (const x of Array.isArray(v) ? v : [v]) if (x !== undefined) q.append(k, String(x))
+    url += `?${q.toString()}`
+  } else { headers['Content-Type'] = 'application/json'; body = JSON.stringify(req.body ?? {}) }
+  let upstream: globalThis.Response
+  try { upstream = await fetch(url, { method: req.method, headers, body, cache: 'no-store', signal: AbortSignal.timeout(o.timeoutMs ?? FORWARD_TIMEOUT_MS) }) }
+  catch (e: any) {
+    // No answer: whether Railway already started (and billed) the request is unknown. Do not run it here, do not retry; the same request
+    // recovers its stored result / is held as unclear on the Railway side.
+    const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError'
+    return res.status(timedOut ? 504 : 502).json({ ok: false, error: { code: timedOut ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_UNAVAILABLE', message: '승인·생성 서버(Railway)의 응답을 확인하지 못했습니다. 처리 여부가 불명확할 수 있어 자동으로 다시 호출하지 않았습니다.' } })
+  }
+  const type = upstream.headers.get('content-type'), disposition = upstream.headers.get('content-disposition')
+  if (type) res.setHeader('Content-Type', type)
+  if (disposition) res.setHeader('Content-Disposition', disposition)
+  return res.status(upstream.status).send(Buffer.from(await upstream.arrayBuffer()))
+}
+
 export default async function handler(req: Request, res: Response) {
   setCors(req, res)
   if (req.method === 'OPTIONS') return res.status(204).end()
   const sourceRequest = req.method === 'GET' ? req.query : req.body
+  if (shouldForwardToRailway(req, sourceRequest?.taskType)) return forwardToRailway(req, res)
   // Production Jobs: routing only. The HTTP adapter and all domain logic live in lib/jobs/*
   // (kept out of api/ so it does not count as a separate Vercel Serverless Function).
   if (req.method === 'POST' && sourceRequest?.taskType === 'reference_ingest') {
