@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express'
 import { verifyPromise, promiseBrief } from '../lib/story/titlePromise.js'
+import { DIRECTION_PROMPT, DIRECTION_MAX, normalizeDraftDirections } from '../lib/story/sceneDirection.js'
 import { validateYasaStoryDna, yasaScriptBrief, isYasa, yasaLongformMinutes, yasaChapterCount } from '../lib/story/yasaStoryDna.js'
 
 function setCors(_req: Request, res: Response) {
@@ -58,12 +59,13 @@ const LONGFORM_DRAFT_SCHEMA = {
                 speaker: { type: 'string' },
                 text: { type: 'string' },
                 visualHint: { type: 'string' },
+                direction: { type: 'string' },
                 factStatus: {
                   type: 'string',
                   enum: ['verified', 'interpretation', 'verify_before_publish']
                 }
               },
-              required: ['speaker', 'text', 'visualHint', 'factStatus'],
+              required: ['speaker', 'text', 'visualHint', 'direction', 'factStatus'],
               additionalProperties: false
             }
           }
@@ -120,7 +122,8 @@ function buildSystemPrompt(input: any = {}) {
   if (input.contentFormat === 'shorts') return [
     '당신은 한국어 쇼츠 대본 작가다. 기획안의 인물·사건·반전·결말·연출 조건을 우선한다.',
     '60~90초의 자연스러운 내레이션을 작성하고 MASTER 12장면에 순서대로 연결한다.',
-    '제공된 장면 번호를 유지하고 불필요한 반복이나 길이 늘리기를 피한다. 지정 JSON Schema만 반환한다.'
+    '제공된 장면 번호를 유지하고 불필요한 반복이나 길이 늘리기를 피한다. 지정 JSON Schema만 반환한다.',
+    `각 장면 segment에 ${DIRECTION_PROMPT}`
   ].join('\n')
   return [
     '당신은 유튜브 콘텐츠 제작 시스템의 전문 롱폼 Story Writer다.',
@@ -182,6 +185,8 @@ function buildSystemPrompt(input: any = {}) {
     '- segment 경계에서 의미가 다음 segment로 물리지 않는지 확인한다.',
     '- visualHint가 실제 narration 핵심을 보여주는지 확인한다.',
     '- 전체를 들었을 때 질문 → 원인 → 근거/사례 → 반론/예외 → 대응 또는 판단 기준이 끊기지 않는지 확인한다.',
+    '',
+    `- 모든 segment에 ${DIRECTION_PROMPT}`,
     '',
     '응답은 제공된 JSON Schema를 정확히 따라야 한다.'
   ].join('\n')
@@ -258,6 +263,7 @@ ${JSON.stringify({ primaryCategory: input?.primaryCategory || '', secondaryTags:
 - 나중에 장면계획/CUT 자동분해가 가능하도록 chapterNo와 segment를 명확하게 구분
 - chapters 배열은 정확히 ${chapterCount}개 챕터로 구성
 - 각 segment의 factStatus는 verified, interpretation, verify_before_publish 중 하나만 사용
+- 각 segment에 direction(장면 구도·인물 동작·배경 등 시각 연출, ${DIRECTION_MAX}자 이내)을 함께 작성
 `.trim()
 }
 
@@ -382,6 +388,7 @@ ${JSON.stringify(previousTail || {}, null, 2)}
 - 이번 챕터는 하나의 소질문에 실질적으로 답한다.
 - segment는 하나의 핵심 의미만 담당하고 완결된 문장/의미 단위로 끝낸다.
 - visualHint는 narration을 실제로 이해시키는 화면 설계다.
+- 모든 segment에 direction(장면 구도·인물 동작·배경 등 시각 연출, ${DIRECTION_MAX}자 이내)을 함께 작성한다.
 - factStatus는 verified, interpretation, verify_before_publish 중 하나만 사용한다.
 - 첫 챕터가 아니면 hook은 빈 문자열로 둔다.
 - 마지막 챕터가 아니면 ending.text는 빈 문자열로 둔다.
@@ -518,6 +525,7 @@ export default async function handler(req: Request, res: Response) {
         })
       }
       draft.chapters[0].chapterNo = chapterNo
+      normalizeDraftDirections(draft)
       return res.status(200).json({
         ok:true,
         provider:'Anthropic',
@@ -589,6 +597,7 @@ export default async function handler(req: Request, res: Response) {
         }
 
         part.chapters[0].chapterNo = chapterNo
+        normalizeDraftDirections(part)
         parts.push(part)
         usage = addUsage(usage, call.data?.usage)
         lastModel = call.data?.model || lastModel
@@ -640,6 +649,7 @@ export default async function handler(req: Request, res: Response) {
     if (data?.stop_reason === 'max_tokens') return res.status(502).json({ ok:false, error:'Claude output was truncated before completion' })
     let draft:any
     try { draft = extractJson(text) } catch { return res.status(502).json({ ok:false, error:'Claude returned invalid JSON', rawText:text }) }
+    normalizeDraftDirections(draft)
     if (shorts) {
       const segments = draft?.chapters?.flatMap((chapter: any) => chapter.segments || []) || []
       if (draft?.chapters?.length !== 1 || segments.length !== 12 || segments.some((segment: any, index: number) => segment.sceneIndex !== index + 1 || !String(segment.text || '').trim()) || draft.hook || draft?.ending?.text) {

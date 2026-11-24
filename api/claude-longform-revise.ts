@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express'
 import { runPartialRevision, verifyPromise, PARTIAL_SCHEMA } from '../lib/story/titlePromise.js'
+import { preserveDirections } from '../lib/story/sceneDirection.js'
 import { isYasa, yasaScriptBrief } from '../lib/story/yasaStoryDna.js'
 
 function setCors(req: Request, res: Response) {
@@ -70,6 +71,7 @@ const LONGFORM_DRAFT_SCHEMA = {
                 speaker: { type: 'string' },
                 text: { type: 'string' },
                 visualHint: { type: 'string' },
+                direction: { type: 'string' },
                 factStatus: {
                   type: 'string',
                   enum: ['verified', 'interpretation', 'verify_before_publish']
@@ -121,6 +123,7 @@ function buildSystemPrompt(finalizeForProduction = false) {
     '',
     '[출력 규칙]',
     '- 반드시 원래 Claude Longform Draft와 동일한 JSON 구조만 출력한다.',
+    '- 각 segment의 direction(시각 연출, 600자 이내 문자열)은 원본 값을 그대로 유지한다. 수정한 segment의 연출이 달라져야 할 때만 고친다.',
     '- Markdown 코드블록, 설명문, 수정 요약은 출력하지 않는다.'
   ].join('\n')
 }
@@ -284,6 +287,7 @@ export default async function handler(req: Request, res: Response) {
       return res.status(502).json({ ok: false, error: 'Claude revision returned invalid JSON', rawText: text })
     }
 
+    preserveDirections(input.draft, draft)
     return res.status(200).json({
       ok: true,
       provider: 'Anthropic',
