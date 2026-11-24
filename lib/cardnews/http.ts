@@ -4,14 +4,15 @@ import { createHash } from 'node:crypto'
 import { reviewCardImage } from './visionReview.js'
 import { zipNinePanels } from './zipNinePanels.js'
 import type { Request, Response } from 'express'
-import { createVercelJobBlobStore, type JobBlobStore } from '../jobs/blobs.js'
+import { createVercelJobBlobStore, sha256, type JobBlobStore } from '../jobs/blobs.js'
+import { readFlight, claimFlight, recordFlight, retryStore } from '../generative/paidFlight.js'
 import { CardnewsError, putImage, getImage, composeCards, storyboardForExistingCards, reviewCardsWithGpt, fixFlaggedWithClaude, getSaved, putSaved, listProjects, projectIdOf, depsFromEnv, cardnewsEstimate, type CardnewsDeps } from './cardnews.js'
-import { ApprovalError, requireApproval, recordSpend } from '../generative/paidApproval.js'
+import { ApprovalError, requireApproval, recordSpend, reserveBatchSlot, validateBatchTerms, payloadHash } from '../generative/paidApproval.js'
 
 // api/story.ts routes taskType cardnews_* here (not a separate Vercel function). Same X-Sync-Key workspace rule as the Job API.
 export const CARDNEWS_TASKS = ['cardnews_get', 'cardnews_list', 'cardnews_save', 'cardnews_compose', 'cardnews_storyboard', 'cardnews_review', 'cardnews_fix', 'cardnews_image_put', 'cardnews_image_get', 'cardnews_image_review', 'cardnews_zip_get', 'cardnews_image_generate', 'cardnews_image_direct', 'cardnews_master_image_generate'] as const
 export const isCardnewsTask = (t: unknown) => typeof t === 'string' && (CARDNEWS_TASKS as readonly string[]).includes(t)
-const STATUS: Record<string, number> = { BAD_REQUEST: 400, UNAUTHORIZED: 401, COST_APPROVAL_REQUIRED: 402, REV_CONFLICT: 409, APPROVAL_USED: 409, APPROVAL_MISMATCH: 402, APPROVAL_EXPIRED: 402, NOT_FOUND: 404, STORE_FAILED: 502, STATE_TOO_LARGE: 413, PROVIDER_DOWN: 503, REVIEW_INVALID: 502, FIX_INCOMPLETE: 502, METHOD_NOT_ALLOWED: 405 }
+const STATUS: Record<string, number> = { BAD_REQUEST: 400, UNAUTHORIZED: 401, COST_APPROVAL_REQUIRED: 402, REV_CONFLICT: 409, APPROVAL_USED: 409, APPROVAL_MISMATCH: 402, APPROVAL_EXPIRED: 402, BATCH_LIMIT_EXCEEDED: 402, IMAGE_IN_PROGRESS: 409, IMAGE_STATE_UNKNOWN: 409, NOT_FOUND: 404, STORE_FAILED: 502, STATE_TOO_LARGE: 413, PROVIDER_DOWN: 503, REVIEW_INVALID: 502, FIX_INCOMPLETE: 502, METHOD_NOT_ALLOWED: 405 }
 
 export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => CardnewsDeps }) {
   return async (req: Request, res: Response) => {
@@ -75,12 +76,46 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
               !/^[A-Za-z0-9+/]+={0,2}$/.test(r.data) || !['image/png', 'image/jpeg', 'image/webp'].includes(String(r.mimeType || r.mime_type || '')))) {
           throw new CardnewsError('BAD_REQUEST', 'MASTER 장면 ID·규격(16:9/9:16)·프롬프트가 필요합니다.')
         }
+        // 같은 요청(장면·프롬프트·참조·재생성 의도, 일괄 id는 제외)의 이전 호출 기록: 결과가 있으면 승인·과금 없이 복구하고,
+        // 처리 여부가 불명확하면 자동으로 다시 호출하지 않는다. 선택 장면 '다시 생성'은 새 regenerate 값으로 새 요청이 된다.
+        // 일괄 요청이면 승인 대상(프로젝트·장면 목록·총액)과 이 장면이 맞는지 승인 소비 전에 검증한다
+        if (input.batch !== undefined) validateBatchTerms(input.batch, String(input.sceneId), 0.067)
+        const flightBase = `image-flight/${ws}/${payloadHash({ sceneId: input.sceneId, imageInput: im, regenerate: input.regenerate ?? null })}`
+        const prior = await readFlight(o.blobs, flightBase)
+        if (prior.state === 'done') {
+          const bytes = await o.blobs.getBytes(prior.result.ref)
+          if (bytes && sha256(bytes) === prior.result.sha256) return res.status(200).json({ image: { base64: bytes.toString('base64'), mimeType: prior.result.mimeType }, meta: { recovered: true }, recovered: true, budget: null })
+          throw new CardnewsError('IMAGE_STATE_UNKNOWN', '이전에 만든 이미지 파일을 읽지 못했습니다. 과금이 중복되지 않도록 자동으로 다시 호출하지 않았습니다.')
+        }
+        if (prior.state === 'in_progress') throw new CardnewsError('IMAGE_IN_PROGRESS', '같은 이미지를 다른 요청이 만들고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
+        if (prior.state === 'unknown') throw new CardnewsError('IMAGE_STATE_UNKNOWN', '같은 이미지 요청의 처리 여부를 확인할 수 없습니다(이미 생성·과금되었을 수 있음). 자동으로 다시 호출하지 않았습니다. 새로 만들려면 확인 후 다시 생성을 선택하세요.')
         const approval = await requireApproval(o.blobs, { ws, input, quote: { task, usd: 0.067, calls: 1, note: 'Gemini MASTER 이미지 1장 예상 비용(확정 단가 아님)' } })
+        // 공급자 호출 전에 이 요청의 실행권을 원자적으로 확보(독립 인스턴스·동시 요청 중 하나만 호출)
+        if (!(await claimFlight(o.blobs, flightBase, prior.gen))) throw new CardnewsError('IMAGE_IN_PROGRESS', '같은 이미지를 다른 요청이 만들고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
+        // 일괄 제작이면 승인된 총액·장수를 서버가 원자적으로 예약한다(동시 요청·다른 탭이 한도를 넘길 수 없다). 슬롯이 없으면 공급자 호출 없음.
+        try { if (input.batch !== undefined) await reserveBatchSlot(o.blobs, { ws, batch: input.batch, sceneId: String(input.sceneId), unitUsd: 0.067 }) }
+        catch (e) { await recordFlight(o.blobs, flightBase, prior.gen, { status: 'failed_safe', reason: 'batch_limit' }); throw e }
         let status = 500, output: any, budget: any
         try {
           await imageHandler({ ...req, headers: req.headers, method: req.method, body: { input: im }, [INTERNAL_IMAGE_CALL]: true } as any,
             { setHeader() {}, status(code: number) { status = code; return this }, json(value: any) { output = value; return this } } as any)
-        } finally { budget = await recordSpend(o.blobs, { ws, approval }) }
+        } catch (e) { await recordFlight(o.blobs, flightBase, prior.gen, { status: 'unknown', reason: 'handler_threw' }); throw e }
+        finally { budget = await recordSpend(o.blobs, { ws, approval }) }
+        // 결과 기록: 생성됐으면 이미지를 저장소에 남겨 응답이 유실돼도 복구한다. 공급자가 호출되지 않았거나(검증 단계 거절), 공급자가 4xx로
+        // 거절했으면 생성되지 않았음이 확실(failed_safe). 그 밖은 모두 불명확(unknown)이라 자동 재호출하지 않는다:
+        // 응답 없음, 5xx·408, HTTP 200이지만 이미지를 읽지 못함(PROVIDER_RESPONSE_UNREADABLE), 결과 저장 실패.
+        if (status === 200 && typeof output?.image?.base64 === 'string') {
+          const bytes = Buffer.from(output.image.base64.replace(/^data:[^;]+;base64,/, ''), 'base64'), h = sha256(bytes), mimeType = String(output.image.mimeType || 'image/png')
+          const ref = `generative-assets/master-images/${h}`
+          const saved = await retryStore(() => o.blobs.putBytes(ref, bytes, mimeType))
+          await recordFlight(o.blobs, flightBase, prior.gen, saved ? { status: 'done', ref, sha256: h, mimeType } : { status: 'paid_unsaved', sha256: h })
+        } else {
+          const code = output?.error?.code, providerStatus = Number(output?.error?.providerStatus)
+          const reachedProvider = code === 'PROVIDER_HTTP_ERROR' || code === 'PROVIDER_NO_RESPONSE' || code === 'PROVIDER_RESPONSE_UNREADABLE'
+          const rejectedByProvider = code === 'PROVIDER_HTTP_ERROR' && Number.isInteger(providerStatus) && providerStatus >= 400 && providerStatus < 500 && providerStatus !== 408
+          const notExecuted = status !== 200 && output?.error && (!reachedProvider || rejectedByProvider)
+          await recordFlight(o.blobs, flightBase, prior.gen, notExecuted ? { status: 'failed_safe', http: status } : { status: 'unknown', reason: code ?? `http_${status}` })
+        }
         return res.status(status).json({ ...output, budget })
       }
       // 이미지 1장(유료): 8장 덱은 위의 확정 계획 확인 후, 그 외 덱(cardnews_image_direct)은 바로 — 둘 다 1회용 승인 → Gemini → Ledger

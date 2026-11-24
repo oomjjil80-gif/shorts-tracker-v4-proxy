@@ -9,12 +9,14 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { sha256, sha256File, type JobBlobStore } from '../jobs/blobs.js'
-import { cachedTts, clipToWav, assembleNarration, narrationChunks, NARRATION_LOUDNORM, type TtsFn } from './narration.js'
+import { cachedTts, ttsCacheLookup, TtsPendingError, TtsUnknownError, TtsBudgetError, clipToWav, assembleNarration, narrationChunks, NARRATION_LOUDNORM, type TtsFn } from './narration.js'
 import { creativeContentFor, creativeVoiceFor, resolveCreativeProfile, type CreativeContent, type ResolvedCreativeProfile } from './creativeProfile.js'
 import { LONGFORM_VOICE_PROFILES, LONGFORM_VOICE_TONES, LONGFORM_VOICE_SPEEDS, type VoiceProfile } from './voiceProfile.js'
 
 export class TrackerTtsError extends Error { constructor(public code: string, message: string) { super(message); this.name = 'TrackerTtsError' } }
 const MAX_CLIPS = 24, MAX_CLIP_CHARS = 6000, MAX_REFS = 4000
+// quote basis (same figures as the frontend usage estimate): spoken Korean ~6.2 chars/second, gpt-4o-mini-tts ~$0.015/minute
+const TTS_CHARS_PER_SECOND = 6.2, TTS_USD_PER_MINUTE = 0.015
 const REF = /^generative-assets\/audio\/[0-9a-f]{64}\.mp3$/, NARRATION_REF = /^generative-assets\/audio\/[0-9a-f]{64}\.m4a$/
 
 // the narration voice of an Episode: its stored resolved profile (from creative_resolve), else the same resolver
@@ -33,7 +35,8 @@ const stopCode = (e: any) => (e?.stop ? (/quota|credit_balance/.test(String(e?.c
 export function createTrackerTts(deps: { blobs: JobBlobStore; tts: TtsFn; apiKey?: () => string; log?: (line: string) => void }) {
   const log = deps.log ?? ((l: string) => console.log(l))
   const key = () => deps.apiKey?.() ?? process.env.OPENAI_API_KEY ?? ''
-  async function clips(input: any) {
+  // shared by plan() and clips(): the same validation and the same chunks, so the quote always matches what will be voiced
+  function parse(input: any) {
     const { voice } = trackerVoice(input)
     if (input?.forceRegenerate !== undefined && typeof input.forceRegenerate !== 'boolean') throw new TrackerTtsError('BAD_REQUEST', 'forceRegenerate must be boolean')
     const list = Array.isArray(input?.clips) ? input.clips : []
@@ -43,6 +46,23 @@ export function createTrackerTts(deps: { blobs: JobBlobStore; tts: TtsFn; apiKey
       if (!text || [...text].length > MAX_CLIP_CHARS) throw new TrackerTtsError('BAD_REQUEST', `clip ${i + 1}: text must be 1..${MAX_CLIP_CHARS} characters`)
       return { id: String(c?.id ?? i), chunks: narrationChunks(text) }
     })
+    return { voice, units, force: input?.forceRegenerate === true }
+  }
+  // What a request would cost, WITHOUT calling the provider: only chunks that are not cached are paid (a forced regeneration pays
+  // all of them). Identical chunks count once. calls = 0 means the request is free (cache reuse) and needs no approval.
+  async function plan(input: any) {
+    const { voice, units, force } = parse(input)
+    const texts = [...new Set<string>(units.flatMap((u: any) => u.chunks as string[]))]
+    const misses: string[] = []
+    for (const t of texts) if (force || !(await ttsCacheLookup(deps.blobs, voice, t))) misses.push(t)
+    const chars = misses.reduce((n, t) => n + [...t].length, 0)
+    const usd = misses.length ? Math.max(0.001, Math.ceil((chars / TTS_CHARS_PER_SECOND / 60) * TTS_USD_PER_MINUTE * 1.5 * 10_000) / 10_000) : 0
+    return { force, calls: misses.length, chars, usd, quote: { task: 'tts_clips', usd, calls: misses.length, note: `음성 ${misses.length}구간 새로 만들기 예상 비용(확정 단가 아님)` } }
+  }
+  // opts.maxCalls = the paid calls the approval covers: never more provider calls than that. opts.flightId = the approval ID of a forced regeneration.
+  async function clips(input: any, opts: { maxCalls?: number; flightId?: string } = {}) {
+    const { voice, units, force } = parse(input)
+    const budget = opts.maxCalls === undefined ? undefined : { remaining: opts.maxCalls }
     const work = await mkdtemp(join(tmpdir(), 'tracker-tts-'))
     let calls = 0, hits = 0
     try {
@@ -52,7 +72,7 @@ export function createTrackerTts(deps: { blobs: JobBlobStore; tts: TtsFn; apiKey
       const worker = async () => {
         for (let i = next++; i < jobs.length; i = next++) {
           const j = jobs[i]
-          const c = await cachedTts({ blobs: deps.blobs, voice, text: j.text, tts: deps.tts, apiKey: key(), forceRegenerate: input.forceRegenerate === true })
+          const c = await cachedTts({ blobs: deps.blobs, voice, text: j.text, tts: deps.tts, apiKey: key(), forceRegenerate: force, budget, flightId: opts.flightId })
           if (c.cache === 'HIT') hits++; else calls++
           const { seconds } = await clipToWav(c.bytes, work, `c${i}`)
           if (!(seconds > 0)) throw new TrackerTtsError('TTS_FAILED', `clip ${j.ui + 1} has no audio`)
@@ -60,7 +80,7 @@ export function createTrackerTts(deps: { blobs: JobBlobStore; tts: TtsFn; apiKey
         }
       }
       try { await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, worker)) }
-      catch (e: any) { if (e instanceof TrackerTtsError) throw e; log(`[tracker-tts] ${JSON.stringify({ step: 'clips', voice: voice.id, ttsCalls: calls + 1, code: e?.code ?? 'TTS_FAILED' })}`); throw new TrackerTtsError(stopCode(e), e?.stop ? '음성 서비스를 지금 사용할 수 없습니다.' : '음성을 만들지 못했습니다. 다시 시도해 주세요.') }
+      catch (e: any) { if (e instanceof TrackerTtsError) throw e; if (e instanceof TtsPendingError || e instanceof TtsUnknownError || e instanceof TtsBudgetError) { log(`[tracker-tts] ${JSON.stringify({ step: 'clips', voice: voice.id, code: e.code })}`); throw new TrackerTtsError(e.code, e.message) } log(`[tracker-tts] ${JSON.stringify({ step: 'clips', voice: voice.id, ttsCalls: calls + 1, code: e?.code ?? 'TTS_FAILED' })}`); throw new TrackerTtsError(stopCode(e), e?.stop ? '음성 서비스를 지금 사용할 수 없습니다.' : '음성을 만들지 못했습니다. 다시 시도해 주세요.') }
       const out = units.map((u: any, ui: number) => {
         const chunks = jobs.map((j: any, i: number) => (j.ui === ui ? done[i] : null)).filter(Boolean)
         return { id: u.id, chunks, seconds: Number(chunks.reduce((s: number, c: any) => s + c.seconds, 0).toFixed(3)) }
@@ -103,5 +123,5 @@ export function createTrackerTts(deps: { blobs: JobBlobStore; tts: TtsFn; apiKey
     if (!bytes) throw new TrackerTtsError('NOT_FOUND', 'narration not found; make it again')
     return bytes
   }
-  return { clips, assemble, audio }
+  return { plan, clips, assemble, audio }
 }

@@ -35,6 +35,12 @@ const http = (handler: any, body: any) => new Promise<{ status: number; json: an
   handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32) }, query: {}, body } as any,
     { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { resolve({ status, json: b }); return this }, end() { return this } } as any)
 })
+// the real client's two steps: ask for the estimate (no provider call), then send the same request with the issued approval
+const approvedClips = async (handler: any, body: any) => {
+  const q = await http(handler, body)
+  if (q.status !== 402) return q
+  return http(handler, { ...body, costApproved: true, approvedUsd: q.json.estimate.usd, approvalId: q.json.approval.approvalId })
+}
 const CLIPS = [{ id: 'c1', text: '금리가 오르면 대출 이자가 먼저 늘어납니다.' }, { id: 'c2', text: '그래서 월급은 그대로인데 쓸 돈이 줄어듭니다. 이게 체감 물가입니다.' }, { id: 'c3', text: '오늘은 그 이유를 세 가지로 정리합니다.' }]
 
 test('1-4 + 9: every family x format voices through the resolver; the narration voice IS the preview voice (voice, tone, speed)', async () => {
@@ -78,16 +84,18 @@ test('7-8: billing/auth stop at once (1 call, nothing stored); a transient error
   for (const [status, body, code] of [[429, '{"error":{"code":"credit_balance_exhausted"}}', 'PROVIDER_BILLING'], [429, '{"error":{"code":"insufficient_quota"}}', 'PROVIDER_BILLING'], [400, '{"error":{"code":"billing_hard_limit_reached"}}', 'PROVIDER_BILLING'], [401, '{"error":{"code":"invalid_api_key"}}', 'PROVIDER_STOP'], [403, '{}', 'PROVIDER_STOP']] as const) {
     const blobs: any = createMemoryBlobStore(), s = standIn(() => ({ status, body }))
     const handler = createJobsHttp({ getStore: async () => { throw new Error('no database') }, blobs, trackerTts: createTrackerTts({ blobs, tts: s.tts, apiKey: () => 'k', log: () => {} }) })
-    const r = await http(handler, { taskType: 'tts_clips', family: 'yasa', format: 'shorts', creative: { requested: AUTO }, clips: [CLIPS[0]] })
+    const r = await approvedClips(handler, { taskType: 'tts_clips', family: 'yasa', format: 'shorts', creative: { requested: AUTO }, clips: [CLIPS[0]] })
     assert.equal(r.json.error.code, code); assert.equal(r.status, 503); assert.equal(s.calls.length, 1, code)
     assert.equal([...blobs.files.keys()].filter((k: string) => k.startsWith('generative-cache/tts/')).length, 0)
   }
-  const once = standIn((n) => (n === 1 ? { status: 503, body: 'upstream' } : null))
-  const ok = await createTrackerTts({ blobs: createMemoryBlobStore(), tts: once.tts, apiKey: () => 'k', log: () => {} }).clips({ family: 'general', format: 'shorts', creative: { requested: AUTO }, clips: [CLIPS[0]] })
-  assert.equal(once.calls.length, 2); assert.equal(ok.clips[0].chunks.length, 1)
-  const twice = standIn(() => ({ status: 502, body: 'bad gateway' }))
-  await assert.rejects(() => createTrackerTts({ blobs: createMemoryBlobStore(), tts: twice.tts, apiKey: () => 'k', log: () => {} }).clips({ family: 'general', format: 'shorts', creative: { requested: AUTO }, clips: [CLIPS[0]] }), (e: any) => e.code === 'TTS_FAILED')
-  assert.equal(twice.calls.length, 2, 'never a third call')
+  // 5xx·504 등 처리 여부가 불명확한 오류는 자동으로 다시 호출하지 않는다(승인 1회 = 공급자 호출 최대 1회): 보류 코드로 알린다
+  for (const status of [503, 502, 504]) {
+    const unclear = standIn(() => ({ status, body: 'upstream' })), blobs: any = createMemoryBlobStore()
+    const t = createTrackerTts({ blobs, tts: unclear.tts, apiKey: () => 'k', log: () => {} }), body = { family: 'general', format: 'shorts', creative: { requested: AUTO }, clips: [CLIPS[0]] }
+    await assert.rejects(() => t.clips(body, { maxCalls: 1 }), (e: any) => e.code === 'TTS_STATE_UNKNOWN')
+    assert.equal(unclear.calls.length, 1, `HTTP ${status}: exactly one provider call`)
+    await assert.rejects(() => t.clips(body, { maxCalls: 1 }), (e: any) => e.code === 'TTS_STATE_UNKNOWN'); assert.equal(unclear.calls.length, 1, 'held: no repeat')
+  }
 })
 
 test('13-14: one levelled narration (~-17 LUFS, no clipping); its probed length is authoritative and matches the clips; assembly cached', async () => {
@@ -116,4 +124,79 @@ test('13-14: one levelled narration (~-17 LUFS, no clipping); its probed length 
   })
   assert.equal(got.status, 200); assert.equal(got.type, 'audio/mp4'); assert.ok(got.bytes.equals(blobs.binaries.get(n.ref)))
   await assert.rejects(() => t.audio(refs[0]), (e: any) => e.code === 'BAD_REQUEST')
+})
+
+// ── 과금 안전성: tts_clips 서버 승인 (기존 paidApproval 재사용). 캐시 재사용과 tts_assemble은 무료 ──
+test('tts_clips: 승인 없이는 공급자 호출 0회, 승인 의사·금액 오류·재사용·변조는 거절, 캐시 재사용과 tts_assemble은 승인 없이 무료', async () => {
+  const blobs: any = createMemoryBlobStore(), s = standIn()
+  const handler = createJobsHttp({ getStore: async () => { throw new Error('no database') }, blobs, trackerTts: createTrackerTts({ blobs, tts: s.tts, apiKey: () => 'k', log: () => {} }) })
+  const body = { taskType: 'tts_clips', family: 'economy', format: 'shorts', creative: { requested: AUTO }, clips: [CLIPS[0], CLIPS[1]] }
+  const quote = async (b: any) => { const q = await http(handler, b); assert.equal(q.status, 402); assert.equal(q.json.error.code, 'COST_APPROVAL_REQUIRED'); return q.json }
+  // 1) 승인 없음 → 견적만(공급자 호출 0회), 금액은 서버가 계산
+  const q = await quote(body); assert.equal(s.calls.length, 0); assert.ok(q.estimate.usd > 0 && q.estimate.calls === 2); assert.equal(q.estimate.confirmed, false)
+  // 2) 승인 ID가 있어도 승인 의사 false / 금액 0·음수·부족·문자열이면 호출 0회
+  for (const consent of [{ costApproved: false, approvedUsd: q.estimate.usd }, { costApproved: true }, { costApproved: true, approvedUsd: 0 }, { costApproved: true, approvedUsd: -1 }, { costApproved: true, approvedUsd: 'x' }, { costApproved: true, approvedUsd: true }, { costApproved: true, approvedUsd: null }, { costApproved: true, approvedUsd: String(q.estimate.usd) }, { costApproved: true, approvedUsd: [q.estimate.usd] }, { costApproved: true, approvedUsd: q.estimate.usd / 10 }]) {
+    const r = await http(handler, { ...body, approvalId: q.approval.approvalId, ...consent }); assert.equal(r.status, 402, JSON.stringify(consent)); assert.equal(r.json.error.code, 'COST_APPROVAL_REQUIRED')
+  }
+  assert.equal(s.calls.length, 0)
+  // 3) 승인 내용을 바꿔(다른 문구) 같은 승인을 쓰지 못한다
+  const tamper = await http(handler, { ...body, clips: [CLIPS[0], { id: 'z', text: '승인과 다른 문구로 바꿔치기한 요청입니다.' }], approvalId: q.approval.approvalId, costApproved: true, approvedUsd: q.estimate.usd })
+  assert.equal(tamper.json.error.code, 'APPROVAL_MISMATCH'); assert.equal(s.calls.length, 0)
+  // 4) 정상 승인 → 승인된 만큼만 호출, 같은 승인은 다시 쓸 수 없음
+  const good = { ...body, approvalId: q.approval.approvalId, costApproved: true, approvedUsd: q.estimate.usd }
+  const ok = await http(handler, good); assert.equal(ok.status, 200); assert.equal(ok.json.ttsCalls, 2); assert.equal(s.calls.length, 2)
+  const retry = await http(handler, good); assert.equal(retry.status, 200); assert.equal(retry.json.ttsCalls, 0); assert.equal(s.calls.length, 2) // 응답이 유실돼 같은 요청을 다시 보내도 결과를 복구하고 과금하지 않는다
+  // 5) 이미 만든 클립은 승인 없이 무료로 재사용(공급자 호출 0회)
+  const again = await http(handler, body); assert.equal(again.status, 200); assert.equal(again.json.ttsCalls, 0); assert.equal(again.json.cacheHits, 2); assert.equal(s.calls.length, 2)
+  // 6) 일부만 새 문구면 새 문구만 견적·호출 (승인 범위 = 새로 만드는 구간)
+  const mixed = { ...body, clips: [CLIPS[0], { id: 'n', text: '아직 만들지 않은 새 문장입니다. 이것만 과금됩니다.' }] }
+  const qm = await quote(mixed); assert.equal(qm.estimate.calls, 1)
+  const okm = await http(handler, { ...mixed, approvalId: qm.approval.approvalId, costApproved: true, approvedUsd: qm.estimate.usd }); assert.equal(okm.status, 200); assert.equal(okm.json.ttsCalls, 1); assert.equal(s.calls.length, 3)
+  // 7) 선택 장면 재생성(forceRegenerate)은 캐시가 있어도 승인이 필요하고, 승인하면 정상 재생성
+  const force = { ...body, clips: [CLIPS[0]], forceRegenerate: true }
+  const qf = await quote(force); assert.equal(qf.estimate.calls, 1); assert.equal(s.calls.length, 3)
+  const okf = await http(handler, { ...force, approvalId: qf.approval.approvalId, costApproved: true, approvedUsd: qf.estimate.usd }); assert.equal(okf.status, 200); assert.equal(okf.json.ttsCalls, 1); assert.equal(s.calls.length, 4)
+  const reuseForce = await http(handler, { ...force, approvalId: qf.approval.approvalId, costApproved: true, approvedUsd: qf.estimate.usd }); assert.equal(reuseForce.status, 409); assert.equal(reuseForce.json.error.code, 'APPROVAL_USED'); assert.equal(s.calls.length, 4) // 같은 승인으로 재생성을 두 번 할 수 없다
+  // 8) tts_assemble은 ffmpeg만 쓰므로 승인 없이 가능
+  const refs = ok.json.clips.flatMap((c: any) => c.chunks.map((k: any) => k.ref))
+  const asm = await http(handler, { taskType: 'tts_assemble', family: 'economy', format: 'shorts', creative: { requested: AUTO }, refs }); assert.equal(asm.status, 200); assert.ok(asm.json.seconds > 0); assert.equal(s.calls.length, 4)
+  // 9) 승인 기록: 월별 비용 기록에 남는다(경고용)
+  assert.ok([...blobs.files.keys()].some((k: string) => k.startsWith('ai-spend/')))
+})
+
+test('tts_clips HTTP: 504 후에는 승인 1회로 공급자 호출 1회뿐이고 새 승인으로도 자동 재호출하지 않는다 (불명확한 실패 보류)', async () => {
+  const blobs: any = createMemoryBlobStore(), s = standIn(() => ({ status: 504, body: 'gateway timeout' }))
+  const handler = createJobsHttp({ getStore: async () => { throw new Error('no database') }, blobs, trackerTts: createTrackerTts({ blobs, tts: s.tts, apiKey: () => 'k', log: () => {} }) })
+  const body = { taskType: 'tts_clips', family: 'economy', format: 'shorts', creative: { requested: AUTO }, clips: [CLIPS[0]] }
+  const first = await approvedClips(handler, body)
+  assert.equal(first.status, 409); assert.equal(first.json.error.code, 'TTS_STATE_UNKNOWN'); assert.equal(s.calls.length, 1, '504, 1 approval -> exactly 1 provider call')
+  const again = await approvedClips(handler, body) // 새 승인을 받아도 처리 여부가 불명확한 문구는 자동으로 다시 호출하지 않는다
+  assert.equal(again.json.error.code, 'TTS_STATE_UNKNOWN'); assert.equal(s.calls.length, 1)
+})
+
+test('creative_resolve(무료·부작용 없음)가 서버의 승인 기능 표식을 알려준다 — 클라이언트는 이 표식을 확인하기 전에 유료 요청을 보내지 않는다', async () => {
+  const handler = createJobsHttp({ getStore: async () => { throw new Error('no database') }, blobs: createMemoryBlobStore() as any })
+  const r = await http(handler, { taskType: 'creative_resolve', family: 'economy', format: 'shorts', ...AUTO })
+  assert.equal(r.status, 200); assert.equal(r.json.capabilities.ttsApproval, 1); assert.equal(r.json.capabilities.imageFlight, 1); assert.equal(r.json.capabilities.batchScenes, 1)
+})
+
+// ── 혼합 버전: 요청 구조 v2(items)는 승인 단계를 모르는 서버가 해석할 수 없어, 어떤 서버 전환에서도 미승인 생성이 시작되지 않는다 ──
+test('tts_clips v2(items): 견적 단계 공급자 호출 0회 → 승인 후 정상 실행 → 같은 요청은 무료 복구, 승인 해시는 견적·실행이 동일', async () => {
+  const blobs: any = createMemoryBlobStore(), s = standIn()
+  const handler = createJobsHttp({ getStore: async () => { throw new Error('no database') }, blobs, trackerTts: createTrackerTts({ blobs, tts: s.tts, apiKey: () => 'k', log: () => {} }) })
+  const v2 = { taskType: 'tts_clips', family: 'economy', format: 'shorts', creative: { requested: AUTO }, items: [CLIPS[0], CLIPS[1]] }
+  const q = await http(handler, v2); assert.equal(q.status, 402); assert.equal(q.json.error.code, 'COST_APPROVAL_REQUIRED'); assert.equal(s.calls.length, 0, 'quote step: provider calls 0')
+  assert.equal(q.json.estimate.calls, 2)
+  const bad = await http(handler, { ...v2, approvalId: q.json.approval.approvalId, costApproved: true, approvedUsd: 0 }); assert.equal(bad.status, 402); assert.equal(s.calls.length, 0)
+  const ok = await http(handler, { ...v2, approvalId: q.json.approval.approvalId, costApproved: true, approvedUsd: q.json.estimate.usd })
+  assert.equal(ok.status, 200); assert.equal(ok.json.ttsCalls, 2); assert.equal(s.calls.length, 2); assert.equal(ok.json.clips.length, 2)
+  const again = await http(handler, v2); assert.equal(again.status, 200); assert.equal(again.json.ttsCalls, 0); assert.equal(s.calls.length, 2) // 무료 캐시 복구
+  const other = await http(handler, { ...v2, items: [CLIPS[0], { id: 'z', text: '승인과 다른 문구로 바꾼 v2 요청입니다.' }] }); assert.equal(other.status, 402); assert.equal(s.calls.length, 2)
+})
+
+test('v2 요청을 승인 단계 이전의 파싱(clips만 읽음)으로 받으면 공급자 호출 전에 BAD_REQUEST — 구 서버 도달 시 생성 0회', async () => {
+  const s = standIn(), t = createTrackerTts({ blobs: createMemoryBlobStore() as any, tts: s.tts, apiKey: () => 'k', log: () => {} })
+  // what a server without the approval step does with a v2 body: it reads input.clips only
+  await assert.rejects(() => t.clips({ family: 'economy', format: 'shorts', creative: { requested: AUTO }, items: [CLIPS[0]] }), (e: any) => e.code === 'BAD_REQUEST' && /clips must be/.test(e.message))
+  assert.equal(s.calls.length, 0)
 })

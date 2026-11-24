@@ -223,13 +223,15 @@ export default async function handler(req: Request, res: Response) {
     try { data = raw ? JSON.parse(raw) : {} } catch {}
 
     if (!response.ok) {
+      // Gemini answered with an error: providerStatus tells the paid-call guard whether nothing was generated (4xx) or it is unclear (5xx/408)
       return res.status(response.status).json({
-        error: { message: data?.error?.message || raw || 'Gemini API request failed' }
+        error: { code: 'PROVIDER_HTTP_ERROR', providerStatus: response.status, message: data?.error?.message || raw || 'Gemini API request failed' }
       })
     }
 
     const image = findGeneratedImage(data)
-    if (!image) return res.status(502).json({ error: { message: 'Gemini response had no image output' } })
+    // HTTP 200 but no readable image: Gemini processed (and may have billed) the request, so this is NOT a safe-to-repeat failure
+    if (!image) return res.status(502).json({ error: { code: 'PROVIDER_RESPONSE_UNREADABLE', message: 'Gemini response had no image output' } })
 
     return res.status(200).json({
       image,
@@ -245,6 +247,7 @@ export default async function handler(req: Request, res: Response) {
       }
     })
   } catch (error: any) {
-    return res.status(500).json({ error: { message: error?.message || String(error) } })
+    // the request may have reached Gemini: the caller must not assume nothing was generated or billed
+    return res.status(500).json({ error: { code: 'PROVIDER_NO_RESPONSE', message: error?.message || String(error) } })
   }
 }

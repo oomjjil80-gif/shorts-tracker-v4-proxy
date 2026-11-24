@@ -6,6 +6,7 @@ import { requireApproval, recordSpend, payloadHash, ApprovalError } from '../lib
 import { createCardnewsHttp } from '../lib/cardnews/http.js'
 
 const WS = 'w'.repeat(64), KEY = 'k'.repeat(32), quote = { task: 'cardnews_review', usd: 0.03, calls: 1 }
+const yes = { costApproved: true, approvedUsd: 0.03 } // what the real client sends after the user confirms the estimate
 const code = async (p: Promise<unknown>) => { try { await p; return 'OK' } catch (e: any) { return e instanceof ApprovalError ? e.code : `OTHER:${e.message}` } }
 const issue = async (blobs: any, input: any) => { try { await requireApproval(blobs, { ws: WS, input, quote }) } catch (e: any) { return e.extra.approval.approvalId as string } throw new Error('no approval issued') }
 
@@ -13,24 +14,24 @@ test('승인 없는 요청은 승인 ID만 발급(사용 안 됨), 같은 승인
   const blobs = createMemoryBlobStore(), input = { cards: [1, 2] }
   assert.equal(await code(requireApproval(blobs, { ws: WS, input, quote })), 'COST_APPROVAL_REQUIRED')
   const id = await issue(blobs, input)
-  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id, costApproved: true }, quote })), 'OK')
-  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id, costApproved: true }, quote })), 'APPROVAL_USED')
+  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id, ...yes }, quote })), 'OK')
+  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id, ...yes }, quote })), 'APPROVAL_USED')
 })
 
 test('동시 요청 10개가 같은 승인을 써도 정확히 1개만 통과', async () => {
   const blobs = createMemoryBlobStore(), input = { cards: [1] }, id = await issue(blobs, input)
-  const r = await Promise.all(Array.from({ length: 10 }, () => code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id }, quote }))))
+  const r = await Promise.all(Array.from({ length: 10 }, () => code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id, ...yes }, quote }))))
   assert.equal(r.filter((x) => x === 'OK').length, 1); assert.equal(r.filter((x) => x === 'APPROVAL_USED').length, 9)
 })
 
 test('승인을 다른 내용·다른 작업·더 큰 비용·다른 워크스페이스에 쓰지 못함, 만료되면 거절', async () => {
   const blobs = createMemoryBlobStore(), input = { cards: [1] }, id = await issue(blobs, input)
-  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { cards: [2], approvalId: id }, quote })), 'APPROVAL_MISMATCH')
-  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id }, quote: { ...quote, task: 'cardnews_fix' } })), 'APPROVAL_MISMATCH')
-  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id }, quote: { ...quote, usd: 0.5 } })), 'APPROVAL_MISMATCH')
-  assert.equal(await code(requireApproval(blobs, { ws: 'x'.repeat(64), input: { ...input, approvalId: id }, quote })), 'COST_APPROVAL_REQUIRED')
-  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id }, quote, now: new Date(Date.now() + 16 * 60_000) })), 'APPROVAL_EXPIRED')
-  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id }, quote })), 'OK', 'the rejected attempts did not consume it')
+  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { cards: [2], approvalId: id, ...yes }, quote })), 'APPROVAL_MISMATCH')
+  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id, ...yes }, quote: { ...quote, task: 'cardnews_fix' } })), 'APPROVAL_MISMATCH')
+  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id, ...yes }, quote: { ...quote, usd: 0.5 } })), 'APPROVAL_MISMATCH')
+  assert.equal(await code(requireApproval(blobs, { ws: 'x'.repeat(64), input: { ...input, approvalId: id, ...yes }, quote })), 'COST_APPROVAL_REQUIRED')
+  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id, ...yes }, quote, now: new Date(Date.now() + 16 * 60_000) })), 'APPROVAL_EXPIRED')
+  assert.equal(await code(requireApproval(blobs, { ws: WS, input: { ...input, approvalId: id, ...yes }, quote })), 'OK', 'the rejected attempts did not consume it')
   assert.equal(payloadHash({ a: 1, b: [1, { c: 2, d: 3 }] }), payloadHash({ b: [1, { d: 3, c: 2 }], a: 1, approvalId: 'x', costApproved: true }), 'key order and approval fields do not matter')
 })
 
@@ -42,7 +43,7 @@ test('$20은 경고만: 넘어도 계속 기록·통과, 같은 승인은 두 �
   const again = await recordSpend(blobs, { ws: WS, now, approval: { approvalId: 'a2', ws: WS, task: 't', payloadHash: 'h', usd: 9, issuedAt: '', expiresAt: '' } })
   assert.equal(again.monthUsd, 27)
   // 경고 상태에서도 승인된 호출은 막지 않는다
-  const id = await issue(blobs, { x: 1 }); assert.equal(await code(requireApproval(blobs, { ws: WS, input: { x: 1, approvalId: id }, quote })), 'OK')
+  const id = await issue(blobs, { x: 1 }); assert.equal(await code(requireApproval(blobs, { ws: WS, input: { x: 1, approvalId: id, ...yes }, quote })), 'OK')
 })
 
 test('카드뉴스 HTTP: 더블 클릭(같은 승인 2번·동시) → 공급자 호출 1회, 실패해도 승인 재사용 불가, 비용 기록·경고 응답', async () => {

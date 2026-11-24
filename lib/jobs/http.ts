@@ -13,6 +13,7 @@ import { canonicalize } from '../tracker-core/renderManifest.js'
 import { createPgDbFromEnv } from './db.js'
 import { createJobStore, type JobStore } from './store.js'
 import { createVercelJobBlobStore, putAddressed, type JobBlobStore } from './blobs.js'
+import { ApprovalError, requireApproval, recordSpend } from '../generative/paidApproval.js'
 import { recoverSleepDraft } from './sleepDraftRecovery.js'
 import { makeSavedOdysseyScript, offlineOdysseyFingerprint } from './sleepDraftImport.js'
 import { PIPELINES } from './pipeline.js'
@@ -53,7 +54,7 @@ export type JobsDeps = {
   sourceExists?: (sourceAssetId: string) => Promise<boolean>
   analyzeReference?: typeof analyzeRegisteredReference
   voicePreview?: (input: any) => Promise<{ playbackUrl: string; validUntil: number; cache: 'HIT' | 'MISS' }>
-  trackerTts?: { clips: (input: any) => Promise<any>; assemble: (input: any) => Promise<any>; audio?: (ref: string) => Promise<Buffer> }
+  trackerTts?: { plan?: (input: any) => Promise<{ calls: number; quote: { task: string; usd: number; calls?: number; note?: string } }>; clips: (input: any, opts?: { maxCalls?: number; flightId?: string }) => Promise<any>; assemble: (input: any) => Promise<any>; audio?: (ref: string) => Promise<Buffer> }
   // job_upload_text: the publish kit (one text call) and its key (tests inject both)
   uploadKit?: typeof openAiWisdomPublishKit
   openAiKey?: () => string
@@ -71,6 +72,9 @@ export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
 // Creative Settings for browser-made content (Story Writer): the server resolves AUTO (POST; no database, no paid call)
 export const CREATIVE_RESOLVE_TASK = 'creative_resolve'
+// Reported by the free creative_resolve answer. A browser must see ttsApproval >= 1 before it sends ANY paid tts_clips request: an older server
+// would run the request at once (no quote step), so the absence of this marker means "do not send".
+export const SERVER_CAPABILITIES = Object.freeze({ ttsApproval: 1, imageFlight: 1, batchScenes: 1 })
 // Tracker TTS for browser-made content: voice clips in small batches, then one levelled narration (POST; no database)
 export const TTS_CLIPS_TASK = 'tts_clips', TTS_ASSEMBLE_TASK = 'tts_assemble', TTS_AUDIO_TASK = 'tts_audio'
 // 제작 6단계: 제목·썸네일 약속 잠금 / 최종본 약속 확인 (POST; no database, no paid call)
@@ -80,7 +84,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
   JOB_BUSY: 409, STALE_APPROVAL: 409, JOB_ALREADY_STARTED: 409, NOT_AWAITING_APPROVAL: 409, NOT_EDITABLE: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503, PROMISE_SIGNING_NOT_CONFIGURED: 503,
-  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, NOT_SLEEP_RECOVERABLE: 409, RECOVERY_ALREADY_IMPORTED: 409, NOT_ASSET_BILLING_RECOVERABLE: 409, UPLOAD_TEXT_REFUSED: 502
+  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, TTS_IN_PROGRESS: 409, TTS_STATE_UNKNOWN: 409, TTS_APPROVAL_EXCEEDED: 402, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, NOT_SLEEP_RECOVERABLE: 409, RECOVERY_ALREADY_IMPORTED: 409, NOT_ASSET_BILLING_RECOVERABLE: 409, UPLOAD_TEXT_REFUSED: 502
 }
 
 const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
@@ -184,8 +188,24 @@ export function createJobsHttp(deps: JobsDeps) {
       let taskType = String(input.taskType || '')
       if (taskType === TTS_CLIPS_TASK || taskType === TTS_ASSEMBLE_TASK) {
         if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
-        try { return res.status(200).json({ ok: true, ...(await (taskType === TTS_CLIPS_TASK ? trackerTts.clips(input) : trackerTts.assemble(input))) }) }
-        catch (e: any) { if (e instanceof TrackerTtsError) throw new JobError(e.code as any, e.message); throw e }
+        try {
+          if (taskType === TTS_ASSEMBLE_TASK) return res.status(200).json({ ok: true, ...(await trackerTts.assemble(input)) }) // free: ffmpeg only
+          // tts_clips: cached clips are free; any clip that must be generated needs a server-issued single-use approval whose amount
+          // covers the current quote, and the call never makes more provider calls than the approval covered.
+          // Request shape v2: the clips arrive as `items` (the quote request and the approved request share it). A server that predates the
+          // approval step reads only `clips`, finds none and rejects with BAD_REQUEST BEFORE any provider call — so no version switch between
+          // the capability check, the quote and the execution (deploy, rollback, mixed instances) can start an unapproved generation.
+          // The approval stays bound to the request exactly as received (items form), so quote and execution hash identically.
+          const body = Array.isArray(input.items) && input.clips === undefined ? { ...input, clips: input.items } : input
+          const planned = trackerTts.plan ? await trackerTts.plan(body) : null
+          const approval = planned && planned.calls > 0 ? await requireApproval(deps.blobs, { ws: workspaceId, input, quote: planned.quote }) : null
+          try { return res.status(200).json({ ok: true, ...(await trackerTts.clips(body, planned ? { maxCalls: planned.calls, flightId: approval?.approvalId } : {})) }) }
+          finally { if (approval) await recordSpend(deps.blobs, { ws: workspaceId, approval }) } // even a failed call may have been billed
+        } catch (e: any) {
+          if (e instanceof ApprovalError) return res.status(e.code === 'APPROVAL_USED' ? 409 : 402).json({ ok: false, error: { code: e.code, message: e.message }, ...e.extra })
+          if (e instanceof TrackerTtsError) throw new JobError(e.code as any, e.message)
+          throw e
+        }
       }
       // the assembled narration's bytes through the API (same origin rules as every job call; no storage CORS needed)
       if (taskType === TTS_AUDIO_TASK) {
@@ -208,7 +228,7 @@ export function createJobsHttp(deps: JobsDeps) {
           const content = creativeContentFor(input.family, input.format)
           const c = resolveCreativeProfile(content, input, String(input.topic || '').slice(0, 2000))
           // styleWrap: the style text for prompts the user copies by hand (null when nothing is added)
-          return res.status(200).json({ ok: true, creative: { schema: c.schema, content, family: input.family, format: input.format, requested: c.requested, resolved: c.resolved }, styleWrap: visualStyleWrap(imageStyleFor({ content, requested: c.requested, resolved: c.resolved })) })
+          return res.status(200).json({ ok: true, capabilities: SERVER_CAPABILITIES, creative: { schema: c.schema, content, family: input.family, format: input.format, requested: c.requested, resolved: c.resolved }, styleWrap: visualStyleWrap(imageStyleFor({ content, requested: c.requested, resolved: c.resolved })) })
         } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
       }
       if (taskType === VOICE_PREVIEW_TASK) {
