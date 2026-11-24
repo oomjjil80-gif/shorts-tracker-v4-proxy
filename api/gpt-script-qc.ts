@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { preserveDirections } from '../lib/story/sceneDirection.js'
 import { verifyPromise, promiseBrief, isPromiseCategory, checkDraftAgainstPromise, filterIssuesToScope, carryOverUnresolved, runPartialRevision, PARTIAL_SCHEMA, type TitlePromise } from '../lib/story/titlePromise.js'
 import { validateYasaStoryDna, checkYasaScript, isYasa, yasaScriptBrief } from '../lib/story/yasaStoryDna.js'
 
@@ -539,11 +540,12 @@ const LONGFORM_DRAFT_SCHEMA = {
         title:{type:'string'},
         purpose:{type:'string'},
         segments:{type:'array',items:{
-          type:'object',additionalProperties:false,required:['speaker','text','visualHint','factStatus'],
+          type:'object',additionalProperties:false,required:['speaker','text','visualHint','direction','factStatus'],
           properties:{
             speaker:{type:'string'},
             text:{type:'string'},
             visualHint:{type:'string'},
+            direction:{type:'string'},
             factStatus:{type:'string',enum:['verified','interpretation','verify_before_publish']}
           }
         }}
@@ -638,7 +640,7 @@ export default async function handler(req: Request, res: Response) {
         model,
         store:false,
         reasoning:{ effort:'medium' },
-        instructions:'한국어 롱폼 대본을 수정한다. 제공된 사실과 QC 지시만 사용하고 지정된 JSON Schema를 정확히 따른다.',
+        instructions:'한국어 롱폼 대본을 수정한다. 제공된 사실과 QC 지시만 사용하고 지정된 JSON Schema를 정확히 따른다. 각 segment의 direction(시각 연출)은 원본 값을 그대로 유지하고, 원본에 없으면 빈 문자열로 둔다.',
         input:revisionPrompt(input, mode === 'finalize'),
         max_output_tokens:16000,
         text:{format:{type:'json_schema',name:'longform_script_revision',strict:true,schema:LONGFORM_DRAFT_SCHEMA}}
@@ -656,6 +658,7 @@ export default async function handler(req: Request, res: Response) {
       if(!text) return res.status(502).json({ok:false,error:'OpenAI revision response had no text output'})
       let draft:any
       try{draft=JSON.parse(text)}catch{return res.status(502).json({ok:false,error:'OpenAI revision returned invalid JSON',rawText:text})}
+      preserveDirections(input.draft, draft)
       return res.status(200).json({
         ok:true,
         provider:'OpenAI',
