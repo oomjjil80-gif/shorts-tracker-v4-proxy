@@ -33,7 +33,23 @@ export async function guardedTts(tts: TtsFn, text: string, apiKey: string, voice
 }
 
 // one clip from the cache, or ONE guarded paid call stored in the cache
-export async function cachedTts(o: { blobs: JobBlobStore; voice: VoiceProfile; text: string; tts: TtsFn; apiKey: string; forceRegenerate?: boolean }): Promise<{ bytes: Buffer; ref: string; sha256: string; cache: 'HIT' | 'MISS' }> {
+type CachedTtsResult = { bytes: Buffer; ref: string; sha256: string; cache: 'HIT' | 'MISS' }
+// Single-flight: the same voice+text that is being generated right now is paid once. A second request for it (double click,
+// a retry after a dropped response, the same line repeated in one request) waits for the running call instead of calling the
+// provider again, and counts as a cache HIT. Only in-progress calls are shared; nothing is remembered after they finish, so a
+// failure is never reused and a deliberate regeneration (forceRegenerate) is only shared with an identical running one.
+const ttsInFlight = new Map<string, Promise<CachedTtsResult>>()
+export function cachedTts(o: { blobs: JobBlobStore; voice: VoiceProfile; text: string; tts: TtsFn; apiKey: string; forceRegenerate?: boolean }): Promise<CachedTtsResult> {
+  const flight = `${sha256(ttsCacheIdentity(o.voice, o.text))}|${o.forceRegenerate ? 'force' : 'normal'}`
+  const running = ttsInFlight.get(flight)
+  if (running) return running.then((r) => ({ ...r, cache: 'HIT' as const }))
+  const p = cachedTtsOnce(o)
+  ttsInFlight.set(flight, p)
+  const done = () => { if (ttsInFlight.get(flight) === p) ttsInFlight.delete(flight) }
+  p.then(done, done)
+  return p
+}
+async function cachedTtsOnce(o: { blobs: JobBlobStore; voice: VoiceProfile; text: string; tts: TtsFn; apiKey: string; forceRegenerate?: boolean }): Promise<CachedTtsResult> {
   const key = sha256(ttsCacheIdentity(o.voice, o.text))
   if (!o.forceRegenerate) try {
     const m: any = await o.blobs.getJson(`generative-cache/tts/${key}.json`)
