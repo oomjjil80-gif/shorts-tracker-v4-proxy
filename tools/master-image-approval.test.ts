@@ -118,7 +118,9 @@ test('MASTER 이미지: 승인 의사·금액이 올바르지 않으면 호출 0
     imageInput: { profile: 'master-longform', aspectRatio: '16:9', prompt: `A cinematic illustrated scene number ${n}, approved by the user for production`, references: [] }, ...extra })
   // the real client's two steps; `consent` is what the user's confirmation puts in the second request
   const approve = async (body: any, consent: any = (e: any) => ({ costApproved: true, approvedUsd: e.usd })) => {
-    const q = await call(body); assert.equal(q.status, 402); assert.equal(q.data.error.code, 'COST_APPROVAL_REQUIRED')
+    const q = await call(body)
+    if (q.data?.error?.code === 'BATCH_LIMIT_EXCEEDED') return q // 승인 대상에 맞지 않는 batch는 견적 단계에서 거절(승인 ID도 발급하지 않음)
+    assert.equal(q.status, 402); assert.equal(q.data.error.code, 'COST_APPROVAL_REQUIRED')
     return call({ ...body, approvalId: q.data.approval.approvalId, ...consent(q.data.estimate) })
   }
   let providerCalls = 0
@@ -126,28 +128,36 @@ test('MASTER 이미지: 승인 의사·금액이 올바르지 않으면 호출 0
   process.env.GEMINI_API_KEY = 'mock-free-test-key'
   globalThis.fetch = (async () => { providerCalls++; await new Promise((r) => setTimeout(r, 5)); return new Response(JSON.stringify({ output_image: { data: Buffer.from('fake-image').toString('base64'), mime_type: 'image/png' } })) }) as typeof fetch
   try {
-    // 1) 승인 의사 false / 금액 0·음수·NaN·부족 → 유효한 승인 ID가 있어도 공급자 호출 0회
-    for (const consent of [{ costApproved: false, approvedUsd: 0.067 }, { approvedUsd: 0.067 }, { costApproved: true }, { costApproved: true, approvedUsd: 0 }, { costApproved: true, approvedUsd: -1 }, { costApproved: true, approvedUsd: 'abc' }, { costApproved: true, approvedUsd: 0.01 }, { costApproved: 'true', approvedUsd: 1 }]) {
+    // 1) 승인 의사 false / 금액이 숫자가 아니거나(불리언·문자열·null·배열) NaN·Infinity·0·음수·부족 → 유효한 승인 ID가 있어도 공급자 호출 0회
+    for (const consent of [{ costApproved: false, approvedUsd: 0.067 }, { approvedUsd: 0.067 }, { costApproved: true }, { costApproved: true, approvedUsd: 0 }, { costApproved: true, approvedUsd: -1 }, { costApproved: true, approvedUsd: 'abc' }, { costApproved: true, approvedUsd: '1' },
+      { costApproved: true, approvedUsd: true }, { costApproved: true, approvedUsd: null }, { costApproved: true, approvedUsd: [1] }, { costApproved: true, approvedUsd: { v: 1 } }, { costApproved: true, approvedUsd: 0.01 }, { costApproved: 'true', approvedUsd: 1 }, { costApproved: 1, approvedUsd: 1 }]) {
       const r = await approve(scene(1), () => consent)
       assert.equal(r.status, 402, JSON.stringify(consent)); assert.equal(r.data.error.code, 'COST_APPROVAL_REQUIRED')
     }
     assert.equal(providerCalls, 0)
-    // 2) 일괄(2장 승인): 3번째는 슬롯이 없어 공급자 호출 없음, 단일 재생성(batch 없음)은 그대로 가능
-    const batch = { id: 'batch-aaaa1111', count: 2, limitUsd: 0.134 }
+    for (const bad of ['NaN', 'Infinity']) { // JSON cannot carry NaN/Infinity: they arrive as null (rejected above) or as strings (rejected here)
+      const r = await approve(scene(1), () => ({ costApproved: true, approvedUsd: bad })); assert.equal(r.status, 402)
+    }
+    assert.equal(providerCalls, 0)
+    // 2) 일괄 승인 대상 고정: 1·2번 장면만 승인 → 3번 요청은 대상에 없어 승인 소비 전에 거절(공급자 0회), 같은 장면 중복 예약도 차단
+    const batch = { id: 'batch-aaaa1111', projectId: 'ep-1', scenes: ['scene-01', 'scene-02'], limitUsd: 0.134 }
     assert.equal((await approve(scene(1, { batch }))).status, 200)
     assert.equal((await approve(scene(2, { batch }))).status, 200); assert.equal(providerCalls, 2)
-    const over = await approve(scene(3, { batch })); assert.equal(over.status, 402); assert.equal(over.data.error.code, 'BATCH_LIMIT_EXCEEDED'); assert.equal(providerCalls, 2)
+    const outside = await call(scene(3, { batch })); assert.equal(outside.status, 402); assert.equal(outside.data.error.code, 'BATCH_LIMIT_EXCEEDED'); assert.equal(providerCalls, 2) // 승인 ID 발급 전에 거절
+    const dup = await approve(scene(2, { batch, regenerate: 'dup-0001' })); assert.equal(dup.data.error.code, 'BATCH_LIMIT_EXCEEDED'); assert.equal(providerCalls, 2) // 같은 장면 두 번째 예약
     assert.equal((await approve(scene(2, { regenerate: 'regen-0001' }))).status, 200, 'a normal single scene regeneration is untouched'); assert.equal(providerCalls, 3)
-    // 3) 같은 batch id에 다른 조건(한도 부풀리기)은 거절, 잘못된 batch 정보도 호출 없음
-    for (const bad of [{ ...batch, limitUsd: 5 }, { ...batch, count: 50 }, { id: 'x', count: 1, limitUsd: 1 }, { id: 'batch-bbbb2222', count: 0, limitUsd: 1 }, { id: 'batch-cccc3333', count: 2, limitUsd: 0.01 }]) {
-      const r = await approve(scene(4, { batch: bad })); assert.equal(r.data.error.code, 'BATCH_LIMIT_EXCEEDED', JSON.stringify(bad))
+    // 3) 같은 batch id에 다른 조건(프로젝트·장면 집합·총액 변조)은 거절, 잘못된 batch 정보도 호출 없음
+    const t = (extra: any) => ({ ...batch, ...extra })
+    for (const bad of [t({ projectId: 'ep-OTHER' }), t({ scenes: ['scene-01', 'scene-02', 'scene-04'], limitUsd: 0.201 }), t({ scenes: ['scene-01'], limitUsd: 0.067 }), t({ limitUsd: 5 }), t({ limitUsd: 0.01 }), t({ limitUsd: '0.134' }),
+      t({ scenes: ['scene-01', 'scene-01'], limitUsd: 0.134 }), t({ scenes: ['scene-1'], limitUsd: 0.067 }), t({ scenes: [] , limitUsd: 0 }), t({ id: 'x' }), t({ projectId: '' }), { id: 'batch-bbbb2222', count: 2, limitUsd: 0.134 }]) {
+      const r = await approve(scene(1, { batch: bad, regenerate: `t-${Math.random().toString(36).slice(2)}` })); assert.equal(r.data?.error?.code, 'BATCH_LIMIT_EXCEEDED', JSON.stringify(bad))
     }
     assert.equal(providerCalls, 3)
-    // 4) 동시 요청: 장당 승인 1개씩 받은 6개를 동시에 보내도 승인된 3장(한도 0.201)만 호출
-    const cb = { id: 'batch-dddd4444', count: 6, limitUsd: 0.201 }
-    const results = await Promise.all([1, 2, 3, 4, 5, 6].map((n) => approve(scene(n, { batch: cb, regenerate: `regen-b${n}` }))))
-    assert.equal(results.filter((r) => r.status === 200).length, 3); assert.equal(results.filter((r) => r.data?.error?.code === 'BATCH_LIMIT_EXCEEDED').length, 3)
-    assert.equal(providerCalls, 6)
+    // 4) 동시 요청: 승인 대상 3장면 + 대상 밖 3장면을 동시에 → 대상 안은 각 1회만, 대상 밖은 0회. 같은 장면을 두 번 동시에 보내도 1회
+    const cb = { id: 'batch-dddd4444', projectId: 'ep-2', scenes: ['scene-04', 'scene-05', 'scene-06'], limitUsd: 0.201 }
+    const results = await Promise.all([4, 5, 6, 7, 8, 9, 4, 5].map((n, i) => approve(scene(n, { batch: cb, regenerate: `regen-c${i}` }))))
+    assert.equal(results.filter((r) => r.status === 200).length, 3); assert.equal(providerCalls, 6)
+    assert.equal(results.filter((r) => r.data?.error?.code === 'BATCH_LIMIT_EXCEEDED').length, 5)
   } finally { globalThis.fetch = oldFetch; if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey }
 })
 
@@ -164,7 +174,7 @@ test('MASTER 이미지: 응답 유실 후 재시도는 결과 복구(무과금),
   const scene = (n: number, extra: any = {}) => ({ taskType: 'cardnews_master_image_generate', sceneId: `scene-${String(n).padStart(2, '0')}`,
     imageInput: { profile: 'master-shorts', aspectRatio: '9:16', prompt: `A cinematic illustrated vertical scene ${n}, approved for production by the user`, references: [] }, ...extra })
   const approve = async (call: any, body: any) => { const q = await call(body); if (q.status !== 402) return q; return call({ ...body, approvalId: q.data.approval.approvalId, costApproved: true, approvedUsd: q.data.estimate.usd }) }
-  let providerCalls = 0, mode: 'ok' | 'lost' | 'error400' | 'error500' = 'ok'
+  let providerCalls: number = 0, mode: 'ok' | 'lost' | 'error400' | 'error500' | 'error504' | 'unreadable200' = 'ok'
   const oldFetch = globalThis.fetch, oldKey = process.env.GEMINI_API_KEY
   process.env.GEMINI_API_KEY = 'mock-free-test-key'
   globalThis.fetch = (async () => {
@@ -172,6 +182,8 @@ test('MASTER 이미지: 응답 유실 후 재시도는 결과 복구(무과금),
     if (mode === 'lost') throw new Error('socket hang up')
     if (mode === 'error400') return new Response(JSON.stringify({ error: { message: 'blocked' } }), { status: 400 })
     if (mode === 'error500') return new Response(JSON.stringify({ error: { message: 'upstream' } }), { status: 500 })
+    if (mode === 'error504') return new Response('gateway timeout', { status: 504 })
+    if (mode === 'unreadable200') return new Response(JSON.stringify({ id: 'x', steps: [{ type: 'model_output', content: [{ type: 'text', text: 'no image' }] }] }), { status: 200 })
     return new Response(JSON.stringify({ output_image: { data: Buffer.from(`image-${providerCalls}`).toString('base64'), mime_type: 'image/png' } }))
   }) as typeof fetch
   try {
@@ -186,7 +198,14 @@ test('MASTER 이미지: 응답 유실 후 재시도는 결과 복구(무과금),
     // 3) 공급자가 오류로 답함(생성되지 않음이 확실): 새 시도 허용
     mode = 'error400'; const rej = await approve(call, scene(2)); assert.equal(rej.status, 400); assert.equal(providerCalls, 3)
     mode = 'ok'; assert.equal((await approve(call, scene(2))).status, 200); assert.equal(providerCalls, 4)
-    mode = 'error500'; assert.equal((await approve(call, scene(3))).status, 500); mode = 'ok'; assert.equal((await approve(call, scene(3))).status, 200); assert.equal(providerCalls, 6)
+    // 5xx·504·HTTP 200이지만 이미지를 읽지 못함: 처리·과금되었을 수 있어 같은 요청은 자동 재호출 보류(failed_safe 아님)
+    for (const [m, sceneNo] of [['error500', 3], ['error504', 10], ['unreadable200', 11]] as const) {
+      const before: number = providerCalls as number; mode = m
+      const r = await approve(call, scene(sceneNo)); assert.ok(r.status >= 500, m); assert.equal(providerCalls, before + 1)
+      mode = 'ok'; const held = await approve(call, scene(sceneNo)); assert.equal(held.data.error.code, 'IMAGE_STATE_UNKNOWN', m); assert.equal(providerCalls, before + 1, m + ': no automatic repeat')
+      assert.equal((await approve(mkCall(mem), scene(sceneNo))).data.error.code, 'IMAGE_STATE_UNKNOWN') // 다른 인스턴스
+    }
+    providerCalls = 6
     // 4) 공급자 응답 없음(연결 끊김·시간 초과): 이미 과금됐을 수 있어 같은 요청은 자동 재호출 보류(승인 소비 없음)
     mode = 'lost'; assert.equal((await approve(call, scene(4))).status, 500); assert.equal(providerCalls, 7)
     mode = 'ok'

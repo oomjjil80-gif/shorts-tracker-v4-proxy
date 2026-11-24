@@ -72,6 +72,9 @@ export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
 // Creative Settings for browser-made content (Story Writer): the server resolves AUTO (POST; no database, no paid call)
 export const CREATIVE_RESOLVE_TASK = 'creative_resolve'
+// Reported by the free creative_resolve answer. A browser must see ttsApproval >= 1 before it sends ANY paid tts_clips request: an older server
+// would run the request at once (no quote step), so the absence of this marker means "do not send".
+export const SERVER_CAPABILITIES = Object.freeze({ ttsApproval: 1, imageFlight: 1, batchScenes: 1 })
 // Tracker TTS for browser-made content: voice clips in small batches, then one levelled narration (POST; no database)
 export const TTS_CLIPS_TASK = 'tts_clips', TTS_ASSEMBLE_TASK = 'tts_assemble', TTS_AUDIO_TASK = 'tts_audio'
 // 제작 6단계: 제목·썸네일 약속 잠금 / 최종본 약속 확인 (POST; no database, no paid call)
@@ -220,7 +223,7 @@ export function createJobsHttp(deps: JobsDeps) {
           const content = creativeContentFor(input.family, input.format)
           const c = resolveCreativeProfile(content, input, String(input.topic || '').slice(0, 2000))
           // styleWrap: the style text for prompts the user copies by hand (null when nothing is added)
-          return res.status(200).json({ ok: true, creative: { schema: c.schema, content, family: input.family, format: input.format, requested: c.requested, resolved: c.resolved }, styleWrap: visualStyleWrap(imageStyleFor({ content, requested: c.requested, resolved: c.resolved })) })
+          return res.status(200).json({ ok: true, capabilities: SERVER_CAPABILITIES, creative: { schema: c.schema, content, family: input.family, format: input.format, requested: c.requested, resolved: c.resolved }, styleWrap: visualStyleWrap(imageStyleFor({ content, requested: c.requested, resolved: c.resolved })) })
         } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
       }
       if (taskType === VOICE_PREVIEW_TASK) {

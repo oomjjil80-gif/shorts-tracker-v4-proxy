@@ -88,12 +88,14 @@ test('7-8: billing/auth stop at once (1 call, nothing stored); a transient error
     assert.equal(r.json.error.code, code); assert.equal(r.status, 503); assert.equal(s.calls.length, 1, code)
     assert.equal([...blobs.files.keys()].filter((k: string) => k.startsWith('generative-cache/tts/')).length, 0)
   }
-  const once = standIn((n) => (n === 1 ? { status: 503, body: 'upstream' } : null))
-  const ok = await createTrackerTts({ blobs: createMemoryBlobStore(), tts: once.tts, apiKey: () => 'k', log: () => {} }).clips({ family: 'general', format: 'shorts', creative: { requested: AUTO }, clips: [CLIPS[0]] })
-  assert.equal(once.calls.length, 2); assert.equal(ok.clips[0].chunks.length, 1)
-  const twice = standIn(() => ({ status: 502, body: 'bad gateway' }))
-  await assert.rejects(() => createTrackerTts({ blobs: createMemoryBlobStore(), tts: twice.tts, apiKey: () => 'k', log: () => {} }).clips({ family: 'general', format: 'shorts', creative: { requested: AUTO }, clips: [CLIPS[0]] }), (e: any) => e.code === 'TTS_FAILED')
-  assert.equal(twice.calls.length, 2, 'never a third call')
+  // 5xx·504 등 처리 여부가 불명확한 오류는 자동으로 다시 호출하지 않는다(승인 1회 = 공급자 호출 최대 1회): 보류 코드로 알린다
+  for (const status of [503, 502, 504]) {
+    const unclear = standIn(() => ({ status, body: 'upstream' })), blobs: any = createMemoryBlobStore()
+    const t = createTrackerTts({ blobs, tts: unclear.tts, apiKey: () => 'k', log: () => {} }), body = { family: 'general', format: 'shorts', creative: { requested: AUTO }, clips: [CLIPS[0]] }
+    await assert.rejects(() => t.clips(body, { maxCalls: 1 }), (e: any) => e.code === 'TTS_STATE_UNKNOWN')
+    assert.equal(unclear.calls.length, 1, `HTTP ${status}: exactly one provider call`)
+    await assert.rejects(() => t.clips(body, { maxCalls: 1 }), (e: any) => e.code === 'TTS_STATE_UNKNOWN'); assert.equal(unclear.calls.length, 1, 'held: no repeat')
+  }
 })
 
 test('13-14: one levelled narration (~-17 LUFS, no clipping); its probed length is authoritative and matches the clips; assembly cached', async () => {
@@ -133,7 +135,7 @@ test('tts_clips: 승인 없이는 공급자 호출 0회, 승인 의사·금액 �
   // 1) 승인 없음 → 견적만(공급자 호출 0회), 금액은 서버가 계산
   const q = await quote(body); assert.equal(s.calls.length, 0); assert.ok(q.estimate.usd > 0 && q.estimate.calls === 2); assert.equal(q.estimate.confirmed, false)
   // 2) 승인 ID가 있어도 승인 의사 false / 금액 0·음수·부족·문자열이면 호출 0회
-  for (const consent of [{ costApproved: false, approvedUsd: q.estimate.usd }, { costApproved: true }, { costApproved: true, approvedUsd: 0 }, { costApproved: true, approvedUsd: -1 }, { costApproved: true, approvedUsd: 'x' }, { costApproved: true, approvedUsd: q.estimate.usd / 10 }]) {
+  for (const consent of [{ costApproved: false, approvedUsd: q.estimate.usd }, { costApproved: true }, { costApproved: true, approvedUsd: 0 }, { costApproved: true, approvedUsd: -1 }, { costApproved: true, approvedUsd: 'x' }, { costApproved: true, approvedUsd: true }, { costApproved: true, approvedUsd: null }, { costApproved: true, approvedUsd: String(q.estimate.usd) }, { costApproved: true, approvedUsd: [q.estimate.usd] }, { costApproved: true, approvedUsd: q.estimate.usd / 10 }]) {
     const r = await http(handler, { ...body, approvalId: q.approval.approvalId, ...consent }); assert.equal(r.status, 402, JSON.stringify(consent)); assert.equal(r.json.error.code, 'COST_APPROVAL_REQUIRED')
   }
   assert.equal(s.calls.length, 0)
@@ -160,4 +162,20 @@ test('tts_clips: 승인 없이는 공급자 호출 0회, 승인 의사·금액 �
   const asm = await http(handler, { taskType: 'tts_assemble', family: 'economy', format: 'shorts', creative: { requested: AUTO }, refs }); assert.equal(asm.status, 200); assert.ok(asm.json.seconds > 0); assert.equal(s.calls.length, 4)
   // 9) 승인 기록: 월별 비용 기록에 남는다(경고용)
   assert.ok([...blobs.files.keys()].some((k: string) => k.startsWith('ai-spend/')))
+})
+
+test('tts_clips HTTP: 504 후에는 승인 1회로 공급자 호출 1회뿐이고 새 승인으로도 자동 재호출하지 않는다 (불명확한 실패 보류)', async () => {
+  const blobs: any = createMemoryBlobStore(), s = standIn(() => ({ status: 504, body: 'gateway timeout' }))
+  const handler = createJobsHttp({ getStore: async () => { throw new Error('no database') }, blobs, trackerTts: createTrackerTts({ blobs, tts: s.tts, apiKey: () => 'k', log: () => {} }) })
+  const body = { taskType: 'tts_clips', family: 'economy', format: 'shorts', creative: { requested: AUTO }, clips: [CLIPS[0]] }
+  const first = await approvedClips(handler, body)
+  assert.equal(first.status, 409); assert.equal(first.json.error.code, 'TTS_STATE_UNKNOWN'); assert.equal(s.calls.length, 1, '504, 1 approval -> exactly 1 provider call')
+  const again = await approvedClips(handler, body) // 새 승인을 받아도 처리 여부가 불명확한 문구는 자동으로 다시 호출하지 않는다
+  assert.equal(again.json.error.code, 'TTS_STATE_UNKNOWN'); assert.equal(s.calls.length, 1)
+})
+
+test('creative_resolve(무료·부작용 없음)가 서버의 승인 기능 표식을 알려준다 — 클라이언트는 이 표식을 확인하기 전에 유료 요청을 보내지 않는다', async () => {
+  const handler = createJobsHttp({ getStore: async () => { throw new Error('no database') }, blobs: createMemoryBlobStore() as any })
+  const r = await http(handler, { taskType: 'creative_resolve', family: 'economy', format: 'shorts', ...AUTO })
+  assert.equal(r.status, 200); assert.equal(r.json.capabilities.ttsApproval, 1); assert.equal(r.json.capabilities.imageFlight, 1); assert.equal(r.json.capabilities.batchScenes, 1)
 })

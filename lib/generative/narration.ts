@@ -21,9 +21,9 @@ export const narrationConcatTimeoutMs = (seconds: number) => Math.max(15 * 60_00
 // one TTS call with the guards: a billing/auth error throws a stop error at once; a transient one is retried once.
 // `retryUnknown:false` (used by the paid, durable path): a failure WITHOUT any provider response (network drop, timeout) may
 // already have been billed, so it is never repeated automatically; only an answered error (HTTP status) is retried once.
-export async function guardedTts(tts: TtsFn, text: string, apiKey: string, voice: VoiceProfile, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)), opts: { retryUnknown?: boolean } = {}) {
+export async function guardedTts(tts: TtsFn, text: string, apiKey: string, voice: VoiceProfile, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)), opts: { retryUnknown?: boolean; maxAttempts?: number } = {}) {
   let last: ProviderError | null = null
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < (opts.maxAttempts ?? 2); attempt++) {
     if (attempt) await sleep(2000)
     try { return await tts(text, apiKey, voice) }
     catch (e: any) {
@@ -35,6 +35,10 @@ export async function guardedTts(tts: TtsFn, text: string, apiKey: string, voice
   }
   throw last
 }
+
+// A provider answer that PROVES nothing was generated: a client-side rejection (4xx, incl. 429 rate limit and billing/auth stops). Anything
+// else (408, 5xx such as 502/503/504 from a gateway, no answer at all) may have been processed and billed: never repeated automatically.
+export const providerRejected = (e: any) => { const s = Number(e?.status); return Number.isInteger(s) && s >= 400 && s < 500 && s !== 408 }
 
 // ---------- paid clip: cache -> durable single flight -> ONE guarded call ----------
 export type CachedTtsResult = { bytes: Buffer; ref: string; sha256: string; cache: 'HIT' | 'MISS' }
@@ -120,11 +124,16 @@ async function retry3(fn: () => Promise<unknown>): Promise<boolean> {
 async function generateAndStore(o: CachedTtsOptions, key: string, cachePath: string, resultPath: string | null): Promise<CachedTtsResult> {
   const record = async (v: Record<string, unknown>) => (resultPath ? retry3(() => o.blobs.putJson(resultPath, { ...v, at: new Date().toISOString() }, { overwrite: true })) : true)
   let au: Awaited<ReturnType<typeof guardedTts>>
-  try { au = await guardedTts(o.tts, o.text, o.apiKey, o.voice, undefined, { retryUnknown: false }) }
+  // One approval = one provider call: exactly ONE attempt, no internal retry, and a hard counter in front of the provider so that
+  // no code path can reach it twice for this approval (there is no SDK in between: plain fetch, no automatic retries).
+  let providerCalls = 0
+  const metered: TtsFn = async (t, k, v) => { if (providerCalls++ >= 1) throw new TtsBudgetError('승인된 음성 생성 호출 횟수를 넘어 호출하지 않았습니다.'); return o.tts(t, k, v) }
+  try { au = await guardedTts(metered, o.text, o.apiKey, o.voice, undefined, { maxAttempts: 1 }) }
   catch (e: any) {
-    if (e?.status !== undefined || e?.code === 'no_api_key') { await record({ status: 'failed_safe', code: e?.code ?? null, http: e?.status ?? null }); throw e }
-    await record({ status: 'unknown', reason: 'no_provider_response' })
-    throw new TtsUnknownError('음성 서비스의 응답을 확인하지 못했습니다(연결 끊김·시간 초과). 이미 처리·과금되었을 수 있어 자동으로 다시 호출하지 않습니다.')
+    if (e instanceof TtsBudgetError) { await record({ status: 'failed_safe', reason: 'budget' }); throw e }
+    if (providerRejected(e) || e?.code === 'no_api_key') { await record({ status: 'failed_safe', code: e?.code ?? null, http: e?.status ?? null }); throw e }
+    await record({ status: 'unknown', reason: e?.status !== undefined ? `http_${e.status}` : 'no_provider_response', http: e?.status ?? null })
+    throw new TtsUnknownError('음성 서비스의 처리 결과를 확인하지 못했습니다(연결 끊김·시간 초과·서버 오류). 이미 처리·과금되었을 수 있어 자동으로 다시 호출하지 않습니다.')
   }
   const h = sha256(au.bytes), ref = `generative-assets/audio/${h}.mp3`
   if (!(await retry3(() => o.blobs.putBytes(ref, au.bytes, au.contentType)))) {

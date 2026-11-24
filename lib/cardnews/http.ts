@@ -7,7 +7,7 @@ import type { Request, Response } from 'express'
 import { createVercelJobBlobStore, sha256, type JobBlobStore } from '../jobs/blobs.js'
 import { readFlight, claimFlight, recordFlight, retryStore } from '../generative/paidFlight.js'
 import { CardnewsError, putImage, getImage, composeCards, storyboardForExistingCards, reviewCardsWithGpt, fixFlaggedWithClaude, getSaved, putSaved, listProjects, projectIdOf, depsFromEnv, cardnewsEstimate, type CardnewsDeps } from './cardnews.js'
-import { ApprovalError, requireApproval, recordSpend, reserveBatchSlot, payloadHash } from '../generative/paidApproval.js'
+import { ApprovalError, requireApproval, recordSpend, reserveBatchSlot, validateBatchTerms, payloadHash } from '../generative/paidApproval.js'
 
 // api/story.ts routes taskType cardnews_* here (not a separate Vercel function). Same X-Sync-Key workspace rule as the Job API.
 export const CARDNEWS_TASKS = ['cardnews_get', 'cardnews_list', 'cardnews_save', 'cardnews_compose', 'cardnews_storyboard', 'cardnews_review', 'cardnews_fix', 'cardnews_image_put', 'cardnews_image_get', 'cardnews_image_review', 'cardnews_zip_get', 'cardnews_image_generate', 'cardnews_image_direct', 'cardnews_master_image_generate'] as const
@@ -78,6 +78,8 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
         }
         // 같은 요청(장면·프롬프트·참조·재생성 의도, 일괄 id는 제외)의 이전 호출 기록: 결과가 있으면 승인·과금 없이 복구하고,
         // 처리 여부가 불명확하면 자동으로 다시 호출하지 않는다. 선택 장면 '다시 생성'은 새 regenerate 값으로 새 요청이 된다.
+        // 일괄 요청이면 승인 대상(프로젝트·장면 목록·총액)과 이 장면이 맞는지 승인 소비 전에 검증한다
+        if (input.batch !== undefined) validateBatchTerms(input.batch, String(input.sceneId), 0.067)
         const flightBase = `image-flight/${ws}/${payloadHash({ sceneId: input.sceneId, imageInput: im, regenerate: input.regenerate ?? null })}`
         const prior = await readFlight(o.blobs, flightBase)
         if (prior.state === 'done') {
@@ -91,7 +93,7 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
         // 공급자 호출 전에 이 요청의 실행권을 원자적으로 확보(독립 인스턴스·동시 요청 중 하나만 호출)
         if (!(await claimFlight(o.blobs, flightBase, prior.gen))) throw new CardnewsError('IMAGE_IN_PROGRESS', '같은 이미지를 다른 요청이 만들고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
         // 일괄 제작이면 승인된 총액·장수를 서버가 원자적으로 예약한다(동시 요청·다른 탭이 한도를 넘길 수 없다). 슬롯이 없으면 공급자 호출 없음.
-        try { if (input.batch !== undefined) await reserveBatchSlot(o.blobs, { ws, batch: input.batch, unitUsd: 0.067 }) }
+        try { if (input.batch !== undefined) await reserveBatchSlot(o.blobs, { ws, batch: input.batch, sceneId: String(input.sceneId), unitUsd: 0.067 }) }
         catch (e) { await recordFlight(o.blobs, flightBase, prior.gen, { status: 'failed_safe', reason: 'batch_limit' }); throw e }
         let status = 500, output: any, budget: any
         try {
@@ -99,15 +101,20 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
             { setHeader() {}, status(code: number) { status = code; return this }, json(value: any) { output = value; return this } } as any)
         } catch (e) { await recordFlight(o.blobs, flightBase, prior.gen, { status: 'unknown', reason: 'handler_threw' }); throw e }
         finally { budget = await recordSpend(o.blobs, { ws, approval }) }
-        // 결과 기록: 생성됐으면 이미지를 저장소에 남겨 응답이 유실돼도 복구한다. 공급자가 오류로 답했으면 생성되지 않았음이 확실(failed_safe),
-        // 응답 자체가 없었거나(PROVIDER_NO_RESPONSE) 저장하지 못했으면 불명확(unknown): 자동 재호출 없음.
+        // 결과 기록: 생성됐으면 이미지를 저장소에 남겨 응답이 유실돼도 복구한다. 공급자가 호출되지 않았거나(검증 단계 거절), 공급자가 4xx로
+        // 거절했으면 생성되지 않았음이 확실(failed_safe). 그 밖은 모두 불명확(unknown)이라 자동 재호출하지 않는다:
+        // 응답 없음, 5xx·408, HTTP 200이지만 이미지를 읽지 못함(PROVIDER_RESPONSE_UNREADABLE), 결과 저장 실패.
         if (status === 200 && typeof output?.image?.base64 === 'string') {
           const bytes = Buffer.from(output.image.base64.replace(/^data:[^;]+;base64,/, ''), 'base64'), h = sha256(bytes), mimeType = String(output.image.mimeType || 'image/png')
           const ref = `generative-assets/master-images/${h}`
           const saved = await retryStore(() => o.blobs.putBytes(ref, bytes, mimeType))
           await recordFlight(o.blobs, flightBase, prior.gen, saved ? { status: 'done', ref, sha256: h, mimeType } : { status: 'paid_unsaved', sha256: h })
         } else {
-          await recordFlight(o.blobs, flightBase, prior.gen, output?.error?.code === 'PROVIDER_NO_RESPONSE' ? { status: 'unknown', reason: 'no_provider_response' } : { status: 'failed_safe', http: status })
+          const code = output?.error?.code, providerStatus = Number(output?.error?.providerStatus)
+          const reachedProvider = code === 'PROVIDER_HTTP_ERROR' || code === 'PROVIDER_NO_RESPONSE' || code === 'PROVIDER_RESPONSE_UNREADABLE'
+          const rejectedByProvider = code === 'PROVIDER_HTTP_ERROR' && Number.isInteger(providerStatus) && providerStatus >= 400 && providerStatus < 500 && providerStatus !== 408
+          const notExecuted = status !== 200 && output?.error && (!reachedProvider || rejectedByProvider)
+          await recordFlight(o.blobs, flightBase, prior.gen, notExecuted ? { status: 'failed_safe', http: status } : { status: 'unknown', reason: code ?? `http_${status}` })
         }
         return res.status(status).json({ ...output, budget })
       }
