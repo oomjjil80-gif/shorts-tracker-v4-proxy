@@ -101,3 +101,50 @@ test('MASTER 9:16 shorts and no-reference scenes use the same single-use approva
     else process.env.GEMINI_API_KEY = oldKey
   }
 })
+
+// ── 과금 안전성: 승인 의사·금액 검증과 일괄 한도(서버 원자적 예약). 공급자는 메모리 mock, 유료 호출 없음 ──
+test('MASTER 이미지: 승인 의사·금액이 올바르지 않으면 호출 0회, 일괄 한도는 동시 요청에서도 승인 장수를 넘지 못하고, 단일 재생성은 유지', async () => {
+  const blobs = createMemoryBlobStore(), handler = createCardnewsHttp({ blobs })
+  const key = 'master-batch-test-workspace-key-12345'
+  const call = async (body: any) => {
+    let status = 0, data: any
+    const req = Object.assign(Object.create({ get headers() { return { 'x-sync-key': key, origin: 'https://shorts-production-tracker.vercel.app' } } }), { method: 'POST', body })
+    await handler(req as any, { setHeader() {}, status(s: number) { status = s; return this }, json(v: any) { data = v; return this } } as any)
+    return { status, data }
+  }
+  const scene = (n: number, extra: any = {}) => ({ taskType: 'cardnews_master_image_generate', sceneId: `scene-${String(n).padStart(2, '0')}`,
+    imageInput: { profile: 'master-longform', aspectRatio: '16:9', prompt: `A cinematic illustrated scene number ${n}, approved by the user for production`, references: [] }, ...extra })
+  // the real client's two steps; `consent` is what the user's confirmation puts in the second request
+  const approve = async (body: any, consent: any = (e: any) => ({ costApproved: true, approvedUsd: e.usd })) => {
+    const q = await call(body); assert.equal(q.status, 402); assert.equal(q.data.error.code, 'COST_APPROVAL_REQUIRED')
+    return call({ ...body, approvalId: q.data.approval.approvalId, ...consent(q.data.estimate) })
+  }
+  let providerCalls = 0
+  const oldFetch = globalThis.fetch, oldKey = process.env.GEMINI_API_KEY
+  process.env.GEMINI_API_KEY = 'mock-free-test-key'
+  globalThis.fetch = (async () => { providerCalls++; await new Promise((r) => setTimeout(r, 5)); return new Response(JSON.stringify({ output_image: { data: Buffer.from('fake-image').toString('base64'), mime_type: 'image/png' } })) }) as typeof fetch
+  try {
+    // 1) 승인 의사 false / 금액 0·음수·NaN·부족 → 유효한 승인 ID가 있어도 공급자 호출 0회
+    for (const consent of [{ costApproved: false, approvedUsd: 0.067 }, { approvedUsd: 0.067 }, { costApproved: true }, { costApproved: true, approvedUsd: 0 }, { costApproved: true, approvedUsd: -1 }, { costApproved: true, approvedUsd: 'abc' }, { costApproved: true, approvedUsd: 0.01 }, { costApproved: 'true', approvedUsd: 1 }]) {
+      const r = await approve(scene(1), () => consent)
+      assert.equal(r.status, 402, JSON.stringify(consent)); assert.equal(r.data.error.code, 'COST_APPROVAL_REQUIRED')
+    }
+    assert.equal(providerCalls, 0)
+    // 2) 일괄(2장 승인): 3번째는 슬롯이 없어 공급자 호출 없음, 단일 재생성(batch 없음)은 그대로 가능
+    const batch = { id: 'batch-aaaa1111', count: 2, limitUsd: 0.134 }
+    assert.equal((await approve(scene(1, { batch }))).status, 200)
+    assert.equal((await approve(scene(2, { batch }))).status, 200); assert.equal(providerCalls, 2)
+    const over = await approve(scene(3, { batch })); assert.equal(over.status, 402); assert.equal(over.data.error.code, 'BATCH_LIMIT_EXCEEDED'); assert.equal(providerCalls, 2)
+    assert.equal((await approve(scene(2))).status, 200, 'a normal single scene regeneration is untouched'); assert.equal(providerCalls, 3)
+    // 3) 같은 batch id에 다른 조건(한도 부풀리기)은 거절, 잘못된 batch 정보도 호출 없음
+    for (const bad of [{ ...batch, limitUsd: 5 }, { ...batch, count: 50 }, { id: 'x', count: 1, limitUsd: 1 }, { id: 'batch-bbbb2222', count: 0, limitUsd: 1 }, { id: 'batch-cccc3333', count: 2, limitUsd: 0.01 }]) {
+      const r = await approve(scene(4, { batch: bad })); assert.equal(r.data.error.code, 'BATCH_LIMIT_EXCEEDED', JSON.stringify(bad))
+    }
+    assert.equal(providerCalls, 3)
+    // 4) 동시 요청: 장당 승인 1개씩 받은 6개를 동시에 보내도 승인된 3장(한도 0.201)만 호출
+    const cb = { id: 'batch-dddd4444', count: 6, limitUsd: 0.201 }
+    const results = await Promise.all([1, 2, 3, 4, 5, 6].map((n) => approve(scene(n, { batch: cb }))))
+    assert.equal(results.filter((r) => r.status === 200).length, 3); assert.equal(results.filter((r) => r.data?.error?.code === 'BATCH_LIMIT_EXCEEDED').length, 3)
+    assert.equal(providerCalls, 6)
+  } finally { globalThis.fetch = oldFetch; if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey }
+})

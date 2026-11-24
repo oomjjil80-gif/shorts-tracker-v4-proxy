@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { JobBlobStore } from '../jobs/blobs.js'
 import { DEFAULT_MONTHLY_WARNING_USD, monthInKst } from './monthlyBudgetPolicy.js'
 
-export class ApprovalError extends Error { constructor(public code: 'COST_APPROVAL_REQUIRED' | 'APPROVAL_USED' | 'APPROVAL_MISMATCH' | 'APPROVAL_EXPIRED', message: string, public extra: Record<string, unknown> = {}) { super(message) } }
+export class ApprovalError extends Error { constructor(public code: 'COST_APPROVAL_REQUIRED' | 'APPROVAL_USED' | 'APPROVAL_MISMATCH' | 'APPROVAL_EXPIRED' | 'BATCH_LIMIT_EXCEEDED', message: string, public extra: Record<string, unknown> = {}) { super(message) } }
 export type Quote = { task: string; usd: number; calls?: number; note?: string }
 export type Approval = { approvalId: string; ws: string; task: string; payloadHash: string; usd: number; issuedAt: string; expiresAt: string }
 const TTL_MS = 15 * 60 * 1000
@@ -33,6 +33,10 @@ export async function requireApproval(blobs: JobBlobStore, o: { ws: string; inpu
   const a = await blobs.getJson<Approval>(path(o.ws, id, 'issued'))
   if (!a || a.ws !== o.ws) return issue()
   if (a.task !== o.quote.task || a.payloadHash !== hash || o.quote.usd > a.usd + 1e-9) return issue('APPROVAL_MISMATCH', '승인한 내용·비용과 요청이 달라 호출하지 않았습니다. 다시 승인해 주세요.')
+  // The user's consent must be explicit in the request itself: costApproved:true and a positive approvedUsd that covers the
+  // CURRENT server quote. A valid approval ID alone never starts a paid call; the server's own record (a.usd) stays the authority.
+  const approvedUsd = Number(o.input?.approvedUsd)
+  if (o.input?.costApproved !== true || !Number.isFinite(approvedUsd) || approvedUsd <= 0 || approvedUsd + 1e-9 < o.quote.usd) return issue('COST_APPROVAL_REQUIRED', '예상 비용을 확인하고 승인해야 AI를 호출합니다(승인 의사·금액이 올바르지 않음).')
   if (Date.parse(a.expiresAt) <= now.getTime()) return issue('APPROVAL_EXPIRED', '승인이 만료되어 호출하지 않았습니다. 다시 승인해 주세요.')
   if (!blobs.claim) throw new Error('approval store cannot claim atomically')
   // 원자적 '사용됨' 기록: 동시에 들어온 같은 승인 중 단 하나만 통과한다.
@@ -52,4 +56,29 @@ export async function recordSpend(blobs: JobBlobStore, o: { ws: string; approval
     }
     return { month, monthUsd: cur.usd, warningUsd, warning: cur.usd >= warningUsd }
   } catch { return { month, monthUsd: null, warningUsd, warning: false } }
+}
+
+// Batch spending limit, enforced on the server with only create-once claims (no read-then-write race):
+//  - the first approved call of a batch freezes its terms (count, limitUsd) in `meta` (create-once); later calls must repeat them exactly
+//  - each approved call then claims the next free slot; slots = min(count, floor(limitUsd / unitUsd)); no free slot => no provider call
+// Concurrent calls (other tabs, instances, retries) can never reserve more than the batch's approved total.
+const BATCH_ID = /^[A-Za-z0-9_-]{8,64}$/
+export async function reserveBatchSlot(blobs: JobBlobStore, o: { ws: string; batch: any; unitUsd: number }): Promise<{ slot: number; slots: number; reservedUsd: number }> {
+  const b = o.batch
+  const count = Number(b?.count), limitUsd = Number(b?.limitUsd)
+  if (!b || typeof b.id !== 'string' || !BATCH_ID.test(b.id) || !Number.isInteger(count) || count < 1 || count > 100 || !Number.isFinite(limitUsd) || limitUsd < o.unitUsd - 1e-9 || limitUsd > 1000) {
+    throw new ApprovalError('BATCH_LIMIT_EXCEEDED', '일괄 승인 정보(batch)가 올바르지 않아 호출하지 않았습니다.')
+  }
+  if (!blobs.claim) throw new Error('approval store cannot claim atomically')
+  const base = `paid-batches/${o.ws}/${b.id}`
+  const terms = { count, limitUsd, unitUsd: o.unitUsd }
+  if (!(await blobs.claim(`${base}/meta.json`, terms))) {
+    const meta = await blobs.getJson<typeof terms>(`${base}/meta.json`)
+    if (!meta || meta.count !== count || Math.abs(meta.limitUsd - limitUsd) > 1e-9 || Math.abs(meta.unitUsd - o.unitUsd) > 1e-9) throw new ApprovalError('BATCH_LIMIT_EXCEEDED', '이미 시작된 일괄 승인과 조건이 달라 호출하지 않았습니다.')
+  }
+  const slots = Math.min(count, Math.floor((limitUsd + 1e-9) / o.unitUsd))
+  for (let i = 0; i < slots; i++) {
+    if (await blobs.claim(`${base}/slot-${i}.json`, { slot: i, at: new Date().toISOString() })) return { slot: i, slots, reservedUsd: Math.round((i + 1) * o.unitUsd * 1e6) / 1e6 }
+  }
+  throw new ApprovalError('BATCH_LIMIT_EXCEEDED', `일괄 승인 한도(${slots}장, 최대 $${limitUsd})를 모두 사용했습니다. 더 만들려면 새로 승인해 주세요.`)
 }

@@ -6,12 +6,12 @@ import { zipNinePanels } from './zipNinePanels.js'
 import type { Request, Response } from 'express'
 import { createVercelJobBlobStore, type JobBlobStore } from '../jobs/blobs.js'
 import { CardnewsError, putImage, getImage, composeCards, storyboardForExistingCards, reviewCardsWithGpt, fixFlaggedWithClaude, getSaved, putSaved, listProjects, projectIdOf, depsFromEnv, cardnewsEstimate, type CardnewsDeps } from './cardnews.js'
-import { ApprovalError, requireApproval, recordSpend } from '../generative/paidApproval.js'
+import { ApprovalError, requireApproval, recordSpend, reserveBatchSlot } from '../generative/paidApproval.js'
 
 // api/story.ts routes taskType cardnews_* here (not a separate Vercel function). Same X-Sync-Key workspace rule as the Job API.
 export const CARDNEWS_TASKS = ['cardnews_get', 'cardnews_list', 'cardnews_save', 'cardnews_compose', 'cardnews_storyboard', 'cardnews_review', 'cardnews_fix', 'cardnews_image_put', 'cardnews_image_get', 'cardnews_image_review', 'cardnews_zip_get', 'cardnews_image_generate', 'cardnews_image_direct', 'cardnews_master_image_generate'] as const
 export const isCardnewsTask = (t: unknown) => typeof t === 'string' && (CARDNEWS_TASKS as readonly string[]).includes(t)
-const STATUS: Record<string, number> = { BAD_REQUEST: 400, UNAUTHORIZED: 401, COST_APPROVAL_REQUIRED: 402, REV_CONFLICT: 409, APPROVAL_USED: 409, APPROVAL_MISMATCH: 402, APPROVAL_EXPIRED: 402, NOT_FOUND: 404, STORE_FAILED: 502, STATE_TOO_LARGE: 413, PROVIDER_DOWN: 503, REVIEW_INVALID: 502, FIX_INCOMPLETE: 502, METHOD_NOT_ALLOWED: 405 }
+const STATUS: Record<string, number> = { BAD_REQUEST: 400, UNAUTHORIZED: 401, COST_APPROVAL_REQUIRED: 402, REV_CONFLICT: 409, APPROVAL_USED: 409, APPROVAL_MISMATCH: 402, APPROVAL_EXPIRED: 402, BATCH_LIMIT_EXCEEDED: 402, NOT_FOUND: 404, STORE_FAILED: 502, STATE_TOO_LARGE: 413, PROVIDER_DOWN: 503, REVIEW_INVALID: 502, FIX_INCOMPLETE: 502, METHOD_NOT_ALLOWED: 405 }
 
 export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => CardnewsDeps }) {
   return async (req: Request, res: Response) => {
@@ -76,6 +76,8 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
           throw new CardnewsError('BAD_REQUEST', 'MASTER 장면 ID·규격(16:9/9:16)·프롬프트가 필요합니다.')
         }
         const approval = await requireApproval(o.blobs, { ws, input, quote: { task, usd: 0.067, calls: 1, note: 'Gemini MASTER 이미지 1장 예상 비용(확정 단가 아님)' } })
+        // 일괄 제작이면 승인된 총액·장수를 서버가 원자적으로 예약한다(동시 요청·다른 탭이 한도를 넘길 수 없다). 슬롯이 없으면 공급자 호출 없음.
+        if (input.batch !== undefined) await reserveBatchSlot(o.blobs, { ws, batch: input.batch, unitUsd: 0.067 })
         let status = 500, output: any, budget: any
         try {
           await imageHandler({ ...req, headers: req.headers, method: req.method, body: { input: im }, [INTERNAL_IMAGE_CALL]: true } as any,
