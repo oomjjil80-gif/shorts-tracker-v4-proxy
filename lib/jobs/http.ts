@@ -192,9 +192,14 @@ export function createJobsHttp(deps: JobsDeps) {
           if (taskType === TTS_ASSEMBLE_TASK) return res.status(200).json({ ok: true, ...(await trackerTts.assemble(input)) }) // free: ffmpeg only
           // tts_clips: cached clips are free; any clip that must be generated needs a server-issued single-use approval whose amount
           // covers the current quote, and the call never makes more provider calls than the approval covered.
-          const planned = trackerTts.plan ? await trackerTts.plan(input) : null
+          // Request shape v2: the clips arrive as `items` (the quote request and the approved request share it). A server that predates the
+          // approval step reads only `clips`, finds none and rejects with BAD_REQUEST BEFORE any provider call — so no version switch between
+          // the capability check, the quote and the execution (deploy, rollback, mixed instances) can start an unapproved generation.
+          // The approval stays bound to the request exactly as received (items form), so quote and execution hash identically.
+          const body = Array.isArray(input.items) && input.clips === undefined ? { ...input, clips: input.items } : input
+          const planned = trackerTts.plan ? await trackerTts.plan(body) : null
           const approval = planned && planned.calls > 0 ? await requireApproval(deps.blobs, { ws: workspaceId, input, quote: planned.quote }) : null
-          try { return res.status(200).json({ ok: true, ...(await trackerTts.clips(input, planned ? { maxCalls: planned.calls, flightId: approval?.approvalId } : {})) }) }
+          try { return res.status(200).json({ ok: true, ...(await trackerTts.clips(body, planned ? { maxCalls: planned.calls, flightId: approval?.approvalId } : {})) }) }
           finally { if (approval) await recordSpend(deps.blobs, { ws: workspaceId, approval }) } // even a failed call may have been billed
         } catch (e: any) {
           if (e instanceof ApprovalError) return res.status(e.code === 'APPROVAL_USED' ? 409 : 402).json({ ok: false, error: { code: e.code, message: e.message }, ...e.extra })

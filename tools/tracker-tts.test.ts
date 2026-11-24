@@ -179,3 +179,24 @@ test('creative_resolve(무료·부작용 없음)가 서버의 승인 기능 표�
   const r = await http(handler, { taskType: 'creative_resolve', family: 'economy', format: 'shorts', ...AUTO })
   assert.equal(r.status, 200); assert.equal(r.json.capabilities.ttsApproval, 1); assert.equal(r.json.capabilities.imageFlight, 1); assert.equal(r.json.capabilities.batchScenes, 1)
 })
+
+// ── 혼합 버전: 요청 구조 v2(items)는 승인 단계를 모르는 서버가 해석할 수 없어, 어떤 서버 전환에서도 미승인 생성이 시작되지 않는다 ──
+test('tts_clips v2(items): 견적 단계 공급자 호출 0회 → 승인 후 정상 실행 → 같은 요청은 무료 복구, 승인 해시는 견적·실행이 동일', async () => {
+  const blobs: any = createMemoryBlobStore(), s = standIn()
+  const handler = createJobsHttp({ getStore: async () => { throw new Error('no database') }, blobs, trackerTts: createTrackerTts({ blobs, tts: s.tts, apiKey: () => 'k', log: () => {} }) })
+  const v2 = { taskType: 'tts_clips', family: 'economy', format: 'shorts', creative: { requested: AUTO }, items: [CLIPS[0], CLIPS[1]] }
+  const q = await http(handler, v2); assert.equal(q.status, 402); assert.equal(q.json.error.code, 'COST_APPROVAL_REQUIRED'); assert.equal(s.calls.length, 0, 'quote step: provider calls 0')
+  assert.equal(q.json.estimate.calls, 2)
+  const bad = await http(handler, { ...v2, approvalId: q.json.approval.approvalId, costApproved: true, approvedUsd: 0 }); assert.equal(bad.status, 402); assert.equal(s.calls.length, 0)
+  const ok = await http(handler, { ...v2, approvalId: q.json.approval.approvalId, costApproved: true, approvedUsd: q.json.estimate.usd })
+  assert.equal(ok.status, 200); assert.equal(ok.json.ttsCalls, 2); assert.equal(s.calls.length, 2); assert.equal(ok.json.clips.length, 2)
+  const again = await http(handler, v2); assert.equal(again.status, 200); assert.equal(again.json.ttsCalls, 0); assert.equal(s.calls.length, 2) // 무료 캐시 복구
+  const other = await http(handler, { ...v2, items: [CLIPS[0], { id: 'z', text: '승인과 다른 문구로 바꾼 v2 요청입니다.' }] }); assert.equal(other.status, 402); assert.equal(s.calls.length, 2)
+})
+
+test('v2 요청을 승인 단계 이전의 파싱(clips만 읽음)으로 받으면 공급자 호출 전에 BAD_REQUEST — 구 서버 도달 시 생성 0회', async () => {
+  const s = standIn(), t = createTrackerTts({ blobs: createMemoryBlobStore() as any, tts: s.tts, apiKey: () => 'k', log: () => {} })
+  // what a server without the approval step does with a v2 body: it reads input.clips only
+  await assert.rejects(() => t.clips({ family: 'economy', format: 'shorts', creative: { requested: AUTO }, items: [CLIPS[0]] }), (e: any) => e.code === 'BAD_REQUEST' && /clips must be/.test(e.message))
+  assert.equal(s.calls.length, 0)
+})
