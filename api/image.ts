@@ -245,6 +245,7 @@ export default async function handler(req: Request, res: Response) {
       }
     })
   } catch (error: any) {
-    return res.status(500).json({ error: { message: error?.message || String(error) } })
+    // the request may have reached Gemini: the caller must not assume nothing was generated or billed
+    return res.status(500).json({ error: { code: 'PROVIDER_NO_RESPONSE', message: error?.message || String(error) } })
   }
 }
