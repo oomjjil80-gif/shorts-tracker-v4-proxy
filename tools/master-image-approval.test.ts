@@ -258,6 +258,12 @@ test('썸네일: 서버 승인 후에만 생성, 같은 요청은 무과금 복�
       assert.equal(direct, 403, `${profile} cannot bypass approval`)
     }
     assert.equal(sent.length, 3)
+    // 이전 버전 앱의 썸네일(일반 프로필 + cutIndex -1)은 승인 없이 Gemini에 가지 못한다. 일반 컷 이미지(cutIndex 0 이상)는 그대로 동작한다.
+    const direct = async (input: any) => { let st = 0; await imageHandler({ method: 'POST', headers: {}, body: { input } } as any, { setHeader() {}, status(s: number) { st = s; return this }, json() { return this } } as any); return st }
+    for (const ci of [-1, '-1']) assert.equal(await direct({ prompt: 'old app thumbnail request', aspectRatio: '16:9', imageSize: '1K', cutIndex: ci, references: [], profile: '' }), 403)
+    assert.equal(sent.length, 3, 'old-app thumbnail: no provider call')
+    assert.notEqual(await direct({ prompt: 'ordinary cut image request', aspectRatio: '9:16', imageSize: '1K', cutIndex: 0, references: [], profile: '' }), 403)
+    assert.equal(sent.length, 4, 'ordinary cut images still reach the provider')
   } finally {
     globalThis.fetch = oldFetch
     if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey

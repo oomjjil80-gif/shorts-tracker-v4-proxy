@@ -99,6 +99,10 @@ export default async function handler(req: Request, res: Response) {
   // 카드뉴스 이미지는 /api/story 카드뉴스 작업(서버 1회용 승인 + Ledger)으로만 만든다. 직접 호출은 Gemini 전에 거부한다.
   if (['cardnews', 'master-longform', 'master-shorts', 'thumbnail-longform', 'thumbnail-shorts'].includes(String(req.body?.input?.profile || '').trim()) && (req as any)[INTERNAL_IMAGE_CALL] !== true)
     return res.status(403).json({ error: { code: 'CARDNEWS_APPROVAL_REQUIRED', message: '카드뉴스 이미지는 서버 비용 승인 경로로만 생성할 수 있습니다.' } })
+  // 이전 버전 앱의 썸네일: 일반 이미지 프로필로 직접 호출하지만 cutIndex가 -1인 것은 썸네일뿐이다(컷 이미지는 0 이상).
+  // 승인 없는 유료 호출이므로 Gemini 전에 거부한다. 새 앱은 서버 승인 경로(thumbnail-* 프로필)를 쓴다.
+  if (Number(req.body?.input?.cutIndex) === -1 && (req as any)[INTERNAL_IMAGE_CALL] !== true)
+    return res.status(403).json({ error: { code: 'THUMBNAIL_APPROVAL_REQUIRED', message: '썸네일은 서버 비용 승인 경로로만 생성할 수 있습니다. 앱을 새로고침한 뒤 다시 시도해 주세요.' } })
 
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) return res.status(503).json({ error: { message: 'GEMINI_API_KEY is not configured' } })
