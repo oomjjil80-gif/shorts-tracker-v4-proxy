@@ -25,8 +25,6 @@ const http = (handler: any, body: any) => new Promise<{ status: number; json: an
   handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': KEY }, query: {}, body } as any,
     { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { resolve({ status, json: b }); return this }, end() { return this } } as any)
 })
-// 캐시 미스의 유료 미리듣기는 서버 견적 → 승인 후에만 실행된다(견적 단계는 공급자 호출 0회).
-const approvedHttp = async (handler: any, body: any) => { const q = await http(handler, body); assert.equal(q.status, 402, JSON.stringify(q.json)); return http(handler, { ...body, approvalId: q.json.approval.approvalId, costApproved: true, approvedUsd: q.json.estimate.usd }) }
 
 test('1-2: 7 voice choices resolve; auto keeps the topic rule while tone/speed stay the user\'s', () => {
   assert.deepEqual([...LONGFORM_VOICE_CHOICES], ['auto', 'male-young', 'male-middle', 'male-senior', 'female-young', 'female-middle', 'female-senior'])
@@ -135,21 +133,26 @@ test('10-11: preview MISS -> 1 TTS call + stored; HIT (also a fresh server proce
   assert.doesNotMatch(JSON.stringify(first) + logs.join(''), /marin|cedar|onyx|nova|sage|ash"|Bearer/) // no provider values
 })
 
-test('12: preview billing/auth errors stop at once (0 retries, nothing stored); a transient error is not retried automatically', async () => {
+test('12: preview billing/auth errors stop at once (0 retries, nothing stored); a transient error is not retried automatically; over HTTP only cached previews are served and a MISS is blocked', async () => {
+  // the preview module itself (no route restriction): provider errors stop at once, nothing is stored
   for (const [status, body, code] of [[429, '{"error":{"code":"credit_balance_exhausted"}}', 'PROVIDER_BILLING'], [429, '{"error":{"code":"insufficient_quota"}}', 'PROVIDER_BILLING'], [401, '{"error":{"code":"invalid_api_key"}}', 'PROVIDER_STOP'], [503, 'upstream', 'PREVIEW_FAILED']] as const) {
     const blobs: any = createMemoryBlobStore(), t = fakeTts({ status, body })
-    const handler = createJobsHttp({ getStore: async () => { throw new Error('no database for a preview') }, blobs, voicePreview: createVoicePreview({ blobs, tts: t.tts, apiKey: () => 'k', log: () => {} }) })
-    const r = await approvedHttp(handler, { taskType: 'longform_voice_preview', voiceProfile: 'female-young', voiceTone: 'bright', voiceSpeed: 1.1 })
-    assert.equal(r.json.ok, false); assert.equal(r.json.error.code, code); assert.ok(r.status >= 500)
+    const preview = createVoicePreview({ blobs, tts: t.tts, apiKey: () => 'k', log: () => {} })
+    await assert.rejects(preview({ voiceProfile: 'female-young', voiceTone: 'bright', voiceSpeed: 1.1 }), (e: any) => e.code === code, code)
     assert.equal(t.calls.length, 1, `${code}: exactly one provider call`)
-    assert.deepEqual([...blobs.binaries.keys(), ...blobs.files.keys()].filter((k: string) => k.startsWith('voice-preview/')), [], 'no preview audio or marker stored (approval/flight records are not preview data)')
+    assert.deepEqual([...blobs.binaries.keys(), ...blobs.files.keys()].filter((k: string) => k.startsWith('voice-preview/')), [], 'no preview audio or marker stored')
   }
-  // the HTTP route: POST only, a sync key is required, bad values are refused before any provider call
+  // the HTTP route: a cached preview is served for free; a MISS never reaches the provider (no trustworthy workspace authority exists to approve a paid one)
   const blobs: any = createMemoryBlobStore(), t = fakeTts()
-  const handler = createJobsHttp({ getStore: async () => { throw new Error('no database for a preview') }, blobs, voicePreview: createVoicePreview({ blobs, tts: t.tts, apiKey: () => 'k', log: () => {} }) })
-  const ok = await approvedHttp(handler, { taskType: 'longform_voice_preview', voiceProfile: 'female-middle', voiceTone: 'calm', voiceSpeed: 1 })
-  assert.equal(ok.status, 200); assert.deepEqual(Object.keys(ok.json).sort(), ['cache', 'ok', 'playbackUrl', 'validUntil'])
+  const preview = createVoicePreview({ blobs, tts: t.tts, apiKey: () => 'k', log: () => {} })
+  const handler = createJobsHttp({ getStore: async () => { throw new Error('no database for a preview') }, blobs, voicePreview: preview })
+  await preview({ voiceProfile: 'female-middle', voiceTone: 'calm', voiceSpeed: 1 }) // warmed outside the route: 1 call
+  assert.equal(t.calls.length, 1)
+  const hit = await http(handler, { taskType: 'longform_voice_preview', voiceProfile: 'female-middle', voiceTone: 'calm', voiceSpeed: 1 })
+  assert.equal(hit.status, 200); assert.deepEqual(Object.keys(hit.json).sort(), ['cache', 'ok', 'playbackUrl', 'validUntil']); assert.equal(hit.json.cache, 'HIT')
+  const miss = await http(handler, { taskType: 'longform_voice_preview', voiceProfile: 'female-young', voiceTone: 'bright', voiceSpeed: 1.1 })
+  assert.equal(miss.status, 403); assert.equal(miss.json.error.code, 'VOICE_PREVIEW_UNAVAILABLE')
   assert.equal((await http(handler, { taskType: 'longform_voice_preview', voiceProfile: 'marin' })).status, 400)
   assert.equal((await http(handler, { taskType: 'longform_voice_preview', voiceProfile: 'female-middle', voiceSpeed: 1.25 })).status, 400)
-  assert.equal(t.calls.length, 1)
+  assert.equal(t.calls.length, 1, 'the blocked MISS made no provider call')
 })

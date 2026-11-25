@@ -100,7 +100,7 @@ test('구형 스토리 작업은 허용된 taskType만 통과하고, 다른 라�
 })
 
 // ── D-2 독립 검증 결함 재현(수정 전 실패 · 수정 후 통과): 공급자 호출 횟수는 정확한 수치로 단언한다 ──
-import { planAiCall, maxProviderCalls, isComplete } from '../lib/generative/paidAiCall.js'
+import { planAiCall, maxProviderCalls, isComplete, AI_CALL_TARGETS } from '../lib/generative/paidAiCall.js'
 import { withCallBudget, CallLimitError } from '../lib/generative/callBudget.js'
 import { createJobsHttp } from '../lib/jobs/http.js'
 import { createVoicePreview } from '../lib/generative/voicePreview.js'
@@ -142,7 +142,7 @@ test('결함2 실패 분류: 공급자 호출이 나간 뒤의 실패는 자동 
 test('결함3 불완전 200·서버 결과 저장 실패는 성공이 아니고 자동으로 다시 호출하지 않는다', async () => {
   for (const out of [{}, { image: {} }, { image: { base64: '' } }]) assert.equal(isComplete('image', out), false)
   assert.equal(isComplete('claude-story', { ok: true }), false); assert.equal(isComplete('gpt-image-qc', {}), false); assert.equal(isComplete('gpt-script-qc', { ok: true }), false)
-  assert.equal(isComplete('claude-longform-revise', { ok: true, draft: {} }), true); assert.equal(isComplete('image', { image: { base64: 'AAAA' } }), true)
+  assert.equal(isComplete('claude-longform-revise', { ok: true, draft: { chapters: [{ chapterNo: 1 }] } }), true); assert.equal(isComplete('image', { image: { base64: 'AAAA' } }), true)
   // a 200 from the provider without an image: the handler fails it; nothing is stored as a success and nothing repeats by itself
   await withProviders(() => new Response(JSON.stringify({ output_image: { data: '' } })), async (calls) => {
     const { call } = aiHttp(), req = { target: 'image', body: imageBody('A prompt whose provider answer comes back without any picture, no text') }
@@ -188,32 +188,32 @@ test('일반 CUT 일괄: 장면 목록·최대 장수·총액을 한 번 승인�
   })
 })
 
-test('결함5 voicePreview: HIT 무료, MISS는 서버 견적·승인 후 정확히 1회, 동시·재시도·저장소 오류·불명 상태에서 자동 호출 없음', async () => {
-  const mkPreview = (blobs: any, tts: () => Promise<any>) => createJobsHttp({ getStore: async () => { throw new Error('no db') }, blobs, voicePreview: createVoicePreview({ blobs, tts, apiKey: () => 'k', log: () => {} }) })
-  const post = (handler: any, body: any) => run(handler, { method: 'POST', headers: { 'x-sync-key': KEY }, query: {}, body: { taskType: 'longform_voice_preview', voiceProfile: 'female-middle', voiceTone: 'calm', voiceSpeed: 1, ...body } })
-  const approvedPost = async (handler: any, body: any = {}) => { const q = await post(handler, body); assert.equal(q.status, 402, JSON.stringify(q.data)); return post(handler, { ...body, approvalId: q.data.approval.approvalId, costApproved: true, approvedUsd: q.data.estimate.usd }) }
-  // workspace auth is kept
-  { const blobs: any = createMemoryBlobStore(); let n = 0; const h = mkPreviewHandler(blobs, async () => { n++; return { bytes: Buffer.from('ID3x'), contentType: 'audio/mpeg' } })
-    assert.equal((await run(h, { method: 'POST', headers: {}, query: {}, body: { taskType: 'longform_voice_preview' } })).status, 401); assert.equal(n, 0) }
-  function mkPreviewHandler(blobs: any, tts: () => Promise<any>) { return mkPreview(blobs, tts) }
-  // MISS: quote (0 calls) → approved (1 call) → same again is a free HIT; a concurrent double click makes ONE call
-  { const blobs: any = createMemoryBlobStore(); let n = 0; const h = mkPreview(blobs, async () => { n++; return { bytes: Buffer.from('ID3x'), contentType: 'audio/mpeg' } })
-    const quote = await post(h, {}); assert.equal(quote.status, 402); assert.equal(n, 0)
-    const ap = { approvalId: quote.data.approval.approvalId, costApproved: true, approvedUsd: quote.data.estimate.usd }
-    const [x, y] = await Promise.all([post(h, ap), post(h, ap)]); assert.ok([x.status, y.status].every((c) => c === 200 || c === 409)); assert.ok([x.status, y.status].includes(200)); assert.equal(n, 1)
-    const hit = await post(h, {}); assert.equal(hit.status, 200); assert.equal(hit.data.cache, 'HIT'); assert.equal(n, 1) }
-  // cache read error: not a MISS → no provider call
-  { const blobs: any = createMemoryBlobStore(); const get = blobs.getJson.bind(blobs); blobs.getJson = async (p: string) => { if (String(p).startsWith('voice-preview/')) throw new Error('read failed'); return get(p) }
-    let n = 0; const h = mkPreview(blobs, async () => { n++; return { bytes: Buffer.from('ID3x'), contentType: 'audio/mpeg' } })
-    const r = await post(h, {}); assert.ok(r.status >= 400 && r.status !== 402); assert.equal(n, 0) }
-  // provider answer lost (transient error): the same preview is NOT regenerated automatically — exactly one call
-  { const blobs: any = createMemoryBlobStore(); let n = 0; const h = mkPreview(blobs, async () => { n++; throw new Error('OpenAI TTS failed 503: upstream') })
-    const first = await approvedPost(h); assert.ok(first.status >= 400); assert.equal(n, 1)
-    const again = await post(h, {}); assert.equal(again.status, 409); assert.equal(again.data.error.code, 'PREVIEW_STATE_UNKNOWN'); assert.equal(n, 1) }
-  // billed but the audio cannot be stored: never reported as a success, never repeated automatically
-  { const blobs: any = createMemoryBlobStore(); const put = blobs.putBytes.bind(blobs); blobs.putBytes = async (p: string, ...r: any[]) => { if (String(p).startsWith('voice-preview/')) throw new Error('store down'); return (put as any)(p, ...r) }
-    let n = 0; const h = mkPreview(blobs, async () => { n++; return { bytes: Buffer.from('ID3x'), contentType: 'audio/mpeg' } })
-    const r = await approvedPost(h); assert.ok(r.status >= 400); assert.equal(n, 1); assert.equal((await post(h, {})).data.error.code, 'PREVIEW_STATE_UNKNOWN'); assert.equal(n, 1) }
+test('결함5 voicePreview: 어떤 키(미등록·임의 문자열 포함)로도 캐시 미스의 유료 생성은 견적·승인·공급자 호출 0회로 차단, 캐시 HIT만 무료 — 모듈의 공유 claim·캐시 복구는 유지', async () => {
+  const voice = { voiceProfile: 'female-middle', voiceTone: 'calm', voiceSpeed: 1 }
+  const post = (handler: any, key: string, body: any = {}) => run(handler, { method: 'POST', headers: { 'x-sync-key': key }, query: {}, body: { taskType: 'job_voice_preview', ...voice, ...body } })
+  // HTTP route: every key, both request shapes
+  { const blobs: any = createMemoryBlobStore(); let n = 0
+    const preview = createVoicePreview({ blobs, tts: async () => { n++; return { bytes: Buffer.from('ID3x'), contentType: 'audio/mpeg' } }, apiKey: () => 'k', log: () => {} })
+    const h = createJobsHttp({ getStore: async () => { throw new Error('no db') }, blobs, voicePreview: preview })
+    for (const key of ['unregistered-workspace-key-0123456789', 'a'.repeat(40), 'x'.repeat(24), KEY]) for (const taskType of ['job_voice_preview', 'longform_voice_preview']) {
+      const r = await post(h, key, { taskType }); assert.equal(r.status, 403, `${key}/${taskType}`); assert.equal(r.data.error.code, 'VOICE_PREVIEW_UNAVAILABLE'); assert.equal(r.data.approval, undefined, 'no approval is even offered')
+    }
+    assert.equal(n, 0, 'provider calls: 0'); assert.deepEqual([...blobs.files.keys(), ...blobs.binaries.keys()].filter((k: string) => /paid-approvals|ai-spend|voice-preview/.test(k)), [], 'no approval/ledger/preview record created')
+    assert.equal((await run(h, { method: 'POST', headers: {}, query: {}, body: { taskType: 'job_voice_preview', ...voice } })).status, 401, 'no key at all: still unauthenticated')
+    await preview(voice); assert.equal(n, 1) // warmed outside the route
+    const hit = await post(h, 'unregistered-workspace-key-0123456789'); assert.equal(hit.status, 200); assert.equal(hit.data.cache, 'HIT'); assert.equal(n, 1, 'a cached preview is free') }
+  // module: concurrent identical previews → one provider call; cache read error → no call; transient failure → not repeated; billed-but-unsaved → not repeated
+  const mk = (blobs: any, tts: () => Promise<any>) => createVoicePreview({ blobs, tts, apiKey: () => 'k', log: () => {} })
+  { const blobs: any = createMemoryBlobStore(); let n = 0; const p = mk(blobs, async () => { n++; return { bytes: Buffer.from('ID3x'), contentType: 'audio/mpeg' } })
+    await Promise.all([p(voice), p(voice)]); assert.equal(n, 1) }
+  { const blobs: any = createMemoryBlobStore(); const get = blobs.getJson.bind(blobs); blobs.getJson = async (path: string) => { if (String(path).startsWith('voice-preview/')) throw new Error('read failed'); return get(path) }
+    let n = 0; const p = mk(blobs, async () => { n++; return { bytes: Buffer.from('ID3x'), contentType: 'audio/mpeg' } })
+    await assert.rejects(p(voice)); assert.equal(n, 0) }
+  { const blobs: any = createMemoryBlobStore(); let n = 0; const p = mk(blobs, async () => { n++; throw new Error('OpenAI TTS failed 503: upstream') })
+    await assert.rejects(p(voice)); assert.equal(n, 1); await assert.rejects(p(voice), (e: any) => e.code === 'PREVIEW_STATE_UNKNOWN'); assert.equal(n, 1) }
+  { const blobs: any = createMemoryBlobStore(); const put = blobs.putBytes.bind(blobs); blobs.putBytes = async (path: string, ...r: any[]) => { if (String(path).startsWith('voice-preview/')) throw new Error('store down'); return (put as any)(path, ...r) }
+    let n = 0; const p = mk(blobs, async () => { n++; return { bytes: Buffer.from('ID3x'), contentType: 'audio/mpeg' } })
+    await assert.rejects(p(voice)); assert.equal(n, 1); await assert.rejects(p(voice), (e: any) => e.code === 'PREVIEW_STATE_UNKNOWN'); assert.equal(n, 1) }
 })
 
 test('경제 V4/V5·벤치마크: 신규 유료 생성은 차단 유지, 기존 조회(GET 진단·헬스)는 막지 않는다', async () => {
@@ -295,20 +295,35 @@ test('이미지 승인 범위: cutIndex -1(숫자·문자열) 차단, 승인된 
   })
 })
 
-test('워크스페이스 키: 길이만 맞춘 반복 키는 유료 승인 경로(cardnews_ai_call·미리듣기 v1/v2)에서 거절, 새 요청 형식은 옛 서버가 공급자 호출 전에 거절하는 job_ 작업', async () => {
+test('유료 승인 경로(cardnews_ai_call)는 길이만 맞춘 반복 키를 받지 않는다(워크스페이스 소유 검증이 아니라 최소 강도 확인)', async () => {
   await withProviders(() => { throw new Error('provider must not be called') }, async (calls) => {
-    const weak = 'a'.repeat(40)
-    assert.equal((await aiCallWith(createMemoryBlobStore(), weak)({ target: 'image', body: imageBody() })).status, 401)
-    const blobs: any = createMemoryBlobStore(); let n = 0
-    const h = createJobsHttp({ getStore: async () => { throw new Error('no db') }, blobs, voicePreview: createVoicePreview({ blobs, tts: async () => { n++; return { bytes: Buffer.from('ID3x'), contentType: 'audio/mpeg' } }, apiKey: () => 'k', log: () => {} }) })
-    for (const taskType of ['longform_voice_preview', 'job_voice_preview']) {
-      assert.equal((await run(h, { method: 'POST', headers: { 'x-sync-key': weak }, query: {}, body: { taskType, voiceProfile: 'female-middle', voiceTone: 'calm', voiceSpeed: 1 } })).status, 401, taskType)
-    }
-    assert.equal(n, 0); assert.equal(calls.length, 0)
-    const strong = 'strong-workspace-key-0123456789abcdef'
-    const q = await run(h, { method: 'POST', headers: { 'x-sync-key': strong }, query: {}, body: { taskType: 'job_voice_preview', voiceProfile: 'female-middle', voiceTone: 'calm', voiceSpeed: 1 } })
-    assert.equal(q.status, 402); assert.equal(n, 0)
-    const ok = await run(h, { method: 'POST', headers: { 'x-sync-key': strong }, query: {}, body: { taskType: 'job_voice_preview', voiceProfile: 'female-middle', voiceTone: 'calm', voiceSpeed: 1, approvalId: q.data.approval.approvalId, costApproved: true, approvedUsd: q.data.estimate.usd } })
-    assert.equal(ok.status, 200); assert.equal(n, 1)
+    assert.equal((await aiCallWith(createMemoryBlobStore(), 'a'.repeat(40))({ target: 'image', body: imageBody() })).status, 401)
+    assert.equal(calls.length, 0)
   })
+})
+
+test('작업 유형별 정상 응답 계약: {"ok":true}만 있는 200은 성공이 아니고(서버 실제 경로), 호출은 정확히 1회·자동 재호출 없음, manual_required는 계속 정상', async () => {
+  const targets: Array<[string, any]> = [['claude-story', { input: { title: 't', targetMinutes: 10, chapterCount: 5 } }], ['claude-longform-revise', { input: { partial: true, draft: { chapters: [] }, qc: { status: 'revision_required', issues: [] } } }],
+    ['gpt-script-qc', { input: { handoff: {}, draft: {} } }], ['gpt-script-qc', { mode: 'finalize', input: { draft: { chapters: [] } } }], ['story', { taskType: 'yasa_story_plan', input: { topic: 't' } }],
+    ['story', { taskType: 'longform_chapter', input: {} }], ['story', { taskType: 'visual_director', input: {} }], ['story', { taskType: 'story_draft', input: { topic: 't' } }], ['story', { input: { topic: 't' } }]]
+  for (const [target, body] of targets) {
+    const spec = AI_CALL_TARGETS[target], realLoad = spec.load
+    let provider = 0
+    spec.load = async () => ({ default: async (_req: any, res: any) => { provider++; await fetch('https://api.example.invalid/provider'); res.status(200).json({ ok: true }) } })
+    try {
+      await withProviders(() => new Response('{}'), async () => {
+        const call = aiCallWith(createMemoryBlobStore()), req = { target, body: { ...body, marker: `${target}-${body.taskType ?? body.mode ?? 'x'}` } }
+        const first = await approveAi(call, req); assert.equal(first.status, 502, `${target}/${body.taskType ?? body.mode}`); assert.equal(first.data.error.code, 'AI_RESULT_INVALID'); assert.equal(provider, 1)
+        const again = await call(req); assert.equal(again.status, 409); assert.equal(again.data.error.code, 'AI_STATE_UNKNOWN'); assert.equal(provider, 1, 'not repeated automatically')
+      })
+    } finally { spec.load = realLoad }
+  }
+  // a complete answer per task type is accepted
+  const chapters = { chapters: [{ chapterNo: 1 }] }
+  for (const [target, out, body] of [['claude-story', { ok: true, draft: chapters }, {}], ['claude-story', { ok: true, text: 'hi' }, { test: true }], ['claude-longform-revise', { ok: true, draft: chapters }, {}], ['gpt-script-qc', { ok: true, qc: { status: 'approved' } }, {}],
+    ['gpt-script-qc', { ok: true, draft: chapters }, { mode: 'revise' }], ['story', { ok: true, dna: { title: 't' } }, { taskType: 'yasa_story_plan' }], ['story', { ok: true, draft: chapters }, { taskType: 'longform_chapter' }],
+    ['story', { ok: true, plan: { cuts: [{}] } }, { taskType: 'visual_director' }], ['story', { draft: { cuts: [{}] }, meta: {} }, { taskType: 'story_draft' }]] as const) assert.equal(isComplete(target, out, body), true, `${target}/${JSON.stringify(body)}`)
+  for (const [target, body] of [['claude-story', {}], ['claude-longform-revise', {}], ['gpt-script-qc', {}], ['gpt-script-qc', { mode: 'revise' }], ['story', { taskType: 'yasa_story_plan' }], ['story', { taskType: 'longform_chapter' }], ['story', { taskType: 'visual_director' }], ['story', { taskType: 'story_draft' }], ['story', {}]] as const)
+    assert.equal(isComplete(target, { ok: true }, body), false, `${target}/${JSON.stringify(body)}`)
+  assert.equal(isComplete('gpt-script-qc', { ok: true, scope: 'manual_required', reason: 'x' }, { mode: 'revise_partial' }), true)
 })

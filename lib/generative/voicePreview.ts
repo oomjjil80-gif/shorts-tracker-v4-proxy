@@ -50,6 +50,8 @@ export function createVoicePreview(deps: { blobs: JobBlobStore; tts: PreviewTts;
     let existing: Buffer | null
     try { existing = await deps.blobs.getBytes(path) } catch { throw new PreviewError('PREVIEW_FAILED', '미리듣기 저장소를 확인하지 못해 호출하지 않았습니다. 잠시 후 다시 눌러주세요.') }
     if (existing?.length) { await deps.blobs.putJson(marker, { ref: path, profile: profile.id, bytes: existing.length, version: VOICE_PREVIEW_VERSION }); return hit() }
+    // 캐시 미스의 유료 생성: 호출 경로가 허용하지 않으면(beforeProvider가 던지면) 키 확인·기록·승인·공급자 호출 어느 것도 하지 않는다.
+    await ctx.beforeProvider?.()
     const apiKey = deps.apiKey?.() ?? process.env.OPENAI_API_KEY ?? ''
     if (!apiKey) throw new PreviewError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured')
     // 같은 미리듣기의 이전 호출 기록(공유 저장소의 원자적 claim): 진행 중이면 대기, 처리 여부가 불명확하면 자동으로 다시 호출하지 않는다.
@@ -57,7 +59,6 @@ export function createVoicePreview(deps: { blobs: JobBlobStore; tts: PreviewTts;
     const prior = await readFlight(deps.blobs, flightBase)
     if (prior.state === 'in_progress') throw new PreviewError('PREVIEW_IN_PROGRESS', '같은 미리듣기를 만들고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
     if (prior.state !== 'free') throw new PreviewError('PREVIEW_STATE_UNKNOWN', '이전 미리듣기 요청의 처리 여부를 확인할 수 없습니다(이미 호출·과금되었을 수 있음). 자동으로 다시 호출하지 않았습니다.')
-    await ctx.beforeProvider?.() // 캐시 미스의 유료 호출: 서버 견적과 1회용 승인(없으면 여기서 멈춘다)
     if (!(await claimFlight(deps.blobs, flightBase, prior.gen))) throw new PreviewError('PREVIEW_IN_PROGRESS', '같은 미리듣기를 만들고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
     let audio: { bytes: Buffer; contentType: string }
     try { audio = await deps.tts(VOICE_PREVIEW_TEXT, apiKey, profile) }

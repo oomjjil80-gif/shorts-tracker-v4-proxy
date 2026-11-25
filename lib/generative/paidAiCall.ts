@@ -55,18 +55,31 @@ export function planAiCall(target: string, body: any, withQc: boolean) {
   return { calls: total, usd, note: `${spec.label} 최대 ${calls}회${withQc ? ' + 자동 이미지 검수 1회' : ''} 예상 비용(확정 단가 아님)` }
 }
 
-// 200이어도 필요한 결과가 없으면 성공이 아니다.
-export function isComplete(target: string, output: any): boolean {
+// 200이어도 작업 유형별 정상 응답 계약을 채우지 못하면 성공이 아니다({"ok":true}만 있는 응답은 성공이 아니다).
+const hasChapters = (d: any) => !!d && typeof d === 'object' && Array.isArray(d.chapters) && d.chapters.length > 0
+export function isComplete(target: string, output: any, body: any = {}): boolean {
   if (!output || typeof output !== 'object') return false
   // 부분 수정이 대상 구간을 정할 수 없을 때의 정상 응답(공급자 호출 없음): 호출자가 수동 수정 안내를 보여 준다. 불완전한 응답이 아니다.
   if ((target === 'gpt-script-qc' || target === 'claude-longform-revise') && output.ok === true && output.scope === 'manual_required') return true
   switch (target) {
     case 'image': return typeof output.image?.base64 === 'string' && output.image.base64.length > 0
     case 'gpt-image-qc': return typeof output.decision === 'string' && output.decision.length > 0
-    case 'claude-story': return output.ok === true && (output.draft && typeof output.draft === 'object' || (typeof output.text === 'string' && output.text.length > 0))
-    case 'claude-longform-revise': return output.ok === true && !!output.draft && typeof output.draft === 'object'
-    case 'gpt-script-qc': return output.ok === true && (!!output.draft || !!output.qc || (typeof output.text === 'string' && output.text.length > 0))
-    case 'story': return output.ok === true || !!output.draft || !!output.dna
+    case 'claude-story': return output.ok === true && (body?.test ? typeof output.text === 'string' && output.text.length > 0 : hasChapters(output.draft))
+    case 'claude-longform-revise': return output.ok === true && hasChapters(output.draft)
+    case 'gpt-script-qc': {
+      if (output.ok !== true) return false
+      if (body?.test) return typeof output.text === 'string' && output.text.length > 0
+      const mode = String(body?.mode || '')
+      if (mode === 'revise' || mode === 'finalize' || mode === 'revise_partial') return hasChapters(output.draft)
+      return !!output.qc && typeof output.qc === 'object' && typeof output.qc.status === 'string' // 기본 검수
+    }
+    case 'story': {
+      const task = String(body?.taskType ?? '')
+      if (task === 'yasa_story_plan') return output.ok === true && !!output.dna && typeof output.dna === 'object'
+      if (task === 'longform_chapter') return output.ok === true && hasChapters(output.draft)
+      if (task === 'visual_director') return output.ok === true && !!output.plan && Array.isArray(output.plan.cuts) && output.plan.cuts.length > 0
+      return !!output.draft && typeof output.draft === 'object' && Array.isArray(output.draft.cuts) && output.draft.cuts.length > 0 // story_draft · rewrite · 기본
+    }
     default: return false
   }
 }
@@ -152,13 +165,13 @@ export async function handleAiCall(o: { blobs: JobBlobStore; ws: string; input: 
   if (stored) {
     let parsed: any = null
     try { parsed = JSON.parse(stored.toString('utf8')) } catch { /* 읽을 수 없는 저장 결과는 성공으로 취급하지 않는다 */ }
-    if (parsed && isComplete(target, parsed)) return res.status(200).json({ ...parsed, recovered: true, budget: null })
+    if (parsed && isComplete(target, parsed, body)) return res.status(200).json({ ...parsed, recovered: true, budget: null })
     throw new AiCallError('AI_STATE_UNKNOWN', '이전에 받은 결과 파일을 읽지 못했습니다. 과금이 중복되지 않도록 자동으로 다시 호출하지 않았습니다.')
   }
   const prior = await readFlight(blobs, flightBase)
   if (prior.state === 'done') {
     const bytes = await blobs.getBytes(prior.result.ref)
-    if (bytes && sha256(bytes) === prior.result.sha256) { try { const parsed = JSON.parse(bytes.toString('utf8')); if (isComplete(target, parsed)) return res.status(200).json({ ...parsed, recovered: true, budget: null }) } catch { /* 아래에서 명시적으로 중단한다 */ } }
+    if (bytes && sha256(bytes) === prior.result.sha256) { try { const parsed = JSON.parse(bytes.toString('utf8')); if (isComplete(target, parsed, body)) return res.status(200).json({ ...parsed, recovered: true, budget: null }) } catch { /* 아래에서 명시적으로 중단한다 */ } }
     throw new AiCallError('AI_STATE_UNKNOWN', '이전에 받은 결과 파일을 읽지 못했습니다. 과금이 중복되지 않도록 자동으로 다시 호출하지 않았습니다.')
   }
   if (prior.state === 'in_progress') throw new AiCallError('AI_IN_PROGRESS', '같은 AI 요청을 다른 요청이 처리하고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
@@ -188,7 +201,7 @@ export async function handleAiCall(o: { blobs: JobBlobStore; ws: string; input: 
   // 공급자에 아무것도 보내지 않았다면 과금되지 않았으므로 비용 기록도 남기지 않는다. 한 번이라도 보냈다면 실패해도 기록한다.
   const budget = providerCalls > 0 ? await recordSpend(blobs, { ws, approval }) : null
   if (thrown) { await recordFlight(blobs, flightBase, prior.gen, providerCalls === 0 ? { status: 'failed_safe', reason: 'handler_threw_before_provider' } : { status: 'unknown', reason: 'handler_threw' }); throw thrown }
-  if (status === 200 && isComplete(target, output)) {
+  if (status === 200 && isComplete(target, output, body)) {
     const bytes = Buffer.from(JSON.stringify(output), 'utf8'), ref = resultRef
     const saved = await retryStore(() => blobs.putBytes(ref, bytes, 'application/json'))
     // 결과 파일과 복구 기록이 모두 저장된 뒤에만 정상 성공을 돌려준다. 하나라도 실패하면 성공이 아니고 자동으로 다시 호출하지 않는다
