@@ -320,7 +320,7 @@ test('Vercel 전달: GET(쿼리)과 바이너리 응답, 헤더 보존, 대상�
   try {
     for (const t of ['tts_clips', 'tts_assemble', 'tts_audio', 'cardnews_get', 'cardnews_master_image_generate', 'cardnews_image_generate']) assert.equal(shouldForwardToRailway({ headers: {} } as any, t), true, t)
     for (const t of ['creative_resolve', 'job_create', 'source_latest', 'trending_get', 'longform_voice_preview', undefined]) assert.equal(shouldForwardToRailway({ headers: {} } as any, t as any), false, String(t))
-    assert.equal(shouldForwardToRailway({ headers: { [FORWARDED_HEADER]: 'vercel' } } as any, 'tts_clips'), false, 'loop guard: an already-forwarded request is never forwarded again')
+    assert.equal(shouldForwardToRailway({ headers: { [FORWARDED_HEADER]: 'vercel' } } as any, 'tts_clips'), true, 'a client-set header never decides: on Vercel the request is always forwarded')
   } finally { delete process.env.VERCEL }
   // Railway 직접 호출 경로(VERCEL 아님)는 전달하지 않고 기존처럼 로컬 핸들러가 처리한다 (전달 fetch 0회)
   const direct = await viaVercel({ taskType: 'cardnews_list' }, () => { throw new Error('must not forward') }, { method: 'GET', env: null })
@@ -339,4 +339,37 @@ test('Vercel 전달 실패·응답 유실: Vercel에서 대신 실행하지 않�
     await forwardToRailway({ method: 'POST', headers: { 'x-sync-key': 'k'.repeat(32) }, body: TTS_BODY } as any, res, { timeoutMs: 30 })
   } finally { globalThis.fetch = oldFetch; clearTimeout(keepAlive) }
   assert.equal(status, 504); assert.equal(payload.error.code, 'UPSTREAM_TIMEOUT'); assert.equal(calls, 1)
+})
+
+test('Vercel 전달: 외부에서 x-tracker-forwarded를 넣어도 항상 Railway로 전달 — 로컬(저장소 없는) 핸들러 실행 0회', async () => {
+  for (const value of ['vercel', '1', 'true', 'railway', ' ']) {
+    for (const body of [TTS_BODY, { taskType: 'cardnews_master_image_generate', sceneId: 'scene-01', imageInput: {} }, { taskType: 'tts_assemble', refs: [] }]) {
+      const r = await viaVercel(body, () => j(402, { ok: false, error: { code: 'COST_APPROVAL_REQUIRED' }, approval: { approvalId: 'a-1' } }), { headers: { [FORWARDED_HEADER]: value } })
+      assert.equal(r.upstreamCalls.length, 1, `${value}/${body.taskType}: forwarded exactly once`)
+      assert.equal(r.status, 402); assert.equal(JSON.parse(r.sent.toString()).approval.approvalId, 'a-1', 'the answer is Railway\'s, not a local one')
+      assert.deepEqual(r.otherCalls, [], 'local handler / provider / storage never ran on Vercel')
+      assert.equal(r.upstreamCalls[0].init.headers[FORWARDED_HEADER], 'vercel') // outbound marker is ours, not the caller's
+    }
+  }
+  // GET도 동일
+  const get = await viaVercel({ taskType: 'tts_audio', ref: 'generative-assets/audio/x.m4a' }, () => new Response(Buffer.from([9]), { status: 200, headers: { 'content-type': 'audio/mp4' } }), { method: 'GET', headers: { [FORWARDED_HEADER]: 'vercel' } })
+  assert.equal(get.upstreamCalls.length, 1); assert.deepEqual([...get.sent], [9])
+})
+
+test('Vercel 전달: Railway 응답 본문을 읽다 실패해도 구조화된 502/504(처리 여부 불명), 전달 1회, 대신 실행·재호출 없음', async () => {
+  const unreadable = { status: 200, headers: new Headers({ 'content-type': 'application/json' }), arrayBuffer: async () => { throw new TypeError('terminated') } } as any
+  const cut = await viaVercel(TTS_BODY, () => unreadable)
+  assert.equal(cut.status, 502); assert.equal(cut.payload.error.code, 'UPSTREAM_UNAVAILABLE'); assert.equal(cut.payload.error.outcomeUnknown, true)
+  assert.match(cut.payload.error.message, /처리 여부가 불명확/); assert.match(cut.payload.error.message, /자동으로 다시 호출하지 않았습니다/)
+  assert.equal(cut.upstreamCalls.length, 1, 'forwarded once, not retried'); assert.deepEqual(cut.otherCalls, [], 'not executed on Vercel instead'); assert.equal(cut.sent, undefined, 'no partial body was relayed')
+  assert.ok(!JSON.stringify(cut.payload).includes('k'.repeat(32)), 'no key in the error')
+  // 헤더는 왔지만 본문 도중 시간 초과(abort): 504
+  const stalled = { status: 200, headers: new Headers(), arrayBuffer: async () => { throw Object.assign(new Error('aborted'), { name: 'TimeoutError' }) } } as any
+  const slow = await viaVercel(TTS_BODY, () => stalled)
+  assert.equal(slow.status, 504); assert.equal(slow.payload.error.code, 'UPSTREAM_TIMEOUT'); assert.equal(slow.payload.error.outcomeUnknown, true); assert.equal(slow.upstreamCalls.length, 1)
+  // 요청 자체가 실패한 경우도 같은 표식
+  const down = await viaVercel(TTS_BODY, () => { throw new TypeError('fetch failed') })
+  assert.equal(down.status, 502); assert.equal(down.payload.error.outcomeUnknown, true); assert.equal(down.upstreamCalls.length, 1)
+  // 정상 응답은 그대로 중계(본문 읽기 성공)
+  const ok = await viaVercel(TTS_BODY, () => j(200, { ok: true, ttsCalls: 0 })); assert.equal(ok.status, 200); assert.equal(JSON.parse(ok.sent.toString()).ok, true)
 })

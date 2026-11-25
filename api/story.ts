@@ -179,8 +179,11 @@ export const FORWARDED_HEADER = 'x-tracker-forwarded'
 const FORWARD_TIMEOUT_MS = 170_000 // just under the function's maxDuration (180 s)
 const RAILWAY_TASKS = new Set(['tts_clips', 'tts_assemble', 'tts_audio'])
 export const isRailwayTask = (taskType: unknown): boolean => typeof taskType === 'string' && (RAILWAY_TASKS.has(taskType) || taskType.startsWith('cardnews_'))
-export function shouldForwardToRailway(req: Request, taskType: unknown): boolean {
-  return process.env.VERCEL === '1' && isRailwayTask(taskType) && !req.headers[FORWARDED_HEADER]
+// On Vercel EVERY request of this chain is forwarded, whatever headers the caller sends: an external client can set x-tracker-forwarded
+// itself, so that header must never decide whether the local (storage-less) handler runs. Loops cannot happen: only the Vercel function
+// forwards (VERCEL === '1'); the Railway process and local runs never do. The header is only informational for the Railway side.
+export function shouldForwardToRailway(_req: Request, taskType: unknown): boolean {
+  return process.env.VERCEL === '1' && isRailwayTask(taskType)
 }
 export async function forwardToRailway(req: Request, res: Response, o: { timeoutMs?: number } = {}) {
   res.setHeader('Cache-Control', 'private, no-store')
@@ -194,18 +197,22 @@ export async function forwardToRailway(req: Request, res: Response, o: { timeout
     for (const [k, v] of Object.entries((req.query || {}) as Record<string, unknown>)) for (const x of Array.isArray(v) ? v : [v]) if (x !== undefined) q.append(k, String(x))
     url += `?${q.toString()}`
   } else { headers['Content-Type'] = 'application/json'; body = JSON.stringify(req.body ?? {}) }
-  let upstream: globalThis.Response
-  try { upstream = await fetch(url, { method: req.method, headers, body, cache: 'no-store', signal: AbortSignal.timeout(o.timeoutMs ?? FORWARD_TIMEOUT_MS) }) }
-  catch (e: any) {
-    // No answer: whether Railway already started (and billed) the request is unknown. Do not run it here, do not retry; the same request
-    // recovers its stored result / is held as unclear on the Railway side.
+  // The request AND the reading of its answer share one guard: an answer whose body cannot be read (connection cut, timeout mid-body) is
+  // as unclear as no answer at all. One forwarding only; never retried, never executed on Vercel instead.
+  let upstream: globalThis.Response, payload: Buffer
+  try {
+    upstream = await fetch(url, { method: req.method, headers, body, cache: 'no-store', signal: AbortSignal.timeout(o.timeoutMs ?? FORWARD_TIMEOUT_MS) })
+    payload = Buffer.from(await upstream.arrayBuffer())
+  } catch (e: any) {
+    // Whether Railway already started (and billed) the request is unknown. Do not run it here, do not retry; the same request recovers its
+    // stored result / is held as unclear on the Railway side.
     const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError'
-    return res.status(timedOut ? 504 : 502).json({ ok: false, error: { code: timedOut ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_UNAVAILABLE', message: '승인·생성 서버(Railway)의 응답을 확인하지 못했습니다. 처리 여부가 불명확할 수 있어 자동으로 다시 호출하지 않았습니다.' } })
+    return res.status(timedOut ? 504 : 502).json({ ok: false, error: { code: timedOut ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_UNAVAILABLE', outcomeUnknown: true, message: '승인·생성 서버(Railway)의 응답을 끝까지 확인하지 못했습니다. 처리 여부가 불명확할 수 있어 자동으로 다시 호출하지 않았습니다.' } })
   }
   const type = upstream.headers.get('content-type'), disposition = upstream.headers.get('content-disposition')
   if (type) res.setHeader('Content-Type', type)
   if (disposition) res.setHeader('Content-Disposition', disposition)
-  return res.status(upstream.status).send(Buffer.from(await upstream.arrayBuffer()))
+  return res.status(upstream.status).send(payload)
 }
 
 export default async function handler(req: Request, res: Response) {
