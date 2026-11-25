@@ -276,3 +276,100 @@ test('Shorts application validation retains one chapter and exactly 12 complete 
   const empty = SHORT_DRAFT(); empty.chapters[0].segments[2].text = ''
   assert.equal((await call(claudeStoryHandler, { input: SHORT_INPUT() }, () => empty)).status, 502)
 })
+
+// ── Vercel → Railway 전달: 승인 발급·실행·결과 복구 요청은 기존 Railway API로 그대로 넘기고 Vercel에서는 실행하지 않는다 (무료 mock) ──
+import storyRouter, { shouldForwardToRailway, forwardToRailway, FORWARDED_HEADER, RAILWAY_API_BASE } from '../api/story.js'
+async function viaVercel(body: any, upstream: (url: string, init: any) => Promise<Response> | Response, o: { method?: string; headers?: Record<string, string>; timeoutMs?: number; env?: string | null } = {}) {
+  const oldFetch = globalThis.fetch, oldVercel = process.env.VERCEL, upstreamCalls: Array<{ url: string; init: any }> = [], otherCalls: string[] = []
+  if (o.env === null) delete process.env.VERCEL; else process.env.VERCEL = o.env ?? '1'
+  ;(globalThis as any).fetch = async (url: any, init: any) => { if (String(url).startsWith(RAILWAY_API_BASE)) { upstreamCalls.push({ url: String(url), init }); return upstream(String(url), init) } otherCalls.push(String(url)); throw new Error(`unexpected network call: ${url}`) }
+  try {
+    const headers: any = { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32), ...(o.headers || {}) }
+    const method = o.method ?? 'POST'
+    const req: any = { method, headers, ...(method === 'GET' ? { query: body } : { body }) }
+    let status = 0, payload: any, sent: any; const out: Record<string, string> = {}
+    const res: any = { setHeader(k: string, v: string) { out[k.toLowerCase()] = v }, status(c: number) { status = c; return this }, json(b: any) { payload = b; return this }, send(b: any) { sent = b; return this }, end() { return this } }
+    await storyRouter(req, res)
+    return { status, payload, sent, out, upstreamCalls, otherCalls }
+  } finally { globalThis.fetch = oldFetch; if (oldVercel === undefined) delete process.env.VERCEL; else process.env.VERCEL = oldVercel }
+}
+const j = (status: number, body: any) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+const TTS_BODY = { taskType: 'tts_clips', family: 'economy', format: 'shorts', items: [{ id: 'a', text: '전달 문장입니다.' }] }
+
+test('Vercel 전달: 승인 발급(402)·승인 후 실행(200)·결과 복구가 같은 요청 그대로 Railway로 가고 응답이 그대로 돌아온다 — Vercel에서는 실행하지 않는다', async () => {
+  const quote = await viaVercel(TTS_BODY, () => j(402, { ok: false, error: { code: 'COST_APPROVAL_REQUIRED' }, estimate: { usd: 0.01, calls: 1 }, approval: { approvalId: 'a-1' } }))
+  assert.equal(quote.upstreamCalls.length, 1); assert.equal(quote.upstreamCalls[0].url, `${RAILWAY_API_BASE}/api/story`)
+  assert.equal(quote.upstreamCalls[0].init.method, 'POST'); assert.deepEqual(JSON.parse(quote.upstreamCalls[0].init.body), TTS_BODY) // 본문 그대로
+  assert.equal(quote.upstreamCalls[0].init.headers['X-Sync-Key'], 'k'.repeat(32)); assert.equal(quote.upstreamCalls[0].init.headers[FORWARDED_HEADER], 'vercel') // 인증 그대로 + 순환 방지 표식
+  assert.equal(quote.status, 402); assert.equal(quote.payload, undefined); assert.equal(JSON.parse(quote.sent.toString()).approval.approvalId, 'a-1'); assert.equal(quote.out['content-type'], 'application/json')
+  assert.deepEqual(quote.otherCalls, [], 'no provider / storage call on the Vercel side')
+  const approved = { ...TTS_BODY, approvalId: 'a-1', costApproved: true, approvedUsd: 0.01 }
+  const run = await viaVercel(approved, () => j(200, { ok: true, ttsCalls: 1, clips: [] })); assert.equal(run.status, 200); assert.deepEqual(JSON.parse(run.upstreamCalls[0].init.body), approved)
+  // 카드뉴스(승인·MASTER 이미지·복구 200 recovered:true)도 같은 경로
+  const img = { taskType: 'cardnews_master_image_generate', sceneId: 'scene-01', imageInput: { profile: 'master-shorts', aspectRatio: '9:16', prompt: 'p'.repeat(30), references: [] } }
+  const rec = await viaVercel(img, () => j(200, { image: { base64: 'AAAA', mimeType: 'image/png' }, recovered: true })); assert.equal(rec.status, 200); assert.equal(JSON.parse(rec.sent.toString()).recovered, true); assert.equal(rec.upstreamCalls.length, 1)
+})
+
+test('Vercel 전달: GET(쿼리)과 바이너리 응답, 헤더 보존, 대상이 아닌 요청·Railway 직접 경로·순환 요청은 전달하지 않는다', async () => {
+  const get = await viaVercel({ taskType: 'tts_audio', ref: 'generative-assets/audio/x.m4a' }, () => new Response(Buffer.from([1, 2, 3]), { status: 200, headers: { 'content-type': 'audio/mp4' } }), { method: 'GET' })
+  assert.equal(get.upstreamCalls[0].init.method, 'GET'); assert.match(get.upstreamCalls[0].url, /\?taskType=tts_audio&ref=generative-assets%2Faudio%2Fx\.m4a$/)
+  assert.equal(get.status, 200); assert.deepEqual([...get.sent], [1, 2, 3]); assert.equal(get.out['content-type'], 'audio/mp4')
+  const list = await viaVercel({ taskType: 'cardnews_list' }, () => j(200, { ok: true, projects: [] }), { method: 'GET' }); assert.equal(list.upstreamCalls.length, 1)
+  assert.equal(shouldForwardToRailway({ headers: {} } as any, 'tts_assemble'), false, 'not on Vercel (no VERCEL env): the Railway/local process executes')
+  process.env.VERCEL = '1'
+  try {
+    for (const t of ['tts_clips', 'tts_assemble', 'tts_audio', 'cardnews_get', 'cardnews_master_image_generate', 'cardnews_image_generate']) assert.equal(shouldForwardToRailway({ headers: {} } as any, t), true, t)
+    for (const t of ['creative_resolve', 'job_create', 'source_latest', 'trending_get', 'longform_voice_preview', undefined]) assert.equal(shouldForwardToRailway({ headers: {} } as any, t as any), false, String(t))
+    assert.equal(shouldForwardToRailway({ headers: { [FORWARDED_HEADER]: 'vercel' } } as any, 'tts_clips'), true, 'a client-set header never decides: on Vercel the request is always forwarded')
+  } finally { delete process.env.VERCEL }
+  // Railway 직접 호출 경로(VERCEL 아님)는 전달하지 않고 기존처럼 로컬 핸들러가 처리한다 (전달 fetch 0회)
+  const direct = await viaVercel({ taskType: 'cardnews_list' }, () => { throw new Error('must not forward') }, { method: 'GET', env: null })
+  assert.equal(direct.upstreamCalls.length, 0)
+})
+
+test('Vercel 전달 실패·응답 유실: Vercel에서 대신 실행하지 않고, 자동 재호출 없이(전달 1회) 불명확 오류를 돌려준다', async () => {
+  const down = await viaVercel(TTS_BODY, () => { throw new TypeError('fetch failed') })
+  assert.equal(down.status, 502); assert.equal(down.payload.error.code, 'UPSTREAM_UNAVAILABLE'); assert.equal(down.upstreamCalls.length, 1, 'no retry'); assert.deepEqual(down.otherCalls, [], 'not executed on Vercel')
+  assert.match(down.payload.error.message, /자동으로 다시 호출하지 않았습니다/); assert.ok(!JSON.stringify(down.payload).includes('k'.repeat(32)), 'no key in the error')
+  // 응답이 오지 않는 경우(시간 초과): 504, 전달 1회뿐, 다시 보내지 않는다
+  const oldFetch = globalThis.fetch, keepAlive = setTimeout(() => {}, 1000); let calls = 0, status = 0, payload: any // AbortSignal.timeout does not keep the event loop alive (a running server does)
+  ;(globalThis as any).fetch = (_u: any, init: any) => { calls++; return new Promise((_r, rej) => init.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'TimeoutError' })))) }
+  try {
+    const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { payload = b; return this }, send() { return this } }
+    await forwardToRailway({ method: 'POST', headers: { 'x-sync-key': 'k'.repeat(32) }, body: TTS_BODY } as any, res, { timeoutMs: 30 })
+  } finally { globalThis.fetch = oldFetch; clearTimeout(keepAlive) }
+  assert.equal(status, 504); assert.equal(payload.error.code, 'UPSTREAM_TIMEOUT'); assert.equal(calls, 1)
+})
+
+test('Vercel 전달: 외부에서 x-tracker-forwarded를 넣어도 항상 Railway로 전달 — 로컬(저장소 없는) 핸들러 실행 0회', async () => {
+  for (const value of ['vercel', '1', 'true', 'railway', ' ']) {
+    for (const body of [TTS_BODY, { taskType: 'cardnews_master_image_generate', sceneId: 'scene-01', imageInput: {} }, { taskType: 'tts_assemble', refs: [] }]) {
+      const r = await viaVercel(body, () => j(402, { ok: false, error: { code: 'COST_APPROVAL_REQUIRED' }, approval: { approvalId: 'a-1' } }), { headers: { [FORWARDED_HEADER]: value } })
+      assert.equal(r.upstreamCalls.length, 1, `${value}/${body.taskType}: forwarded exactly once`)
+      assert.equal(r.status, 402); assert.equal(JSON.parse(r.sent.toString()).approval.approvalId, 'a-1', 'the answer is Railway\'s, not a local one')
+      assert.deepEqual(r.otherCalls, [], 'local handler / provider / storage never ran on Vercel')
+      assert.equal(r.upstreamCalls[0].init.headers[FORWARDED_HEADER], 'vercel') // outbound marker is ours, not the caller's
+    }
+  }
+  // GET도 동일
+  const get = await viaVercel({ taskType: 'tts_audio', ref: 'generative-assets/audio/x.m4a' }, () => new Response(Buffer.from([9]), { status: 200, headers: { 'content-type': 'audio/mp4' } }), { method: 'GET', headers: { [FORWARDED_HEADER]: 'vercel' } })
+  assert.equal(get.upstreamCalls.length, 1); assert.deepEqual([...get.sent], [9])
+})
+
+test('Vercel 전달: Railway 응답 본문을 읽다 실패해도 구조화된 502/504(처리 여부 불명), 전달 1회, 대신 실행·재호출 없음', async () => {
+  const unreadable = { status: 200, headers: new Headers({ 'content-type': 'application/json' }), arrayBuffer: async () => { throw new TypeError('terminated') } } as any
+  const cut = await viaVercel(TTS_BODY, () => unreadable)
+  assert.equal(cut.status, 502); assert.equal(cut.payload.error.code, 'UPSTREAM_UNAVAILABLE'); assert.equal(cut.payload.error.outcomeUnknown, true)
+  assert.match(cut.payload.error.message, /처리 여부가 불명확/); assert.match(cut.payload.error.message, /자동으로 다시 호출하지 않았습니다/)
+  assert.equal(cut.upstreamCalls.length, 1, 'forwarded once, not retried'); assert.deepEqual(cut.otherCalls, [], 'not executed on Vercel instead'); assert.equal(cut.sent, undefined, 'no partial body was relayed')
+  assert.ok(!JSON.stringify(cut.payload).includes('k'.repeat(32)), 'no key in the error')
+  // 헤더는 왔지만 본문 도중 시간 초과(abort): 504
+  const stalled = { status: 200, headers: new Headers(), arrayBuffer: async () => { throw Object.assign(new Error('aborted'), { name: 'TimeoutError' }) } } as any
+  const slow = await viaVercel(TTS_BODY, () => stalled)
+  assert.equal(slow.status, 504); assert.equal(slow.payload.error.code, 'UPSTREAM_TIMEOUT'); assert.equal(slow.payload.error.outcomeUnknown, true); assert.equal(slow.upstreamCalls.length, 1)
+  // 요청 자체가 실패한 경우도 같은 표식
+  const down = await viaVercel(TTS_BODY, () => { throw new TypeError('fetch failed') })
+  assert.equal(down.status, 502); assert.equal(down.payload.error.outcomeUnknown, true); assert.equal(down.upstreamCalls.length, 1)
+  // 정상 응답은 그대로 중계(본문 읽기 성공)
+  const ok = await viaVercel(TTS_BODY, () => j(200, { ok: true, ttsCalls: 0 })); assert.equal(ok.status, 200); assert.equal(JSON.parse(ok.sent.toString()).ok, true)
+})
