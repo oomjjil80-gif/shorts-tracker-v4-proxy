@@ -53,7 +53,7 @@ export type JobsDeps = {
   blobs: JobBlobStore
   sourceExists?: (sourceAssetId: string) => Promise<boolean>
   analyzeReference?: typeof analyzeRegisteredReference
-  voicePreview?: (input: any) => Promise<{ playbackUrl: string; validUntil: number; cache: 'HIT' | 'MISS' }>
+  voicePreview?: (input: any, ctx?: { beforeProvider?: () => Promise<void> }) => Promise<{ playbackUrl: string; validUntil: number; cache: 'HIT' | 'MISS' }>
   trackerTts?: { plan?: (input: any) => Promise<{ calls: number; quote: { task: string; usd: number; calls?: number; note?: string } }>; clips: (input: any, opts?: { maxCalls?: number; flightId?: string }) => Promise<any>; assemble: (input: any) => Promise<any>; audio?: (ref: string) => Promise<Buffer> }
   // job_upload_text: the publish kit (one text call) and its key (tests inject both)
   uploadKit?: typeof openAiWisdomPublishKit
@@ -84,7 +84,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
   JOB_BUSY: 409, STALE_APPROVAL: 409, JOB_ALREADY_STARTED: 409, NOT_AWAITING_APPROVAL: 409, NOT_EDITABLE: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503, PROMISE_SIGNING_NOT_CONFIGURED: 503,
-  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, TTS_IN_PROGRESS: 409, TTS_STATE_UNKNOWN: 409, TTS_APPROVAL_EXCEEDED: 402, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, NOT_SLEEP_RECOVERABLE: 409, RECOVERY_ALREADY_IMPORTED: 409, NOT_ASSET_BILLING_RECOVERABLE: 409, UPLOAD_TEXT_REFUSED: 502
+  PREVIEW_IN_PROGRESS: 409, PREVIEW_STATE_UNKNOWN: 409, PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, TTS_IN_PROGRESS: 409, TTS_STATE_UNKNOWN: 409, TTS_APPROVAL_EXCEEDED: 402, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, NOT_SLEEP_RECOVERABLE: 409, RECOVERY_ALREADY_IMPORTED: 409, NOT_ASSET_BILLING_RECOVERABLE: 409, UPLOAD_TEXT_REFUSED: 502
 }
 
 const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
@@ -233,8 +233,16 @@ export function createJobsHttp(deps: JobsDeps) {
       }
       if (taskType === VOICE_PREVIEW_TASK) {
         if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
-        try { const r = await voicePreview(input); return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache }) }
-        catch (e: any) { if (e instanceof PreviewError) throw new JobError(e.code as any, e.message); throw e }
+        // 캐시 HIT는 무료. 캐시 미스의 유료 호출만 서버 견적 + 1회용 승인(같은 워크스페이스 인증·공유 저장소 claim)을 거친다.
+        let approval: Awaited<ReturnType<typeof requireApproval>> | null = null
+        try {
+          const r = await voicePreview(input, { beforeProvider: async () => { approval = await requireApproval(deps.blobs, { ws: workspaceId, input, quote: { task: VOICE_PREVIEW_TASK, usd: 0.02, calls: 1, note: '음성 미리듣기 1회 예상 비용(확정 단가 아님)' } }) } })
+          return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache })
+        } catch (e: any) {
+          if (e instanceof ApprovalError) return res.status(e.code === 'APPROVAL_USED' ? 409 : 402).json({ ok: false, error: { code: e.code, message: e.message }, ...e.extra })
+          if (e instanceof PreviewError) throw new JobError(e.code as any, e.message)
+          throw e
+        } finally { if (approval) await recordSpend(deps.blobs, { ws: workspaceId, approval }) }
       }
       const expectedMethod = taskType === 'job_get' || taskType === 'job_sleep_draft' || taskType === 'job_list' || taskType === 'job_style' || taskType === 'job_style_examples' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' || taskType === 'job_blocks' ? 'GET' : 'POST'
       if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)

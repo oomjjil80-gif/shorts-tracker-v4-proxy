@@ -146,8 +146,9 @@ test('voice preview on R2: MISS stores voice-preview/<sha>.mp3 privately on R2 a
     const { createVoicePreview } = await import('../lib/generative/voicePreview.js')
     const blobs = createVercelJobBlobStore(); let tts = 0
     const handler = createJobsHttp({ getStore: async () => { throw new Error('no database for a preview') }, blobs, voicePreview: createVoicePreview({ blobs, tts: async () => { tts++; return { bytes: Buffer.from('ID3fake-mp3'), contentType: 'audio/mpeg' } }, apiKey: () => 'k', log: () => {} }) })
-    const call = () => new Promise<any>((resolve) => { let status = 0; handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32) }, query: {}, body: { taskType: 'longform_voice_preview', voiceProfile: 'female-middle', voiceTone: 'neutral', voiceSpeed: 1 } } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { resolve({ status, ...b }); return this }, end() { return this } } as any) })
-    const a = await call()
+    const call = (extra: any = {}) => new Promise<any>((resolve) => { let status = 0; handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32) }, query: {}, body: { taskType: 'longform_voice_preview', voiceProfile: 'female-middle', voiceTone: 'neutral', voiceSpeed: 1, ...extra } } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { resolve({ status, ...b }); return this }, end() { return this } } as any) })
+    const quote = await call(); assert.equal(quote.status, 402); assert.equal(tts, 0, 'a MISS needs the server approval first: the quote step makes no provider call')
+    const a = await call({ approvalId: quote.approval.approvalId, costApproved: true, approvedUsd: quote.estimate.usd })
     assert.equal(a.status, 200); assert.equal(a.cache, 'MISS'); assert.equal(tts, 1)
     const put = s.r2.find((r) => r.method === 'PUT' && /^voice-preview\/[0-9a-f]{64}\.mp3$/.test(r.key))
     assert.ok(put, 'preview audio PUT to R2')

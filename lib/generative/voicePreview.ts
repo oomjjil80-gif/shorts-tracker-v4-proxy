@@ -5,12 +5,15 @@
 import { createHash } from 'node:crypto'
 import type { JobBlobStore } from '../jobs/blobs.js'
 import { classifyOpenAiError } from './longformResearch.js'
+import { readFlight, claimFlight, recordFlight } from './paidFlight.js'
 import type { VoiceProfile } from './voiceProfile.js'
 import { resolveCreativeProfile, creativeVoice, isCreativeContent, creativeContentFor } from './creativeProfile.js'
 
 export const VOICE_PREVIEW_VERSION = 'longform-voice-preview/1'
 export const VOICE_PREVIEW_TEXT = '오늘도 편안한 마음으로, 천천히 이야기를 시작해보겠습니다.'
 export type PreviewTts = (text: string, apiKey: string, profile: VoiceProfile) => Promise<{ bytes: Buffer; contentType: string }>
+// beforeProvider: 캐시 미스일 때만, 공급자를 부르기 전에 실행된다(서버 견적·승인). 던지면 호출하지 않는다.
+export type PreviewContext = { beforeProvider?: () => Promise<void> }
 export type VoicePreviewResult = { playbackUrl: string; validUntil: number; cache: 'HIT' | 'MISS' }
 
 export const voicePreviewPath = (p: VoiceProfile) =>
@@ -37,36 +40,52 @@ export function createVoicePreview(deps: { blobs: JobBlobStore; tts: PreviewTts;
     if (!s) throw new PreviewError('PREVIEW_FAILED', 'playback URL unavailable')
     return s
   }
-  async function make(profile: VoiceProfile, path: string): Promise<VoicePreviewResult> {
+  async function make(profile: VoiceProfile, path: string, ctx: PreviewContext): Promise<VoicePreviewResult> {
     const marker = `${path.replace(/\.mp3$/, '')}.json`
-    if (await deps.blobs.getJson(marker).catch(() => null)) {
-      const s = await sign(path)
-      log(`[voice-preview] ${JSON.stringify({ cache: 'HIT', profile: profile.id, ttsCalls: 0 })}`)
-      return { playbackUrl: s.url, validUntil: s.validUntil, cache: 'HIT' }
-    }
+    // 캐시 조회·저장소 오류는 "없음"이 아니다: 확인할 수 없으면 유료 호출을 하지 않는다.
+    const readMarker = async () => { try { return await deps.blobs.getJson(marker) } catch { throw new PreviewError('PREVIEW_FAILED', '미리듣기 저장소를 확인하지 못해 호출하지 않았습니다. 잠시 후 다시 눌러주세요.') } }
+    const hit = async () => { const s = await sign(path); log(`[voice-preview] ${JSON.stringify({ cache: 'HIT', profile: profile.id, ttsCalls: 0 })}`); return { playbackUrl: s.url, validUntil: s.validUntil, cache: 'HIT' as const } }
+    if (await readMarker()) return hit()
+    // 이전에 음성 파일은 저장됐지만 표식만 없는 경우: 다시 만들지 않고 표식만 복구한다(무과금).
+    let existing: Buffer | null
+    try { existing = await deps.blobs.getBytes(path) } catch { throw new PreviewError('PREVIEW_FAILED', '미리듣기 저장소를 확인하지 못해 호출하지 않았습니다. 잠시 후 다시 눌러주세요.') }
+    if (existing?.length) { await deps.blobs.putJson(marker, { ref: path, profile: profile.id, bytes: existing.length, version: VOICE_PREVIEW_VERSION }); return hit() }
     const apiKey = deps.apiKey?.() ?? process.env.OPENAI_API_KEY ?? ''
     if (!apiKey) throw new PreviewError('PROVIDER_DOWN', 'OPENAI_API_KEY is not configured')
+    // 같은 미리듣기의 이전 호출 기록(공유 저장소의 원자적 claim): 진행 중이면 대기, 처리 여부가 불명확하면 자동으로 다시 호출하지 않는다.
+    const flightBase = `voice-preview-flight/${path.replace(/^voice-preview\//, '').replace(/\.mp3$/, '')}`
+    const prior = await readFlight(deps.blobs, flightBase)
+    if (prior.state === 'in_progress') throw new PreviewError('PREVIEW_IN_PROGRESS', '같은 미리듣기를 만들고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
+    if (prior.state !== 'free') throw new PreviewError('PREVIEW_STATE_UNKNOWN', '이전 미리듣기 요청의 처리 여부를 확인할 수 없습니다(이미 호출·과금되었을 수 있음). 자동으로 다시 호출하지 않았습니다.')
+    await ctx.beforeProvider?.() // 캐시 미스의 유료 호출: 서버 견적과 1회용 승인(없으면 여기서 멈춘다)
+    if (!(await claimFlight(deps.blobs, flightBase, prior.gen))) throw new PreviewError('PREVIEW_IN_PROGRESS', '같은 미리듣기를 만들고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
     let audio: { bytes: Buffer; contentType: string }
     try { audio = await deps.tts(VOICE_PREVIEW_TEXT, apiKey, profile) }
     catch (e: any) {
       const m = /failed (\d{3}): ([\s\S]*)$/.exec(String(e?.message || ''))
       const c = m ? classifyOpenAiError(Number(m[1]), m[2]) : null
       const code = c?.stop ? (/quota|credit_balance/.test(c.code) ? 'PROVIDER_BILLING' : 'PROVIDER_STOP') : 'PREVIEW_FAILED'
+      // 공급자가 거절(과금·인증 정지)한 것만 생성되지 않았음이 확실하다. 그 밖의 실패는 불명확해 자동으로 다시 호출하지 않는다.
+      await recordFlight(deps.blobs, flightBase, prior.gen, c?.stop ? { status: 'failed_safe', code } : { status: 'unknown', code })
       log(`[voice-preview] ${JSON.stringify({ cache: 'MISS', profile: profile.id, ttsCalls: 1, code: c?.code ?? code })}`)
-      throw new PreviewError(code, code === 'PREVIEW_FAILED' ? '미리듣기를 만들지 못했습니다. 잠시 후 다시 눌러주세요.' : '음성 서비스를 지금 사용할 수 없습니다.')
+      throw new PreviewError(code, code === 'PREVIEW_FAILED' ? '미리듣기를 만들지 못했습니다. 이미 과금되었을 수 있어 자동으로 다시 호출하지 않았습니다.' : '음성 서비스를 지금 사용할 수 없습니다.')
     }
-    if (!audio?.bytes?.length) throw new PreviewError('PREVIEW_FAILED', 'empty preview audio')
-    await deps.blobs.putBytes(path, audio.bytes, 'audio/mpeg')
-    await deps.blobs.putJson(marker, { ref: path, profile: profile.id, bytes: audio.bytes.length, version: VOICE_PREVIEW_VERSION })
+    if (!audio?.bytes?.length) { await recordFlight(deps.blobs, flightBase, prior.gen, { status: 'unknown', code: 'empty_audio' }); throw new PreviewError('PREVIEW_FAILED', '미리듣기 음성이 비어 있습니다. 이미 과금되었을 수 있어 자동으로 다시 호출하지 않았습니다.') }
+    // 저장에 실패하면 이미 과금된 상태다: 성공으로 돌려주지 않고 자동으로 다시 호출하지 않는다(음성 파일이 저장됐다면 다음 요청이 표식만 복구한다).
+    try {
+      await deps.blobs.putBytes(path, audio.bytes, 'audio/mpeg')
+      await deps.blobs.putJson(marker, { ref: path, profile: profile.id, bytes: audio.bytes.length, version: VOICE_PREVIEW_VERSION })
+    } catch { await recordFlight(deps.blobs, flightBase, prior.gen, { status: 'paid_unsaved' }); throw new PreviewError('PREVIEW_FAILED', '미리듣기를 저장하지 못했습니다. 이미 과금되었을 수 있어 자동으로 다시 호출하지 않았습니다.') }
+    await recordFlight(deps.blobs, flightBase, prior.gen, { status: 'done' })
     const s = await sign(path)
     log(`[voice-preview] ${JSON.stringify({ cache: 'MISS', profile: profile.id, ttsCalls: 1 })}`)
     return { playbackUrl: s.url, validUntil: s.validUntil, cache: 'MISS' }
   }
-  return async function preview(input: any): Promise<VoicePreviewResult> {
+  return async function preview(input: any, ctx: PreviewContext = {}): Promise<VoicePreviewResult> {
     const profile = previewVoice(input), path = voicePreviewPath(profile)
     const running = inflight.get(path)
     if (running) return running
-    const p = make(profile, path).finally(() => inflight.delete(path))
+    const p = make(profile, path, ctx).finally(() => inflight.delete(path))
     inflight.set(path, p)
     return p
   }
