@@ -19,7 +19,7 @@ import { createJobsHttp } from '../lib/jobs/http.js'
 import { createTestDb } from './testDb.js'
 import { createJobStore } from '../lib/jobs/store.js'
 
-const KEY = 'k'.repeat(32), BUDDHA = '부처님이 말한 인생의 마지막 공부'
+const KEY = 'voice-preview-workspace-key-0123456789abcdef', BUDDHA = '부처님이 말한 인생의 마지막 공부' // 유료 승인 경로의 워크스페이스 키는 추측하기 쉬운 반복 키가 아니어야 한다
 const http = (handler: any, body: any) => new Promise<{ status: number; json: any }>((resolve) => {
   let status = 0
   handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': KEY }, query: {}, body } as any,

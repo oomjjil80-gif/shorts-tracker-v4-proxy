@@ -8,6 +8,7 @@ import { createVercelJobBlobStore, sha256, type JobBlobStore } from '../jobs/blo
 import { readFlight, claimFlight, recordFlight, retryStore } from '../generative/paidFlight.js'
 import { CardnewsError, putImage, getImage, composeCards, storyboardForExistingCards, reviewCardsWithGpt, fixFlaggedWithClaude, getSaved, putSaved, listProjects, projectIdOf, depsFromEnv, cardnewsEstimate, type CardnewsDeps } from './cardnews.js'
 import { handleAiCall, AiCallError } from '../generative/paidAiCall.js'
+import { isStrongWorkspaceKey } from '../generative/internalCall.js'
 import { ApprovalError, requireApproval, recordSpend, reserveBatchSlot, validateBatchTerms, payloadHash } from '../generative/paidApproval.js'
 
 // api/story.ts routes taskType cardnews_* here (not a separate Vercel function). Same X-Sync-Key workspace rule as the Job API.
@@ -33,6 +34,7 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
       if (task === 'cardnews_image_put') return res.status(200).json({ ok: true, ...(await putImage(o.blobs, ws, input)) })
       if (task === 'cardnews_image_get') return res.status(200).json({ ok: true, ...(await getImage(o.blobs, ws, String(input.ref || ''))) })
       // 직접 호출 유료 AI(Claude·GPT·Gemini·구형 OpenAI)의 서버 승인 경로: 견적·1회용 승인·중복 실행 방지·결과 복구
+      if (task === 'cardnews_ai_call' && !isStrongWorkspaceKey(key)) throw new CardnewsError('UNAUTHORIZED', '유료 AI 호출에는 유효한 워크스페이스 키가 필요합니다.')
       if (task === 'cardnews_ai_call') return await handleAiCall({ blobs: o.blobs, ws, input, req, res })
       if (task === 'cardnews_zip_get') {
         const saved = await getSaved(o.blobs, ws, projectIdOf(input.projectId))

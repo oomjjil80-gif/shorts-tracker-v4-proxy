@@ -14,6 +14,7 @@ import { createPgDbFromEnv } from './db.js'
 import { createJobStore, type JobStore } from './store.js'
 import { createVercelJobBlobStore, putAddressed, type JobBlobStore } from './blobs.js'
 import { ApprovalError, requireApproval, recordSpend } from '../generative/paidApproval.js'
+import { isStrongWorkspaceKey } from '../generative/internalCall.js'
 import { recoverSleepDraft } from './sleepDraftRecovery.js'
 import { makeSavedOdysseyScript, offlineOdysseyFingerprint } from './sleepDraftImport.js'
 import { PIPELINES } from './pipeline.js'
@@ -69,7 +70,8 @@ function workspaceOf(req: Request): string {
 export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume', 'job_upload_text', 'job_sleep_draft', 'job_sleep_import', 'job_recover_asset_billing', 'job_blocks', 'job_block_approve', 'job_block_edit'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
-export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
+// 미리듣기 승인 요청 형식(v2): 승인 기능이 없는 옛 서버는 job_ 접두의 알 수 없는 작업을 공급자 호출 전에 400으로 거절한다.
+export const VOICE_PREVIEW_TASK = 'longform_voice_preview', VOICE_PREVIEW_V2_TASK = 'job_voice_preview'
 // Creative Settings for browser-made content (Story Writer): the server resolves AUTO (POST; no database, no paid call)
 export const CREATIVE_RESOLVE_TASK = 'creative_resolve'
 // Reported by the free creative_resolve answer. A browser must see ttsApproval >= 1 before it sends ANY paid tts_clips request: an older server
@@ -231,11 +233,12 @@ export function createJobsHttp(deps: JobsDeps) {
           return res.status(200).json({ ok: true, capabilities: SERVER_CAPABILITIES, creative: { schema: c.schema, content, family: input.family, format: input.format, requested: c.requested, resolved: c.resolved }, styleWrap: visualStyleWrap(imageStyleFor({ content, requested: c.requested, resolved: c.resolved })) })
         } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
       }
-      if (taskType === VOICE_PREVIEW_TASK) {
+      if (taskType === VOICE_PREVIEW_TASK || taskType === VOICE_PREVIEW_V2_TASK) {
         if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
         // 캐시 HIT는 무료. 캐시 미스의 유료 호출만 서버 견적 + 1회용 승인(같은 워크스페이스 인증·공유 저장소 claim)을 거친다.
         let approval: Awaited<ReturnType<typeof requireApproval>> | null = null
         try {
+          if (!isStrongWorkspaceKey(req.headers['x-sync-key'])) throw new JobError('UNAUTHORIZED', '유효한 워크스페이스 키가 필요합니다.')
           const r = await voicePreview(input, { beforeProvider: async () => { approval = await requireApproval(deps.blobs, { ws: workspaceId, input, quote: { task: VOICE_PREVIEW_TASK, usd: 0.02, calls: 1, note: '음성 미리듣기 1회 예상 비용(확정 단가 아님)' } }) } })
           return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache })
         } catch (e: any) {

@@ -11,7 +11,7 @@ import type { Request, Response } from 'express'
 import type { JobBlobStore } from '../jobs/blobs.js'
 import { sha256 } from '../jobs/blobs.js'
 import { readFlight, claimFlight, recordFlight, retryStore } from './paidFlight.js'
-import { requireApproval, recordSpend, payloadHash, validateBatchTerms, reserveBatchSlot } from './paidApproval.js'
+import { requireApproval, recordSpend, payloadHash, validateBatchTerms, reserveBatchSlot, ApprovalError } from './paidApproval.js'
 import { INTERNAL_AI_CALL } from './internalCall.js'
 import { withCallBudget } from './callBudget.js'
 import { isYasa, yasaLongformMinutes, yasaChapterCount } from '../story/yasaStoryDna.js'
@@ -58,6 +58,8 @@ export function planAiCall(target: string, body: any, withQc: boolean) {
 // 200이어도 필요한 결과가 없으면 성공이 아니다.
 export function isComplete(target: string, output: any): boolean {
   if (!output || typeof output !== 'object') return false
+  // 부분 수정이 대상 구간을 정할 수 없을 때의 정상 응답(공급자 호출 없음): 호출자가 수동 수정 안내를 보여 준다. 불완전한 응답이 아니다.
+  if ((target === 'gpt-script-qc' || target === 'claude-longform-revise') && output.ok === true && output.scope === 'manual_required') return true
   switch (target) {
     case 'image': return typeof output.image?.base64 === 'string' && output.image.base64.length > 0
     case 'gpt-image-qc': return typeof output.decision === 'string' && output.decision.length > 0
@@ -66,6 +68,42 @@ export function isComplete(target: string, output: any): boolean {
     case 'gpt-script-qc': return output.ok === true && (!!output.draft || !!output.qc || (typeof output.text === 'string' && output.text.length > 0))
     case 'story': return output.ok === true || !!output.draft || !!output.dna
     default: return false
+  }
+}
+
+// ── 대본 작업 일괄 승인: 한 번의 시작 승인이 프로젝트·허용 작업 유형·누적 견적 상한에 묶인다(서버가 create-once 클레임만으로 강제) ──
+export const SCRIPT_TARGETS = ['claude-story', 'claude-longform-revise', 'gpt-script-qc', 'story']
+const batchError = (m: string) => new ApprovalError('BATCH_LIMIT_EXCEEDED', m)
+export function validateScriptBatch(batch: any, target: string, projectId: unknown) {
+  if (!batch || typeof batch !== 'object' || batch.kind !== 'script' || typeof batch.id !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(batch.id) ||
+      typeof batch.projectId !== 'string' || batch.projectId.length < 1 || batch.projectId.length > 80 || typeof batch.limitUsd !== 'number' || !Number.isFinite(batch.limitUsd) || batch.limitUsd <= 0 || batch.limitUsd > 50)
+    throw batchError('대본 일괄 승인 정보(scriptBatch: id·kind·projectId·limitUsd)가 올바르지 않아 호출하지 않았습니다.')
+  if (!SCRIPT_TARGETS.includes(target)) throw batchError('이 일괄 승인은 대본 작업에만 쓸 수 있어 호출하지 않았습니다.')
+  if (projectId !== batch.projectId) throw batchError('일괄 승인한 프로젝트와 요청의 프로젝트가 달라 호출하지 않았습니다.')
+}
+async function reserveScriptSpend(blobs: JobBlobStore, o: { ws: string; batch: any; hash: string; usd: number }) {
+  if (!blobs.claim) throw new Error('approval store cannot claim atomically')
+  const base = `paid-batches/${o.ws}/${o.batch.id}`, terms = { kind: 'script', projectId: o.batch.projectId, limitUsd: o.batch.limitUsd }
+  if (!(await blobs.claim(`${base}/meta.json`, terms))) {
+    const meta: any = await blobs.getJson(`${base}/meta.json`)
+    if (!meta || meta.kind !== 'script' || meta.projectId !== terms.projectId || Math.abs(meta.limitUsd - terms.limitUsd) > 1e-9) throw batchError('이미 다른 프로젝트·상한으로 열린 일괄 승인이라 호출하지 않았습니다.')
+  }
+  // 호출마다 순서 번호 하나를 create-once로 차지한다. 같은 요청의 재시도는 같은 번호를 다시 쓴다. 누적 상한은 번호 순서대로 결정된다(경쟁 없음).
+  let mine = -1
+  for (let i = 0; i < 300 && mine < 0; i++) {
+    const path = `${base}/seq-${i}.json`
+    let e: any = await blobs.getJson(path)
+    if (!e) { if (await blobs.claim(path, { hash: o.hash, usd: o.usd })) { mine = i; break } e = await blobs.getJson(path) }
+    if (e?.hash === o.hash) mine = i
+  }
+  if (mine < 0) throw batchError('일괄 승인 호출 기록이 가득 차 호출하지 않았습니다.')
+  let running = 0
+  for (let j = 0; j <= mine; j++) {
+    const e: any = await blobs.getJson(`${base}/seq-${j}.json`)
+    if (!e) throw batchError('일괄 승인 기록을 확인하지 못해 호출하지 않았습니다.')
+    const fits = running + Number(e.usd) <= o.batch.limitUsd + 1e-9
+    if (j === mine) { if (!fits) throw batchError(`일괄 승인 상한(${o.batch.limitUsd}달러)을 넘어 호출하지 않았습니다.`); return { reservedUsd: running + Number(e.usd), limitUsd: o.batch.limitUsd } }
+    if (fits) running += Number(e.usd)
   }
 }
 
@@ -90,25 +128,46 @@ export async function handleAiCall(o: { blobs: JobBlobStore; ws: string; input: 
   if (target === 'image' && RESERVED_IMAGE_PROFILE.test(String(body?.input?.profile ?? '').trim())) throw new AiCallError('BAD_REQUEST', '이 이미지 프로필은 전용 승인 경로로만 만들 수 있습니다.')
   const qc = input.qc
   if (qc !== undefined && (target !== 'image' || !qc || typeof qc !== 'object' || typeof qc.prompt !== 'string')) throw new AiCallError('BAD_REQUEST', '이미지 검수(qc)는 이미지 호출에만 포함할 수 있습니다.')
-  const batch = input.batch, sceneId = input.sceneId
+  // 옛 앱의 썸네일(cutIndex -1: 숫자·문자열)은 일반 이미지 경로로 만들 수 없다(썸네일은 전용 승인 경로).
+  if (target === 'image' && Number(body?.input?.cutIndex) === -1) throw new AiCallError('BAD_REQUEST', '썸네일은 전용 승인 경로로만 만들 수 있습니다.')
+  const batch = input.batch, sceneId = input.sceneId, scriptBatch = input.scriptBatch
   if ((batch !== undefined || sceneId !== undefined) && target !== 'image') throw new AiCallError('BAD_REQUEST', '일괄 승인은 이미지 호출에만 쓸 수 있습니다.')
+  if (scriptBatch !== undefined && (batch !== undefined || target === 'image')) throw new AiCallError('BAD_REQUEST', '대본 일괄 승인은 이미지 호출에 쓸 수 없습니다.')
+  if (scriptBatch !== undefined) validateScriptBatch(scriptBatch, target, input.projectId)
   const plan = planAiCall(target, body, !!qc)
   const unitUsd = qc ? CUT_IMAGE_UNIT_USD : spec.usd
   // 일괄이면 승인 대상(프로젝트·장면 목록·총액)과 이 장면이 맞는지 승인 소비 전에 검증한다
-  if (batch !== undefined) validateBatchTerms(batch, String(sceneId), unitUsd)
+  if (batch !== undefined) {
+    validateBatchTerms(batch, String(sceneId), unitUsd)
+    // 승인된 장면과 실제 요청의 CUT이 같아야 한다: sceneId scene-NN ↔ cutIndex NN-1
+    const cut = body?.input?.cutIndex
+    if (!Number.isInteger(cut) || cut < 0 || Number(String(sceneId).slice(6)) !== cut + 1) throw batchError('승인한 장면 번호와 요청의 CUT 번호가 달라 호출하지 않았습니다.')
+  }
   // 같은 요청(대상·본문·검수·장면·재실행 식별자; 일괄 id는 제외)의 이전 호출 기록: 결과가 있으면 승인·과금 없이 복구, 불명확하면 자동 재호출 없음.
-  const hash = payloadHash({ target, body, qc: qc ?? null, sceneId: sceneId ?? null, regenerate: input.regenerate ?? null })
+  const hash = payloadHash({ target, body, qc: qc ?? null, sceneId: sceneId ?? null, projectId: input.projectId ?? null, regenerate: input.regenerate ?? null })
   const flightBase = `ai-flight/${ws}/${hash}`
+  // 복구 우선: 저장된 결과 파일이 있으면(복구 기록 저장이 중간에 실패했어도) 그것을 무과금으로 돌려준다.
+  const resultRef = `ai-results/${ws}/${hash}.json`
+  const stored = await blobs.getBytes(resultRef)
+  if (stored) {
+    let parsed: any = null
+    try { parsed = JSON.parse(stored.toString('utf8')) } catch { /* 읽을 수 없는 저장 결과는 성공으로 취급하지 않는다 */ }
+    if (parsed && isComplete(target, parsed)) return res.status(200).json({ ...parsed, recovered: true, budget: null })
+    throw new AiCallError('AI_STATE_UNKNOWN', '이전에 받은 결과 파일을 읽지 못했습니다. 과금이 중복되지 않도록 자동으로 다시 호출하지 않았습니다.')
+  }
   const prior = await readFlight(blobs, flightBase)
   if (prior.state === 'done') {
     const bytes = await blobs.getBytes(prior.result.ref)
-    if (bytes && sha256(bytes) === prior.result.sha256) return res.status(200).json({ ...JSON.parse(bytes.toString('utf8')), recovered: true, budget: null })
+    if (bytes && sha256(bytes) === prior.result.sha256) { try { const parsed = JSON.parse(bytes.toString('utf8')); if (isComplete(target, parsed)) return res.status(200).json({ ...parsed, recovered: true, budget: null }) } catch { /* 아래에서 명시적으로 중단한다 */ } }
     throw new AiCallError('AI_STATE_UNKNOWN', '이전에 받은 결과 파일을 읽지 못했습니다. 과금이 중복되지 않도록 자동으로 다시 호출하지 않았습니다.')
   }
   if (prior.state === 'in_progress') throw new AiCallError('AI_IN_PROGRESS', '같은 AI 요청을 다른 요청이 처리하고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
   if (prior.state === 'unknown') throw new AiCallError('AI_STATE_UNKNOWN', '같은 AI 요청의 처리 여부를 확인할 수 없습니다(이미 호출·과금되었을 수 있음). 자동으로 다시 호출하지 않았습니다.')
   const approval = await requireApproval(blobs, { ws, input, quote: { task: 'cardnews_ai_call', usd: plan.usd, calls: plan.calls, note: plan.note } })
   if (!(await claimFlight(blobs, flightBase, prior.gen))) throw new AiCallError('AI_IN_PROGRESS', '같은 AI 요청을 다른 요청이 처리하고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
+  // 대본 일괄이면 프로젝트·작업 유형·누적 견적 상한을 서버가 강제한다. 넘으면 공급자 호출 없음.
+  try { if (scriptBatch !== undefined) await reserveScriptSpend(blobs, { ws, batch: scriptBatch, hash, usd: plan.usd }) }
+  catch (e) { await recordFlight(blobs, flightBase, prior.gen, { status: 'failed_safe', reason: 'script_batch_limit' }); throw e }
   // 일괄 제작이면 승인된 총액·장수를 서버가 원자적으로 예약한다(다른 탭·재시도가 한도를 넘길 수 없다). 슬롯이 없으면 공급자 호출 없음.
   try { if (batch !== undefined) await reserveBatchSlot(blobs, { ws, batch, sceneId: String(sceneId), unitUsd }) }
   catch (e) { await recordFlight(blobs, flightBase, prior.gen, { status: 'failed_safe', reason: 'batch_limit' }); throw e }
@@ -130,13 +189,15 @@ export async function handleAiCall(o: { blobs: JobBlobStore; ws: string; input: 
   const budget = providerCalls > 0 ? await recordSpend(blobs, { ws, approval }) : null
   if (thrown) { await recordFlight(blobs, flightBase, prior.gen, providerCalls === 0 ? { status: 'failed_safe', reason: 'handler_threw_before_provider' } : { status: 'unknown', reason: 'handler_threw' }); throw thrown }
   if (status === 200 && isComplete(target, output)) {
-    const bytes = Buffer.from(JSON.stringify(output), 'utf8'), ref = `ai-results/${ws}/${hash}.json`
+    const bytes = Buffer.from(JSON.stringify(output), 'utf8'), ref = resultRef
     const saved = await retryStore(() => blobs.putBytes(ref, bytes, 'application/json'))
-    if (!saved) { // 결과를 서버에 남기지 못했다: 정상 성공으로 돌려주지 않고, 자동으로 다시 호출하지 않는다.
-      await recordFlight(blobs, flightBase, prior.gen, { status: 'paid_unsaved', sha256: sha256(bytes) })
+    // 결과 파일과 복구 기록이 모두 저장된 뒤에만 정상 성공을 돌려준다. 하나라도 실패하면 성공이 아니고 자동으로 다시 호출하지 않는다
+    // (결과 파일만 저장됐다면 같은 요청이 그 파일부터 복구한다).
+    const recorded = saved ? await recordFlight(blobs, flightBase, prior.gen, { status: 'done', ref, sha256: sha256(bytes) }) : false
+    if (!saved || !recorded) {
+      if (!saved) await recordFlight(blobs, flightBase, prior.gen, { status: 'paid_unsaved', sha256: sha256(bytes) })
       return res.status(502).json({ ok: false, error: { code: 'AI_RESULT_NOT_SAVED', message: 'AI 결과를 서버에 저장하지 못했습니다. 이미 과금되었을 수 있어 자동으로 다시 호출하지 않았습니다.' }, budget })
     }
-    await recordFlight(blobs, flightBase, prior.gen, { status: 'done', ref, sha256: sha256(bytes) })
     return res.status(200).json({ ...output, budget })
   }
   if (status === 200) { // 호출은 나갔는데 필요한 결과가 비어 있다: 성공이 아니고, 자동으로 다시 호출하지 않는다.

@@ -175,7 +175,7 @@ test('일반 CUT 일괄: 장면 목록·최대 장수·총액을 한 번 승인�
   await withProviders((url) => url.includes('openai') ? new Response('{"error":"qc down"}', { status: 500 }) : gemini(), async (calls) => {
     const { call } = aiHttp(), unit = 0.077
     const batch = { id: 'cutbatch12345', projectId: 'ep-1', scenes: ['scene-01', 'scene-02'], limitUsd: 0.154 }
-    const mk = (sceneId: string, prompt: string, b: any = batch) => ({ target: 'image', sceneId, batch: b, qc: { prompt, context: {} }, body: imageBody(prompt) })
+    const mk = (sceneId: string, prompt: string, b: any = batch) => ({ target: 'image', sceneId, batch: b, qc: { prompt, context: {} }, body: { input: { ...imageBody(prompt).input, cutIndex: Number(sceneId.slice(6)) - 1 } } })
     assert.equal((await call(mk('scene-01', 'First batch scene prompt for the cut image batch test, no text', { ...batch, limitUsd: 0.2 }))).status, 402, 'wrong total refused before any approval/provider call')
     assert.equal((await call(mk('scene-03', 'Third scene is not part of the approved batch scene list, no text', batch))).status, 402)
     assert.equal(calls.length, 0)
@@ -224,5 +224,91 @@ test('경제 V4/V5·벤치마크: 신규 유료 생성은 차단 유지, 기존 
     assert.equal(calls.length, 0)
     const get = await run(imageHandler, { method: 'GET', headers: {}, query: {}, body: {} }); assert.notEqual(get.status, 403, 'read-only GET is not gated')
     const health = await run(claudeRevise, { method: 'GET', headers: {}, query: {}, body: {} }); assert.notEqual(health.status, 403)
+  })
+})
+
+// ── D-2 잔여 결함 재현(실제 실행 경로, 공급자 호출 횟수 정확히 단언) ──
+const aiCallWith = (blobs: any, key = KEY) => { const handler = createCardnewsHttp({ blobs }); return (body: any) => run(handler, { method: 'POST', headers: { 'x-sync-key': key }, body: { taskType: 'cardnews_ai_call', ...body } }) }
+
+test('정상 응답 manual_required: 공급자 호출 없이 정상 계약 그대로 돌려주고(수동 수정 안내), 불완전 응답으로 오인하지 않는다', async () => {
+  await withProviders(() => { throw new Error('provider must not be called') }, async (calls) => {
+    const call = aiCallWith(createMemoryBlobStore())
+    const unmappable = { draft: { title: 't', chapters: [] }, qc: { status: 'revision_required', issues: [{ severity: 'required', location: 'overall', problem: 'cannot be mapped to a segment' }] } }
+    for (const [target, body] of [['gpt-script-qc', { mode: 'revise_partial', input: unmappable }], ['claude-longform-revise', { input: { ...unmappable, partial: true } }]] as const) {
+      const r = await approveAi(call, { target, body })
+      assert.equal(r.status, 200, target); assert.equal(r.data.scope, 'manual_required', target); assert.equal(r.data.ok, true); assert.ok(r.data.reason)
+      assert.equal(isComplete(target, { ok: true, scope: 'manual_required', reason: 'x' }), true)
+    }
+    assert.equal(calls.length, 0, 'no provider call for a manual_required answer')
+    const again = await call({ target: 'gpt-script-qc', body: { mode: 'revise_partial', input: unmappable } }); assert.equal(again.status, 200); assert.equal(again.data.recovered, true); assert.equal(again.data.scope, 'manual_required')
+  })
+})
+
+test('서버 저장: 결과 파일과 복구 기록이 모두 저장돼야 성공 — 기록 저장만 실패해도 정상 성공 금지, 같은 요청은 결과 파일부터 복구(추가 호출 0)', async () => {
+  const blobs: any = createMemoryBlobStore(), putJson = blobs.putJson.bind(blobs)
+  let failRecord = true
+  blobs.putJson = async (path: string, ...rest: any[]) => { if (failRecord && /ai-flight\/.*\.result\.json$/.test(String(path))) throw new Error('record store down'); return (putJson as any)(path, ...rest) }
+  await withProviders(() => gemini(), async (calls) => {
+    const call = aiCallWith(blobs), req = { target: 'image', body: imageBody('A prompt whose recovery record cannot be written the first time, no text') }
+    const first = await approveAi(call, req); assert.equal(first.status, 502); assert.equal(first.data.error.code, 'AI_RESULT_NOT_SAVED'); assert.equal(first.data.image, undefined); assert.equal(calls.length, 1)
+    failRecord = false
+    const again = await call(req); assert.equal(again.status, 200); assert.equal(again.data.recovered, true); assert.ok(again.data.image.base64); assert.equal(calls.length, 1, 'recovered from the stored result file: no second provider call')
+  })
+  // an unreadable stored result is never a success
+  const bad: any = createMemoryBlobStore()
+  await withProviders(() => gemini(), async (calls) => {
+    const call = aiCallWith(bad), req = { target: 'image', body: imageBody('A prompt whose stored result file gets corrupted afterwards, no text inside') }
+    assert.equal((await approveAi(call, req)).status, 200); assert.equal(calls.length, 1)
+    for (const k of [...bad.binaries.keys()]) if (String(k).startsWith('ai-results/')) bad.binaries.set(k, Buffer.from('{not json'))
+    const r = await call(req); assert.equal(r.status, 409); assert.equal(r.data.error.code, 'AI_STATE_UNKNOWN'); assert.equal(calls.length, 1)
+  })
+})
+
+test('대본 일괄 승인: 프로젝트·작업 유형·누적 견적 상한을 서버가 강제(다른 프로젝트·이미지 작업·상한 초과는 공급자 호출 0회)', async () => {
+  await withProviders(() => new Response('{"error":{"message":"overloaded"}}', { status: 529 }), async (calls) => {
+    const call = aiCallWith(createMemoryBlobStore())
+    const batch = { id: 'scriptbatch-0001', kind: 'script', projectId: 'ep-1', limitUsd: 0.5 }
+    const story = (title: string, extra: any = {}) => ({ target: 'claude-story', projectId: 'ep-1', scriptBatch: batch, body: { input: { title, targetMinutes: 10, chapterCount: 5 } }, ...extra })
+    const a = await approveAi(call, story('first')); assert.ok(a.status >= 400 && a.status !== 402, 'reserved 0.30 of 0.50 and the (mock) provider was called once'); assert.equal(calls.length, 1)
+    const over = await approveAi(call, story('second')); assert.equal(over.status, 402); assert.equal(over.data.error.code, 'BATCH_LIMIT_EXCEEDED'); assert.equal(calls.length, 1, 'cumulative cap exceeded: no provider call')
+    const cheap = await approveAi(call, { target: 'gpt-script-qc', projectId: 'ep-1', scriptBatch: batch, body: { mode: 'revise_partial', input: { draft: { chapters: [] }, qc: { status: 'revision_required', issues: [{ severity: 'required', location: 'overall', problem: 'x' }] } } } })
+    assert.equal(cheap.status, 200, 'a 0.05 job still fits in the remaining 0.20'); assert.equal(calls.length, 1)
+    // another project can neither reuse this batch id nor pass its own project id through it
+    assert.equal((await call(story('third', { projectId: 'ep-2' }))).status, 402); assert.equal((await call(story('fourth', { scriptBatch: { ...batch, projectId: 'ep-2' }, projectId: 'ep-2' }))).status, 402)
+    // an image job can never use a script batch; a script job can never use an image batch
+    assert.equal((await call({ target: 'image', projectId: 'ep-1', scriptBatch: batch, body: imageBody() })).status, 400)
+    assert.equal((await call({ target: 'claude-story', batch: { id: 'cutbatch12345', projectId: 'ep-1', scenes: ['scene-01'], limitUsd: 0.077 }, sceneId: 'scene-01', body: { input: {} } })).status, 400)
+    assert.equal((await call(story('fifth', { scriptBatch: { ...batch, limitUsd: 0 } }))).status, 402)
+    assert.equal(calls.length, 1)
+  })
+})
+
+test('이미지 승인 범위: cutIndex -1(숫자·문자열) 차단, 승인된 sceneId와 실제 CUT 번호·요청 불일치는 공급자 호출 0회', async () => {
+  await withProviders(() => gemini(), async (calls) => {
+    const call = aiCallWith(createMemoryBlobStore())
+    for (const ci of [-1, '-1', -1.0]) assert.equal((await call({ target: 'image', body: { input: { ...imageBody().input, cutIndex: ci } } })).status, 400, String(ci))
+    const batch = { id: 'cutbatch67890', projectId: 'ep-3', scenes: ['scene-01', 'scene-02'], limitUsd: 0.154 }
+    const mk = (sceneId: string, cutIndex: any, prompt: string) => ({ target: 'image', sceneId, batch, qc: { prompt, context: {} }, body: { input: { ...imageBody(prompt).input, cutIndex } } })
+    for (const [sceneId, cut] of [['scene-02', 0], ['scene-01', 1], ['scene-01', '0'], ['scene-01', 0.5], ['scene-01', -1]] as const) { const r = await call(mk(sceneId, cut, 'Prompt for the scene/cut consistency check, no text inside')); assert.ok(r.status === 402 || r.status === 400, `${sceneId}/${cut} → ${r.status}`); assert.ok(r.data.error.code === 'BATCH_LIMIT_EXCEEDED' || r.data.error.code === 'BAD_REQUEST') }
+    assert.equal(calls.length, 0)
+    assert.equal((await approveAi(call, mk('scene-02', 1, 'Matching scene 2 and CUT index 1 passes the approved scope, no text'))).status, 200); assert.equal(calls.filter((u) => !u.includes('openai')).length, 1)
+  })
+})
+
+test('워크스페이스 키: 길이만 맞춘 반복 키는 유료 승인 경로(cardnews_ai_call·미리듣기 v1/v2)에서 거절, 새 요청 형식은 옛 서버가 공급자 호출 전에 거절하는 job_ 작업', async () => {
+  await withProviders(() => { throw new Error('provider must not be called') }, async (calls) => {
+    const weak = 'a'.repeat(40)
+    assert.equal((await aiCallWith(createMemoryBlobStore(), weak)({ target: 'image', body: imageBody() })).status, 401)
+    const blobs: any = createMemoryBlobStore(); let n = 0
+    const h = createJobsHttp({ getStore: async () => { throw new Error('no db') }, blobs, voicePreview: createVoicePreview({ blobs, tts: async () => { n++; return { bytes: Buffer.from('ID3x'), contentType: 'audio/mpeg' } }, apiKey: () => 'k', log: () => {} }) })
+    for (const taskType of ['longform_voice_preview', 'job_voice_preview']) {
+      assert.equal((await run(h, { method: 'POST', headers: { 'x-sync-key': weak }, query: {}, body: { taskType, voiceProfile: 'female-middle', voiceTone: 'calm', voiceSpeed: 1 } })).status, 401, taskType)
+    }
+    assert.equal(n, 0); assert.equal(calls.length, 0)
+    const strong = 'strong-workspace-key-0123456789abcdef'
+    const q = await run(h, { method: 'POST', headers: { 'x-sync-key': strong }, query: {}, body: { taskType: 'job_voice_preview', voiceProfile: 'female-middle', voiceTone: 'calm', voiceSpeed: 1 } })
+    assert.equal(q.status, 402); assert.equal(n, 0)
+    const ok = await run(h, { method: 'POST', headers: { 'x-sync-key': strong }, query: {}, body: { taskType: 'job_voice_preview', voiceProfile: 'female-middle', voiceTone: 'calm', voiceSpeed: 1, approvalId: q.data.approval.approvalId, costApproved: true, approvedUsd: q.data.estimate.usd } })
+    assert.equal(ok.status, 200); assert.equal(n, 1)
   })
 })
