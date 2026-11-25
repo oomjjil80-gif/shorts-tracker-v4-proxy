@@ -7,12 +7,13 @@ import type { Request, Response } from 'express'
 import { createVercelJobBlobStore, sha256, type JobBlobStore } from '../jobs/blobs.js'
 import { readFlight, claimFlight, recordFlight, retryStore } from '../generative/paidFlight.js'
 import { CardnewsError, putImage, getImage, composeCards, storyboardForExistingCards, reviewCardsWithGpt, fixFlaggedWithClaude, getSaved, putSaved, listProjects, projectIdOf, depsFromEnv, cardnewsEstimate, type CardnewsDeps } from './cardnews.js'
+import { handleAiCall, AiCallError } from '../generative/paidAiCall.js'
 import { ApprovalError, requireApproval, recordSpend, reserveBatchSlot, validateBatchTerms, payloadHash } from '../generative/paidApproval.js'
 
 // api/story.ts routes taskType cardnews_* here (not a separate Vercel function). Same X-Sync-Key workspace rule as the Job API.
-export const CARDNEWS_TASKS = ['cardnews_get', 'cardnews_list', 'cardnews_save', 'cardnews_compose', 'cardnews_storyboard', 'cardnews_review', 'cardnews_fix', 'cardnews_image_put', 'cardnews_image_get', 'cardnews_image_review', 'cardnews_zip_get', 'cardnews_image_generate', 'cardnews_image_direct', 'cardnews_master_image_generate'] as const
+export const CARDNEWS_TASKS = ['cardnews_get', 'cardnews_list', 'cardnews_save', 'cardnews_compose', 'cardnews_storyboard', 'cardnews_review', 'cardnews_fix', 'cardnews_image_put', 'cardnews_image_get', 'cardnews_image_review', 'cardnews_zip_get', 'cardnews_image_generate', 'cardnews_image_direct', 'cardnews_master_image_generate', 'cardnews_ai_call'] as const
 export const isCardnewsTask = (t: unknown) => typeof t === 'string' && (CARDNEWS_TASKS as readonly string[]).includes(t)
-const STATUS: Record<string, number> = { BAD_REQUEST: 400, UNAUTHORIZED: 401, COST_APPROVAL_REQUIRED: 402, REV_CONFLICT: 409, APPROVAL_USED: 409, APPROVAL_MISMATCH: 402, APPROVAL_EXPIRED: 402, BATCH_LIMIT_EXCEEDED: 402, IMAGE_IN_PROGRESS: 409, IMAGE_STATE_UNKNOWN: 409, NOT_FOUND: 404, STORE_FAILED: 502, STATE_TOO_LARGE: 413, PROVIDER_DOWN: 503, REVIEW_INVALID: 502, FIX_INCOMPLETE: 502, METHOD_NOT_ALLOWED: 405 }
+const STATUS: Record<string, number> = { AI_IN_PROGRESS: 409, AI_STATE_UNKNOWN: 409, BAD_REQUEST: 400, UNAUTHORIZED: 401, COST_APPROVAL_REQUIRED: 402, REV_CONFLICT: 409, APPROVAL_USED: 409, APPROVAL_MISMATCH: 402, APPROVAL_EXPIRED: 402, BATCH_LIMIT_EXCEEDED: 402, IMAGE_IN_PROGRESS: 409, IMAGE_STATE_UNKNOWN: 409, NOT_FOUND: 404, STORE_FAILED: 502, STATE_TOO_LARGE: 413, PROVIDER_DOWN: 503, REVIEW_INVALID: 502, FIX_INCOMPLETE: 502, METHOD_NOT_ALLOWED: 405 }
 
 export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => CardnewsDeps }) {
   return async (req: Request, res: Response) => {
@@ -31,6 +32,8 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
       if (task === 'cardnews_save') return res.status(200).json({ ok: true, saved: await putSaved(o.blobs, ws, input) })
       if (task === 'cardnews_image_put') return res.status(200).json({ ok: true, ...(await putImage(o.blobs, ws, input)) })
       if (task === 'cardnews_image_get') return res.status(200).json({ ok: true, ...(await getImage(o.blobs, ws, String(input.ref || ''))) })
+      // 직접 호출 유료 AI(Claude·GPT·Gemini·구형 OpenAI)의 서버 승인 경로: 견적·1회용 승인·중복 실행 방지·결과 복구
+      if (task === 'cardnews_ai_call') return await handleAiCall({ blobs: o.blobs, ws, input, req, res })
       if (task === 'cardnews_zip_get') {
         const saved = await getSaved(o.blobs, ws, projectIdOf(input.projectId))
         if (!saved) throw new CardnewsError('NOT_FOUND', '저장된 카드뉴스가 없습니다.')
@@ -140,6 +143,7 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
       return res.status(200).json({ ok: true, ...r, budget })
     } catch (e: any) {
       if (e instanceof ApprovalError) return res.status(STATUS[e.code] ?? 402).json({ ok: false, error: { code: e.code, message: e.message }, ...e.extra })
+      if (e instanceof AiCallError) return res.status(STATUS[e.code] ?? 400).json({ ok: false, error: { code: e.code, message: e.message } })
       if (e instanceof CardnewsError) return res.status(STATUS[e.code] ?? 400).json({ ok: false, error: { code: e.code, message: e.message }, ...e.extra })
       console.error('[cardnews]', e?.message || e)
       // provider/billing failures: the browser keeps the copy-and-paste path

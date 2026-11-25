@@ -262,8 +262,8 @@ test('썸네일: 서버 승인 후에만 생성, 같은 요청은 무과금 복�
     const direct = async (input: any) => { let st = 0; await imageHandler({ method: 'POST', headers: {}, body: { input } } as any, { setHeader() {}, status(s: number) { st = s; return this }, json() { return this } } as any); return st }
     for (const ci of [-1, '-1']) assert.equal(await direct({ prompt: 'old app thumbnail request', aspectRatio: '16:9', imageSize: '1K', cutIndex: ci, references: [], profile: '' }), 403)
     assert.equal(sent.length, 3, 'old-app thumbnail: no provider call')
-    assert.notEqual(await direct({ prompt: 'ordinary cut image request', aspectRatio: '9:16', imageSize: '1K', cutIndex: 0, references: [], profile: '' }), 403)
-    assert.equal(sent.length, 4, 'ordinary cut images still reach the provider')
+    assert.equal(await direct({ prompt: 'ordinary cut image request', aspectRatio: '9:16', imageSize: '1K', cutIndex: 0, references: [], profile: '' }), 403, 'ordinary profile too: only the server approval path reaches the provider')
+    assert.equal(sent.length, 3)
   } finally {
     globalThis.fetch = oldFetch
     if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey

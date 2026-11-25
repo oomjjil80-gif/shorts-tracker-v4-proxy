@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { isInternalAiCall, aiDirectBlocked } from '../lib/generative/internalCall.js'
 import { Readable } from 'node:stream'
 import { runVisualDirector } from '../lib/visualDirectorCore.js'
 import { get, presign as presignObject, storageBackend } from '../lib/objectStorage.js'
@@ -319,6 +320,8 @@ export default async function handler(req: Request, res: Response) {
     res.setHeader('Cache-Control', 'private, no-store')
     try { return res.status(200).json(await collectSource(req.body)) } catch(e:any) { return res.status(e?.status || (e?.code==='COLLECTOR_NOT_CONFIGURED'?503:400)).json({ok:false,error:{code:e?.code||'SOURCE_COLLECT_FAILED',message:e?.message||String(e)}}) }
   }
+  // 이 아래는 모두 OpenAI를 호출하는 구형 스토리 작업이다: 서버 비용 승인 경로(cardnews_ai_call) 밖의 직접 호출은 공급자 전에 거부한다.
+  if (!isInternalAiCall(req)) return res.status(403).json(aiDirectBlocked()) // 서버 비용 승인 경로(cardnews_ai_call)로만 호출한다
   if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: { message: 'OPENAI_API_KEY is not configured' } })
 
   const body = req.body || {}

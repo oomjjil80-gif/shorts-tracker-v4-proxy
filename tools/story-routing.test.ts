@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { INTERNAL_AI_CALL } from '../lib/generative/internalCall.js'
 import assert from 'node:assert/strict'
 import handler from '../api/story.js'
 
@@ -6,10 +7,10 @@ import handler from '../api/story.js'
 // These tests pin the router: job_* goes to lib/jobs/http, every pre-existing taskType still goes where it did.
 
 const KEY = 'k'.repeat(32)
-async function call(method: string, o: { body?: any; query?: any; key?: string | null; origin?: string } = {}) {
+async function call(method: string, o: { body?: any; query?: any; key?: string | null; origin?: string; internal?: boolean } = {}) {
   let status = 0, json: any = null
   const headers: Record<string, string> = {}
-  const req: any = { method, headers: { ...(o.origin ? { origin: o.origin } : {}), ...(o.key === null ? {} : { 'x-sync-key': o.key ?? KEY }) }, query: o.query || {}, body: o.body }
+  const req: any = { method, headers: { ...(o.origin ? { origin: o.origin } : {}), ...(o.key === null ? {} : { 'x-sync-key': o.key ?? KEY }) }, query: o.query || {}, body: o.body, ...(o.internal ? { [INTERNAL_AI_CALL]: true } : {}) }
   const res: any = { setHeader: (k: string, v: string) => { headers[k] = v }, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this }, send(b: any) { json = b; return this }, write() { return true } }
   await handler(req, res)
   return { status, json, headers }
@@ -60,7 +61,9 @@ test('regression: non-job task types keep falling through (jobs_x / story are no
   const saved = process.env.OPENAI_API_KEY; delete process.env.OPENAI_API_KEY
   try {
     for (const taskType of ['jobs_x', 'story', 'longform_chapter', 'visual_director', undefined]) {
-      const r = await call('POST', { body: { taskType } })
+      const direct = await call('POST', { body: { taskType } })
+      assert.equal(direct.status, 403, `${String(taskType)}: a direct call never reaches the provider`); assert.equal(direct.json.error.code, 'AI_APPROVAL_REQUIRED')
+      const r = await call('POST', { body: { taskType }, internal: true }) // the server approval path (cardnews_ai_call) keeps the old routing
       assert.equal(r.status, 503, String(taskType)); assert.match(r.json.error.message, /OPENAI_API_KEY/)
     }
     assert.equal((await call('PUT', { body: {} })).status, 405)

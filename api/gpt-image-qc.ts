@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { isInternalAiCall, aiDirectBlocked } from '../lib/generative/internalCall.js'
 
 function setCors(_req: Request, res: Response) {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -119,6 +120,7 @@ export default async function handler(req: Request, res: Response) {
   }
 
   if (req.method !== 'POST') return res.status(405).json({ error: { message: 'Method not allowed' } })
+  if (!isInternalAiCall(req)) return res.status(403).json(aiDirectBlocked()) // 서버 비용 승인 경로(cardnews_ai_call)로만 호출한다
   if (!process.env.OPENAI_API_KEY) {
     return res.status(503).json({ error: { message: 'OPENAI_API_KEY is not configured' } })
   }
