@@ -74,7 +74,7 @@ export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
 export const CREATIVE_RESOLVE_TASK = 'creative_resolve'
 // Reported by the free creative_resolve answer. A browser must see ttsApproval >= 1 before it sends ANY paid tts_clips request: an older server
 // would run the request at once (no quote step), so the absence of this marker means "do not send".
-export const SERVER_CAPABILITIES = Object.freeze({ ttsApproval: 1, imageFlight: 1, batchScenes: 1 })
+export const SERVER_CAPABILITIES = Object.freeze({ ttsApproval: 1, imageFlight: 1, batchScenes: 1, voicePreviewApproval: 1 })
 // Tracker TTS for browser-made content: voice clips in small batches, then one levelled narration (POST; no database)
 export const TTS_CLIPS_TASK = 'tts_clips', TTS_ASSEMBLE_TASK = 'tts_assemble', TTS_AUDIO_TASK = 'tts_audio'
 // 제작 6단계: 제목·썸네일 약속 잠금 / 최종본 약속 확인 (POST; no database, no paid call)
