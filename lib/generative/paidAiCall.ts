@@ -44,7 +44,7 @@ export async function handleAiCall(o: { blobs: JobBlobStore; ws: string; input: 
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new AiCallError('BAD_REQUEST', '요청 본문(body)이 필요합니다.')
   if (JSON.stringify(body).length > MAX_BODY_CHARS) throw new AiCallError('BAD_REQUEST', '요청이 너무 큽니다.')
   // 구형 스토리 작업만 허용(그 밖의 taskType은 이 경로로 다른 라우터에 닿지 않게 한다)
-  if (target === 'story' && body.taskType !== undefined && !['yasa_story_plan', 'longform_chapter', 'visual_director'].includes(String(body.taskType))) throw new AiCallError('BAD_REQUEST', '이 경로로 호출할 수 없는 작업입니다.')
+  if (target === 'story' && body.taskType !== undefined && !['yasa_story_plan', 'longform_chapter', 'visual_director', 'story_draft', 'rewrite'].includes(String(body.taskType))) throw new AiCallError('BAD_REQUEST', '이 경로로 호출할 수 없는 작업입니다.')
   const qc = input.qc
   if (qc !== undefined && (target !== 'image' || !qc || typeof qc !== 'object' || typeof qc.prompt !== 'string')) throw new AiCallError('BAD_REQUEST', '이미지 검수(qc)는 이미지 호출에만 포함할 수 있습니다.')
   const usd = Math.round((spec.usd + (qc ? QC_USD : 0)) * 1e6) / 1e6
