@@ -225,3 +225,47 @@ test('MASTER 이미지: 응답 유실 후 재시도는 결과 복구(무과금),
     assert.equal([a, b].find((r) => r.status === 409)!.data.error.code, 'IMAGE_IN_PROGRESS')
   } finally { globalThis.fetch = oldFetch; if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey }
 })
+
+// ── C-4: 썸네일(쇼츠 9:16 · 롱폼 16:9)도 같은 서버 승인·1회 실행 경로. 직접 호출·잘못된 규격·승인 없는 호출은 공급자 호출 0회 (모의) ──
+test('썸네일: 서버 승인 후에만 생성, 같은 요청은 무과금 복구, 새 재생성은 새 승인, 직접 호출·규격 불일치는 차단', async () => {
+  const handler = createCardnewsHttp({ blobs: createMemoryBlobStore() })
+  const call = async (body: any) => {
+    let status = 0, data: any
+    await handler({ method: 'POST', headers: { 'x-sync-key': 'thumbnail-test-workspace-key-12345' }, body } as any,
+      { setHeader() {}, status(s: number) { status = s; return this }, json(v: any) { data = v; return this } } as any)
+    return { status, data }
+  }
+  const mk = (profile: string, aspectRatio: string, extra: any = {}) => ({ taskType: 'cardnews_master_image_generate', sceneId: 'thumbnail', ...extra,
+    imageInput: { profile, aspectRatio, prompt: 'Thumbnail artwork for the approved story, no text inside the picture at all', references: [] } })
+  const sent: any[] = []
+  const oldFetch = globalThis.fetch, oldKey = process.env.GEMINI_API_KEY
+  process.env.GEMINI_API_KEY = 'mock-free-test-key'
+  globalThis.fetch = (async (_u: any, init: any) => { sent.push(JSON.parse(init.body)); return new Response(JSON.stringify({ output_image: { data: Buffer.from('fake-thumb').toString('base64'), mime_type: 'image/png' } })) }) as typeof fetch
+  const approve = async (body: any) => { const q = await call(body); assert.equal(q.status, 402, JSON.stringify(q.data)); assert.match(q.data.estimate.note, /썸네일/); return call({ ...body, approvalId: q.data.approval.approvalId, costApproved: true, approvedUsd: q.data.estimate.usd }) }
+  try {
+    const shorts = mk('thumbnail-shorts', '9:16'), longform = mk('thumbnail-longform', '16:9')
+    for (const bad of [mk('thumbnail-shorts', '16:9'), mk('thumbnail-longform', '9:16'), mk('thumbnail-shorts', '9:16', { sceneId: 'scene-01' }), mk('master-shorts', '9:16', { sceneId: 'thumbnail' })])
+      assert.equal((await call(bad)).status, 400)
+    assert.equal(sent.length, 0, 'no provider call for a wrong format or id')
+    assert.equal((await call(shorts)).status, 402); assert.equal(sent.length, 0, 'the quote step never calls the provider')
+    const made = await approve(shorts); assert.equal(made.status, 200); assert.equal(sent.length, 1); assert.equal(sent[0].response_format[0].aspect_ratio, '9:16')
+    const replay = await call({ ...shorts, approvalId: 'unused', costApproved: true, approvedUsd: 0.067 }); assert.equal(replay.data.recovered, true); assert.equal(sent.length, 1, 'same request: stored result, no new charge')
+    assert.equal((await approve(mk('thumbnail-shorts', '9:16', { regenerate: 'r1' }))).status, 200); assert.equal(sent.length, 2, 'deliberate regeneration = a new approved request')
+    assert.equal((await approve(longform)).status, 200); assert.equal(sent[2].response_format[0].aspect_ratio, '16:9')
+    for (const profile of ['thumbnail-shorts', 'thumbnail-longform']) {
+      let direct = 0
+      await imageHandler({ method: 'POST', headers: {}, body: { input: { profile, aspectRatio: '9:16', prompt: 'direct thumbnail call must be refused before the provider' } } } as any, { setHeader() {}, status(s: number) { direct = s; return this }, json() { return this } } as any)
+      assert.equal(direct, 403, `${profile} cannot bypass approval`)
+    }
+    assert.equal(sent.length, 3)
+    // 이전 버전 앱의 썸네일(일반 프로필 + cutIndex -1)은 승인 없이 Gemini에 가지 못한다. 일반 컷 이미지(cutIndex 0 이상)는 그대로 동작한다.
+    const direct = async (input: any) => { let st = 0; await imageHandler({ method: 'POST', headers: {}, body: { input } } as any, { setHeader() {}, status(s: number) { st = s; return this }, json() { return this } } as any); return st }
+    for (const ci of [-1, '-1']) assert.equal(await direct({ prompt: 'old app thumbnail request', aspectRatio: '16:9', imageSize: '1K', cutIndex: ci, references: [], profile: '' }), 403)
+    assert.equal(sent.length, 3, 'old-app thumbnail: no provider call')
+    assert.notEqual(await direct({ prompt: 'ordinary cut image request', aspectRatio: '9:16', imageSize: '1K', cutIndex: 0, references: [], profile: '' }), 403)
+    assert.equal(sent.length, 4, 'ordinary cut images still reach the provider')
+  } finally {
+    globalThis.fetch = oldFetch
+    if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey
+  }
+})
