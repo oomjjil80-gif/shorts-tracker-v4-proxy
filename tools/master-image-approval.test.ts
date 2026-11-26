@@ -269,3 +269,35 @@ test('썸네일: 서버 승인 후에만 생성, 같은 요청은 무과금 복�
     if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey
   }
 })
+
+// 스토리보드 시트(3x4 한 장): 같은 MASTER 승인·1회 실행·복구 경로, 장면 ID 'storyboard'만 추가로 허용한다.
+test('스토리보드 시트: 장면 ID storyboard는 MASTER 프로필에서만, 견적→1회용 승인→1회 호출→같은 요청 복구, 일괄·썸네일과 섞이지 않는다', async () => {
+  const handler = createCardnewsHttp({ blobs: createMemoryBlobStore() })
+  const key = 'master-image-test-workspace-key-12345'
+  const call = async (body: any) => {
+    let status = 0, data: any
+    const req = Object.assign(Object.create({ get headers() { return { 'x-sync-key': key, origin: 'https://shorts-production-tracker.vercel.app' } } }), { method: 'POST', body })
+    await handler(req as any, { setHeader() {}, status(s: number) { status = s; return this }, json(v: any) { data = v; return this } } as any)
+    return { status, data }
+  }
+  const sheet = { taskType: 'cardnews_master_image_generate', sceneId: 'storyboard',
+    imageInput: { profile: 'master-shorts', aspectRatio: '9:16', prompt: 'A 3 columns by 4 rows storyboard contact sheet of twelve numbered panels, one continuous art style', references: [] } }
+  let calls = 0
+  const oldFetch = globalThis.fetch, oldKey = process.env.GEMINI_API_KEY
+  process.env.GEMINI_API_KEY = 'mock-free-test-key'
+  globalThis.fetch = (async () => { calls++; return new Response(JSON.stringify({ output_image: { data: Buffer.from('fake-sheet').toString('base64'), mime_type: 'image/png' } })) }) as typeof fetch
+  try {
+    for (const bad of [
+      { ...sheet, sceneId: 'Storyboard' }, { ...sheet, sceneId: 'storyboard-2' },
+      { ...sheet, imageInput: { ...sheet.imageInput, profile: 'thumbnail-shorts' } },           // 썸네일 프로필은 'thumbnail'만
+      { ...sheet, imageInput: { ...sheet.imageInput, profile: 'cardnews', aspectRatio: '4:5' } },
+      { ...sheet, batch: { id: 'batch-sheet0001', projectId: 'ep-1', scenes: ['storyboard'], limitUsd: 0.067 } }, // 일괄 제작에는 쓸 수 없다
+    ]) assert.equal((await call(bad)).status, 400)
+    assert.equal(calls, 0, 'rejected requests never reach the provider')
+    const quote = await call(sheet); assert.equal(quote.status, 402); assert.match(quote.data.estimate.note, /스토리보드 시트/); assert.equal(calls, 0)
+    const approved = { ...sheet, approvalId: quote.data.approval.approvalId, costApproved: true, approvedUsd: quote.data.estimate.usd }
+    const ok = await call(approved); assert.equal(ok.status, 200); assert.equal(calls, 1)
+    const replay = await call(approved); assert.equal(replay.status, 200); assert.equal(replay.data.recovered, true); assert.equal(calls, 1)
+    const again = await call({ ...sheet, regenerate: 'r1' }); assert.equal(again.status, 402, '다시 제작은 새 요청: 새 승인이 필요하다'); assert.equal(calls, 1)
+  } finally { globalThis.fetch = oldFetch; if (oldKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldKey }
+})
