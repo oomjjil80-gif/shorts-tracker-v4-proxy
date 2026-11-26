@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { put, putIfAbsent, get, head, list, storageBackend } from '../../lib/objectStorage.js'
+import { put, putIfAbsent, putIfMatch, get, head, list, storageBackend } from '../../lib/objectStorage.js'
 import { createHash, randomUUID } from 'node:crypto'
 
 function setCors(req: Request, res: Response) {
@@ -74,13 +74,25 @@ async function episodeBaseConflict(req: Request, key: string, id: string) {
 //  - 어느 저장의 link가 이미 있고 manifest가 아직 쓰이지 않았다면, 다른 요청이 그 확정된 저장의 manifest를 완성해 준다(중단 복구).
 const UPLOAD_SLOT = /^u[0-9a-f]{32}$/
 const linkPath = (key: string, id: string, baseRevision: string) => `${syncBase(key)}/episodes/${id}/links/${baseRevision || 'first'}.json`
-async function writeEpisodeManifest(key: string, id: string, link: any, previous: any) {
-  const manifest = {
+// manifest와 그 ETag를 한 번의 읽기로 가져온다(이 ETag가 이후 조건부 쓰기의 기준이다).
+async function readJsonWithEtag(path: string): Promise<{ json: any; etag: string | null }> {
+  const result: any = await readPrivate(path)
+  if (!result) return { json: null, etag: null }
+  const etag = result.blob?.etag || result.etag || null
+  return { json: JSON.parse(await new Response(result.stream).text()), etag }
+}
+// 조건부 manifest 확정(CAS): 읽은 manifest의 ETag가 그대로일 때만 쓴다(최초는 If-None-Match: *). 불일치는 { ok:false } — 무조건 쓰기로 폴백하지 않는다.
+function manifestFromLink(id: string, link: any, previous: any) {
+  return {
     episodeId: id, format: 'SPB1-CLOUD', version: 1, activeSlot: link.uploadId, uploadId: link.uploadId, chunkCount: link.chunkCount, byteLength: link.byteLength,
     revision: link.revision, updatedAt: link.updatedAt, ...(previous?.uploadId ? { previous: { uploadId: previous.uploadId, chunkCount: previous.chunkCount } } : {})
   }
-  await put(episodeManifestPath(key, id), JSON.stringify(manifest), { access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/json', cacheControlMaxAge: 60 })
-  return manifest
+}
+async function writeEpisodeManifest(key: string, id: string, link: any, previous: any, previousEtag: string | null) {
+  if (previous && !previousEtag) throw new Error('저장소가 manifest ETag를 돌려주지 않아 안전하게 확정할 수 없습니다.')
+  const manifest = manifestFromLink(id, link, previous)
+  const written = await putIfMatch(episodeManifestPath(key, id), JSON.stringify(manifest), previous ? previousEtag : null, { contentType: 'application/json', cacheControlMaxAge: 60 })
+  return written.ok ? manifest : null
 }
 // 두 세대 전 저장의 청크는 더 이상 참조되지 않는다: 용량을 돌려주기 위해 비운다(삭제 API 없이 기존 put만 사용, 실패해도 무시).
 async function reclaimOldChunks(key: string, id: string, old: any) {
@@ -284,14 +296,18 @@ export default async function handler(req: Request, res: Response) {
         let link: any = mine
         if (!(await putIfAbsent(path, JSON.stringify(mine)))) link = await readJson(path)
         // link를 가진 저장의 manifest가 아직 없으면(중단됐거나 방금 확정됨) 누가 도착하든 그 저장의 manifest를 완성한다.
-        const live = await readJson(episodeManifestPath(key, scopeId))
-        let manifest = live
-        if ((live?.revision || '') === base) {
-          manifest = await writeEpisodeManifest(key, scopeId, link, live)
-          await reclaimOldChunks(key, scopeId, live?.previous)
+        // 읽은 manifest의 ETag로 조건부 쓰기(CAS)한다: 읽은 뒤 다른 저장이 manifest를 바꿨다면 실패하고 최신 manifest는 보존된다.
+        let manifest: any = null
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const { json: live, etag } = await readJsonWithEtag(episodeManifestPath(key, scopeId))
+          manifest = live
+          if ((live?.revision || '') !== base) break // 이 기준에서 이미 다른 revision으로 전진했다(이 link는 그때 반영되었다)
+          const written = await writeEpisodeManifest(key, scopeId, link, live, etag)
+          if (written) { manifest = written; await reclaimOldChunks(key, scopeId, live?.previous); break }
         }
         if (link.uploadId !== slot) return res.status(409).json(EPISODE_CONFLICT) // 다른 저장이 먼저 확정되었다
-        return res.status(200).json({ ok: true, manifest })
+        // 이 저장이 link를 얻었다면 이미 반영된 것이다(이후 다른 저장이 이어서 전진했을 수 있다): 이 저장의 revision을 돌려준다.
+        return res.status(200).json({ ok: true, manifest: manifest?.revision === link.revision ? manifest : manifestFromLink(scopeId, link, null) })
       }
       const current = scopeId ? await readJson(episodeManifestPath(key, scopeId)) : await readJson(manifestPath(key))
       const previousRevision = scopeId ? (current?.revision || null) : (body?.previousRevision ?? null)

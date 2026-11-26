@@ -66,7 +66,7 @@ function credentials() {
 async function signedFetch(
   method: 'GET' | 'PUT' | 'HEAD',
   path: string,
-  opts: { body?: string | Buffer; contentType?: string; query?: Array<[string, string]>; file?: { path: string; size: number }; ifNoneMatch?: boolean } = {}
+  opts: { body?: string | Buffer; contentType?: string; query?: Array<[string, string]>; file?: { path: string; size: number }; ifNoneMatch?: boolean; ifMatch?: string } = {}
 ) {
   const base = endpoint()
   const { accessKeyId, secretAccessKey } = credentials()
@@ -85,6 +85,7 @@ async function signedFetch(
   if (opts.contentType) headers['content-type'] = opts.contentType
   if (opts.file) headers['content-length'] = String(opts.file.size)
   if (opts.ifNoneMatch) headers['if-none-match'] = '*'
+  if (opts.ifMatch) headers['if-match'] = opts.ifMatch
   const signedHeaderNames = Object.keys(headers).sort()
   const canonicalHeaders = signedHeaderNames.map((k) => `${k}:${headers[k].trim()}\n`).join('')
   const signedHeaders = signedHeaderNames.join(';')
@@ -140,6 +141,7 @@ async function r2Get(path: string) {
       size: Number(res.headers.get('content-length') || 0),
       pathname: path,
       contentType: res.headers.get('content-type') || undefined,
+      etag: res.headers.get('etag') || undefined,
     },
   }
 }
@@ -233,6 +235,29 @@ export async function putIfAbsent(path: string, body: string, contentType = 'app
   }
   try { await (vercelBlob as any).put(path, body, { access: 'private', addRandomSuffix: false, allowOverwrite: false, contentType }); return true }
   catch (e: any) { if (/already exists|exists/i.test(String(e?.message || e))) return false; throw e }
+}
+
+// Compare-and-swap write. expectedEtag === null: create only if absent (If-None-Match: *). Otherwise: replace only if the stored
+// object still has that ETag (If-Match). { ok:false } when the precondition fails — the caller must re-read; there is NO unconditional fallback.
+// R2: conditional PUT (412 on mismatch). Vercel Blob: allowOverwrite:false / ifMatch (BlobPreconditionFailedError).
+export async function putIfMatch(path: string, body: string | Buffer, expectedEtag: string | null, opts: PutOpts = {}): Promise<{ ok: true; etag: string | null } | { ok: false }> {
+  const contentType = opts.contentType || 'application/json'
+  if (r2Configured()) {
+    const res = await signedFetch('PUT', path, expectedEtag === null ? { body, contentType, ifNoneMatch: true } : { body, contentType, ifMatch: expectedEtag })
+    if (res.status === 412 || res.status === 409) return { ok: false }
+    if (!res.ok) throw new Error(`R2 conditional PUT failed (${res.status}): ${await res.text()}`)
+    return { ok: true, etag: res.headers.get('etag') || null }
+  }
+  try {
+    const blob: any = await (vercelBlob as any).put(path, body, {
+      access: 'private', addRandomSuffix: false, contentType, cacheControlMaxAge: opts.cacheControlMaxAge,
+      ...(expectedEtag === null ? { allowOverwrite: false } : { allowOverwrite: true, ifMatch: expectedEtag })
+    })
+    return { ok: true, etag: blob?.etag || null }
+  } catch (e: any) {
+    if (e?.name === 'BlobPreconditionFailedError' || /precondition|already exists|exists/i.test(String(e?.message || e))) return { ok: false }
+    throw e
+  }
 }
 
 // Large files (a 60-120+ minute MP4 / narration): streamed from disk to the store, never read whole into memory.

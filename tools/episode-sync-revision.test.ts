@@ -22,28 +22,32 @@ function installR2() {
   gates.length = 0; failures.length = 0
   const saved: Record<string, string | undefined> = {}
   for (const [k, v] of Object.entries(ENV)) { saved[k] = process.env[k]; process.env[k] = v }
-  const objects = new Map<string, Buffer>(); const realFetch = globalThis.fetch
+  const objects = new Map<string, Buffer>(), etags = new Map<string, string>(), wire: { method: string; key: string; headers: Record<string, string> }[] = []; let etagSeq = 0; const realFetch = globalThis.fetch
   globalThis.fetch = (async (input: any, init: any = {}) => {
     const url = new URL(String(input)), method = String(init.method || 'GET')
     const key = decodeURIComponent(url.pathname.replace(new RegExp(`^/${BUCKET}/?`), ''))
     if (method === 'PUT') {
       const gate = gates.find((g) => g.match(key) && !g.used); if (gate) { gate.used = true; gate.reached(); await gate.release } // 요청은 권한 확인을 통과했지만 쓰기 완료가 지연되는 상황
       const fail = failures.find((f) => f.match(key) && !f.used); if (fail) { fail.used = true; return new Response('boom', { status: 500 }) }
+      // 실제 R2와 같은 조건부 쓰기: If-None-Match: * (이미 있으면 412) · If-Match: <etag> (현재 ETag와 다르거나 없으면 412). 조건은 요청이 서버에 도착한 시점에 평가한다.
+      wire.push({ method, key, headers: { ...(init.headers || {}) } })
       if (init.headers?.['if-none-match'] === '*' && objects.has(key)) return new Response('', { status: 412 })
-      objects.set(key, Buffer.from(typeof init.body === 'string' ? init.body : init.body ?? '')); return new Response('', { status: 200, headers: { etag: '"x"' } }) }
+      if (init.headers?.['if-match'] !== undefined && (!objects.has(key) || etags.get(key) !== init.headers['if-match'])) return new Response('', { status: 412 })
+      objects.set(key, Buffer.from(typeof init.body === 'string' ? init.body : init.body ?? '')); etags.set(key, `"e${++etagSeq}"`)
+      return new Response('', { status: 200, headers: { etag: etags.get(key)! } }) }
     if (url.searchParams.get('list-type') === '2') {
       const prefix = url.searchParams.get('prefix') || ''
       return new Response(`<ListBucketResult>${[...objects].filter(([k]) => k.startsWith(prefix)).map(([k, b]) => `<Contents><Key>${k}</Key><Size>${b.length}</Size></Contents>`).join('')}<IsTruncated>false</IsTruncated></ListBucketResult>`, { status: 200 })
     }
     const o = objects.get(key); if (!o) return new Response('', { status: 404 })
-    return new Response(new Uint8Array(o), { status: 200, headers: { 'content-length': String(o.length) } })
+    return new Response(new Uint8Array(o), { status: 200, headers: { 'content-length': String(o.length), etag: etags.get(key)! } })
   }) as any
   const agent = new MockAgent(); agent.disableNetConnect() // 옛 Vercel Blob: 항상 '없음'
   const notFound = () => ({ statusCode: 404, data: JSON.stringify({ error: { code: 'not_found', message: 'The requested blob does not exist' } }), responseOptions: { headers: { 'content-type': 'application/json' } } })
   agent.get('https://vercel.com').intercept({ path: () => true, method: () => true }).reply(notFound as any).persist()
   agent.get(/blob\.vercel-storage\.com$/).intercept({ path: () => true, method: () => true }).reply(notFound as any).persist()
   const prev = getGlobalDispatcher(); setGlobalDispatcher(agent)
-  return { objects, restore() { setGlobalDispatcher(prev); globalThis.fetch = realFetch; for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } } }
+  return { objects, wire, restore() { setGlobalDispatcher(prev); globalThis.fetch = realFetch; for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } } }
 }
 
 async function call(method: string, path: string, query: Record<string, string>, { base, body, client = 'client-default-1' }: { base?: string; body?: any; client?: string } = {}) {
@@ -183,6 +187,51 @@ test('4d. 확정(link) 직후 manifest 쓰기가 실패해도 같은 저장의 �
     const again = await commitOf(A, a.payload.slot, 1, 6, a.payload) // A의 지연 재시도: 이미 완료된 같은 저장 → 멱등
     assert.equal(again.status, 200) // 이미 확정된 같은 저장의 재시도는 멱등 성공
     assert.equal((await cloud())?.content, 'A-data')
+  } finally { r2.restore() }
+})
+
+const manifestKey = (k: string) => k.endsWith(`/episodes/${EP}.json`)
+
+test('4e. A 확정 요청 지연 → B 및 후속 revision 확정 → A 지연 요청 완료: 최신 manifest와 MP4·썸네일 청크가 그대로다', async () => {
+  const r2 = installR2()
+  try {
+    const base = await upload('base', '')
+    const A = { base: base.revision, client: 'client-aaaaaaaa' }, B = { base: base.revision, client: 'client-bbbbbbbb' }
+    const a = await call('POST', 'start', { episodeId: EP, op: 'start' }, A), b = await call('POST', 'start', { episodeId: EP, op: 'start' }, B)
+    await putChunk(A, a.payload.slot, 'A-data'); await putChunk(B, b.payload.slot, 'B-data')
+    const gate = delayNextPut(manifestKey) // A의 최종 manifest 쓰기 요청이 네트워크에서 지연된다
+    const aCommit = commitOf(A, a.payload.slot, 1, 6, a.payload)
+    await gate.seen
+    const bCommit = await commitOf(B, b.payload.slot, 1, 6, b.payload) // B: link는 A가 가졌다 → A의 확정을 완성해 두고 거절된다
+    assert.equal(bCommit.status, 409)
+    const mid = await cloud(); assert.equal(mid?.content, 'A-data')
+    const c = await upload('C-data(후속 revision: 최신 MP4·썸네일)', mid!.revision) // 후속 저장
+    assert.equal(c.status, 200)
+    const latest = await cloud(); assert.deepEqual(latest, { revision: c.revision, content: 'C-data(후속 revision: 최신 MP4·썸네일)' })
+    gate.open() // A의 지연된 manifest 쓰기가 이제 서버에 도착한다
+    const aDone = await aCommit
+    assert.deepEqual(await cloud(), latest, '최신 manifest와 청크는 그대로')
+    assert.equal(aDone.status, 200); assert.equal(aDone.payload.manifest.revision, mid!.revision) // A의 저장은 이미 반영된 revision으로 응답한다
+  } finally { r2.restore() }
+})
+
+test('4f. 조건부 쓰기는 실제 R2 요청에 실린다(서명된 If-Match / If-None-Match), 실패 후 무조건 쓰기로 폴백하지 않는다', async () => {
+  const r2 = installR2()
+  try {
+    const first = await upload('v1', '')
+    const second = await upload('v2', first.revision)
+    const manifestPuts = r2.wire.filter((w) => w.method === 'PUT' && manifestKey(w.key))
+    assert.equal(manifestPuts.length, 2)
+    assert.equal(manifestPuts[0].headers['if-none-match'], '*')                       // 최초 manifest
+    assert.match(String(manifestPuts[1].headers['if-match']), /^"e\d+"$/)               // 기존 manifest: 읽은 ETag
+    for (const w of manifestPuts) assert.match(w.headers.Authorization, /SignedHeaders=[^,]*if-(none-)?match/) // 서명에 포함
+    // 조건 불일치(412) 후 manifest에 무조건 PUT이 나가지 않는다
+    r2.wire.length = 0
+    const stale = await upload('STALE', first.revision)
+    assert.equal(stale.status, 409)
+    assert.equal(r2.wire.filter((w) => manifestKey(w.key)).length, 0)
+    assert.equal(r2.wire.filter((w) => manifestKey(w.key) && w.headers['if-match'] === undefined && w.headers['if-none-match'] === undefined).length, 0)
+    assert.equal((await cloud())?.revision, second.revision)
   } finally { r2.restore() }
 })
 
