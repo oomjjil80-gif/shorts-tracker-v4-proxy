@@ -71,6 +71,7 @@ export function isComplete(target: string, output: any, body: any = {}): boolean
       if (body?.test) return typeof output.text === 'string' && output.text.length > 0
       const mode = String(body?.mode || '')
       if (mode === 'revise' || mode === 'finalize' || mode === 'revise_partial') return hasChapters(output.draft)
+      if (mode === 'fill_directions') return Array.isArray(output.directions) && output.directions.length > 0 && output.directions.every((d: any) => Number.isInteger(d?.sceneIndex) && typeof d?.direction === 'string' && d.direction.trim().length > 0)
       return !!output.qc && typeof output.qc === 'object' && typeof output.qc.status === 'string' // 기본 검수
     }
     case 'story': {
