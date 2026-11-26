@@ -75,8 +75,10 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
         // 썸네일(쇼츠 9:16 · 롱폼 16:9)도 같은 서버 승인·1회 실행·Ledger 경로를 쓴다: 장면 ID는 'thumbnail', 규격은 thumbnail-* 프로필
         const isThumb = typeof im?.profile === 'string' && im.profile.startsWith('thumbnail-')
         const formatOk = (im?.aspectRatio === '16:9' && (im?.profile === 'master-longform' || im?.profile === 'thumbnail-longform')) || (im?.aspectRatio === '9:16' && (im?.profile === 'master-shorts' || im?.profile === 'thumbnail-shorts'))
+        // 스토리보드 시트(3x4, 한 장): 같은 MASTER 승인 경로를 쓰는 장면 ID 'storyboard'. 일괄(batch)·썸네일 프로필과는 섞지 않는다.
+        const isSheet = !isThumb && input.sceneId === 'storyboard' && input.batch === undefined
         if (!im || !formatOk ||
-            !(isThumb ? input.sceneId === 'thumbnail' : /^scene-(0[1-9]|[1-9][0-9])$/.test(String(input.sceneId || ''))) ||
+            !(isThumb ? input.sceneId === 'thumbnail' : isSheet || /^scene-(0[1-9]|[1-9][0-9])$/.test(String(input.sceneId || ''))) ||
             typeof im.prompt !== 'string' || im.prompt.trim().length < 20 || im.prompt.length > 12000 ||
             !Array.isArray(im.references) || im.references.length > 4 ||
             im.references.some((r: any) => typeof r?.data !== 'string' || r.data.length < 100 || r.data.length > 12_000_000 ||
@@ -96,7 +98,7 @@ export function createCardnewsHttp(o: { blobs: JobBlobStore; deps?: () => Cardne
         }
         if (prior.state === 'in_progress') throw new CardnewsError('IMAGE_IN_PROGRESS', '같은 이미지를 다른 요청이 만들고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
         if (prior.state === 'unknown') throw new CardnewsError('IMAGE_STATE_UNKNOWN', '같은 이미지 요청의 처리 여부를 확인할 수 없습니다(이미 생성·과금되었을 수 있음). 자동으로 다시 호출하지 않았습니다. 새로 만들려면 확인 후 다시 생성을 선택하세요.')
-        const approval = await requireApproval(o.blobs, { ws, input, quote: { task, usd: 0.067, calls: 1, note: isThumb ? 'Gemini 썸네일 이미지 1장 예상 비용(확정 단가 아님)' : 'Gemini MASTER 이미지 1장 예상 비용(확정 단가 아님)' } })
+        const approval = await requireApproval(o.blobs, { ws, input, quote: { task, usd: 0.067, calls: 1, note: isThumb ? 'Gemini 썸네일 이미지 1장 예상 비용(확정 단가 아님)' : isSheet ? 'Gemini 스토리보드 시트 이미지 1장 예상 비용(확정 단가 아님)' : 'Gemini MASTER 이미지 1장 예상 비용(확정 단가 아님)' } })
         // 공급자 호출 전에 이 요청의 실행권을 원자적으로 확보(독립 인스턴스·동시 요청 중 하나만 호출)
         if (!(await claimFlight(o.blobs, flightBase, prior.gen))) throw new CardnewsError('IMAGE_IN_PROGRESS', '같은 이미지를 다른 요청이 만들고 있습니다. 잠시 뒤 다시 확인해 주세요(중복 호출하지 않았습니다).')
         // 일괄 제작이면 승인된 총액·장수를 서버가 원자적으로 예약한다(동시 요청·다른 탭이 한도를 넘길 수 없다). 슬롯이 없으면 공급자 호출 없음.
