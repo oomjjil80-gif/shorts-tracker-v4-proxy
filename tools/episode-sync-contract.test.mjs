@@ -12,8 +12,8 @@ test('episode-scoped backup is isolated from the full workspace manifest', () =>
   assert.match(source, /backupHeader\.episodes\[0\]\?\.id !== id/);
   assert.match(source, /current\?\.revision \|\| ''\) !== previousRevision/);
   assert.match(source, /return res\.status\(409\)/);
-  assert.match(source, /await put\(episodePath\(key, id\), buffer/);
-  assert.match(source, /await put\(manifestFile, JSON\.stringify\(manifest\)/);
+  assert.match(source, /await put\(object, buffer/);                      // 이 요청 전용 새 경로
+  assert.match(source, /putIfMatch\(manifestFile, JSON\.stringify\(manifest\)/); // manifest는 조건부 확정(CAS)만
   assert.doesNotMatch(source.slice(source.indexOf("if (parts[0] === 'episode'"), source.indexOf("if (req.method === 'GET' && op === 'manifest')")), /put\(manifestPath\(key\)/);
 });
 

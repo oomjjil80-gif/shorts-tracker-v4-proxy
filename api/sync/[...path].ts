@@ -82,6 +82,21 @@ async function readJsonWithEtag(path: string): Promise<{ json: any; etag: string
   return { json: JSON.parse(await new Response(result.stream).text()), etag }
 }
 // 조건부 manifest 확정(CAS): 읽은 manifest의 ETag가 그대로일 때만 쓴다(최초는 If-None-Match: *). 불일치는 { ok:false } — 무조건 쓰기로 폴백하지 않는다.
+// 이 저장(link)의 결과가 실제 manifest에 확정되었는지 manifest 자체로 확인한다.
+//  - 현재 manifest가 이 저장이다 → 그 manifest
+//  - 현재 manifest가 이 저장 바로 다음 저장이고, 교체한 manifest(previous)가 이 저장이다 → 이 저장의 revision
+//  - 그 밖에는 확인할 수 없다 → null (호출부는 200을 돌려주지 않는다)
+function confirmedManifest(id: string, link: any, live: any) {
+  if (!link || !live) return null
+  if (live.revision === link.revision && live.uploadId === link.uploadId) return live
+  if (live.previous?.uploadId === link.uploadId && live.previous?.chunkCount === link.chunkCount) return manifestFromLink(id, link, null)
+  return null
+}
+function legacyObjectPath(key: string, id: string, token: string) { return `${syncBase(key)}/episodes/${id}/legacy/${token}.spbak` }
+async function tombstone(path: string) {
+  if (!path) return
+  try { await put(path, Buffer.from('x'), { access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/octet-stream' }) } catch { /* best effort */ }
+}
 function manifestFromLink(id: string, link: any, previous: any) {
   return {
     episodeId: id, format: 'SPB1-CLOUD', version: 1, activeSlot: link.uploadId, uploadId: link.uploadId, chunkCount: link.chunkCount, byteLength: link.byteLength,
@@ -152,7 +167,9 @@ export default async function handler(req: Request, res: Response) {
       if (req.method === 'GET') {
         const manifest = await readJson(manifestFile)
         if (!manifest) return res.status(404).json({ error: { message: '에피소드 백업이 없습니다.' } })
-        const stored = await readPrivate(episodePath(key, id))
+        // 분할(chunk) 저장본은 이 단일 파일 경로로 읽을 수 없다(다른 revision의 데이터를 돌려주지 않는다).
+        if (manifest.uploadId) return res.status(409).json({ error: { message: '분할 저장된 에피소드입니다. 분할 다운로드 경로를 사용해주세요.' } })
+        const stored = await readPrivate(manifest.object || episodePath(key, id))
         if (!stored) return res.status(404).json({ error: { message: '에피소드 파일이 없습니다.' } })
         const buffer = Buffer.from(await new Response(stored.stream).arrayBuffer())
         res.setHeader('Content-Type', 'application/octet-stream')
@@ -161,11 +178,13 @@ export default async function handler(req: Request, res: Response) {
         return res.status(200).send(buffer)
       }
       if (req.method === 'POST') {
+        // 읽은 manifest의 ETag를 기준으로 조건부 확정(CAS)한다. 기준 revision(X-Episode-Revision)이 현재와 다르거나 비어 있는데 이미 있으면 409.
         const previousRevision = String(req.headers['x-episode-revision'] || '')
-        const current = await readJson(manifestFile)
+        const { json: current, etag } = await readJsonWithEtag(manifestFile)
         if ((current?.revision || '') !== previousRevision) {
           return res.status(409).json({ error: { message: '에피소드가 다른 기기에서 수정되었습니다. 먼저 최신본을 확인해주세요.' } })
         }
+        if (current && !etag) throw new Error('저장소가 manifest ETag를 돌려주지 않아 안전하게 확정할 수 없습니다.')
         const incoming = await readBody(req)
         const buffer = Buffer.isBuffer(incoming) ? incoming : Buffer.from(incoming || [])
         if (buffer.length < 8 || buffer.subarray(0, 4).toString('utf8') !== 'SPB1') {
@@ -179,13 +198,20 @@ export default async function handler(req: Request, res: Response) {
         if (backupHeader.episodeCount !== 1 || backupHeader.episodes?.length !== 1 || backupHeader.episodes[0]?.id !== id) {
           return res.status(400).json({ error: { message: '요청한 에피소드 하나만 포함해야 합니다.' } })
         }
-        await put(episodePath(key, id), buffer, {
-          access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/octet-stream'
-        })
-        const manifest = { revision: randomUUID(), updatedAt: new Date().toISOString(), episodeId: id, byteLength: buffer.length }
-        await put(manifestFile, JSON.stringify(manifest), {
-          access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/json'
-        })
+        // 데이터는 이 요청 전용 새 경로에 쓴다(오래된 요청이 확정된 최신 파일을 덮어쓸 수 없다). 확정은 manifest CAS 하나로 결정한다.
+        const object = legacyObjectPath(key, id, randomUUID())
+        await put(object, buffer, { access: 'private', allowOverwrite: false, addRandomSuffix: false, contentType: 'application/octet-stream' })
+        const manifest = {
+          revision: randomUUID(), updatedAt: new Date().toISOString(), episodeId: id, byteLength: buffer.length, object,
+          ...(current?.object ? { previousObject: current.object } : {})
+        }
+        const written = await putIfMatch(manifestFile, JSON.stringify(manifest), current ? etag : null, { contentType: 'application/json' })
+        if (!written.ok) {
+          await tombstone(object) // 확정되지 못한 데이터는 비운다
+          return res.status(409).json({ error: { message: '에피소드가 다른 기기에서 수정되었습니다. 먼저 최신본을 확인해주세요.' } })
+        }
+        await tombstone(current?.previousObject || '') // 두 세대 전 파일 정리(기존 put만 사용)
+        await reclaimOldChunks(key, id, current?.previous)
         return res.status(200).json({ ok: true, manifest })
       }
     }
@@ -281,6 +307,12 @@ export default async function handler(req: Request, res: Response) {
         const current = await readJson(episodeManifestPath(key, scopeId))
         if (current?.uploadId === slot && current.chunkCount === chunkCount && current.byteLength === byteLength) return res.status(200).json({ ok: true, manifest: current }) // 이미 확정된 같은 저장의 재시도(멱등)
         const base = rawBase === undefined ? (current ? null : '') : String(rawBase)
+        // 이미 확정된 같은 저장의 재시도: 이 기준에서 이 저장이 link를 가졌고 manifest로 확인될 때만 성공(바로 다음 저장이 전진했어도 같은 revision).
+        if (base !== null) {
+          const prior = await readJson(linkPath(key, scopeId, base))
+          const done = prior?.uploadId === slot && prior.chunkCount === chunkCount && prior.byteLength === byteLength ? confirmedManifest(scopeId, prior, current) : null
+          if (done) return res.status(200).json({ ok: true, manifest: done })
+        }
         if (base === null || (current?.revision || '') !== base) return res.status(409).json(EPISODE_CONFLICT)
         // 모든 청크가 완성되어 있고 크기가 맞을 때만 확정 후보가 된다.
         let total = 0
@@ -306,20 +338,23 @@ export default async function handler(req: Request, res: Response) {
           if (written) { manifest = written; await reclaimOldChunks(key, scopeId, live?.previous); break }
         }
         if (link.uploadId !== slot) return res.status(409).json(EPISODE_CONFLICT) // 다른 저장이 먼저 확정되었다
-        // 이 저장이 link를 얻었다면 이미 반영된 것이다(이후 다른 저장이 이어서 전진했을 수 있다): 이 저장의 revision을 돌려준다.
-        return res.status(200).json({ ok: true, manifest: manifest?.revision === link.revision ? manifest : manifestFromLink(scopeId, link, null) })
+        // 실제 manifest에서 이 저장의 결과가 확정된 것을 확인한 경우에만 성공을 돌려준다. 확인할 수 없으면 409(로컬 데이터는 그대로, 같은 저장의 재시도로 이어서 확정된다).
+        const confirmed = confirmedManifest(scopeId, link, manifest)
+        if (!confirmed) return res.status(409).json(EPISODE_CONFLICT)
+        return res.status(200).json({ ok: true, manifest: confirmed })
       }
-      const current = scopeId ? await readJson(episodeManifestPath(key, scopeId)) : await readJson(manifestPath(key))
-      const previousRevision = scopeId ? (current?.revision || null) : (body?.previousRevision ?? null)
+      // 여기에는 전체 작업공간 스냅샷만 도달한다(에피소드 단위는 위에서 모두 처리되어 반환된다). 에피소드 manifest는 이 경로로 쓰지 않는다.
+      if (scopeId) throw new Error('에피소드 확정 경로 오류')
+      const current = await readJson(manifestPath(key))
+      const previousRevision = body?.previousRevision ?? null
       if ((current?.revision || null) !== previousRevision) {
         return res.status(409).json({ error: { message: '다른 기기에서 클라우드 작업이 먼저 변경되었습니다. 연결 확인 후 다시 업로드해주세요.' } })
       }
       const manifest = {
-        ...(scopeId ? { episodeId: scopeId } : {}),
         format: 'SPB1-CLOUD', version: 1, activeSlot: slot, chunkCount, byteLength,
         revision: randomUUID(), updatedAt: new Date().toISOString()
       }
-      await put(scopedManifestPath(key, scopeId), JSON.stringify(manifest), {
+      await put(manifestPath(key), JSON.stringify(manifest), {
         access: 'private', allowOverwrite: true, addRandomSuffix: false,
         contentType: 'application/json', cacheControlMaxAge: 60
       })
