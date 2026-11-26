@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { put, get, list, storageBackend } from '../../lib/objectStorage.js'
+import { put, putIfAbsent, get, list, storageBackend } from '../../lib/objectStorage.js'
 import { createHash, randomUUID } from 'node:crypto'
 
 function setCors(req: Request, res: Response) {
@@ -16,7 +16,7 @@ function setCors(req: Request, res: Response) {
     res.setHeader('Vary', 'Origin')
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Sync-Key, X-Episode-Revision')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, X-Sync-Key, X-Episode-Revision, X-Episode-Base, X-Upload-Client')
 }
 
 function getSyncKey(req: Request) {
@@ -54,6 +54,48 @@ function validIndex(v: unknown) {
   if (!Number.isInteger(index) || index < 0 || index > 10000) throw new Error('잘못된 청크 번호입니다.')
   return index
 }
+
+// 에피소드 단위 저장은 "로컬 사본이 실제로 기반한 revision"(X-Episode-Base)과 서버의 현재 revision이 같을 때만 허용한다.
+//  - 헤더 값 ''  : 클라우드에 아직 없다고 알고 있는 사본(첫 저장)
+//  - 헤더 없음   : 기준을 모르는 사본 → 클라우드에 이미 있으면 거절(덮어쓰지 않는다)
+async function episodeBaseConflict(req: Request, key: string, id: string) {
+  const current = await readJson(episodeManifestPath(key, id))
+  const raw = req.headers['x-episode-base']
+  const base = raw === undefined ? null : String(raw)
+  const ok = base === null ? !current : (current?.revision || '') === base
+  return ok ? null : current
+}
+// 같은 기준 revision에서 시작한 동시 저장은 하나만 진행한다(원자적 create-once 선점). 늦은 쪽은 청크를 쓰기 전에 거절되어
+// 먼저 진행한 저장의 슬롯을 덮어쓸 수 없다. 같은 클라이언트의 재시도는 허용하고, 30분 넘게 멈춘 선점은 버려진 것으로 본다.
+const CLAIM_STALE_MS = 30 * 60 * 1000
+function claimPath(key: string, id: string, current: any) { return `${syncBase(key)}/episodes/${id}/claims/${current?.revision || 'first'}.json` }
+function uploadClient(req: Request) {
+  const v = String(req.headers['x-upload-client'] || '').trim()
+  return /^[A-Za-z0-9-]{8,64}$/.test(v) ? v : ''
+}
+async function claimEpisodeUpload(req: Request, key: string, id: string) {
+  const client = uploadClient(req)
+  if (!client) return false
+  const current = await readJson(episodeManifestPath(key, id))
+  const path = claimPath(key, id, current)
+  const body = JSON.stringify({ client, at: Date.now() })
+  if (await putIfAbsent(path, body)) return true
+  const existing = await readJson(path).catch(() => null)
+  if (existing?.client === client) return true
+  if (existing && Date.now() - Number(existing.at || 0) > CLAIM_STALE_MS) {
+    await put(path, body, { access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/json' })
+    return true
+  }
+  return false
+}
+async function holdsEpisodeClaim(req: Request, key: string, id: string) {
+  const client = uploadClient(req)
+  if (!client) return false
+  const current = await readJson(episodeManifestPath(key, id))
+  const existing = await readJson(claimPath(key, id, current)).catch(() => null)
+  return existing?.client === client
+}
+const EPISODE_CONFLICT = { error: { code: 'EPISODE_BASE_CONFLICT', message: '다른 기기에서 이 에피소드의 클라우드본이 먼저 변경되었거나 이 사본의 기준 버전을 알 수 없습니다. 덮어쓰지 않았습니다. 클라우드 최신본을 먼저 불러온 뒤 다시 저장해주세요.' } }
 
 async function readPrivate(path: string) {
   const result: any = await get(path, { access: 'private', useCache: false })
@@ -178,6 +220,7 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (req.method === 'POST' && op === 'start') {
+      if (scopeId && (await episodeBaseConflict(req, key, scopeId) || !(await claimEpisodeUpload(req, key, scopeId)))) return res.status(409).json(EPISODE_CONFLICT)
       const current = await readJson(scopedManifestPath(key, scopeId))
       const slot = current?.activeSlot === 'a' ? 'b' : 'a'
       return res.status(200).json({ ok: true, slot, chunkBytes: 2 * 1024 * 1024, previousRevision: current?.revision || null })
@@ -195,6 +238,8 @@ export default async function handler(req: Request, res: Response) {
         else if (incoming && typeof incoming === 'object' && incoming.type === 'Buffer' && Array.isArray(incoming.data)) body = Buffer.from(incoming.data)
         else body = Buffer.from([])
         if (!body.length) throw new Error('업로드 청크가 비어 있습니다.')
+        // 늦게 도착한 오래된 사본이 이미 확정된 최신 슬롯을 덮어쓰지 못하게 청크 쓰기 직전에도 기준 revision을 확인한다.
+        if (scopeId && (await episodeBaseConflict(req, key, scopeId) || !(await holdsEpisodeClaim(req, key, scopeId)))) return res.status(409).json(EPISODE_CONFLICT)
         const blob: any = await put(scopedChunkPath(key, scopeId, slot, index), body, {
           access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/octet-stream'
         })
@@ -218,8 +263,14 @@ export default async function handler(req: Request, res: Response) {
       if (!Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > 10000) throw new Error('잘못된 청크 개수입니다.')
       if (!Number.isFinite(byteLength) || byteLength < 1) throw new Error('잘못된 백업 크기입니다.')
       if (scopeId && chunkCount * 2 * 1024 * 1024 < byteLength) throw new Error('청크 개수와 백업 크기가 일치하지 않습니다.')
-      const current = await readJson(manifestPath(key))
-      const previousRevision = body?.previousRevision ?? null
+      if (scopeId) {
+        const conflict = await episodeBaseConflict(req, key, scopeId)
+        if (conflict || !(await holdsEpisodeClaim(req, key, scopeId))) return res.status(409).json(EPISODE_CONFLICT)
+        const live = await readJson(episodeManifestPath(key, scopeId))
+        if (live?.activeSlot === slot) return res.status(409).json(EPISODE_CONFLICT) // 같은 슬롯을 이미 다른 저장이 확정했다
+      }
+      const current = scopeId ? await readJson(episodeManifestPath(key, scopeId)) : await readJson(manifestPath(key))
+      const previousRevision = scopeId ? (current?.revision || null) : (body?.previousRevision ?? null)
       if ((current?.revision || null) !== previousRevision) {
         return res.status(409).json({ error: { message: '다른 기기에서 클라우드 작업이 먼저 변경되었습니다. 연결 확인 후 다시 업로드해주세요.' } })
       }
