@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { put, get, storageBackend } from '../../lib/objectStorage.js'
+import { put, get, list, storageBackend } from '../../lib/objectStorage.js'
 import { createHash, randomUUID } from 'node:crypto'
 
 function setCors(req: Request, res: Response) {
@@ -140,6 +140,26 @@ export default async function handler(req: Request, res: Response) {
         })
         return res.status(200).json({ ok: true, manifest })
       }
+    }
+
+    // 이 동기화 키(작업공간)의 에피소드별 클라우드 백업 목록: 새 브라우저가 복원할 에피소드 ID를 찾는 용도. 읽기 전용.
+    if (req.method === 'GET' && op === 'episodes' && parts.length === 1) {
+      const prefix = `${syncBase(key)}/episodes/`
+      const found: Array<{ episodeId: string; revision: string; updatedAt: string; byteLength: number }> = []
+      let cursor: string | undefined
+      for (let page = 0; page < 5; page++) {
+        const listed: any = await list({ prefix, limit: 200, cursor })
+        for (const blob of listed?.blobs || []) {
+          const m = String(blob.pathname || '').slice(prefix.length).match(/^([^/]+)\.json$/)
+          if (!m || !/^ep_[a-z0-9]{8,40}$/i.test(m[1])) continue
+          const manifest = await readJson(String(blob.pathname)).catch(() => null)
+          if (manifest?.revision) found.push({ episodeId: m[1], revision: String(manifest.revision), updatedAt: String(manifest.updatedAt || ''), byteLength: Number(manifest.byteLength || 0) })
+        }
+        if (!listed?.hasMore || !listed?.cursor) break
+        cursor = listed.cursor
+      }
+      found.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      return res.status(200).json({ ok: true, episodes: found })
     }
 
     if (req.method === 'GET' && op === 'manifest') {

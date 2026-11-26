@@ -21,3 +21,11 @@ test('episode ID is constrained and full snapshot routes remain available', () =
   assert.match(source, /\^ep_\[a-z0-9\]\{8,40\}\$/i);
   for (const op of ['manifest','start','chunk','commit']) assert.ok(source.includes("op === '"+op+"'"));
 });
+
+test('episode listing is read-only, workspace-scoped and lists only episode manifests', () => {
+  const block = source.slice(source.indexOf("req.method === 'GET' && op === 'episodes'"), source.indexOf("if (req.method === 'GET' && op === 'manifest')"));
+  assert.match(block, /req\.method === 'GET'/);
+  assert.match(block, /syncBase\(key\)\}\/episodes\//);
+  assert.match(block, /\\\.json\$/);
+  assert.doesNotMatch(block, /put\(|del\(/);
+});
