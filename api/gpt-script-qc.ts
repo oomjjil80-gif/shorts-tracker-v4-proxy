@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express'
 import { isInternalAiCall, aiDirectBlocked } from '../lib/generative/internalCall.js'
-import { preserveDirections } from '../lib/story/sceneDirection.js'
+import { preserveDirections, parseFillDirectionsInput, fillDirectionsPrompt, FILL_DIRECTIONS_SCHEMA, pickRequestedDirections } from '../lib/story/sceneDirection.js'
 import { verifyPromise, promiseBrief, isPromiseCategory, checkDraftAgainstPromise, filterIssuesToScope, carryOverUnresolved, runPartialRevision, PARTIAL_SCHEMA, type TitlePromise } from '../lib/story/titlePromise.js'
 import { validateYasaStoryDna, checkYasaScript, isYasa, yasaScriptBrief } from '../lib/story/yasaStoryDna.js'
 
@@ -630,6 +630,25 @@ export default async function handler(req: Request, res: Response) {
       return { items:parsed?.items, usage:data?.usage || null, model:data?.model || model, provider:'OpenAI' }
     }, isYasa(input) ? '\n' + yasaScriptBrief(input.yasaStoryDNA, 'longform') : '')
     return res.status(out.status).json(out.body)
+  }
+
+  // E-1: 확정된 나레이션·수동 프롬프트는 그대로 두고, 요청한 장면의 연출(direction)만 만든다(전체 대본 재작성 없음, 공급자 호출 1회).
+  if (mode === 'fill_directions') {
+    const parsedInput = parseFillDirectionsInput(input)
+    if ('error' in parsedInput) return res.status(400).json({ ok: false, error: parsedInput.error })
+    try {
+      const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({
+        model, store: false, reasoning: { effort: 'low' }, instructions: '확정된 한국어 대본의 장면 연출만 작성한다. 지정된 JSON Schema를 정확히 따른다.',
+        input: fillDirectionsPrompt(parsedInput), max_output_tokens: 4000, text: { format: { type: 'json_schema', name: 'scene_directions', strict: true, schema: FILL_DIRECTIONS_SCHEMA } }
+      }) })
+      const raw = await response.text(); let data: any = {}; try { data = raw ? JSON.parse(raw) : {} } catch {}
+      if (!response.ok) return res.status(response.status).json({ ok: false, error: data?.error?.message || raw || 'OpenAI API request failed' })
+      const text = extractText(data); if (!text) return res.status(502).json({ ok: false, error: 'OpenAI response had no text output' })
+      let parsed: any; try { parsed = JSON.parse(text) } catch { return res.status(502).json({ ok: false, error: 'OpenAI returned invalid JSON' }) }
+      const picked = pickRequestedDirections(parsed, parsedInput.targets)
+      if (!picked.ok) return res.status(502).json({ ok: false, error: { code: 'DIRECTIONS_INCOMPLETE', message: `model did not return a direction for scene(s): ${picked.missing.join(', ')}` } })
+      return res.status(200).json({ ok: true, mode: 'fill_directions', provider: 'OpenAI', model: data?.model || model, usage: data?.usage || null, directions: picked.directions })
+    } catch (e: any) { return res.status(Number(e?.status) || 500).json({ ok: false, error: e?.message || String(e) }) }
   }
 
   if ((mode === 'revise' || mode === 'finalize') && input?.draft && typeof input.draft === 'object') {
