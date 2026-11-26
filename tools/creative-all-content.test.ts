@@ -2,6 +2,7 @@
 // task the browser uses for Story Writer content, the picture style applied at /api/image (keys in, style text added
 // server-side, legacy Episodes untouched), and the voice preview by family. Fake providers; no paid calls.
 import test from 'node:test'
+import { INTERNAL_AI_CALL } from '../lib/generative/internalCall.js'
 import assert from 'node:assert/strict'
 import { resolveCreativeProfile, creativeContentFor, imageStyleFor, withVisualStyle, creativeVoice, CONTENT_FAMILIES } from '../lib/generative/creativeProfile.js'
 import { VISUAL_STYLE_PROFILES } from '../lib/generative/visualStyle.js'
@@ -14,7 +15,7 @@ const FORMATS = ['shorts', 'longform'] as const
 const AUTO_STYLE: Record<string, string> = { senior: 'senior-warm-watercolor', wisdom: 'wisdom-painterly', yasa: 'yadam_reference', general: 'bright-editorial', economy: 'realistic-documentary' }
 const http = (handler: any, body: any) => new Promise<{ status: number; json: any }>((resolve) => {
   let status = 0
-  handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32) }, query: {}, body } as any,
+  handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32) }, query: {}, body, [INTERNAL_AI_CALL]: true } as any,
     { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { resolve({ status, json: b }); return this }, end() { return this } } as any)
 })
 
@@ -93,7 +94,7 @@ async function callImage(input: any) {
   globalThis.fetch = (async (_u: string, init: any) => { sent.push(JSON.parse(init.body)); return new Response(JSON.stringify({ id: 'r1', output_image: { data: Buffer.from('img').toString('base64'), mime_type: 'image/png' } }), { status: 200 }) }) as any
   try {
     let status = 0, json: any = null
-    await imageHandler({ method: 'POST', query: {}, headers: {}, body: { contractVersion: '1.5', taskType: 'cut_image', input } } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this }, send() { return this } } as any)
+    await imageHandler({ method: 'POST', query: {}, headers: {}, body: { contractVersion: '1.5', taskType: 'cut_image', input }, [INTERNAL_AI_CALL]: true } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this }, send() { return this } } as any)
     return { status, json, text: sent[0]?.input?.[0]?.text as string, sent: sent[0] }
   } finally { globalThis.fetch = prevFetch; if (prevKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = prevKey }
 }

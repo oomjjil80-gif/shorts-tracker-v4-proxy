@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express'
+import { isInternalAiCall, aiDirectBlocked } from '../lib/generative/internalCall.js'
 import { verifyPromise, promiseBrief } from '../lib/story/titlePromise.js'
 import { DIRECTION_PROMPT, DIRECTION_MAX, normalizeDraftDirections } from '../lib/story/sceneDirection.js'
 import { validateYasaStoryDna, yasaScriptBrief, isYasa, yasaLongformMinutes, yasaChapterCount } from '../lib/story/yasaStoryDna.js'
@@ -420,6 +421,7 @@ export default async function handler(req: Request, res: Response) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' })
   }
 
+  if (!isInternalAiCall(req)) return res.status(403).json(aiDirectBlocked()) // 서버 비용 승인 경로(cardnews_ai_call)로만 호출한다
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) {
     return res.status(503).json({ ok: false, error: 'ANTHROPIC_API_KEY is not configured' })

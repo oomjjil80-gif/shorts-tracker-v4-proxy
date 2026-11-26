@@ -53,7 +53,7 @@ export type JobsDeps = {
   blobs: JobBlobStore
   sourceExists?: (sourceAssetId: string) => Promise<boolean>
   analyzeReference?: typeof analyzeRegisteredReference
-  voicePreview?: (input: any) => Promise<{ playbackUrl: string; validUntil: number; cache: 'HIT' | 'MISS' }>
+  voicePreview?: (input: any, ctx?: { beforeProvider?: () => Promise<void> }) => Promise<{ playbackUrl: string; validUntil: number; cache: 'HIT' | 'MISS' }>
   trackerTts?: { plan?: (input: any) => Promise<{ calls: number; quote: { task: string; usd: number; calls?: number; note?: string } }>; clips: (input: any, opts?: { maxCalls?: number; flightId?: string }) => Promise<any>; assemble: (input: any) => Promise<any>; audio?: (ref: string) => Promise<Buffer> }
   // job_upload_text: the publish kit (one text call) and its key (tests inject both)
   uploadKit?: typeof openAiWisdomPublishKit
@@ -69,12 +69,13 @@ function workspaceOf(req: Request): string {
 export const JOB_TASK_TYPES = ['job_create', 'job_get', 'job_preview', 'job_package', 'job_decision', 'job_cancel', 'job_derived', 'job_retry_render', 'job_remaster', 'job_remaster_yasa', 'job_list', 'job_style', 'job_style_decision', 'job_style_examples', 'job_resume', 'job_upload_text', 'job_sleep_draft', 'job_sleep_import', 'job_recover_asset_billing', 'job_blocks', 'job_block_approve', 'job_block_edit'] as const
 export type JobTaskType = (typeof JOB_TASK_TYPES)[number]
 // Longform voice preview: a short cached sample of the chosen voice (POST; no database)
-export const VOICE_PREVIEW_TASK = 'longform_voice_preview'
+// 미리듣기 승인 요청 형식(v2): 승인 기능이 없는 옛 서버는 job_ 접두의 알 수 없는 작업을 공급자 호출 전에 400으로 거절한다.
+export const VOICE_PREVIEW_TASK = 'longform_voice_preview', VOICE_PREVIEW_V2_TASK = 'job_voice_preview'
 // Creative Settings for browser-made content (Story Writer): the server resolves AUTO (POST; no database, no paid call)
 export const CREATIVE_RESOLVE_TASK = 'creative_resolve'
 // Reported by the free creative_resolve answer. A browser must see ttsApproval >= 1 before it sends ANY paid tts_clips request: an older server
 // would run the request at once (no quote step), so the absence of this marker means "do not send".
-export const SERVER_CAPABILITIES = Object.freeze({ ttsApproval: 1, imageFlight: 1, batchScenes: 1 })
+export const SERVER_CAPABILITIES = Object.freeze({ ttsApproval: 1, imageFlight: 1, batchScenes: 1, voicePreviewApproval: 1 })
 // Tracker TTS for browser-made content: voice clips in small batches, then one levelled narration (POST; no database)
 export const TTS_CLIPS_TASK = 'tts_clips', TTS_ASSEMBLE_TASK = 'tts_assemble', TTS_AUDIO_TASK = 'tts_audio'
 // 제작 6단계: 제목·썸네일 약속 잠금 / 최종본 약속 확인 (POST; no database, no paid call)
@@ -84,7 +85,7 @@ export const isJobTaskType = (t: unknown): boolean => typeof t === 'string' && (
 const STATUS_BY_CODE: Record<string, number> = {
   METHOD_NOT_ALLOWED: 405, UNAUTHORIZED: 401, NOT_FOUND: 404, BAD_REQUEST: 400, IDEMPOTENCY_KEY_REUSED: 409, NOT_AWAITING_DECISION: 409, JOB_CLOSED: 409,
   JOB_BUSY: 409, STALE_APPROVAL: 409, JOB_ALREADY_STARTED: 409, NOT_AWAITING_APPROVAL: 409, NOT_EDITABLE: 409, PLAN_REV_CONFLICT: 409, UNKNOWN_MANIFEST: 422, QC_NOT_PASSED: 422, SOURCE_ASSET_NOT_FOUND: 404, JOBS_DB_NOT_CONFIGURED: 503, PROMISE_SIGNING_NOT_CONFIGURED: 503,
-  PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, TTS_IN_PROGRESS: 409, TTS_STATE_UNKNOWN: 409, TTS_APPROVAL_EXCEEDED: 402, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, NOT_SLEEP_RECOVERABLE: 409, RECOVERY_ALREADY_IMPORTED: 409, NOT_ASSET_BILLING_RECOVERABLE: 409, UPLOAD_TEXT_REFUSED: 502
+  VOICE_PREVIEW_UNAVAILABLE: 403, PREVIEW_IN_PROGRESS: 409, PREVIEW_STATE_UNKNOWN: 409, PROVIDER_BILLING: 503, PROVIDER_STOP: 503, PROVIDER_DOWN: 503, PREVIEW_FAILED: 502, TTS_FAILED: 502, TTS_IN_PROGRESS: 409, TTS_STATE_UNKNOWN: 409, TTS_APPROVAL_EXCEEDED: 402, NOT_RENDER_RETRYABLE: 409, NOT_AWAITING_THUMBNAIL: 409, NO_THUMBNAIL: 409, PREREQUISITE_MISSING: 409, THUMBNAIL_BUSY: 409, THUMBNAIL_LOCKED: 409, NOT_RESUMABLE: 409, BUDGET_TOO_LOW: 409, NOT_UPLOAD_RECOVERABLE: 409, NOT_SLEEP_RECOVERABLE: 409, RECOVERY_ALREADY_IMPORTED: 409, NOT_ASSET_BILLING_RECOVERABLE: 409, UPLOAD_TEXT_REFUSED: 502
 }
 
 const latest = (runs: StageRun[], stage: string) => [...runs].reverse().find((r) => r.stage === stage && r.status === 'SUCCEEDED')
@@ -231,10 +232,17 @@ export function createJobsHttp(deps: JobsDeps) {
           return res.status(200).json({ ok: true, capabilities: SERVER_CAPABILITIES, creative: { schema: c.schema, content, family: input.family, format: input.format, requested: c.requested, resolved: c.resolved }, styleWrap: visualStyleWrap(imageStyleFor({ content, requested: c.requested, resolved: c.resolved })) })
         } catch (e: any) { throw new JobError('BAD_REQUEST', String(e?.message || e)) }
       }
-      if (taskType === VOICE_PREVIEW_TASK) {
+      if (taskType === VOICE_PREVIEW_TASK || taskType === VOICE_PREVIEW_V2_TASK) {
         if (req.method !== 'POST') throw new JobError('METHOD_NOT_ALLOWED', `${taskType} requires POST`)
-        try { const r = await voicePreview(input); return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache }) }
-        catch (e: any) { if (e instanceof PreviewError) throw new JobError(e.code as any, e.message); throw e }
+        // 캐시 HIT는 무료로 제공한다. 캐시 미스의 유료 음성 생성은 막는다: 서버에는 워크스페이스 접근 권한을 믿고 확인할 수 있는 수단이
+        // 없다(키의 해시가 곧 워크스페이스이고 등록소가 없다). 임의의 키 검사로 대신하지 않고, 믿을 수 있는 인증이 생길 때까지 생성하지 않는다.
+        try {
+          const r = await voicePreview(input, { beforeProvider: async () => { throw new PreviewError('VOICE_PREVIEW_UNAVAILABLE', '새 미리듣기 음성은 지금 만들 수 없습니다(워크스페이스 접근 권한을 확인할 수단이 아직 없습니다). 이미 만들어 둔 미리듣기만 들을 수 있습니다.') } })
+          return res.status(200).json({ ok: true, playbackUrl: r.playbackUrl, validUntil: r.validUntil, cache: r.cache })
+        } catch (e: any) {
+          if (e instanceof PreviewError) throw new JobError(e.code as any, e.message)
+          throw e
+        }
       }
       const expectedMethod = taskType === 'job_get' || taskType === 'job_sleep_draft' || taskType === 'job_list' || taskType === 'job_style' || taskType === 'job_style_examples' || taskType === 'job_preview' || taskType === 'job_package' || taskType === 'job_derived' || taskType === 'job_blocks' ? 'GET' : 'POST'
       if (!JOB_TASK_TYPES.includes(taskType as JobTaskType)) throw new JobError('BAD_REQUEST', `unknown job taskType: ${taskType || '(none)'}`)

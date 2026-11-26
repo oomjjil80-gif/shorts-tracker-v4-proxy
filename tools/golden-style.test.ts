@@ -1,6 +1,7 @@
 // Golden Style 1~5 (issue #179): the locked references + text, the resolver, and every content's request. No network,
 // no paid call: Gemini is a recorder.
 import test from 'node:test'
+import { INTERNAL_AI_CALL } from '../lib/generative/internalCall.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { copyFile, mkdtemp, readFile, writeFile } from 'node:fs/promises'
@@ -82,7 +83,7 @@ async function callImage(input: any) {
   globalThis.fetch = (async (_u: string, init: any) => { sent.push(JSON.parse(init.body)); return new Response(JSON.stringify({ id: 'r1', output_image: { data: PNG.toString('base64'), mime_type: 'image/png' } }), { status: 200 }) }) as any
   try {
     let status = 0, json: any = null
-    await imageHandler({ method: 'POST', query: {}, headers: {}, body: { contractVersion: '1.5', taskType: 'cut_image', input } } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } } as any)
+    await imageHandler({ method: 'POST', query: {}, headers: {}, body: { contractVersion: '1.5', taskType: 'cut_image', input }, [INTERNAL_AI_CALL]: true } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } } as any)
     return { status, json, sent: sent[0] }
   } finally { globalThis.fetch = prevFetch; if (prevKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = prevKey }
 }

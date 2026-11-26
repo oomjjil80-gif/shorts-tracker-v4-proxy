@@ -145,15 +145,20 @@ test('voice preview on R2: MISS stores voice-preview/<sha>.mp3 privately on R2 a
   try {
     const { createVoicePreview } = await import('../lib/generative/voicePreview.js')
     const blobs = createVercelJobBlobStore(); let tts = 0
-    const handler = createJobsHttp({ getStore: async () => { throw new Error('no database for a preview') }, blobs, voicePreview: createVoicePreview({ blobs, tts: async () => { tts++; return { bytes: Buffer.from('ID3fake-mp3'), contentType: 'audio/mpeg' } }, apiKey: () => 'k', log: () => {} }) })
-    const call = () => new Promise<any>((resolve) => { let status = 0; handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32) }, query: {}, body: { taskType: 'longform_voice_preview', voiceProfile: 'female-middle', voiceTone: 'neutral', voiceSpeed: 1 } } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { resolve({ status, ...b }); return this }, end() { return this } } as any) })
-    const a = await call()
-    assert.equal(a.status, 200); assert.equal(a.cache, 'MISS'); assert.equal(tts, 1)
+    const preview = createVoicePreview({ blobs, tts: async () => { tts++; return { bytes: Buffer.from('ID3fake-mp3'), contentType: 'audio/mpeg' } }, apiKey: () => 'k', log: () => {} })
+    const handler = createJobsHttp({ getStore: async () => { throw new Error('no database for a preview') }, blobs, voicePreview: preview })
+    const call = (extra: any = {}) => new Promise<any>((resolve) => { let status = 0; handler({ method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'r2-voice-preview-workspace-key-0123456789' }, query: {}, body: { taskType: 'longform_voice_preview', voiceProfile: 'female-middle', voiceTone: 'neutral', voiceSpeed: 1, ...extra } } as any, { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { resolve({ status, ...b }); return this }, end() { return this } } as any) })
+    // a MISS made by the preview module itself (the route never generates): stored privately on R2, presigned URL; then the HTTP route serves it as a free HIT
+    const voice = { voiceProfile: 'female-middle', voiceTone: 'neutral', voiceSpeed: 1 }
+    const a = await preview(voice)
+    assert.equal(a.cache, 'MISS'); assert.equal(tts, 1)
     const put = s.r2.find((r) => r.method === 'PUT' && /^voice-preview\/[0-9a-f]{64}\.mp3$/.test(r.key))
     assert.ok(put, 'preview audio PUT to R2')
     assert.ok(a.playbackUrl.startsWith(`${R2}/${BUCKET}/voice-preview/`) && /X-Amz-Signature=/.test(a.playbackUrl), a.playbackUrl)
     const b = await call()
-    assert.equal(b.cache, 'HIT'); assert.equal(tts, 1)
+    assert.equal(b.status, 200); assert.equal(b.cache, 'HIT'); assert.equal(tts, 1)
+    const blocked = await call({ voiceProfile: 'female-young', voiceTone: 'bright', voiceSpeed: 1.1 })
+    assert.equal(blocked.status, 403); assert.equal(blocked.error.code, 'VOICE_PREVIEW_UNAVAILABLE'); assert.equal(tts, 1, 'a MISS over HTTP never generates')
     assert.deepEqual(s.vercelWrites(), [])
   } finally { s.restore() }
 })

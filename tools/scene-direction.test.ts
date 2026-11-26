@@ -1,5 +1,6 @@
 // B-1: segment.direction 계약(문자열, ≤600자) — 무료 stand-in fetch만 사용 (유료 AI 호출 없음).
 // Run: node --import tsx --test tools/scene-direction.test.ts
+import { INTERNAL_AI_CALL } from '../lib/generative/internalCall.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import claudeStoryHandler from '../api/claude-story.js'
@@ -15,7 +16,7 @@ async function call(handler: any, body: any, respond: (b: any) => any) {
   try {
     let status = 0, json: any = null
     const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this } }
-    await handler({ method: 'POST', headers: {}, query: {}, body }, res)
+    await handler({ method: 'POST', headers: {}, query: {}, body, [INTERNAL_AI_CALL]: true } as any, res)
     return { status, json, calls }
   } finally { (globalThis as any).fetch = orig }
 }

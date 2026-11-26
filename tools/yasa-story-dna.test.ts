@@ -2,6 +2,7 @@
 // story_draft, longform chapter on GPT and Claude, QC, revise) carries it; other families are untouched.
 // fetch is stubbed — no paid AI call.
 import test from 'node:test'
+import { INTERNAL_AI_CALL } from '../lib/generative/internalCall.js'
 import assert from 'node:assert/strict'
 import storyHandler from '../api/story.js'
 import claudeStoryHandler from '../api/claude-story.js'
@@ -42,7 +43,7 @@ async function call(handler: any, body: any, responses: any[]) {
   const orig = globalThis.fetch; (globalThis as any).fetch = f
   try {
     let status = 0, json: any = null
-    const req: any = { method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32) }, query: {}, body }
+    const req: any = { method: 'POST', headers: { origin: 'https://shorts-production-tracker.vercel.app', 'x-sync-key': 'k'.repeat(32) }, query: {}, body, [INTERNAL_AI_CALL]: true }
     const res: any = { setHeader() {}, status(c: number) { status = c; return this }, json(b: any) { json = b; return this }, end() { return this }, send(b: any) { json = b; return this } }
     await handler(req, res)
     return { status, json, calls }
