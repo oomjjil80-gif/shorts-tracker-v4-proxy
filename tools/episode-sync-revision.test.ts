@@ -9,7 +9,17 @@ const ENV = { R2_ENDPOINT: R2, R2_BUCKET: BUCKET, R2_ACCESS_KEY_ID: 'AKIDTEST', 
 const KEY = 'sync-key-for-the-episode-revision-test-0123456789'
 const EP = 'ep_revtest0001'
 
+type Gate = { match: (k: string) => boolean; used: boolean; release: Promise<void>; reached: () => void }
+const gates: Gate[] = [], failures: { match: (k: string) => boolean; used: boolean }[] = []
+function delayNextPut(match: (k: string) => boolean) {
+  let open!: () => void, reached!: () => void
+  const release = new Promise<void>((r) => { open = r }), seen = new Promise<void>((r) => { reached = r })
+  gates.push({ match, used: false, release, reached })
+  return { open, seen }
+}
+function failNextPut(match: (k: string) => boolean) { failures.push({ match, used: false }) }
 function installR2() {
+  gates.length = 0; failures.length = 0
   const saved: Record<string, string | undefined> = {}
   for (const [k, v] of Object.entries(ENV)) { saved[k] = process.env[k]; process.env[k] = v }
   const objects = new Map<string, Buffer>(); const realFetch = globalThis.fetch
@@ -17,6 +27,8 @@ function installR2() {
     const url = new URL(String(input)), method = String(init.method || 'GET')
     const key = decodeURIComponent(url.pathname.replace(new RegExp(`^/${BUCKET}/?`), ''))
     if (method === 'PUT') {
+      const gate = gates.find((g) => g.match(key) && !g.used); if (gate) { gate.used = true; gate.reached(); await gate.release } // 요청은 권한 확인을 통과했지만 쓰기 완료가 지연되는 상황
+      const fail = failures.find((f) => f.match(key) && !f.used); if (fail) { fail.used = true; return new Response('boom', { status: 500 }) }
       if (init.headers?.['if-none-match'] === '*' && objects.has(key)) return new Response('', { status: 412 })
       objects.set(key, Buffer.from(typeof init.body === 'string' ? init.body : init.body ?? '')); return new Response('', { status: 200, headers: { etag: '"x"' } }) }
     if (url.searchParams.get('list-type') === '2') {
@@ -53,7 +65,7 @@ async function upload(content: string, base?: string) {
   const slot = s.payload.slot
   const c = await call('POST', 'start', { ...q, op: 'chunk', slot, index: '0' }, { base, body: Buffer.from(content) })
   if (c.status !== 200) return { stage: 'chunk', status: c.status, msg: c.payload?.error?.message }
-  const m = await call('POST', 'commit', { ...q, op: 'commit' }, { base, body: { slot, chunkCount: 1, byteLength: content.length, previousRevision: s.payload.previousRevision } })
+  const m = await call('POST', 'commit', { ...q, op: 'commit' }, { base, body: { slot, chunkCount: 1, byteLength: Buffer.byteLength(content), previousRevision: s.payload.previousRevision } })
   return { stage: 'commit', status: m.status, revision: m.payload?.manifest?.revision as string | undefined, slot }
 }
 async function cloud() {
@@ -96,43 +108,81 @@ test('3. 기준 revision을 모르면(첫 저장 제외) 덮어쓰지 않는다'
   } finally { r2.restore() }
 })
 
-test('4. 동시 저장: 같은 기준에서 시작한 늦은 저장은 청크를 쓰기 전에 거절되어 먼저 진행한 저장이 손상되지 않는다', async () => {
+const slotKey = (slot: string) => (k: string) => k.includes(`/${slot}/chunk-0.bin`)
+const commitOf = (c: any, slot: string, n: number, len: number, a: any) => call('POST', 'commit', { episodeId: EP, op: 'commit' }, { ...c, body: { slot, chunkCount: n, byteLength: len, previousRevision: a.previousRevision } })
+const putChunk = (c: any, slot: string, text: string) => call('POST', 'start', { episodeId: EP, op: 'chunk', slot, index: '0' }, { ...c, body: Buffer.from(text) })
+
+test('4. 동시 저장: 같은 기준에서 둘 다 올려도 먼저 확정된 저장만 남고 늦은 쪽 커밋은 거절된다', async () => {
   const r2 = installR2()
   try {
     const base = await upload('base', '')
-    const q = { episodeId: EP }
     const A = { base: base.revision, client: 'client-aaaaaaaa' }, B = { base: base.revision, client: 'client-bbbbbbbb' }
-    const a = await call('POST', 'start', { ...q, op: 'start' }, A)
-    assert.equal(a.status, 200)
-    const b = await call('POST', 'start', { ...q, op: 'start' }, B) // 같은 기준·같은 슬롯이 될 늦은 저장
-    assert.equal(b.status, 409)
-    const bChunk = await call('POST', 'start', { ...q, op: 'chunk', slot: a.payload.slot, index: '0' }, { ...B, body: Buffer.from('B-late') })
-    assert.equal(bChunk.status, 409)
-    await call('POST', 'start', { ...q, op: 'chunk', slot: a.payload.slot, index: '0' }, { ...A, body: Buffer.from('A-wins') })
-    const bCommit = await call('POST', 'commit', { ...q, op: 'commit' }, { ...B, body: { slot: a.payload.slot, chunkCount: 1, byteLength: 6, previousRevision: a.payload.previousRevision } })
-    assert.equal(bCommit.status, 409)
-    const aCommit = await call('POST', 'commit', { ...q, op: 'commit' }, { ...A, body: { slot: a.payload.slot, chunkCount: 1, byteLength: 6, previousRevision: a.payload.previousRevision } })
-    assert.equal(aCommit.status, 200)
-    assert.deepEqual(await cloud(), { revision: aCommit.payload.manifest.revision, content: 'A-wins' })
-    // 같은 클라이언트의 재시도는 허용된다
-    const base2 = aCommit.payload.manifest.revision
-    const r1 = await call('POST', 'start', { ...q, op: 'start' }, { base: base2, client: 'client-aaaaaaaa' })
-    const r2b = await call('POST', 'start', { ...q, op: 'start' }, { base: base2, client: 'client-aaaaaaaa' })
-    assert.equal(r1.status, 200); assert.equal(r2b.status, 200)
+    const a = await call('POST', 'start', { episodeId: EP, op: 'start' }, A), b = await call('POST', 'start', { episodeId: EP, op: 'start' }, B)
+    assert.equal(a.status, 200); assert.equal(b.status, 200)
+    assert.notEqual(a.payload.slot, b.payload.slot, '저장 요청마다 청크 경로가 분리된다')
+    assert.equal((await putChunk(A, a.payload.slot, 'A-data')).status, 200)
+    assert.equal((await putChunk(B, b.payload.slot, 'B-data')).status, 200)
+    const bCommit = await commitOf(B, b.payload.slot, 1, 6, b.payload)
+    assert.equal(bCommit.status, 200)
+    assert.equal((await commitOf(A, a.payload.slot, 1, 6, a.payload)).status, 409)
+    assert.deepEqual(await cloud(), { revision: bCommit.payload.manifest.revision, content: 'B-data' })
   } finally { r2.restore() }
 })
 
-test('4b. 멈춘(30분 초과) 선점은 버려진 것으로 보고 다른 저장이 이어받는다', async () => {
+test('4b. A 저장 지연 → 선점/시간 경과 → B 저장 완료 → A의 지연된 쓰기 완료: B의 청크·manifest는 바뀌지 않는다', async () => {
   const r2 = installR2()
   try {
     const base = await upload('base', '')
-    const q = { episodeId: EP }
-    const a = await call('POST', 'start', { ...q, op: 'start' }, { base: base.revision, client: 'client-aaaaaaaa' })
-    assert.equal(a.status, 200)
-    const claim = [...r2.objects.keys()].find((k) => k.includes('/claims/') && k.endsWith(`${base.revision}.json`))!
-    r2.objects.set(claim, Buffer.from(JSON.stringify({ client: 'client-aaaaaaaa', at: Date.now() - 31 * 60 * 1000 })))
-    const b = await call('POST', 'start', { ...q, op: 'start' }, { base: base.revision, client: 'client-bbbbbbbb' })
+    const A = { base: base.revision, client: 'client-aaaaaaaa' }, B = { base: base.revision, client: 'client-bbbbbbbb' }
+    const a = await call('POST', 'start', { episodeId: EP, op: 'start' }, A)
+    const gate = delayNextPut(slotKey(a.payload.slot))
+    const aWrite = putChunk(A, a.payload.slot, 'A-STALE-DELAYED') // 권한 확인은 통과, 쓰기 완료만 지연
+    await gate.seen
+    for (const k of r2.objects.keys()) if (k.includes('/claims/')) r2.objects.set(k, Buffer.from(JSON.stringify({ client: 'client-aaaaaaaa', at: Date.now() - 31 * 60 * 1000 }))) // (이전 방식의) 선점 만료
+    const b = await call('POST', 'start', { episodeId: EP, op: 'start' }, B)
     assert.equal(b.status, 200)
+    assert.equal((await putChunk(B, b.payload.slot, 'B-FINAL')).status, 200)
+    const bCommit = await commitOf(B, b.payload.slot, 1, 7, b.payload)
+    assert.equal(bCommit.status, 200)
+    const before = await cloud()
+    gate.open(); await aWrite // A의 지연된 쓰기가 이제 완료된다
+    assert.deepEqual(await cloud(), before)
+    assert.deepEqual(before, { revision: bCommit.payload.manifest.revision, content: 'B-FINAL' })
+    assert.equal((await commitOf(A, a.payload.slot, 1, 15, a.payload)).status, 409)
+    assert.deepEqual(await cloud(), before)
+  } finally { r2.restore() }
+})
+
+test('4c. 확정된 청크는 변경되지 않는다(같은 경로 재쓰기는 같은 크기만 멱등, 다르면 거절)', async () => {
+  const r2 = installR2()
+  try {
+    const first = await upload('v1', '')
+    const q = { episodeId: EP }
+    const s1 = await call('POST', 'start', { ...q, op: 'start' }, { base: first.revision })
+    assert.equal((await putChunk({ base: first.revision }, s1.payload.slot, 'v2-data')).status, 200)
+    assert.equal((await putChunk({ base: first.revision }, s1.payload.slot, 'v2-data')).status, 200) // 같은 재시도
+    assert.equal((await putChunk({ base: first.revision }, s1.payload.slot, 'DIFFERENT-LENGTH')).status, 409)
+    const c = await commitOf({ base: first.revision }, s1.payload.slot, 1, 7, s1.payload)
+    assert.equal(c.status, 200)
+    assert.equal((await putChunk({ base: c.payload.manifest.revision }, s1.payload.slot, 'v2-XXXX')).status, 200) // 같은 크기 재쓰기는 기존 값을 그대로 둔다
+    assert.equal((await cloud())?.content, 'v2-data')
+  } finally { r2.restore() }
+})
+
+test('4d. 확정(link) 직후 manifest 쓰기가 실패해도 같은 저장의 재시도는 이어서 완료되고, 다른 저장이 먼저 도착하면 그 결과를 완성해 준다', async () => {
+  const r2 = installR2()
+  try {
+    const base = await upload('base', '')
+    const A = { base: base.revision, client: 'client-aaaaaaaa' }, B = { base: base.revision, client: 'client-bbbbbbbb' }
+    const a = await call('POST', 'start', { episodeId: EP, op: 'start' }, A), b = await call('POST', 'start', { episodeId: EP, op: 'start' }, B)
+    await putChunk(A, a.payload.slot, 'A-data'); await putChunk(B, b.payload.slot, 'B-data')
+    failNextPut((k) => k.endsWith(`/episodes/${EP}.json`))
+    assert.equal((await commitOf(A, a.payload.slot, 1, 6, a.payload)).status, 400) // A: 연결은 확정됐지만 manifest 쓰기 실패
+    assert.equal((await commitOf(B, b.payload.slot, 1, 6, b.payload)).status, 409)  // B: 거절되고, 확정된 A의 manifest를 완성해 둔다
+    assert.equal((await cloud())?.content, 'A-data')
+    const again = await commitOf(A, a.payload.slot, 1, 6, a.payload) // A의 지연 재시도: 이미 완료된 같은 저장 → 멱등
+    assert.equal(again.status, 200) // 이미 확정된 같은 저장의 재시도는 멱등 성공
+    assert.equal((await cloud())?.content, 'A-data')
   } finally { r2.restore() }
 })
 

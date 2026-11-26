@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { put, putIfAbsent, get, list, storageBackend } from '../../lib/objectStorage.js'
+import { put, putIfAbsent, get, head, list, storageBackend } from '../../lib/objectStorage.js'
 import { createHash, randomUUID } from 'node:crypto'
 
 function setCors(req: Request, res: Response) {
@@ -44,8 +44,11 @@ function scopedManifestPath(key: string, id: string | null) {
 function scopedChunkPath(key: string, id: string | null, slot: string, index: number) {
   return id ? `${syncBase(key)}/episodes/${id}/${slot}/chunk-${index}.bin` : chunkPath(key, slot, index)
 }
-function validSlot(v: unknown) {
+// 에피소드 단위: 슬롯은 서버가 저장 요청마다 발급한 uploadId(읽기는 예전 a/b 슬롯도 허용). 쓰기는 uploadId 경로에만 허용한다.
+function validSlot(v: unknown, scoped = false, write = false) {
   const slot = String(v || '')
+  if (scoped && UPLOAD_SLOT.test(slot)) return slot
+  if (scoped && write) throw new Error('잘못된 업로드 ID입니다.')
   if (slot !== 'a' && slot !== 'b') throw new Error('잘못된 동기화 슬롯입니다.')
   return slot
 }
@@ -65,35 +68,26 @@ async function episodeBaseConflict(req: Request, key: string, id: string) {
   const ok = base === null ? !current : (current?.revision || '') === base
   return ok ? null : current
 }
-// 같은 기준 revision에서 시작한 동시 저장은 하나만 진행한다(원자적 create-once 선점). 늦은 쪽은 청크를 쓰기 전에 거절되어
-// 먼저 진행한 저장의 슬롯을 덮어쓸 수 없다. 같은 클라이언트의 재시도는 허용하고, 30분 넘게 멈춘 선점은 버려진 것으로 본다.
-const CLAIM_STALE_MS = 30 * 60 * 1000
-function claimPath(key: string, id: string, current: any) { return `${syncBase(key)}/episodes/${id}/claims/${current?.revision || 'first'}.json` }
-function uploadClient(req: Request) {
-  const v = String(req.headers['x-upload-client'] || '').trim()
-  return /^[A-Za-z0-9-]{8,64}$/.test(v) ? v : ''
-}
-async function claimEpisodeUpload(req: Request, key: string, id: string) {
-  const client = uploadClient(req)
-  if (!client) return false
-  const current = await readJson(episodeManifestPath(key, id))
-  const path = claimPath(key, id, current)
-  const body = JSON.stringify({ client, at: Date.now() })
-  if (await putIfAbsent(path, body)) return true
-  const existing = await readJson(path).catch(() => null)
-  if (existing?.client === client) return true
-  if (existing && Date.now() - Number(existing.at || 0) > CLAIM_STALE_MS) {
-    await put(path, body, { access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/json' })
-    return true
+// 저장 요청(start)마다 서버가 새 uploadId를 발급하고, 청크는 그 요청 전용 경로(`episodes/<id>/<uploadId>/chunk-N.bin`)에만 쓴다.
+//  - 청크는 create-once(If-None-Match)라 한 번 만들어진 청크는 이전 요청이나 지연된 재시도가 바꿀 수 없다.
+//  - 확정(commit)은 기준 revision마다 한 번만 만들 수 있는 link 객체(create-once)로 원자적으로 결정한다. link를 얻은 저장만 manifest가 된다.
+//  - 어느 저장의 link가 이미 있고 manifest가 아직 쓰이지 않았다면, 다른 요청이 그 확정된 저장의 manifest를 완성해 준다(중단 복구).
+const UPLOAD_SLOT = /^u[0-9a-f]{32}$/
+const linkPath = (key: string, id: string, baseRevision: string) => `${syncBase(key)}/episodes/${id}/links/${baseRevision || 'first'}.json`
+async function writeEpisodeManifest(key: string, id: string, link: any, previous: any) {
+  const manifest = {
+    episodeId: id, format: 'SPB1-CLOUD', version: 1, activeSlot: link.uploadId, uploadId: link.uploadId, chunkCount: link.chunkCount, byteLength: link.byteLength,
+    revision: link.revision, updatedAt: link.updatedAt, ...(previous?.uploadId ? { previous: { uploadId: previous.uploadId, chunkCount: previous.chunkCount } } : {})
   }
-  return false
+  await put(episodeManifestPath(key, id), JSON.stringify(manifest), { access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/json', cacheControlMaxAge: 60 })
+  return manifest
 }
-async function holdsEpisodeClaim(req: Request, key: string, id: string) {
-  const client = uploadClient(req)
-  if (!client) return false
-  const current = await readJson(episodeManifestPath(key, id))
-  const existing = await readJson(claimPath(key, id, current)).catch(() => null)
-  return existing?.client === client
+// 두 세대 전 저장의 청크는 더 이상 참조되지 않는다: 용량을 돌려주기 위해 비운다(삭제 API 없이 기존 put만 사용, 실패해도 무시).
+async function reclaimOldChunks(key: string, id: string, old: any) {
+  if (!old?.uploadId || !UPLOAD_SLOT.test(old.uploadId)) return
+  for (let i = 0; i < Math.min(Number(old.chunkCount) || 0, 10000); i++) {
+    try { await put(scopedChunkPath(key, id, old.uploadId, i), Buffer.from('x'), { access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/octet-stream' }) } catch { /* best effort */ }
+  }
 }
 const EPISODE_CONFLICT = { error: { code: 'EPISODE_BASE_CONFLICT', message: '다른 기기에서 이 에피소드의 클라우드본이 먼저 변경되었거나 이 사본의 기준 버전을 알 수 없습니다. 덮어쓰지 않았습니다. 클라우드 최신본을 먼저 불러온 뒤 다시 저장해주세요.' } }
 
@@ -220,14 +214,14 @@ export default async function handler(req: Request, res: Response) {
     }
 
     if (req.method === 'POST' && op === 'start') {
-      if (scopeId && (await episodeBaseConflict(req, key, scopeId) || !(await claimEpisodeUpload(req, key, scopeId)))) return res.status(409).json(EPISODE_CONFLICT)
+      if (scopeId && await episodeBaseConflict(req, key, scopeId)) return res.status(409).json(EPISODE_CONFLICT)
       const current = await readJson(scopedManifestPath(key, scopeId))
-      const slot = current?.activeSlot === 'a' ? 'b' : 'a'
+      const slot = scopeId ? `u${randomUUID().replace(/-/g, '')}` : current?.activeSlot === 'a' ? 'b' : 'a'
       return res.status(200).json({ ok: true, slot, chunkBytes: 2 * 1024 * 1024, previousRevision: current?.revision || null })
     }
 
     if (op === 'chunk') {
-      const slot = validSlot(parts.length >= 3 ? parts[1] : querySlot)
+      const slot = validSlot(parts.length >= 3 ? parts[1] : querySlot, !!scopeId, !!scopeId && req.method === 'POST')
       const index = validIndex(parts.length >= 3 ? parts[2] : queryIndex)
       if (req.method === 'POST') {
         const incoming = await readBody(req)
@@ -238,8 +232,15 @@ export default async function handler(req: Request, res: Response) {
         else if (incoming && typeof incoming === 'object' && incoming.type === 'Buffer' && Array.isArray(incoming.data)) body = Buffer.from(incoming.data)
         else body = Buffer.from([])
         if (!body.length) throw new Error('업로드 청크가 비어 있습니다.')
-        // 늦게 도착한 오래된 사본이 이미 확정된 최신 슬롯을 덮어쓰지 못하게 청크 쓰기 직전에도 기준 revision을 확인한다.
-        if (scopeId && (await episodeBaseConflict(req, key, scopeId) || !(await holdsEpisodeClaim(req, key, scopeId)))) return res.status(409).json(EPISODE_CONFLICT)
+        if (scopeId) {
+          // 저장 요청 전용 경로에 create-once로 쓴다: 이미 있는 청크는 어떤 요청·재시도도 바꿀 수 없다(같은 크기의 재시도만 멱등 성공).
+          const path = scopedChunkPath(key, scopeId, slot, index)
+          if (!(await putIfAbsent(path, body as unknown as string, 'application/octet-stream'))) {
+            const existing: any = await head(path)
+            if (Number(existing?.size) !== body.length) return res.status(409).json(EPISODE_CONFLICT)
+          }
+          return res.status(200).json({ ok: true, slot, index, size: body.length })
+        }
         const blob: any = await put(scopedChunkPath(key, scopeId, slot, index), body, {
           access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/octet-stream'
         })
@@ -257,17 +258,40 @@ export default async function handler(req: Request, res: Response) {
 
     if (req.method === 'POST' && op === 'commit') {
       const body = await readBody(req)
-      const slot = validSlot(body?.slot)
+      const slot = validSlot(body?.slot, !!scopeId, !!scopeId)
       const chunkCount = Number(body?.chunkCount)
       const byteLength = Number(body?.byteLength)
       if (!Number.isInteger(chunkCount) || chunkCount < 1 || chunkCount > 10000) throw new Error('잘못된 청크 개수입니다.')
       if (!Number.isFinite(byteLength) || byteLength < 1) throw new Error('잘못된 백업 크기입니다.')
       if (scopeId && chunkCount * 2 * 1024 * 1024 < byteLength) throw new Error('청크 개수와 백업 크기가 일치하지 않습니다.')
       if (scopeId) {
-        const conflict = await episodeBaseConflict(req, key, scopeId)
-        if (conflict || !(await holdsEpisodeClaim(req, key, scopeId))) return res.status(409).json(EPISODE_CONFLICT)
+        const rawBase = req.headers['x-episode-base']
+        const current = await readJson(episodeManifestPath(key, scopeId))
+        if (current?.uploadId === slot && current.chunkCount === chunkCount && current.byteLength === byteLength) return res.status(200).json({ ok: true, manifest: current }) // 이미 확정된 같은 저장의 재시도(멱등)
+        const base = rawBase === undefined ? (current ? null : '') : String(rawBase)
+        if (base === null || (current?.revision || '') !== base) return res.status(409).json(EPISODE_CONFLICT)
+        // 모든 청크가 완성되어 있고 크기가 맞을 때만 확정 후보가 된다.
+        let total = 0
+        for (let i = 0; i < chunkCount; i++) {
+          const info: any = await head(scopedChunkPath(key, scopeId, slot, i))
+          if (!info) throw new Error(`청크 ${i + 1}이(가) 아직 올라오지 않았습니다.`)
+          total += Number(info.size) || 0
+        }
+        if (total !== byteLength) throw new Error('올라온 청크 크기와 백업 크기가 일치하지 않습니다.')
+        // 원자적 확정: 이 기준 revision에서 link를 만들 수 있는 저장은 단 하나. 이긴 저장만 manifest가 된다.
+        const mine = { uploadId: slot, chunkCount, byteLength, revision: randomUUID(), updatedAt: new Date().toISOString() }
+        const path = linkPath(key, scopeId, base)
+        let link: any = mine
+        if (!(await putIfAbsent(path, JSON.stringify(mine)))) link = await readJson(path)
+        // link를 가진 저장의 manifest가 아직 없으면(중단됐거나 방금 확정됨) 누가 도착하든 그 저장의 manifest를 완성한다.
         const live = await readJson(episodeManifestPath(key, scopeId))
-        if (live?.activeSlot === slot) return res.status(409).json(EPISODE_CONFLICT) // 같은 슬롯을 이미 다른 저장이 확정했다
+        let manifest = live
+        if ((live?.revision || '') === base) {
+          manifest = await writeEpisodeManifest(key, scopeId, link, live)
+          await reclaimOldChunks(key, scopeId, live?.previous)
+        }
+        if (link.uploadId !== slot) return res.status(409).json(EPISODE_CONFLICT) // 다른 저장이 먼저 확정되었다
+        return res.status(200).json({ ok: true, manifest })
       }
       const current = scopeId ? await readJson(episodeManifestPath(key, scopeId)) : await readJson(manifestPath(key))
       const previousRevision = scopeId ? (current?.revision || null) : (body?.previousRevision ?? null)
