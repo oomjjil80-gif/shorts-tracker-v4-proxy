@@ -68,12 +68,18 @@ async function episodeBaseConflict(req: Request, key: string, id: string) {
   const ok = base === null ? !current : (current?.revision || '') === base
   return ok ? null : current
 }
-// 저장 요청(start)마다 서버가 새 uploadId를 발급하고, 청크는 그 요청 전용 경로(`episodes/<id>/<uploadId>/chunk-N.bin`)에만 쓴다.
-//  - 청크는 create-once(If-None-Match)라 한 번 만들어진 청크는 이전 요청이나 지연된 재시도가 바꿀 수 없다.
-//  - 확정(commit)은 기준 revision마다 한 번만 만들 수 있는 link 객체(create-once)로 원자적으로 결정한다. link를 얻은 저장만 manifest가 된다.
-//  - 어느 저장의 link가 이미 있고 manifest가 아직 쓰이지 않았다면, 다른 요청이 그 확정된 저장의 manifest를 완성해 준다(중단 복구).
+// 저장 구조(에피소드 단위)의 불변 규칙
+//  1. 요청 불변성: start가 uploadId를 발급하면서 그 요청의 기준 revision을 업로드 기록(create-once)으로 고정한다. 청크는 그 uploadId 전용 경로에
+//     create-once로만 쓰고, commit은 고정된 기준 revision으로만 확정할 수 있다(다른 기준으로 기존 슬롯을 재사용할 수 없다).
+//  2. 성공 판정 불변성: 200은 (uploadId, 기준 revision, 확정 revision)이 실제 확정 기록(현재 manifest · 그 manifest가 교체한 기록 · 확정 기록 객체)과
+//     일치할 때만. link.revision을 그대로 돌려주지 않는다. 확인할 수 없으면 409.
+//  3. 데이터 보존: 이전 제작물의 파일·청크를 자동으로 덮어쓰거나 비우지 않는다(정리 기능 없음).
+//  확정은 기준 revision마다 한 번만 만들 수 있는 link(create-once)로 결정하고, manifest는 ETag 조건부 쓰기(CAS)로만 바꾼다.
+//  link는 있으나 manifest가 아직 없으면 다른 요청이 그 확정된 저장의 manifest를 완성한다(중단 복구).
 const UPLOAD_SLOT = /^u[0-9a-f]{32}$/
 const linkPath = (key: string, id: string, baseRevision: string) => `${syncBase(key)}/episodes/${id}/links/${baseRevision || 'first'}.json`
+const uploadPath = (key: string, id: string, uploadId: string) => `${syncBase(key)}/episodes/${id}/uploads/${uploadId}.json`
+const commitRecordPath = (key: string, id: string, revision: string) => `${syncBase(key)}/episodes/${id}/commits/${revision}.json`
 // manifest와 그 ETag를 한 번의 읽기로 가져온다(이 ETag가 이후 조건부 쓰기의 기준이다).
 async function readJsonWithEtag(path: string): Promise<{ json: any; etag: string | null }> {
   const result: any = await readPrivate(path)
@@ -81,40 +87,33 @@ async function readJsonWithEtag(path: string): Promise<{ json: any; etag: string
   const etag = result.blob?.etag || result.etag || null
   return { json: JSON.parse(await new Response(result.stream).text()), etag }
 }
-// 조건부 manifest 확정(CAS): 읽은 manifest의 ETag가 그대로일 때만 쓴다(최초는 If-None-Match: *). 불일치는 { ok:false } — 무조건 쓰기로 폴백하지 않는다.
-// 이 저장(link)의 결과가 실제 manifest에 확정되었는지 manifest 자체로 확인한다.
-//  - 현재 manifest가 이 저장이다 → 그 manifest
-//  - 현재 manifest가 이 저장 바로 다음 저장이고, 교체한 manifest(previous)가 이 저장이다 → 이 저장의 revision
-//  - 그 밖에는 확인할 수 없다 → null (호출부는 200을 돌려주지 않는다)
-function confirmedManifest(id: string, link: any, live: any) {
-  if (!link || !live) return null
-  if (live.revision === link.revision && live.uploadId === link.uploadId) return live
-  if (live.previous?.uploadId === link.uploadId && live.previous?.chunkCount === link.chunkCount) return manifestFromLink(id, link, null)
-  return null
-}
-function legacyObjectPath(key: string, id: string, token: string) { return `${syncBase(key)}/episodes/${id}/legacy/${token}.spbak` }
-async function tombstone(path: string) {
-  if (!path) return
-  try { await put(path, Buffer.from('x'), { access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/octet-stream' }) } catch { /* best effort */ }
-}
 function manifestFromLink(id: string, link: any, previous: any) {
   return {
     episodeId: id, format: 'SPB1-CLOUD', version: 1, activeSlot: link.uploadId, uploadId: link.uploadId, chunkCount: link.chunkCount, byteLength: link.byteLength,
-    revision: link.revision, updatedAt: link.updatedAt, ...(previous?.uploadId ? { previous: { uploadId: previous.uploadId, chunkCount: previous.chunkCount } } : {})
+    revision: link.revision, baseRevision: link.base, updatedAt: link.updatedAt,
+    ...(previous?.uploadId ? { previous: { uploadId: previous.uploadId, revision: previous.revision, baseRevision: previous.baseRevision ?? '', chunkCount: previous.chunkCount, byteLength: previous.byteLength, updatedAt: previous.updatedAt } } : {})
   }
 }
+const sameRecord = (rec: any, link: any) => !!rec && rec.uploadId === link.uploadId && rec.revision === link.revision && (rec.baseRevision ?? '') === link.base
+const linkOfRecord = (rec: any) => ({ uploadId: rec.uploadId, chunkCount: rec.chunkCount, byteLength: rec.byteLength, revision: rec.revision, base: rec.baseRevision ?? '', updatedAt: rec.updatedAt })
+// 이 저장(link)이 실제로 확정되었는지 확정 기록으로 확인한다. 확인할 수 없으면 null — 호출부는 200을 돌려주지 않는다.
+async function confirmedManifest(key: string, id: string, link: any, live: any) {
+  if (!link) return null
+  if (live && sameRecord(live, link)) return live                                                   // 현재 manifest가 이 저장
+  if (live?.previous && sameRecord(live.previous, link)) return manifestFromLink(id, linkOfRecord(live.previous), null) // 바로 다음 저장이 교체한 기록
+  const rec = await readJson(commitRecordPath(key, id, link.revision)).catch(() => null)            // 확정 기록 객체
+  if (sameRecord(rec, link)) return manifestFromLink(id, linkOfRecord(rec), null)
+  return null
+}
+function legacyObjectPath(key: string, id: string, token: string) { return `${syncBase(key)}/episodes/${id}/legacy/${token}.spbak` }
 async function writeEpisodeManifest(key: string, id: string, link: any, previous: any, previousEtag: string | null) {
   if (previous && !previousEtag) throw new Error('저장소가 manifest ETag를 돌려주지 않아 안전하게 확정할 수 없습니다.')
   const manifest = manifestFromLink(id, link, previous)
   const written = await putIfMatch(episodeManifestPath(key, id), JSON.stringify(manifest), previous ? previousEtag : null, { contentType: 'application/json', cacheControlMaxAge: 60 })
-  return written.ok ? manifest : null
-}
-// 두 세대 전 저장의 청크는 더 이상 참조되지 않는다: 용량을 돌려주기 위해 비운다(삭제 API 없이 기존 put만 사용, 실패해도 무시).
-async function reclaimOldChunks(key: string, id: string, old: any) {
-  if (!old?.uploadId || !UPLOAD_SLOT.test(old.uploadId)) return
-  for (let i = 0; i < Math.min(Number(old.chunkCount) || 0, 10000); i++) {
-    try { await put(scopedChunkPath(key, id, old.uploadId, i), Buffer.from('x'), { access: 'private', allowOverwrite: true, addRandomSuffix: false, contentType: 'application/octet-stream' }) } catch { /* best effort */ }
-  }
+  if (!written.ok) return null
+  // 확정 기록(create-once): 이후 같은 저장의 재시도가 이 기록으로 확인된다. 기록 실패는 확정을 되돌리지 않는다.
+  try { await putIfAbsent(commitRecordPath(key, id, link.revision), JSON.stringify({ uploadId: link.uploadId, baseRevision: link.base, revision: link.revision, chunkCount: link.chunkCount, byteLength: link.byteLength, updatedAt: link.updatedAt })) } catch { /* manifest가 확정 기록이다 */ }
+  return manifest
 }
 const EPISODE_CONFLICT = { error: { code: 'EPISODE_BASE_CONFLICT', message: '다른 기기에서 이 에피소드의 클라우드본이 먼저 변경되었거나 이 사본의 기준 버전을 알 수 없습니다. 덮어쓰지 않았습니다. 클라우드 최신본을 먼저 불러온 뒤 다시 저장해주세요.' } }
 
@@ -201,17 +200,11 @@ export default async function handler(req: Request, res: Response) {
         // 데이터는 이 요청 전용 새 경로에 쓴다(오래된 요청이 확정된 최신 파일을 덮어쓸 수 없다). 확정은 manifest CAS 하나로 결정한다.
         const object = legacyObjectPath(key, id, randomUUID())
         await put(object, buffer, { access: 'private', allowOverwrite: false, addRandomSuffix: false, contentType: 'application/octet-stream' })
-        const manifest = {
-          revision: randomUUID(), updatedAt: new Date().toISOString(), episodeId: id, byteLength: buffer.length, object,
-          ...(current?.object ? { previousObject: current.object } : {})
-        }
+        const manifest = { revision: randomUUID(), updatedAt: new Date().toISOString(), episodeId: id, byteLength: buffer.length, object }
         const written = await putIfMatch(manifestFile, JSON.stringify(manifest), current ? etag : null, { contentType: 'application/json' })
         if (!written.ok) {
-          await tombstone(object) // 확정되지 못한 데이터는 비운다
           return res.status(409).json({ error: { message: '에피소드가 다른 기기에서 수정되었습니다. 먼저 최신본을 확인해주세요.' } })
         }
-        await tombstone(current?.previousObject || '') // 두 세대 전 파일 정리(기존 put만 사용)
-        await reclaimOldChunks(key, id, current?.previous)
         return res.status(200).json({ ok: true, manifest })
       }
     }
@@ -255,6 +248,12 @@ export default async function handler(req: Request, res: Response) {
       if (scopeId && await episodeBaseConflict(req, key, scopeId)) return res.status(409).json(EPISODE_CONFLICT)
       const current = await readJson(scopedManifestPath(key, scopeId))
       const slot = scopeId ? `u${randomUUID().replace(/-/g, '')}` : current?.activeSlot === 'a' ? 'b' : 'a'
+      if (scopeId) {
+        // 이 저장 요청의 uploadId와 기준 revision을 최초 생성 시 고정한다(create-once). 기준을 모르는 요청은 위에서 이미 거절되었다.
+        const rawBase = req.headers['x-episode-base']
+        const created = await putIfAbsent(uploadPath(key, scopeId, slot), JSON.stringify({ uploadId: slot, base: rawBase === undefined ? '' : String(rawBase), createdAt: new Date().toISOString() }))
+        if (!created) throw new Error('업로드 ID 충돌')
+      }
       return res.status(200).json({ ok: true, slot, chunkBytes: 2 * 1024 * 1024, previousRevision: current?.revision || null })
     }
 
@@ -272,6 +271,8 @@ export default async function handler(req: Request, res: Response) {
         if (!body.length) throw new Error('업로드 청크가 비어 있습니다.')
         if (scopeId) {
           // 저장 요청 전용 경로에 create-once로 쓴다: 이미 있는 청크는 어떤 요청·재시도도 바꿀 수 없다(같은 크기의 재시도만 멱등 성공).
+          const record = await readJson(uploadPath(key, scopeId, slot)) // 발급되지 않은 uploadId에는 쓸 수 없다
+          if (!record) return res.status(409).json(EPISODE_CONFLICT)
           const path = scopedChunkPath(key, scopeId, slot, index)
           if (!(await putIfAbsent(path, body as unknown as string, 'application/octet-stream'))) {
             const existing: any = await head(path)
@@ -303,17 +304,20 @@ export default async function handler(req: Request, res: Response) {
       if (!Number.isFinite(byteLength) || byteLength < 1) throw new Error('잘못된 백업 크기입니다.')
       if (scopeId && chunkCount * 2 * 1024 * 1024 < byteLength) throw new Error('청크 개수와 백업 크기가 일치하지 않습니다.')
       if (scopeId) {
+        // 요청 불변성: 기준 revision은 start에서 고정된 값이다. 다른 기준을 주장하는 commit(기존 슬롯 재사용)은 거절한다.
+        const record = await readJson(uploadPath(key, scopeId, slot))
         const rawBase = req.headers['x-episode-base']
+        if (!record || (rawBase !== undefined && String(rawBase) !== record.base)) return res.status(409).json(EPISODE_CONFLICT)
+        const base: string = record.base
         const current = await readJson(episodeManifestPath(key, scopeId))
-        if (current?.uploadId === slot && current.chunkCount === chunkCount && current.byteLength === byteLength) return res.status(200).json({ ok: true, manifest: current }) // 이미 확정된 같은 저장의 재시도(멱등)
-        const base = rawBase === undefined ? (current ? null : '') : String(rawBase)
-        // 이미 확정된 같은 저장의 재시도: 이 기준에서 이 저장이 link를 가졌고 manifest로 확인될 때만 성공(바로 다음 저장이 전진했어도 같은 revision).
-        if (base !== null) {
-          const prior = await readJson(linkPath(key, scopeId, base))
-          const done = prior?.uploadId === slot && prior.chunkCount === chunkCount && prior.byteLength === byteLength ? confirmedManifest(scopeId, prior, current) : null
+        // 이미 확정된 같은 요청의 재시도: 확정 기록과 일치할 때만 성공(바로 다음 저장이 전진했어도 같은 revision).
+        const prior = await readJson(linkPath(key, scopeId, base))
+        if (prior?.uploadId === slot) {
+          if (prior.chunkCount !== chunkCount || prior.byteLength !== byteLength) return res.status(409).json(EPISODE_CONFLICT)
+          const done = await confirmedManifest(key, scopeId, prior, current)
           if (done) return res.status(200).json({ ok: true, manifest: done })
         }
-        if (base === null || (current?.revision || '') !== base) return res.status(409).json(EPISODE_CONFLICT)
+        if ((current?.revision || '') !== base) return res.status(409).json(EPISODE_CONFLICT)
         // 모든 청크가 완성되어 있고 크기가 맞을 때만 확정 후보가 된다.
         let total = 0
         for (let i = 0; i < chunkCount; i++) {
@@ -323,23 +327,22 @@ export default async function handler(req: Request, res: Response) {
         }
         if (total !== byteLength) throw new Error('올라온 청크 크기와 백업 크기가 일치하지 않습니다.')
         // 원자적 확정: 이 기준 revision에서 link를 만들 수 있는 저장은 단 하나. 이긴 저장만 manifest가 된다.
-        const mine = { uploadId: slot, chunkCount, byteLength, revision: randomUUID(), updatedAt: new Date().toISOString() }
+        const mine = { uploadId: slot, chunkCount, byteLength, revision: randomUUID(), base, updatedAt: new Date().toISOString() }
         const path = linkPath(key, scopeId, base)
         let link: any = mine
         if (!(await putIfAbsent(path, JSON.stringify(mine)))) link = await readJson(path)
-        // link를 가진 저장의 manifest가 아직 없으면(중단됐거나 방금 확정됨) 누가 도착하든 그 저장의 manifest를 완성한다.
-        // 읽은 manifest의 ETag로 조건부 쓰기(CAS)한다: 읽은 뒤 다른 저장이 manifest를 바꿨다면 실패하고 최신 manifest는 보존된다.
+        if (!link) return res.status(409).json(EPISODE_CONFLICT)
+        // link를 가진 저장(내 것이든 다른 요청의 것이든)의 manifest를 완성한다. manifest는 읽은 ETag로 조건부 쓰기(CAS)한다. 읽은 뒤 다른 저장이 바꿨다면 실패하고 최신 manifest는 보존된다.
         let manifest: any = null
         for (let attempt = 0; attempt < 3; attempt++) {
           const { json: live, etag } = await readJsonWithEtag(episodeManifestPath(key, scopeId))
           manifest = live
-          if ((live?.revision || '') !== base) break // 이 기준에서 이미 다른 revision으로 전진했다(이 link는 그때 반영되었다)
+          if ((live?.revision || '') !== base) break // 이 기준에서 이미 전진했다
           const written = await writeEpisodeManifest(key, scopeId, link, live, etag)
-          if (written) { manifest = written; await reclaimOldChunks(key, scopeId, live?.previous); break }
+          if (written) { manifest = written; break }
         }
-        if (link.uploadId !== slot) return res.status(409).json(EPISODE_CONFLICT) // 다른 저장이 먼저 확정되었다
-        // 실제 manifest에서 이 저장의 결과가 확정된 것을 확인한 경우에만 성공을 돌려준다. 확인할 수 없으면 409(로컬 데이터는 그대로, 같은 저장의 재시도로 이어서 확정된다).
-        const confirmed = confirmedManifest(scopeId, link, manifest)
+        if (link.uploadId !== slot || link.chunkCount !== chunkCount || link.byteLength !== byteLength) return res.status(409).json(EPISODE_CONFLICT) // 다른 저장이 먼저 확정되었다
+        const confirmed = await confirmedManifest(key, scopeId, link, manifest)
         if (!confirmed) return res.status(409).json(EPISODE_CONFLICT)
         return res.status(200).json({ ok: true, manifest: confirmed })
       }

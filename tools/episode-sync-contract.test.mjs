@@ -29,3 +29,8 @@ test('episode listing is read-only, workspace-scoped and lists only episode mani
   assert.match(block, /\\\.json\$/);
   assert.doesNotMatch(block, /put\(|del\(/);
 });
+
+test('이전 제작물을 훼손하는 자동 용량 회수가 없다(정리 기능 없음)', () => {
+  assert.doesNotMatch(source, /reclaimOldChunks|tombstone/);
+  assert.match(source, /uploadPath\(key, scopeId, slot\)/); // 요청 기준 revision 고정 기록
+});

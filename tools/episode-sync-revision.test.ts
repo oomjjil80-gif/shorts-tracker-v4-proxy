@@ -337,6 +337,82 @@ test('8. manifest(<id>.json)를 쓰는 경로는 조건부 쓰기(putIfMatch) �
   assert.equal([...src.matchAll(/putIfMatch\(episodeManifestPath|putIfMatch\(manifestFile/g)].length, 2, '신규 commit과 기존 POST 두 경로가 모두 CAS')
 })
 
+// ---- 저장 구조 불변성: 요청(uploadId·기준 revision) 고정 · 확정 기록과 일치할 때만 200 · 이전 제작물 보존 ----
+const startUp = (c: any) => call('POST', 'start', { episodeId: EP, op: 'start' }, c)
+const rawKey = (suffix: string) => (k: string) => k.endsWith(suffix)
+
+test('9. 슬롯 재사용 차단: 다른 기준 revision으로 기존 uploadId를 확정할 수 없다(오래된 청크가 새 revision이 되지 않는다)', async () => {
+  const r2 = installR2()
+  try {
+    const base = await upload('base', '')
+    const A = { base: base.revision }, a = await startUp(A)
+    await putChunk(A, a.payload.slot, 'A-STALE-CHUNK')
+    const b = await upload('B-LATEST', base.revision); assert.equal(b.status, 200)  // 그 사이 다른 저장이 먼저 확정
+    const reuse = await commitOf({ base: b.revision }, a.payload.slot, 1, 13, a.payload) // A가 기준을 바꿔 같은 슬롯으로 확정 시도
+    assert.equal(reuse.status, 409)
+    assert.deepEqual(await cloud(), { revision: b.revision, content: 'B-LATEST' })
+    assert.equal((await putChunk({ base: b.revision }, 'u' + '0'.repeat(32), 'x')).status, 409) // 발급되지 않은 uploadId에는 쓸 수 없다
+  } finally { r2.restore() }
+})
+
+test('10. A → B → A 슬롯 재사용 시도 후에도 현재 제작물이 보존된다', async () => {
+  const r2 = installR2()
+  try {
+    const base = await upload('base', '')
+    const A = { base: base.revision }, a = await startUp(A)
+    await putChunk(A, a.payload.slot, 'A-DATA')
+    const aDone = await commitOf(A, a.payload.slot, 1, 6, a.payload); assert.equal(aDone.status, 200)
+    const b = await upload('B-DATA', aDone.payload.manifest.revision); assert.equal(b.status, 200)
+    for (const tryBase of [base.revision, aDone.payload.manifest.revision, b.revision!]) {
+      const again = await commitOf({ base: tryBase }, a.payload.slot, 1, 6, a.payload)
+      assert.notEqual(again.status === 200 && again.payload.manifest.revision !== aDone.payload.manifest.revision, true, 'A의 재시도는 다른 revision을 만들 수 없다')
+      assert.deepEqual(await cloud(), { revision: b.revision, content: 'B-DATA' })
+    }
+    // 같은 요청의 정상 재시도(원래 기준)는 확정 기록으로 같은 revision을 돌려준다
+    const same = await commitOf(A, a.payload.slot, 1, 6, a.payload)
+    assert.equal(same.status, 200); assert.equal(same.payload.manifest.revision, aDone.payload.manifest.revision)
+    assert.deepEqual(await cloud(), { revision: b.revision, content: 'B-DATA' })
+  } finally { r2.restore() }
+})
+
+test('11. 확정 기록(uploadId·기준·revision)과 일치하지 않으면 200을 주지 않는다', async () => {
+  const r2 = installR2()
+  try {
+    const base = await upload('base', '')
+    const A = { base: base.revision }, a = await startUp(A)
+    await putChunk(A, a.payload.slot, 'A-DATA')
+    reject412(manifestKey, 3)
+    assert.equal((await commitOf(A, a.payload.slot, 1, 6, a.payload)).status, 409)      // link는 있으나 manifest는 미확정
+    // manifest가 이 저장의 uploadId를 가리키지만 revision이 다른 경우(확정 기록 불일치): 성공으로 보지 않는다
+    const liveKey = [...r2.objects.keys()].find(manifestKey)!
+    const live = JSON.parse(r2.objects.get(liveKey)!.toString())
+    r2.objects.set(liveKey, Buffer.from(JSON.stringify({ ...live, revision: 'other-revision', uploadId: 'u' + '1'.repeat(32), previous: { uploadId: a.payload.slot, chunkCount: 1, revision: 'not-the-linked-revision', baseRevision: base.revision } })))
+    const r = await commitOf(A, a.payload.slot, 1, 6, a.payload)
+    assert.equal(r.status, 409)
+  } finally { r2.restore() }
+})
+
+test('12. 이전 제작물의 파일·청크는 자동으로 회수·훼손되지 않는다', async () => {
+  const r2 = installR2()
+  try {
+    const texts = ['gen-1-data', 'gen-2-data', 'gen-3-data', 'gen-4-data']
+    let base = ''
+    for (const t of texts) { const u = await upload(t, base); assert.equal(u.status, 200); base = u.revision! }
+    const chunkObjs = [...r2.objects].filter(([k]) => /\/episodes\/[^/]+\/u[0-9a-f]{32}\/chunk-0\.bin$/.test(k)).map(([, v]) => v.toString())
+    assert.deepEqual(chunkObjs.sort(), [...texts].sort(), '모든 세대의 청크가 그대로 보존된다')
+  } finally { r2.restore() }
+})
+
+test('12b. 단일 POST 경로도 이전 파일을 회수하지 않는다', async () => {
+  const r2 = installR2()
+  try {
+    let rev = ''
+    for (const t of ['legacy-1', 'legacy-2', 'legacy-3']) { const r = await legacyPost(t, rev); assert.equal(r.status, 200); rev = r.payload.manifest.revision }
+    const objs = [...r2.objects].filter(([k]) => k.includes('/legacy/')).map(([, v]) => v.toString().replace(/^SPB1[\s\S]*?\}\]\}/, ''))
+    assert.deepEqual(objs.sort(), ['legacy-1', 'legacy-2', 'legacy-3'])
+  } finally { r2.restore() }
+})
+
 test('5. 브라우저가 보내는 기준 revision 헤더가 CORS로 허용된다', async () => {
   const { readFileSync } = await import('node:fs')
   assert.match(readFileSync(new URL('../api/sync/[...path].ts', import.meta.url), 'utf8'), /Access-Control-Allow-Headers', '[^']*X-Episode-Base/)
