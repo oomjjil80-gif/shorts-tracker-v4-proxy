@@ -240,11 +240,15 @@ export async function putIfAbsent(path: string, body: string, contentType = 'app
 // Compare-and-swap write. expectedEtag === null: create only if absent (If-None-Match: *). Otherwise: replace only if the stored
 // object still has that ETag (If-Match). { ok:false } when the precondition fails — the caller must re-read; there is NO unconditional fallback.
 // R2: conditional PUT (412 on mismatch). Vercel Blob: allowOverwrite:false / ifMatch (BlobPreconditionFailedError).
-export async function putIfMatch(path: string, body: string | Buffer, expectedEtag: string | null, opts: PutOpts = {}): Promise<{ ok: true; etag: string | null } | { ok: false }> {
+export async function putIfMatch(path: string, body: string | Buffer, expectedEtag: string | null, opts: PutOpts = {}): Promise<{ ok: true; etag: string | null } | { ok: false; status?: number; code?: string }> {
   const contentType = opts.contentType || 'application/json'
   if (r2Configured()) {
     const res = await signedFetch('PUT', path, expectedEtag === null ? { body, contentType, ifNoneMatch: true } : { body, contentType, ifMatch: expectedEtag })
-    if (res.status === 412 || res.status === 409) return { ok: false }
+    if (res.status === 412 || res.status === 409) {
+      // 거절한 저장소의 상태와 오류 코드를 돌려준다(진단용: 조건 불일치(412)인지 동시 쓰기 충돌(409)인지 구분). 본문 전체는 싣지 않는다.
+      const code = (await res.text().catch(() => '')).match(/<Code>([^<]{1,60})<\/Code>/)?.[1]
+      return { ok: false, status: res.status, ...(code ? { code } : {}) }
+    }
     if (!res.ok) throw new Error(`R2 conditional PUT failed (${res.status}): ${await res.text()}`)
     return { ok: true, etag: res.headers.get('etag') || null }
   }
