@@ -69,7 +69,7 @@ async function episodeBaseConflict(req: Request, key: string, id: string) {
   if (ok) return null
   return base === null
     ? { reason: 'START_BASE_UNKNOWN', detail: { cloudRevision: current?.revision || null } }
-    : { reason: 'START_BASE_STALE', detail: { sentBase: safeRevision(base), cloudRevision: current?.revision || '' } }
+    : { reason: 'START_BASE_STALE', detail: { baseHeaderPresent: true, baseMatchesCloud: false, cloudRevision: current?.revision || '' } }
 }
 // 저장 구조(에피소드 단위)의 불변 규칙
 //  1. 요청 불변성: start가 uploadId를 발급하면서 그 요청의 기준 revision을 업로드 기록(create-once)으로 고정한다. 청크는 그 uploadId 전용 경로에
@@ -127,13 +127,8 @@ function conflict(res: Response, key: string, id: string | null, reason: string,
   logConflict(key, id, reason, detail)
   return res.status(409).json({ error: { ...EPISODE_CONFLICT.error, reason, detail } })
 }
-// 요청 헤더에서 온 revision 값은 로그·응답에 그대로 싣지 않는다: 서버가 발급하는 형식(UUID)일 때만 통과시키고, 아니면 값 없이 형식 오류만 표시한다
-// (헤더에 동기화 키나 다른 인증정보가 들어 있어도 새어 나가지 않는다). 빈 값은 '첫 저장'을 뜻하므로 그대로 둔다.
-const REVISION_FORMAT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-function safeRevision(v: unknown): string {
-  const text = String(v ?? '')
-  return text === '' || REVISION_FORMAT.test(text) ? text : '[invalid-format]'
-}
+// 진단(로그·응답)에는 외부 요청에서 받은 값(헤더·쿼리·본문)을 형식과 관계없이 싣지 않는다. 형식이 맞는 값(UUID 등)도 인증정보일 수 있다.
+// 요청 값은 '있는지(present) · 일치하는지(matches) · 발급된 것인지(issued)'로만 보고하고, 값 자체는 서버가 저장한 것(manifest·업로드 기록·link)만 싣는다.
 const EPISODE_CONFLICT = { error: { code: 'EPISODE_BASE_CONFLICT', message: '다른 기기에서 이 에피소드의 클라우드본이 먼저 변경되었거나 이 사본의 기준 버전을 알 수 없습니다. 덮어쓰지 않았습니다. 클라우드 최신본을 먼저 불러온 뒤 다시 저장해주세요.' } }
 
 async function readPrivate(path: string) {
@@ -200,7 +195,7 @@ export default async function handler(req: Request, res: Response) {
         const previousRevision = String(req.headers['x-episode-revision'] || '')
         const { json: current, etag } = await readJsonWithEtag(manifestFile)
         if ((current?.revision || '') !== previousRevision) {
-          const detail = { sentRevision: safeRevision(previousRevision), cloudRevision: current?.revision || '' }
+          const detail = { revisionHeaderPresent: previousRevision !== '', revisionMatchesCloud: false, cloudRevision: current?.revision || '' }
           logConflict(key, id, 'POST_REVISION_MISMATCH', detail)
           return res.status(409).json({ error: { message: '에피소드가 다른 기기에서 수정되었습니다. 먼저 최신본을 확인해주세요.', reason: 'POST_REVISION_MISMATCH', detail } })
         }
@@ -295,11 +290,11 @@ export default async function handler(req: Request, res: Response) {
         if (scopeId) {
           // 저장 요청 전용 경로에 create-once로 쓴다: 이미 있는 청크는 어떤 요청·재시도도 바꿀 수 없다(같은 크기의 재시도만 멱등 성공).
           const record = await readJson(uploadPath(key, scopeId, slot)) // 발급되지 않은 uploadId에는 쓸 수 없다
-          if (!record) return conflict(res, key, scopeId, 'CHUNK_UPLOAD_UNKNOWN', { uploadId: slot })
+          if (!record) return conflict(res, key, scopeId, 'CHUNK_UPLOAD_UNKNOWN', { uploadIdIssued: false })
           const path = scopedChunkPath(key, scopeId, slot, index)
           if (!(await putIfAbsent(path, body as unknown as string, 'application/octet-stream'))) {
             const existing: any = await head(path)
-            if (Number(existing?.size) !== body.length) return conflict(res, key, scopeId, 'CHUNK_SIZE_MISMATCH', { uploadId: slot, index, stored: Number(existing?.size) || 0, incoming: body.length })
+            if (Number(existing?.size) !== body.length) return conflict(res, key, scopeId, 'CHUNK_SIZE_MISMATCH', { uploadId: record.uploadId, index, stored: Number(existing?.size) || 0, incoming: body.length })
           }
           return res.status(200).json({ ok: true, slot, index, size: body.length })
         }
@@ -330,18 +325,18 @@ export default async function handler(req: Request, res: Response) {
         // 요청 불변성: 기준 revision은 start에서 고정된 값이다. 다른 기준을 주장하는 commit(기존 슬롯 재사용)은 거절한다.
         const record = await readJson(uploadPath(key, scopeId, slot))
         const rawBase = req.headers['x-episode-base']
-        if (!record) return conflict(res, key, scopeId, 'COMMIT_UPLOAD_UNKNOWN', { uploadId: slot })
-        if (rawBase !== undefined && String(rawBase) !== record.base) return conflict(res, key, scopeId, 'COMMIT_BASE_HEADER_MISMATCH', { uploadId: slot, headerBase: safeRevision(rawBase), recordBase: record.base })
+        if (!record) return conflict(res, key, scopeId, 'COMMIT_UPLOAD_UNKNOWN', { uploadIdIssued: false })
+        if (rawBase !== undefined && String(rawBase) !== record.base) return conflict(res, key, scopeId, 'COMMIT_BASE_HEADER_MISMATCH', { uploadId: record.uploadId, baseHeaderPresent: true, baseMatchesRecord: false })
         const base: string = record.base
         const current = await readJson(episodeManifestPath(key, scopeId))
         // 이미 확정된 같은 요청의 재시도: 확정 기록과 일치할 때만 성공(바로 다음 저장이 전진했어도 같은 revision).
         const prior = await readJson(linkPath(key, scopeId, base))
         if (prior?.uploadId === slot) {
-          if (prior.chunkCount !== chunkCount || prior.byteLength !== byteLength) return conflict(res, key, scopeId, 'COMMIT_RETRY_SHAPE_MISMATCH', { uploadId: slot, base, confirmed: { chunkCount: prior.chunkCount, byteLength: prior.byteLength }, retry: { chunkCount, byteLength } })
+          if (prior.chunkCount !== chunkCount || prior.byteLength !== byteLength) return conflict(res, key, scopeId, 'COMMIT_RETRY_SHAPE_MISMATCH', { uploadId: record.uploadId, baseIsFirstSave: base === '', confirmed: { chunkCount: prior.chunkCount, byteLength: prior.byteLength }, retry: { chunkCount, byteLength } })
           const done = await confirmedManifest(key, scopeId, prior, current)
           if (done) return res.status(200).json({ ok: true, manifest: done })
         }
-        if ((current?.revision || '') !== base) return conflict(res, key, scopeId, 'COMMIT_MANIFEST_ADVANCED', { uploadId: slot, base, cloudRevision: current?.revision || '', cloudUploadId: current?.uploadId || null })
+        if ((current?.revision || '') !== base) return conflict(res, key, scopeId, 'COMMIT_MANIFEST_ADVANCED', { uploadId: record.uploadId, baseIsFirstSave: base === '', cloudHasManifest: !!current, cloudRevision: current?.revision || '', cloudUploadId: current?.uploadId || null })
         // 모든 청크가 완성되어 있고 크기가 맞을 때만 확정 후보가 된다.
         let total = 0
         for (let i = 0; i < chunkCount; i++) {
@@ -355,7 +350,7 @@ export default async function handler(req: Request, res: Response) {
         const path = linkPath(key, scopeId, base)
         let link: any = mine
         if (!(await putIfAbsent(path, JSON.stringify(mine)))) link = await readJson(path)
-        if (!link) return conflict(res, key, scopeId, 'COMMIT_LINK_UNREADABLE', { uploadId: slot, base })
+        if (!link) return conflict(res, key, scopeId, 'COMMIT_LINK_UNREADABLE', { uploadId: record.uploadId, baseIsFirstSave: base === '' })
         // link를 가진 저장(내 것이든 다른 요청의 것이든)의 manifest를 완성한다. manifest는 읽은 ETag로 조건부 쓰기(CAS)한다. 읽은 뒤 다른 저장이 바꿨다면 실패하고 최신 manifest는 보존된다.
         let manifest: any = null
         const cas: { attempts: number; rejected: number; lastStatus: number | null; lastCode: string | null; etagSeen: boolean } = { attempts: 0, rejected: 0, lastStatus: null, lastCode: null, etagSeen: false }
@@ -369,13 +364,13 @@ export default async function handler(req: Request, res: Response) {
         }
         if (link.uploadId !== slot || link.chunkCount !== chunkCount || link.byteLength !== byteLength) {
           // 다른 저장이 먼저 확정되었다(이 기준 revision의 link는 그 저장의 것). 그 저장이 manifest에 반영되었는지도 함께 남긴다.
-          return conflict(res, key, scopeId, 'COMMIT_OTHER_UPLOAD_WON', { uploadId: slot, base, winnerUploadId: link.uploadId, winnerRevision: link.revision, published: manifest?.revision === link.revision, cloudRevision: manifest?.revision || '', cloudUploadId: manifest?.uploadId || null, cas })
+          return conflict(res, key, scopeId, 'COMMIT_OTHER_UPLOAD_WON', { uploadId: record.uploadId, baseIsFirstSave: base === '', winnerUploadId: link.uploadId, winnerRevision: link.revision, published: manifest?.revision === link.revision, cloudRevision: manifest?.revision || '', cloudUploadId: manifest?.uploadId || null, cas })
         }
         const confirmed = await confirmedManifest(key, scopeId, link, manifest)
         if (!confirmed) {
           // 이 저장이 link는 얻었지만 manifest에 반영하지 못했다. 조건부 쓰기(CAS)가 저장소에서 거절된 경우와 그 밖의 경우를 구분한다.
           const rejected = cas.attempts > 0 && cas.rejected === cas.attempts && (manifest?.revision || '') === base
-          return conflict(res, key, scopeId, rejected ? 'COMMIT_CAS_REJECTED' : 'COMMIT_UNCONFIRMED', { uploadId: slot, base, linkRevision: link.revision, cloudRevision: manifest?.revision || '', cas })
+          return conflict(res, key, scopeId, rejected ? 'COMMIT_CAS_REJECTED' : 'COMMIT_UNCONFIRMED', { uploadId: record.uploadId, baseIsFirstSave: base === '', linkRevision: link.revision, cloudRevision: manifest?.revision || '', cas })
         }
         return res.status(200).json({ ok: true, manifest: confirmed })
       }

@@ -449,7 +449,7 @@ test('14. 중첩 저장: 같은 기준에서 두 저장이 겹치면 늦은 쪽�
     const ac = await commitOf(A, a.payload.slot, 1, 6, a.payload), bc = await commitOf(B, b.payload.slot, 1, 6, b.payload)
     assert.equal(ac.status, 200); assert.equal(bc.status, 409)
     assert.equal(bc.payload.error.code, 'EPISODE_BASE_CONFLICT'); assert.equal(bc.payload.error.reason, 'COMMIT_MANIFEST_ADVANCED')
-    assert.deepEqual([bc.payload.error.detail.base, bc.payload.error.detail.cloudRevision], [base.revision, ac.payload.manifest.revision])
+    assert.deepEqual([bc.payload.error.detail.baseIsFirstSave, bc.payload.error.detail.cloudRevision], [false, ac.payload.manifest.revision])
     assert.equal((await upload('after', ac.payload.manifest.revision)).status, 200)
     assert.equal((await cloud())?.content, 'after')
     assert.deepEqual(warn.lines.map((l) => l.reason), ['COMMIT_MANIFEST_ADVANCED'])
@@ -500,27 +500,35 @@ test('16. 저장소가 조건부 쓰기를 계속 거절하면 후속 저장은 
   } finally { warn.restore(); r2.restore() }
 })
 
-test('17. 단일 에피소드 POST의 409 두 분기도 진단 로그가 남고, 요청 헤더의 revision 원문·동기화 키는 로그와 응답 어디에도 없다', async () => {
+test('17. 단일 POST의 409 두 분기도 진단 로그가 남고, 외부 요청 값(UUID 형식 인증값·일반 인증값·키)은 형식과 관계없이 로그·응답 어디에도 없다', async () => {
   const r2 = installR2(), warn = captureWarnings()
   try {
     const first = await legacyPost('legacy-v1', ''); assert.equal(first.status, 200); const rev = first.payload.manifest.revision
-    // POST_REVISION_MISMATCH: 헤더가 동기화 키·임의 문자열이어도 원문이 새지 않는다(형식 오류만 표시)
-    const secretish = `${KEY}-and-other-credential`
-    const stale = await legacyPost('STALE', secretish); assert.equal(stale.status, 409)
-    assert.equal(stale.payload.error.reason, 'POST_REVISION_MISMATCH'); assert.deepEqual(stale.payload.error.detail, { sentRevision: '[invalid-format]', cloudRevision: rev })
-    // 서버가 발급하는 형식(UUID)의 오래된 revision은 그대로 비교용으로 남는다
-    const old = await legacyPost('STALE-2', '11111111-2222-4333-8444-555555555555'); assert.equal(old.payload.error.detail.sentRevision, '11111111-2222-4333-8444-555555555555')
-    // POST_CAS_REJECTED: 기준은 맞지만 저장소가 조건부 쓰기를 거절
+    // 외부에서 들어온 값들: UUID 형식 인증값, 일반 문자열 인증값, 동기화 키, 발급되지 않은 uploadId 모양의 16진 값
+    const uuidSecret = 'c0ffee00-1234-4abc-8def-0123456789ab', plainSecret = 'Bearer sk-live-PLAINSECRET-0123456789', hexSecret = 'u' + 'ab12cd34'.repeat(4)
+    const bodies: any[] = [], note = (r: any) => { bodies.push(r.payload); return r }
+    const stale = note(await legacyPost('STALE', uuidSecret)); assert.equal(stale.status, 409)
+    assert.equal(stale.payload.error.reason, 'POST_REVISION_MISMATCH'); assert.deepEqual(stale.payload.error.detail, { revisionHeaderPresent: true, revisionMatchesCloud: false, cloudRevision: rev })
+    note(await legacyPost('STALE-2', plainSecret)); note(await legacyPost('STALE-3', KEY))
     reject412(manifestKey, 1)
-    const cas = await legacyPost('CAS', rev); assert.equal(cas.status, 409)
-    assert.equal(cas.payload.error.reason, 'POST_CAS_REJECTED'); assert.equal(cas.payload.error.detail.r2Status, 412); assert.equal(cas.payload.error.detail.cloudRevision, rev)
-    assert.deepEqual(warn.lines.map((l) => l.reason), ['POST_REVISION_MISMATCH', 'POST_REVISION_MISMATCH', 'POST_CAS_REJECTED'], '두 분기 모두 서버 로그가 남는다')
-    // start/commit 경로의 헤더 값도 같은 정제를 거친다
-    const s = await startOf({ base: secretish }); assert.equal(s.status, 409); assert.equal(s.payload.error.detail.sentBase, '[invalid-format]')
+    const cas = note(await legacyPost('CAS', rev)); assert.equal(cas.payload.error.reason, 'POST_CAS_REJECTED'); assert.equal(cas.payload.error.detail.r2Status, 412); assert.equal(cas.payload.error.detail.cloudRevision, rev)
+    assert.deepEqual(warn.lines.map((l) => l.reason), ['POST_REVISION_MISMATCH', 'POST_REVISION_MISMATCH', 'POST_REVISION_MISMATCH', 'POST_CAS_REJECTED'], '두 분기 모두 서버 로그가 남는다')
+    // start / chunk / commit 경로: 헤더·uploadId 자리에 들어온 값
+    for (const secret of [uuidSecret, plainSecret, KEY]) {
+      const s = note(await startOf({ base: secret })); assert.equal(s.payload.error.reason, 'START_BASE_STALE'); assert.deepEqual(s.payload.error.detail, { baseHeaderPresent: true, baseMatchesCloud: false, cloudRevision: rev })
+    }
     const ok = await startOf({ base: rev }); await putChunk({ base: rev }, ok.payload.slot, 'SIX-BY')
-    const c = await commitOf({ base: secretish }, ok.payload.slot, 1, 6, ok.payload); assert.equal(c.payload.error.reason, 'COMMIT_BASE_HEADER_MISMATCH'); assert.equal(c.payload.error.detail.headerBase, '[invalid-format]')
-    const blob = JSON.stringify([stale.payload, old.payload, cas.payload, s.payload, c.payload, ...warn.lines])
-    assert.ok(!blob.includes(KEY) && !blob.includes('other-credential'), '동기화 키·헤더 원문은 응답·로그에 없다')
-    assert.equal((await legacyGet()).text, 'legacy-v1', '거절된 요청은 기존 데이터를 바꾸지 않는다')
+    for (const secret of [uuidSecret, plainSecret, KEY]) {
+      const c = note(await commitOf({ base: secret }, ok.payload.slot, 1, 6, ok.payload))
+      assert.equal(c.payload.error.reason, 'COMMIT_BASE_HEADER_MISMATCH'); assert.deepEqual(c.payload.error.detail, { uploadId: ok.payload.slot, baseHeaderPresent: true, baseMatchesRecord: false })
+    }
+    const ghost = note(await putChunk({ base: rev }, hexSecret, 'x')); assert.deepEqual(ghost.payload.error.detail, { uploadIdIssued: false })
+    const ghostCommit = note(await commitOf({ base: rev }, hexSecret, 1, 6, ok.payload)); assert.deepEqual(ghostCommit.payload.error.detail, { uploadIdIssued: false })
+    const everything = JSON.stringify([...bodies, ...warn.lines])
+    for (const secret of [uuidSecret, plainSecret, KEY, 'PLAINSECRET', hexSecret]) assert.ok(!everything.includes(secret), `외부 입력값이 진단에 노출됨: ${secret.slice(0, 12)}…`)
+    // 정상 revision 전달 계약은 그대로: 올바른 기준으로는 저장되고, 거절된 요청은 기존 데이터를 바꾸지 않는다
+    const done = await commitOf({ base: rev }, ok.payload.slot, 1, 6, ok.payload); assert.equal(done.status, 200)
+    assert.equal((await upload('after', done.payload.manifest.revision)).status, 200)
+    assert.equal((await cloud())?.content, 'after')
   } finally { warn.restore(); r2.restore() }
 })
