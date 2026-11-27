@@ -6,12 +6,14 @@ import healthHandler from '../api/health.js'
 import { storageBackend } from '../lib/objectStorage.js'
 import { createMaterials, createMaterialsHttp } from '../lib/materials/intake.js'
 import { createVercelJobBlobStore } from '../lib/jobs/blobs.js'
+import { chunkRequestDiagnostics } from '../lib/chunkDiagnostics.js'
 
 const app = express()
 app.disable('x-powered-by')
 
 app.use('/api/story', express.json({ limit: '32mb' }))
 app.use('/api/materials', express.json({ limit: '2mb' }))
+app.use('/api/sync', chunkRequestDiagnostics) // 청크 본문 수신 완료·중단 진단(본문·인증정보 비기록). express.raw보다 먼저 이벤트만 구독한다
 app.use('/api/sync', express.raw({ type: 'application/octet-stream', limit: '3mb' }))
 app.use('/api/sync', express.json({ type: 'application/json', limit: '1mb' }))
 
