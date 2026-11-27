@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import * as vercelBlob from '@vercel/blob'
+import { chunkIndexOfPath, logChunkDiag } from './chunkDiagnostics.js'
 
 type PutOpts = {
   access?: 'private' | 'public'
@@ -117,8 +118,18 @@ function xmlDecode(value: string) {
     .replace(/&amp;/g, '&')
 }
 
+// 청크 객체의 R2 PUT 시작·종료 시점(진단). 경로(작업공간 해시 포함)·본문은 기록하지 않고 청크 번호·크기·상태·경과 시간만 남긴다.
+async function timedChunkPut<T extends { status: number }>(path: string, bytes: number, run: () => Promise<T>): Promise<T> {
+  const index = chunkIndexOfPath(path)
+  if (index === null) return run()
+  const started = Date.now()
+  logChunkDiag('r2-put-start', { index, bytes })
+  try { const res = await run(); logChunkDiag('r2-put-end', { index, bytes, status: res.status, ms: Date.now() - started }); return res }
+  catch (error: any) { logChunkDiag('r2-put-failed', { index, bytes, ms: Date.now() - started, error: String(error?.name || 'Error') }); throw error }
+}
+
 async function r2Put(path: string, body: string | Buffer, opts: PutOpts = {}) {
-  const res = await signedFetch('PUT', path, { body, contentType: opts.contentType })
+  const res = await timedChunkPut(path, Buffer.byteLength(body), () => signedFetch('PUT', path, { body, contentType: opts.contentType }))
   if (!res.ok) throw new Error(`R2 PUT failed (${res.status}): ${await res.text()}`)
   return { url: `${endpoint().origin}${keyUri(path)}`, etag: res.headers.get('etag') || null }
 }
@@ -228,7 +239,7 @@ export async function put(path: string, body: string | Buffer, opts: PutOpts = {
 // R2: conditional PUT (If-None-Match: *, 412 when present). Vercel Blob: allowOverwrite:false rejects an existing path.
 export async function putIfAbsent(path: string, body: string, contentType = 'application/json'): Promise<boolean> {
   if (r2Configured()) {
-    const res = await signedFetch('PUT', path, { body, contentType, ifNoneMatch: true })
+    const res = await timedChunkPut(path, Buffer.byteLength(body), () => signedFetch('PUT', path, { body, contentType, ifNoneMatch: true }))
     if (res.status === 412 || res.status === 409) return false
     if (!res.ok) throw new Error(`R2 conditional PUT failed (${res.status}): ${await res.text()}`)
     return true
