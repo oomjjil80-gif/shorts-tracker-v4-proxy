@@ -69,7 +69,7 @@ async function episodeBaseConflict(req: Request, key: string, id: string) {
   if (ok) return null
   return base === null
     ? { reason: 'START_BASE_UNKNOWN', detail: { cloudRevision: current?.revision || null } }
-    : { reason: 'START_BASE_STALE', detail: { sentBase: base, cloudRevision: current?.revision || '' } }
+    : { reason: 'START_BASE_STALE', detail: { sentBase: safeRevision(base), cloudRevision: current?.revision || '' } }
 }
 // 저장 구조(에피소드 단위)의 불변 규칙
 //  1. 요청 불변성: start가 uploadId를 발급하면서 그 요청의 기준 revision을 업로드 기록(create-once)으로 고정한다. 청크는 그 uploadId 전용 경로에
@@ -120,9 +120,19 @@ async function writeEpisodeManifest(key: string, id: string, link: any, previous
 }
 // 409의 정확한 분기를 알 수 있도록 모든 거절에 reason(분기 코드)과 detail(비밀 아님: revision·uploadId·개수)을 싣고 서버 로그에 한 줄 남긴다.
 // 응답의 code·message와 거절 동작은 그대로다(보호를 완화하지 않는다). 동기화 키는 로그·응답에 넣지 않는다(작업공간은 해시 앞부분만).
-function conflict(res: Response, key: string, id: string | null, reason: string, detail: Record<string, unknown> = {}) {
+function logConflict(key: string, id: string | null, reason: string, detail: Record<string, unknown> = {}) {
   console.warn(JSON.stringify({ tag: 'episode-sync-409', reason, workspace: workspaceId(key).slice(0, 10), episodeId: id, ...detail }))
+}
+function conflict(res: Response, key: string, id: string | null, reason: string, detail: Record<string, unknown> = {}) {
+  logConflict(key, id, reason, detail)
   return res.status(409).json({ error: { ...EPISODE_CONFLICT.error, reason, detail } })
+}
+// 요청 헤더에서 온 revision 값은 로그·응답에 그대로 싣지 않는다: 서버가 발급하는 형식(UUID)일 때만 통과시키고, 아니면 값 없이 형식 오류만 표시한다
+// (헤더에 동기화 키나 다른 인증정보가 들어 있어도 새어 나가지 않는다). 빈 값은 '첫 저장'을 뜻하므로 그대로 둔다.
+const REVISION_FORMAT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function safeRevision(v: unknown): string {
+  const text = String(v ?? '')
+  return text === '' || REVISION_FORMAT.test(text) ? text : '[invalid-format]'
 }
 const EPISODE_CONFLICT = { error: { code: 'EPISODE_BASE_CONFLICT', message: '다른 기기에서 이 에피소드의 클라우드본이 먼저 변경되었거나 이 사본의 기준 버전을 알 수 없습니다. 덮어쓰지 않았습니다. 클라우드 최신본을 먼저 불러온 뒤 다시 저장해주세요.' } }
 
@@ -190,7 +200,9 @@ export default async function handler(req: Request, res: Response) {
         const previousRevision = String(req.headers['x-episode-revision'] || '')
         const { json: current, etag } = await readJsonWithEtag(manifestFile)
         if ((current?.revision || '') !== previousRevision) {
-          return res.status(409).json({ error: { message: '에피소드가 다른 기기에서 수정되었습니다. 먼저 최신본을 확인해주세요.', reason: 'POST_REVISION_MISMATCH', detail: { sentRevision: previousRevision, cloudRevision: current?.revision || '' } } })
+          const detail = { sentRevision: safeRevision(previousRevision), cloudRevision: current?.revision || '' }
+          logConflict(key, id, 'POST_REVISION_MISMATCH', detail)
+          return res.status(409).json({ error: { message: '에피소드가 다른 기기에서 수정되었습니다. 먼저 최신본을 확인해주세요.', reason: 'POST_REVISION_MISMATCH', detail } })
         }
         if (current && !etag) throw new Error('저장소가 manifest ETag를 돌려주지 않아 안전하게 확정할 수 없습니다.')
         const incoming = await readBody(req)
@@ -212,7 +224,9 @@ export default async function handler(req: Request, res: Response) {
         const manifest = { revision: randomUUID(), updatedAt: new Date().toISOString(), episodeId: id, byteLength: buffer.length, object }
         const written = await putIfMatch(manifestFile, JSON.stringify(manifest), current ? etag : null, { contentType: 'application/json' })
         if (!written.ok) {
-          return res.status(409).json({ error: { message: '에피소드가 다른 기기에서 수정되었습니다. 먼저 최신본을 확인해주세요.', reason: 'POST_CAS_REJECTED', detail: { r2Status: written.status ?? null, r2Code: written.code ?? null } } })
+          const detail = { r2Status: written.status ?? null, r2Code: written.code ?? null, cloudRevision: current?.revision || '' }
+          logConflict(key, id, 'POST_CAS_REJECTED', detail)
+          return res.status(409).json({ error: { message: '에피소드가 다른 기기에서 수정되었습니다. 먼저 최신본을 확인해주세요.', reason: 'POST_CAS_REJECTED', detail } })
         }
         return res.status(200).json({ ok: true, manifest })
       }
@@ -317,7 +331,7 @@ export default async function handler(req: Request, res: Response) {
         const record = await readJson(uploadPath(key, scopeId, slot))
         const rawBase = req.headers['x-episode-base']
         if (!record) return conflict(res, key, scopeId, 'COMMIT_UPLOAD_UNKNOWN', { uploadId: slot })
-        if (rawBase !== undefined && String(rawBase) !== record.base) return conflict(res, key, scopeId, 'COMMIT_BASE_HEADER_MISMATCH', { uploadId: slot, headerBase: String(rawBase), recordBase: record.base })
+        if (rawBase !== undefined && String(rawBase) !== record.base) return conflict(res, key, scopeId, 'COMMIT_BASE_HEADER_MISMATCH', { uploadId: slot, headerBase: safeRevision(rawBase), recordBase: record.base })
         const base: string = record.base
         const current = await readJson(episodeManifestPath(key, scopeId))
         // 이미 확정된 같은 요청의 재시도: 확정 기록과 일치할 때만 성공(바로 다음 저장이 전진했어도 같은 revision).

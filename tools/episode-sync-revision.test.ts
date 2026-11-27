@@ -499,3 +499,28 @@ test('16. 저장소가 조건부 쓰기를 계속 거절하면 후속 저장은 
     assert.equal(warn.lines.length, 3)
   } finally { warn.restore(); r2.restore() }
 })
+
+test('17. 단일 에피소드 POST의 409 두 분기도 진단 로그가 남고, 요청 헤더의 revision 원문·동기화 키는 로그와 응답 어디에도 없다', async () => {
+  const r2 = installR2(), warn = captureWarnings()
+  try {
+    const first = await legacyPost('legacy-v1', ''); assert.equal(first.status, 200); const rev = first.payload.manifest.revision
+    // POST_REVISION_MISMATCH: 헤더가 동기화 키·임의 문자열이어도 원문이 새지 않는다(형식 오류만 표시)
+    const secretish = `${KEY}-and-other-credential`
+    const stale = await legacyPost('STALE', secretish); assert.equal(stale.status, 409)
+    assert.equal(stale.payload.error.reason, 'POST_REVISION_MISMATCH'); assert.deepEqual(stale.payload.error.detail, { sentRevision: '[invalid-format]', cloudRevision: rev })
+    // 서버가 발급하는 형식(UUID)의 오래된 revision은 그대로 비교용으로 남는다
+    const old = await legacyPost('STALE-2', '11111111-2222-4333-8444-555555555555'); assert.equal(old.payload.error.detail.sentRevision, '11111111-2222-4333-8444-555555555555')
+    // POST_CAS_REJECTED: 기준은 맞지만 저장소가 조건부 쓰기를 거절
+    reject412(manifestKey, 1)
+    const cas = await legacyPost('CAS', rev); assert.equal(cas.status, 409)
+    assert.equal(cas.payload.error.reason, 'POST_CAS_REJECTED'); assert.equal(cas.payload.error.detail.r2Status, 412); assert.equal(cas.payload.error.detail.cloudRevision, rev)
+    assert.deepEqual(warn.lines.map((l) => l.reason), ['POST_REVISION_MISMATCH', 'POST_REVISION_MISMATCH', 'POST_CAS_REJECTED'], '두 분기 모두 서버 로그가 남는다')
+    // start/commit 경로의 헤더 값도 같은 정제를 거친다
+    const s = await startOf({ base: secretish }); assert.equal(s.status, 409); assert.equal(s.payload.error.detail.sentBase, '[invalid-format]')
+    const ok = await startOf({ base: rev }); await putChunk({ base: rev }, ok.payload.slot, 'SIX-BY')
+    const c = await commitOf({ base: secretish }, ok.payload.slot, 1, 6, ok.payload); assert.equal(c.payload.error.reason, 'COMMIT_BASE_HEADER_MISMATCH'); assert.equal(c.payload.error.detail.headerBase, '[invalid-format]')
+    const blob = JSON.stringify([stale.payload, old.payload, cas.payload, s.payload, c.payload, ...warn.lines])
+    assert.ok(!blob.includes(KEY) && !blob.includes('other-credential'), '동기화 키·헤더 원문은 응답·로그에 없다')
+    assert.equal((await legacyGet()).text, 'legacy-v1', '거절된 요청은 기존 데이터를 바꾸지 않는다')
+  } finally { warn.restore(); r2.restore() }
+})
