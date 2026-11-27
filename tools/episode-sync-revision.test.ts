@@ -417,3 +417,118 @@ test('5. 브라우저가 보내는 기준 revision 헤더가 CORS로 허용된�
   const { readFileSync } = await import('node:fs')
   assert.match(readFileSync(new URL('../api/sync/[...path].ts', import.meta.url), 'utf8'), /Access-Control-Allow-Headers', '[^']*X-Episode-Base/)
 })
+
+// ── 연속·중첩 저장과 409 분기 진단(보호는 그대로, 거절 이유만 구분한다) ──
+function captureWarnings() {
+  const lines: any[] = [], original = console.warn
+  console.warn = (...a: any[]) => { try { const o = JSON.parse(String(a[0])); if (o?.tag === 'episode-sync-409') lines.push(o); else original(...a) } catch { original(...a) } }
+  return { lines, restore() { console.warn = original } }
+}
+const startOf = (c: any) => call('POST', 'start', { episodeId: EP, op: 'start' }, c)
+
+test('13. 연속 저장: 첫 저장 뒤의 후속 저장 5번이 모두 성공하고, 매번 직전 manifest의 ETag(If-Match)로 확정된다', async () => {
+  const r2 = installR2()
+  try {
+    let rev = ''; const seen: string[] = []
+    for (let i = 1; i <= 6; i++) { const r = await upload(`v${i}`, rev); assert.equal(r.status, 200, `${i}번째 저장: ${JSON.stringify(r)}`); rev = r.revision as string; seen.push(rev) }
+    assert.equal(new Set(seen).size, 6, '저장마다 새 revision')
+    assert.equal((await cloud())?.content, 'v6')
+    const manifestPuts = r2.wire.filter((w) => w.method === 'PUT' && w.key.endsWith(`/${EP}.json`))
+    assert.equal(manifestPuts.length, 6); assert.equal(manifestPuts[0].headers['if-none-match'], '*')
+    assert.ok(manifestPuts.slice(1).every((w) => /^"e\d+"$/.test(String(w.headers['if-match']))), '2번째부터는 읽은 ETag를 If-Match로 보낸다')
+  } finally { r2.restore() }
+})
+
+test('14. 중첩 저장: 같은 기준에서 두 저장이 겹치면 늦은 쪽만 거절(이유 COMMIT_MANIFEST_ADVANCED)되고, 이긴 저장의 revision 기준의 다음 저장은 성공한다', async () => {
+  const r2 = installR2(), warn = captureWarnings()
+  try {
+    const base = await upload('base', '')
+    const A = { base: base.revision, client: 'client-aaaaaaaa' }, B = { base: base.revision, client: 'client-aaaaaaaa' }
+    const a = await startOf(A), b = await startOf(B)
+    await putChunk(A, a.payload.slot, 'A-data'); await putChunk(B, b.payload.slot, 'B-data')
+    const ac = await commitOf(A, a.payload.slot, 1, 6, a.payload), bc = await commitOf(B, b.payload.slot, 1, 6, b.payload)
+    assert.equal(ac.status, 200); assert.equal(bc.status, 409)
+    assert.equal(bc.payload.error.code, 'EPISODE_BASE_CONFLICT'); assert.equal(bc.payload.error.reason, 'COMMIT_MANIFEST_ADVANCED')
+    assert.deepEqual([bc.payload.error.detail.baseIsFirstSave, bc.payload.error.detail.cloudRevision], [false, ac.payload.manifest.revision])
+    assert.equal((await upload('after', ac.payload.manifest.revision)).status, 200)
+    assert.equal((await cloud())?.content, 'after')
+    assert.deepEqual(warn.lines.map((l) => l.reason), ['COMMIT_MANIFEST_ADVANCED'])
+  } finally { warn.restore(); r2.restore() }
+})
+
+test('15. 409 분기마다 reason이 구분되어 응답과 서버 로그에 남고, 동기화 키는 어디에도 없다', async () => {
+  const r2 = installR2(), warn = captureWarnings(), reasons: Record<string, any> = {}
+  const mark = (name: string, r: any) => { assert.equal(r.status, 409, name); assert.equal(r.payload.error.code, 'EPISODE_BASE_CONFLICT', name); reasons[name] = r.payload.error }
+  try {
+    const first = await upload('v1', ''), rev = first.revision as string
+    // start: 기준을 모름 / 오래된 기준
+    mark('START_BASE_UNKNOWN', await startOf({}))
+    mark('START_BASE_STALE', await startOf({ base: 'old-revision' }))
+    // chunk: 발급되지 않은 uploadId / 이미 있는 청크와 크기가 다른 재시도
+    const s = await startOf({ base: rev }); const slot = s.payload.slot
+    mark('CHUNK_UPLOAD_UNKNOWN', await putChunk({ base: rev }, 'u' + 'f'.repeat(32), 'x'))
+    await putChunk({ base: rev }, slot, 'SIX-BY'); mark('CHUNK_SIZE_MISMATCH', await putChunk({ base: rev }, slot, 'LONGER-DATA'))
+    // commit: 발급되지 않은 uploadId / 시작과 다른 기준 / 이미 전진한 기준
+    mark('COMMIT_UPLOAD_UNKNOWN', await commitOf({ base: rev }, 'u' + 'e'.repeat(32), 1, 6, s.payload))
+    mark('COMMIT_BASE_HEADER_MISMATCH', await commitOf({ base: 'other-base' }, slot, 1, 6, s.payload))
+    const done = await commitOf({ base: rev }, slot, 1, 6, s.payload); assert.equal(done.status, 200)
+    mark('COMMIT_RETRY_SHAPE_MISMATCH', await commitOf({ base: rev }, slot, 1, 7, s.payload)) // 확정된 같은 저장을 다른 모양으로 재시도
+    const late = await startOf({ base: done.payload.manifest.revision }); await putChunk({ base: done.payload.manifest.revision }, late.payload.slot, 'LATE-1')
+    const adv = await upload('ADV', done.payload.manifest.revision); assert.equal(adv.status, 200)
+    mark('COMMIT_MANIFEST_ADVANCED', await commitOf({ base: done.payload.manifest.revision }, late.payload.slot, 1, 6, late.payload))
+    for (const [name, e] of Object.entries(reasons)) assert.equal(e.reason, name)
+    assert.deepEqual(new Set(warn.lines.map((l) => l.reason)), new Set(Object.keys(reasons)))
+    const blob = JSON.stringify([...Object.values(reasons), ...warn.lines]); assert.ok(!blob.includes(KEY), '동기화 키는 응답·로그에 없다'); assert.ok(warn.lines.every((l) => l.workspace.length === 10))
+  } finally { warn.restore(); r2.restore() }
+})
+
+test('16. 저장소가 조건부 쓰기를 계속 거절하면 후속 저장은 모두 commit에서 409이고(시작·청크는 200), 이유가 CAS 거절 → 다른 저장의 link로 구분되며 R2 응답 상태가 남는다', async () => {
+  const r2 = installR2(), warn = captureWarnings()
+  try {
+    const base = await upload('base', ''), B = { base: base.revision, client: 'client-aaaaaaaa' }
+    reject412(manifestKey, 1000) // R2가 manifest의 조건부 쓰기를 항상 412로 거절하는 상황
+    const results: any[] = []
+    for (let i = 1; i <= 3; i++) {
+      const s = await startOf(B); await putChunk(B, s.payload.slot, `DATA-${i}`)
+      const c = await commitOf(B, s.payload.slot, 1, 6, s.payload); results.push({ start: s.status, commit: c.status, reason: c.payload?.error?.reason, detail: c.payload?.error?.detail })
+    }
+    assert.deepEqual(results.map((r) => [r.start, r.commit]), [[200, 409], [200, 409], [200, 409]], '시작은 매번 성공하고 확정만 계속 409 — 운영에서 본 모양')
+    assert.equal(results[0].reason, 'COMMIT_CAS_REJECTED'); assert.equal(results[0].detail.cas.lastStatus, 412); assert.equal(results[0].detail.cas.attempts, 3)
+    assert.equal(results[1].reason, 'COMMIT_OTHER_UPLOAD_WON'); assert.equal(results[1].detail.published, false, '이긴 link의 저장이 manifest에 반영되지 못했다는 사실이 남는다')
+    assert.equal((await cloud())?.content, 'base', '거절 동안 기존 클라우드본은 바뀌지 않는다(보호 유지)')
+    assert.equal(warn.lines.length, 3)
+  } finally { warn.restore(); r2.restore() }
+})
+
+test('17. 단일 POST의 409 두 분기도 진단 로그가 남고, 외부 요청 값(UUID 형식 인증값·일반 인증값·키)은 형식과 관계없이 로그·응답 어디에도 없다', async () => {
+  const r2 = installR2(), warn = captureWarnings()
+  try {
+    const first = await legacyPost('legacy-v1', ''); assert.equal(first.status, 200); const rev = first.payload.manifest.revision
+    // 외부에서 들어온 값들: UUID 형식 인증값, 일반 문자열 인증값, 동기화 키, 발급되지 않은 uploadId 모양의 16진 값
+    const uuidSecret = 'c0ffee00-1234-4abc-8def-0123456789ab', plainSecret = 'Bearer sk-live-PLAINSECRET-0123456789', hexSecret = 'u' + 'ab12cd34'.repeat(4)
+    const bodies: any[] = [], note = (r: any) => { bodies.push(r.payload); return r }
+    const stale = note(await legacyPost('STALE', uuidSecret)); assert.equal(stale.status, 409)
+    assert.equal(stale.payload.error.reason, 'POST_REVISION_MISMATCH'); assert.deepEqual(stale.payload.error.detail, { revisionHeaderPresent: true, revisionMatchesCloud: false, cloudRevision: rev })
+    note(await legacyPost('STALE-2', plainSecret)); note(await legacyPost('STALE-3', KEY))
+    reject412(manifestKey, 1)
+    const cas = note(await legacyPost('CAS', rev)); assert.equal(cas.payload.error.reason, 'POST_CAS_REJECTED'); assert.equal(cas.payload.error.detail.r2Status, 412); assert.equal(cas.payload.error.detail.cloudRevision, rev)
+    assert.deepEqual(warn.lines.map((l) => l.reason), ['POST_REVISION_MISMATCH', 'POST_REVISION_MISMATCH', 'POST_REVISION_MISMATCH', 'POST_CAS_REJECTED'], '두 분기 모두 서버 로그가 남는다')
+    // start / chunk / commit 경로: 헤더·uploadId 자리에 들어온 값
+    for (const secret of [uuidSecret, plainSecret, KEY]) {
+      const s = note(await startOf({ base: secret })); assert.equal(s.payload.error.reason, 'START_BASE_STALE'); assert.deepEqual(s.payload.error.detail, { baseHeaderPresent: true, baseMatchesCloud: false, cloudRevision: rev })
+    }
+    const ok = await startOf({ base: rev }); await putChunk({ base: rev }, ok.payload.slot, 'SIX-BY')
+    for (const secret of [uuidSecret, plainSecret, KEY]) {
+      const c = note(await commitOf({ base: secret }, ok.payload.slot, 1, 6, ok.payload))
+      assert.equal(c.payload.error.reason, 'COMMIT_BASE_HEADER_MISMATCH'); assert.deepEqual(c.payload.error.detail, { uploadId: ok.payload.slot, baseHeaderPresent: true, baseMatchesRecord: false })
+    }
+    const ghost = note(await putChunk({ base: rev }, hexSecret, 'x')); assert.deepEqual(ghost.payload.error.detail, { uploadIdIssued: false })
+    const ghostCommit = note(await commitOf({ base: rev }, hexSecret, 1, 6, ok.payload)); assert.deepEqual(ghostCommit.payload.error.detail, { uploadIdIssued: false })
+    const everything = JSON.stringify([...bodies, ...warn.lines])
+    for (const secret of [uuidSecret, plainSecret, KEY, 'PLAINSECRET', hexSecret]) assert.ok(!everything.includes(secret), `외부 입력값이 진단에 노출됨: ${secret.slice(0, 12)}…`)
+    // 정상 revision 전달 계약은 그대로: 올바른 기준으로는 저장되고, 거절된 요청은 기존 데이터를 바꾸지 않는다
+    const done = await commitOf({ base: rev }, ok.payload.slot, 1, 6, ok.payload); assert.equal(done.status, 200)
+    assert.equal((await upload('after', done.payload.manifest.revision)).status, 200)
+    assert.equal((await cloud())?.content, 'after')
+  } finally { warn.restore(); r2.restore() }
+})
